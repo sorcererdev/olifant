@@ -120,7 +120,8 @@ spec = do
     it "without providers, none; hasUnits and hasTestUnits follow the rules" $ do
       let Right l = lang runner
       (langUnitProvider l, langAnchorProvider l, langTest l >>= testUnitProvider, langTest l >>= testSelectProvider) `shouldBe` (Nothing, Nothing, Nothing, Nothing)
-      (hasUnits l, hasTestUnits l) `shouldBe` (False, False)
+      -- 4b m2: no unit rule, but python's grammar is linked: its queries give units
+      (hasUnitRule l, hasUnits l, hasTestUnits l) `shouldBe` (False, True, False)
     it "an empty provider, or a provider with another key beside it, is an error naming the key" $ do
       lang ["[unit]", "kinds = { provider = [] }"] `shouldSatisfy` either ("unit.kinds" `T.isInfixOf`) (const False)
       lang ["[unit]", "kinds = { provider = [\"x\"], kinds = [] }"] `shouldSatisfy` either ("unit.kinds" `T.isInfixOf`) (const False)
@@ -488,7 +489,8 @@ spec = do
         lineOf needle = length (takeWhile (not . (needle `T.isInfixOf`)) (T.lines pythonModule))
     it "[unit] kinds: the adapter's definition kinds, none when it has no [unit]" $ do
       py <- either (error . T.unpack) id . parseOverShipped "python" "packs/python-htmx" <$> TIO.readFile "packs/python-htmx/languages/python.toml"
-      langUnitKinds py `shouldBe` ["function_definition", "class_definition", "decorated_definition"]
+      -- 4b m2: none, its units come from the grammar's queries
+      langUnitKinds py `shouldBe` []
       fmap langUnitKinds (parseLanguage "python" "/p" "files = [\"**/*.py\"]\ncomment = \"#\"\ngrammar = \"python\"\n") `shouldBe` Right []
     it "[check] convert: format absent or olifant-json; [check.errorformat] needs a pattern" $ do
       let base = "files = [\"**/*.x\"]\ncomment = \"#\"\ngrammar = \"x\"\n[check]\ncommand = [\"t\"]\n"
@@ -548,9 +550,9 @@ spec = do
           `shouldReturn` T.unlines ["x = foo(", "    a,", "    bar(b, c),", "    " <> long <> ",", ")  # note"]
       it "(e) a separator already at the end is not doubled (Review Focus 3)" $ withPython $ \syn lang _ ->
         fmap fst (grown syn lang "y = f(a,)\n" "end of call f" "b") `shouldReturn` "y = f(a, b)\n"
-      it "(g) review C1: code that is not an item (a lambda, an operator) refuses rather than vanish" $ withPython $ \syn lang _ -> do
-        r <- resolveLayers syn (Just lang) Nothing [PhraseAnchor "end of call foo"] "x = foo(a + b, lambda q: q, c)  # note\n"
-        either (any (T.isInfixOf "shares its line" . missReason)) (const False) r `shouldBe` True
+      it "(g) review C1: no argument vanishes: every argument is an item on the generic rule (a lambda, an operator)" $ withPython $ \syn lang _ ->
+        fmap fst (grown syn lang "x = foo(a + b, lambda q: q, c)  # note\n" "end of call foo" "d")
+          `shouldReturn` "x = foo(a + b, lambda q: q, c, d)  # note\n"
       it "(h) review C1: a keyword-only marker is not an item: refused, not dropped" $ withPython $ \syn lang _ -> do
         r <- resolveLayers syn (Just lang) Nothing [PhraseAnchor "end of parameters in f"] "def f(self, *, x: int) -> None:\n    pass\n"
         either (any (T.isInfixOf "shares its line" . missReason)) (const False) r `shouldBe` True
@@ -572,6 +574,12 @@ spec = do
       at syn lang file "end of call CreateBooking" `shouldReturn` Right (lineOf "bookings=booking_repository," + 1, "        ")
     it "(c) end of call NAME in FUNCTION opens an empty argument list" $ withPython $ \syn lang file ->
       fmap (fmap locOpen) (resolveLayers syn (Just lang) Nothing [PhraseAnchor "end of call CancelBooking in create"] file) >>= (`shouldSatisfy` either (const False) isJust)
+    it "Python keeps only `union NAME` and `match on NAME`" $ withPython $ \_ lang _ ->
+      map targetPhrase (langTargets lang) `shouldBe` ["match on NAME", "union NAME"]
+    it "(Review Focus) end of class NAME with a docstring and a decorated method goes after the last method, at its column" $ withPython $ \syn lang _ -> do
+      let src = T.unlines ["class Booking:", "    \"\"\"A booking.\"\"\"", "", "    def a(self) -> int:", "        return 1", "", "    @property", "    def b(self) -> int:", "        return 2", "", "", "x = 1"]
+      at syn lang src "end of class Booking" `shouldReturn` Right (9, "    ")
+      fmap (fmap locSpacing) (resolveLayers syn (Just lang) Nothing [PhraseAnchor "end of class Booking"] src) `shouldReturn` Right BlankBefore
 
   describe "rewriting (ast-grep, a rule with a fix)" $
     it "gives each match its replacement and its byte range" $ withPython $ \syn lang _ ->
@@ -580,6 +588,13 @@ spec = do
   describe "the Rust adapter (ast-grep, fixture service.rs)" $ do
     let at syn lang file p = fmap (fmap locLine) (resolveLayers syn (Just lang) Nothing [PhraseAnchor p] file)
         lineOf file needle = length (takeWhile (not . (needle `T.isInfixOf`)) (T.lines file))
+    it "end of imports goes after the last import declaration (haskell adapter; review I1)" $ withHaskell $ \syn lang _ -> do
+      let at' src = fmap (fmap (\l -> (locLine l, locIndent l))) (resolveLayers syn (Just lang) Nothing [PhraseAnchor "end of imports"] src)
+      at' "module A where\n\nimport X\nimport Y\n\nf :: Int\nf = 1\n" `shouldReturn` Right (4, "")
+      at' "module A where\nimport X\n" `shouldReturn` Right (2, "")
+    it "end of function NAME goes after the last equation (haskell adapter)" $ withHaskell $ \syn lang _ ->
+      fmap (fmap (\l -> (locLine l, locIndent l))) (resolveLayers syn (Just lang) Nothing [PhraseAnchor "end of function f"] "module A where\n\nf :: Int -> Int\nf 0 = 1\nf n = n\n\ng :: Int\ng = 2\n")
+        `shouldReturn` Right (5, "")
     it "end of data goes after the last constructor (haskell adapter)" $ withHaskell $ \syn lang file ->
       fmap (fmap (\l -> (locLine l, locIndent l))) (resolveLayers syn (Just lang) Nothing [PhraseAnchor "end of data SampleError"] file)
         `shouldReturn` Right (6, "  ")

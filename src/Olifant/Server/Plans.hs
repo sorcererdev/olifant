@@ -54,7 +54,7 @@ import Olifant.Catalog (Catalog (..), PlansConfig (..))
 import Olifant.Language.Adapter (languageFor)
 import Olifant.Plans (Anchor (..), Line (..), Section (..), Verdict (..), parsePlan, sectionOf)
 import Olifant.Server.State (ServerState (..))
-import Olifant.Server.Unit (Named (..), fingerprint, unitNamed, unitsOf)
+import Olifant.Server.Unit (Named (..), fingerprint, unitLookupIn, unitsOf, unitsWithKinds)
 import Olifant.Workspace (Workspace (..), normalisePath)
 import System.FilePath (isAbsolute, takeExtension, (</>))
 
@@ -72,6 +72,9 @@ data Resolved = Resolved
   , rsUnit :: Maybe Named
   , rsFingerprint :: Maybe Text
   , rsText :: Maybe Text
+  , rsWhy :: Maybe Text
+  -- ^ why the unit is missing, when the units were read: none of that
+  -- name, or a name several units have
   }
   deriving stock (Eq, Show)
 
@@ -80,10 +83,11 @@ data Resolved = Resolved
 resolveAnchor :: ServerState -> Project -> Anchor -> IO Resolved
 resolveAnchor s p a = do
   text <- maybe (pure Nothing) (safely Nothing . readText (prWorkspace p)) (confined (anPath a))
-  unit <- case (text, languageFor (catalogLanguages (prCatalog p)) rel) of
-    (Just t, Just lang) -> safely Nothing (either (const Nothing) (unitNamed (anUnit a)) <$> unitsOf (pSyntax (ssPorts s)) lang (Just rel) t)
-    _ -> pure Nothing
-  pure (Resolved rel (normalisePath (prRoot p </> rel)) unit (fingerprint <$> text <*> fmap namedLines unit) text)
+  found <- case (text, languageFor (catalogLanguages (prCatalog p)) rel) of
+    (Just t, Just lang) -> safely (Left Nothing) (either (const (Left Nothing)) (either (Left . Just) Right . unitLookupIn (anUnit a)) <$> unitsWithKinds (pSyntax (ssPorts s)) lang (Just rel) t)
+    _ -> pure (Left Nothing)
+  let unit = either (const Nothing) Just found
+  pure (Resolved rel (normalisePath (prRoot p </> rel)) unit (fingerprint <$> text <*> fmap namedLines unit) text (either id (const Nothing) found))
   where
     rel = normalisePath (anPath a)
 
@@ -230,7 +234,7 @@ planFiles s p text = do
   pure
     [ FileItem (secTitle (sectionOf ls (lnRow l))) (lnRow l) (T.strip (lnText l)) (rsAbs r <$ rsText r) (namedDef <$> rsUnit r)
     | (l, a) <- anchored
-    , let r = fromMaybe (Resolved (anPath a) (anPath a) Nothing Nothing Nothing) (M.lookup (key a) resolved)
+    , let r = fromMaybe (Resolved (anPath a) (anPath a) Nothing Nothing Nothing Nothing) (M.lookup (key a) resolved)
     ]
 
 -- | An errand's answer: its blocks, each ghost line with its anchor's

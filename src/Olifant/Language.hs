@@ -13,9 +13,17 @@ module Olifant.Language
   , renamedPhrases
   , oneContainer
   , linkedGrammars
+  , capturesOf
   , grammarLabel
   , queriesFor
+  , queriesOf
+  , definedName
+  , definedNamesIn
+  , signatureHead
+  , functionMatches
+  , querySet
   , grammarLinked
+  , hasUnits
   , genericNames
   , linkedGrammarOf
   , treeSitterAnchors
@@ -39,19 +47,24 @@ import Olifant.Language.Rule
 import Olifant.Language.Syntax
 import Olifant.Language.Test
 import Olifant.Language.Captures (definedNames, genericPhrase, genericPhrases, oneContainer, renamedPhrases)
-import Olifant.Language.TreeSitter (capturesOf, grammarLabel, linkedGrammars, queriesFor, treeSitterAnchors)
+import Olifant.Language.TreeSitter (capturesOf, definedName, definedNamesIn, functionMatches, grammarLabel, linkedGrammars, queriesFor, queriesOf, querySet, signatureHead, treeSitterAnchors)
 
 -- | Is the language's grammar linked in, so the generic anchor phrases
 -- work on it?
 grammarLinked :: Language -> Bool
 grammarLinked = isJust . linkedGrammarOf
 
+-- | Does the language have units: `[unit] kinds`, a units provider, or a
+-- linked grammar (whose queries' definitions are its units)?
+hasUnits :: Language -> Bool
+hasUnits l = hasUnitRule l || grammarLinked l
+
 -- | The names a generic phrase's word (`function`, `class`, a kind word)
 -- can take in a text: its definitions of that kind, in order. None when the
 -- grammar is not linked.
 genericNames :: Language -> Text -> Text -> [Text]
 genericNames l kind txt = case linkedGrammarOf l of
-  Just g -> either (const []) (definedNames kind . snd) (capturesOf g (queriesFor g) txt)
+  Just g -> either (const []) (definedNames kind . snd) (capturesOf g (querySet l) txt)
   Nothing -> []
 
 -- | The language's grammar, when it is linked in.

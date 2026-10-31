@@ -12,10 +12,18 @@
 module Olifant.Language.TreeSitter
   ( capturesOf
   , cacheSize
+  , definitionLines
+  , definitionKinds
+  , definedName
+  , definedNamesIn
+  , signatureHead
+  , functionMatches
   , linkedGrammars
   , grammarNodeTypes
   , grammarLabel
   , queriesFor
+  , queriesOf
+  , querySet
   , shippedQueries
   , treeSitterAnchors
   ) where
@@ -45,10 +53,11 @@ import Foreign.Marshal.Utils (copyBytes, with)
 import Foreign.Ptr (FunPtr, Ptr, castPtr, nullPtr, plusPtr)
 import Foreign.Storable (peek, peekElemOff)
 import Olifant.Language.Adapter (Grammar (..), Language (..))
-import Olifant.Language.Captures (Cap (..), PNode (..), anchorFromCaptures, genericPhrase, phraseKind)
-import Olifant.Language.Syntax (Match, SyntaxFailure (..))
+import Olifant.Language.Captures (Cap (..), DefSpan (..), PNode (..), anchorFromCaptures, definitionSpans, definitionsWith, functionCaps, genericPhrase, phraseKind)
+import Olifant.Language.Syntax (Match (..), SyntaxFailure (..))
 import System.FilePath (splitDirectories, takeExtension)
 import System.IO.Unsafe (unsafePerformIO)
+import Text.Regex.TDFA (Regex, makeRegexM, matchTest)
 
 data TSLanguage
 data TSTree
@@ -59,6 +68,8 @@ data TSQueryMatch
 
 -- the grammars compiled in (cbits/tree-sitter-<grammar>/)
 foreign import ccall "&tree_sitter_rust" p_rust :: FunPtr (IO (Ptr TSLanguage))
+foreign import ccall "&tree_sitter_python" p_python :: FunPtr (IO (Ptr TSLanguage))
+foreign import ccall "&tree_sitter_haskell" p_haskell :: FunPtr (IO (Ptr TSLanguage))
 foreign import ccall "dynamic" callLanguage :: FunPtr (IO (Ptr TSLanguage)) -> IO (Ptr TSLanguage)
 
 foreign import ccall unsafe "ts_language_symbol_count" c_symbolCount :: Ptr TSLanguage -> IO Word32
@@ -84,6 +95,9 @@ foreign import ccall unsafe "ts_query_cursor_delete" c_cursorDelete :: Ptr TSQue
 foreign import ccall unsafe "ots_match_size" c_matchSize :: IO CSize
 foreign import ccall unsafe "ots_next" c_next :: Ptr TSQueryCursor -> Ptr TSQueryMatch -> Ptr Word32 -> IO CInt
 foreign import ccall unsafe "ots_captures" c_captures :: Ptr TSQueryMatch -> Ptr TSNode -> Ptr Word32 -> IO ()
+-- a pattern's predicate steps: (type, value id) pairs of Word32 (0: done, 1: capture, 2: string)
+foreign import ccall unsafe "ts_query_predicates_for_pattern" c_predicates :: Ptr TSQuery -> Word32 -> Ptr Word32 -> IO (Ptr Word32)
+foreign import ccall unsafe "ts_query_string_value_for_id" c_stringValue :: Ptr TSQuery -> Word32 -> Ptr Word32 -> IO CString
 
 -- | The grammar table: a language file's `grammar` to its compiled-in
 -- parser. Data, keyed by grammar, never by a language's name.
@@ -93,7 +107,7 @@ grammarTable = [(g, fp) | (g, fp, _) <- grammars]
 -- | Each grammar compiled in, with its parser and the crate and version
 -- vendored (cbits/tree-sitter-<grammar>/SOURCES).
 grammars :: [(Text, FunPtr (IO (Ptr TSLanguage)), Text)]
-grammars = [("rust", p_rust, "tree-sitter-rust 0.24.2")]
+grammars = [("haskell", p_haskell, "tree-sitter-haskell 0.23.1"), ("python", p_python, "tree-sitter-python 0.25.0"), ("rust", p_rust, "tree-sitter-rust 0.24.2")]
 
 -- | The grammars linked into this binary.
 linkedGrammars :: [Text]
@@ -132,12 +146,86 @@ treeSitterAnchors lang _ ws source = pure $ case langGrammar lang of
     | g `elem` linkedGrammars
     , genericPhrase ws
     , maybe True (kindKnown g) (phraseKind ws) ->
-        case capturesOf g (queriesFor g) source of
+        case capturesOf g (querySet lang) source of
           Left why -> Just (Left (SyntaxFailed why))
           Right (root, caps) -> first SyntaxFailed <$> anchorFromCaptures root caps ws
   _ -> Nothing
   where
     kindKnown g k = any (\t -> t == k || (k <> "_") `T.isPrefixOf` t) (grammarNodeTypes g)
+
+-- | Every function and class-like definition of a text in a language whose
+-- grammar is linked ('Nothing' otherwise, or when its queries fail): its
+-- @name, its own lines and its unit's lines (decorators included), 1-based
+-- and inclusive, in order ('definitionSpans'). Units and test-unit spans
+-- read it.
+definitionLines :: Language -> Text -> Maybe [(Text, (Int, Int), (Int, Int))]
+definitionLines lang source = map (\(n, _, own, unit) -> (n, own, unit)) <$> definitionKinds lang source
+
+-- | 'definitionLines' with each definition's capture (`definition.impl`, …).
+definitionKinds :: Language -> Text -> Maybe [(Text, Text, (Int, Int), (Int, Int))]
+definitionKinds lang source = case langGrammar lang of
+  BuiltInGrammar g
+    | g `elem` linkedGrammars
+    , Right (root, caps) <- capturesOf g (querySet lang) source ->
+        Just [(dsName d, dsCapture d, linesOf (dsNode d), linesOf (dsUnit d)) | d <- definitionsWith root caps]
+  _ -> Nothing
+  where
+    -- a node that ends at a line's start ends on the line before
+    linesOf p =
+      let ((sr, _), (er, ec)) = (pStart p, pEnd p)
+       in (sr + 1, if ec == 0 && er > sr then er else er + 1)
+
+-- | A text's definitions by its language's queries: Nothing when the
+-- grammar is not linked or its queries fail.
+definitionsOf :: Language -> Text -> Maybe [DefSpan]
+definitionsOf lang source = case langGrammar lang of
+  BuiltInGrammar g
+    | g `elem` linkedGrammars
+    , Right (root, caps) <- capturesOf g (querySet lang) source -> Just (definitionsWith root caps)
+  _ -> Nothing
+
+-- | The definition a text starts with: the outermost whose unit starts on
+-- its first line (decorators in).
+leadingDefinition :: Language -> Text -> Maybe DefSpan
+leadingDefinition lang source = definitionsOf lang source >>= \ds ->
+  listToMaybe (sortOn (\d -> (fst (pBytes (dsUnit d)), negate (snd (pBytes (dsUnit d))))) [d | d <- ds, fst (pStart (dsUnit d)) == 0])
+
+-- | The name a definition's text defines: the @name of the definition it
+-- starts with, by the language's queries; else (an unlinked grammar, or no
+-- definition there) its first word.
+definedName :: Language -> Text -> Text
+definedName lang what = maybe firstWord dsName (leadingDefinition lang what)
+  where
+    firstWord = case T.words what of
+      w : _ -> w
+      [] -> ""
+
+-- | The names a text defines (every function and class-like definition),
+-- none for an unlinked grammar.
+definedNamesIn :: Language -> Text -> [Text]
+definedNamesIn lang source = maybe [] (map dsName) (definitionsOf lang source)
+
+-- | A definition's signature: its text up to its `body` field (comment
+-- lines just over the body left out), trimmed
+-- (`def f(\n    a,\n) -> dict:`); the first line when it has no body or
+-- the text starts with no definition.
+signatureHead :: Language -> Text -> Text
+signatureHead lang found = case leadingDefinition lang found >>= dsBody of
+  -- a comment over the body's first line (the grammar may leave it outside
+  -- the body) is not the signature's
+  Just b ->
+    let upTo = T.lines (TE.decodeUtf8Lenient (BS.take (fst (pBytes b)) (TE.encodeUtf8 found)))
+        ownLine l = not (T.null (T.strip l)) && not (langComment lang `T.isPrefixOf` T.strip l)
+     in T.strip (T.intercalate "\n" (reverse (dropWhile (not . ownLine) (reverse upTo))))
+  Nothing -> maybe "" id (listToMaybe (T.lines found))
+
+-- | A text's function definitions (`functionCaps`) as matches, their own
+-- spans (a Haskell signature and its equations one); Nothing for an
+-- unlinked grammar.
+functionMatches :: Language -> Text -> Maybe [Match]
+functionMatches lang source =
+  (\ds -> [Match (pStart n) (pEnd n) (pText n) (pBytes n) | d <- ds, dsCapture d `elem` functionCaps, let n = dsNode d])
+    <$> definitionsOf lang source
 
 -- | The query files shipped inside the binary: (grammar, file name, source).
 shippedQueries :: [(Text, FilePath, Text)]
@@ -149,6 +237,21 @@ shippedQueries =
     , takeExtension f == ".scm"
     ]
 
+-- | A language's query set with each file's origin, in name order: its
+-- grammar's shipped files ("shipped"), a project file (`langQueries`)
+-- replacing the one of its name, the project's new names added.
+queriesOf :: Language -> [(FilePath, Text, Text)]
+queriesOf lang = sortOn (\(f, _, _) -> f) (own ++ [(f, s, "shipped") | (f, s) <- shipped, f `notElem` [f' | (f', _, _) <- own]])
+  where
+    own = langQueries lang
+    shipped = case langGrammar lang of
+      BuiltInGrammar g -> queriesFor g
+      _ -> []
+
+-- | 'queriesOf' as 'capturesOf' takes it: (file name, source).
+querySet :: Language -> [(FilePath, Text)]
+querySet lang = [(f, s) | (f, s, _) <- queriesOf lang]
+
 -- | A grammar's shipped query set: (file name, source).
 queriesFor :: Text -> [(FilePath, Text)]
 queriesFor g = [(f, s) | (g', f, s) <- shippedQueries, g' == g]
@@ -158,11 +261,87 @@ queriesFor g = [(f, s) | (g', f, s) <- shippedQueries, g' == g]
 -- @reference.implementation@ is not read: tags.scm names a trait impl by its
 -- trait; impls.scm gives an inherent impl as @definition.impl@.
 readCaptures :: [Text]
-readCaptures = ["name", "function.inner", "class.inner", "parameter.inner", "call.outer", "import"]
+readCaptures = ["name", "function.inner", "class.inner", "function.outer", "class.outer", "parameter.inner", "call.outer", "import"]
 
 -- | A query set compiled as one query (one walk of the tree for all of
--- them), its capture names, and each file's first pattern index.
-type Compiled = (Ptr TSQuery, M.Map Word32 Text, [(Int, FilePath)])
+-- them), its kept capture names, each file's first pattern index, and each
+-- pattern's predicates.
+type Compiled = (Ptr TSQuery, M.Map Word32 Text, [(Int, FilePath)], M.Map Word32 [Pred])
+
+-- | A predicate (Decision 7), evaluated in Haskell after the cursor returns
+-- a match: the Bool is False for the @not-@ form. Every node a capture
+-- holds in the match must pass; a capture with no node passes.
+data Pred
+  = PEq Bool Word32 (Either Word32 Text)
+  | PMatch Bool Word32 Regex
+  | PAnyOf Bool Word32 [Text]
+
+-- | The predicates olifant evaluates. Any other predicate or directive
+-- (@#make-range!@, @#lua-match?@, @#set!@) fails a query's compile.
+knownPredicates :: [Text]
+knownPredicates = ["eq?", "not-eq?", "match?", "not-match?", "any-of?", "not-any-of?"]
+
+data Step = SCap Word32 | SStr Text
+
+-- | A pattern's predicates, read from the compiled query and checked.
+patternPredicates :: Ptr TSQuery -> Word32 -> IO (Either Text [Pred])
+patternPredicates q p = with 0 $ \countP -> do
+  steps <- c_predicates q p countP
+  n <- fromIntegral <$> peek countP
+  raw <- forM (if n == 0 then [] else [0 .. n - 1]) $ \i -> do
+    ty <- peekElemOff steps (2 * i)
+    v <- peekElemOff steps (2 * i + 1)
+    case ty of
+      0 -> pure Nothing
+      1 -> pure (Just (SCap v))
+      _ -> with 0 $ \len -> do
+        cstr <- c_stringValue q v len
+        l <- peek len
+        Just . SStr . TE.decodeUtf8Lenient <$> BS.packCStringLen (cstr, fromIntegral l)
+  pure (mapM one (splitDone raw))
+  where
+    splitDone xs = case break (\case Nothing -> True; _ -> False) xs of
+      ([], []) -> []
+      (a, _ : rest) -> [x | Just x <- a] : splitDone rest
+      (a, []) -> [[x | Just x <- a]]
+    one = \case
+      SStr name : args -> case (name, args) of
+        ("eq?", [SCap c, a]) -> Right (PEq True c (arg a))
+        ("not-eq?", [SCap c, a]) -> Right (PEq False c (arg a))
+        ("match?", [SCap c, SStr re]) -> PMatch True c <$> regex re
+        ("not-match?", [SCap c, SStr re]) -> PMatch False c <$> regex re
+        ("any-of?", SCap c : vs) | Just ts <- mapM str vs -> Right (PAnyOf True c ts)
+        ("not-any-of?", SCap c : vs) | Just ts <- mapM str vs -> Right (PAnyOf False c ts)
+        _
+          | name `elem` knownPredicates -> Left ("`#" <> name <> "` has the wrong arguments")
+          | otherwise -> Left ("unknown predicate `#" <> name <> "` (known: " <> T.intercalate ", " (map ("#" <>) knownPredicates) <> ")")
+      _ -> Left "a predicate with no name"
+    arg = \case
+      SCap c -> Left c
+      SStr t -> Right t
+    str = \case
+      SStr t -> Just t
+      SCap _ -> Nothing
+    regex re = maybe (Left ("`" <> re <> "` is not a valid regular expression (POSIX extended)")) Right (makeRegexM (T.unpack re) :: Maybe Regex)
+
+-- | Does a match pass its pattern's predicates? @texts@: each capture id's
+-- node texts in the match.
+passes :: M.Map Word32 [Text] -> [Pred] -> Bool
+passes texts = all ok
+  where
+    nodes c = M.findWithDefault [] c texts
+    ok = \case
+      PEq pos c (Right t) -> all (\x -> (x == t) == pos) (nodes c)
+      PEq pos c (Left d) -> and [(x == y) == pos | x <- nodes c, y <- nodes d]
+      PMatch pos c re -> all (\x -> matchTest re (T.unpack x) == pos) (nodes c)
+      PAnyOf pos c ts -> all (\x -> (x `elem` ts) == pos) (nodes c)
+
+predicateCaptures :: Pred -> [Word32]
+predicateCaptures = \case
+  PEq _ c (Left d) -> [c, d]
+  PEq _ c _ -> [c]
+  PMatch _ c _ -> [c]
+  PAnyOf _ c _ -> [c]
 
 -- | Each (grammar, query set), compiled once per process.
 compiled :: MVar (M.Map (Text, [(FilePath, Text)]) (Either Text Compiled))
@@ -179,8 +358,9 @@ compileQueries lang g qs = modifyMVar compiled $ \cache -> case M.lookup (g, qs)
         Left (o, t) -> pure (Left ("`" <> T.pack f <> "`: error at byte " <> T.pack (show o) <> " (" <> errorKind t <> ")"))
         Right q -> do
           n <- c_patternCount q
+          preds <- fmap sequence (forM (if n == 0 then [] else [0 .. n - 1]) (patternPredicates q))
           c_queryDelete q
-          pure (Right (fromIntegral n :: Int))
+          pure (either (\why -> Left ("`" <> T.pack f <> "`: " <> why)) (const (Right (fromIntegral n :: Int))) preds)
     r <- case counts of
       Left why -> pure (Left why)
       Right ns ->
@@ -188,12 +368,18 @@ compileQueries lang g qs = modifyMVar compiled $ \cache -> case M.lookup (g, qs)
           Left (o, t) -> pure (Left ("the query set: error at byte " <> T.pack (show o) <> " (" <> errorKind t <> ")"))
           Right q -> do
             names <- captureNames q
-            let keep c = c `elem` readCaptures || "definition." `T.isPrefixOf` c
+            n <- c_patternCount q
+            -- each file's predicates were checked alone: these parse
+            preds <- fmap (M.fromList . concat) . forM (if n == 0 then [] else [0 .. n - 1]) $ \p ->
+              either (const []) (\ps -> [(p, ps) | not (null ps)]) <$> patternPredicates q p
+            let keep c = c `elem` readCaptures || "definition." `T.isPrefixOf` c || "unit." `T.isPrefixOf` c
+                -- a capture a predicate reads stays in the match (not returned)
+                tested = concatMap predicateCaptures (concat (M.elems preds))
                 flag b = if b then 1 else 0
-                flags k = [flag (k (M.findWithDefault "" i names)) | i <- M.keys names]
+                flags k = [flag (k i (M.findWithDefault "" i names)) | i <- M.keys names]
             -- a bare @name keeps no pattern (tags.scm's references have one)
-            withArray (flags keep) $ \kp -> withArray (flags (\c -> keep c && c /= "name")) (c_prune q kp)
-            pure (Right (q, M.filter keep names, zip (scanl (+) 0 ns) (map fst qs)))
+            withArray (flags (\i c -> keep c || i `elem` tested)) $ \kp -> withArray (flags (\_ c -> keep c && c /= "name")) (c_prune q kp)
+            pure (Right (q, M.filter keep names, zip (scanl (+) 0 ns) (map fst qs), preds))
     pure (M.insert (g, qs) r cache, r)
   where
     compileOne src =
@@ -278,7 +464,7 @@ capturesIO g qs content = case lookup g grammarTable of
                 rootNode <- pnode ctx facts root
                 Right . (rootNode,) . reverse <$> readIORef out
   where
-    runQuery ctx facts root out matchNo (q, names, starts) =
+    runQuery ctx facts root out matchNo (q, names, starts, preds) =
       -- a pattern's file, and its index in that file
       let fileOf ix = case [(T.pack f, ix - s0) | (s0, f) <- reverse starts, s0 <= ix] of
             r : _ -> r
@@ -296,8 +482,19 @@ capturesIO g qs content = case lookup g grammarTable of
                         c_captures m nodes ids
                         is <- peekArray k ids
                         let (file, local) = fileOf (fromIntegral pIx)
-                        forM (zip [0 ..] is) $ \(j, cid) ->
-                          capture ctx facts root (nodes `plusPtr` (j * ctxSize ctx)) (M.findWithDefault "" cid names) file local mi
+                            nodeAt j = nodes `plusPtr` (j * ctxSize ctx)
+                        ok <- case M.lookup pIx preds of
+                          Nothing -> pure True
+                          Just ps -> do
+                            let wanted = concatMap predicateCaptures ps
+                            texts <- forM [(j, cid) | (j, cid) <- zip [0 ..] is, cid `elem` wanted] $ \(j, cid) ->
+                              (\nd -> (cid, [pText nd])) <$> pnode ctx facts (nodeAt j)
+                            pure (passes (M.fromListWith (flip (++)) texts) ps)
+                        if not ok
+                          then pure []
+                          else fmap concat . forM (zip [0 ..] is) $ \(j, cid) -> case M.lookup cid names of
+                            Nothing -> pure []
+                            Just name -> (: []) <$> capture ctx facts root (nodeAt j) name file local mi
                       modifyIORef' out (reverse caps ++)
                       loop
                in loop
@@ -328,7 +525,7 @@ capture :: Ctx -> Ptr Word32 -> Ptr TSNode -> Ptr TSNode -> Text -> Text -> Int 
 capture ctx facts root node name file pIx mi = do
   n <- pnode ctx facts node
   -- the parent only where the rule reads it: an inner node's container
-  parent <- if ".inner" `T.isSuffixOf` name then allocaBytes size (\p -> c_parent node p >> pnodeMaybe ctx facts p) else pure Nothing
+  parent <- if ".inner" `T.isSuffixOf` name || name == "import" then allocaBytes size (\p -> c_parent node p >> pnodeMaybe ctx facts p) else pure Nothing
   top <- if name == "import" then topLevel else pure Nothing
   -- fields only where the rule reads them: definitions and calls
   let wanted
@@ -343,8 +540,21 @@ capture ctx facts root node name file pIx mi = do
         -- a body's children are not read (its items are the inner
         -- captures), and are many: only a list's are marshalled
         Just fnode -> (\kids -> [(fname, fnode, kids)]) <$> (if fname == "body" then pure [] else children fp)
-  pure (Cap name file pIx mi n parent top fields)
+  -- an inner capture that is its parent's whole `body` (Python's block,
+  -- where Rust's textobjects capture each item): its named children are
+  -- the items, given as its own `body` field
+  whole <- case parent of
+    Just _ | ".inner" `T.isSuffixOf` name -> allocaBytes size $ \p -> allocaBytes size $ \b -> do
+      c_parent node p
+      let (s, l) = bodyName
+      c_field p s (fromIntegral l) b
+      pnodeMaybe ctx facts b >>= \case
+        Just bn | pBytes bn == pBytes n -> (\kids -> [("body", n, kids)]) <$> children node
+        _ -> pure []
+    _ -> pure []
+  pure (Cap name file pIx mi n parent top (fields ++ whole))
   where
+    bodyName = maybe (error "fieldNames: body") id (lookup "body" fieldNames)
     size = ctxSize ctx
     -- named, non-extra children
     children p = do

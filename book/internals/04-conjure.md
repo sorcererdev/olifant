@@ -65,7 +65,10 @@ instruction from the **before-run** (`runOver` of the test file, over the editor
 messages and sources as context, the passing ones "to keep passing", and the body on screen as
 "rejected by the person" when `isStubIn` says it is not a stub. The hole verifies by
 `VerifyTests`: every test in the file must pass. `testConjure` (`:1322`) is for a test: the
-module under test in full as context, the notes in the stub's body, and it verifies by
+module under test in full as context (for a test in the module's own file, Rust's `mod tests`,
+the file outside the definition that holds the test, its `[test] above` lines too:
+`outsideTestOf`, over `TreeSitter.definitionLines`, so the model is not shown the file twice),
+the notes in the stub's body, and it verifies by
 `VerifyRedAt tid line True`: the test must fail at its assertion (or pass: an error *before*
 the assertion is asked again).
 

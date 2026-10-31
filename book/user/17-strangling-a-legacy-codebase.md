@@ -44,6 +44,7 @@ It adds the target pack, the strangler pack (`python-strangler`), and
 legacy = ["legacy/**"]   # the legacy folders, as globs
 # base = "main"          # what "new" is measured from: the merge-base of HEAD and this
 # switches = "src/bistro/switches.py"   # the registry; when not set, the strangler pack's [switches] registry glob finds it
+# count = ["function_definition"]       # what a legacy function is, as node kinds; when not set, the language's functions
 ```
 
 and records a baseline, so today's code passes ([chapter 2](02-running-generators.md#an-existing-repo-olifant-init---migrate)).
@@ -165,7 +166,8 @@ migration: +1 extracted (close-table), 0 legacy functions added, legacy 121 → 
 - **extracted**: switches the base did not have;
 - **legacy functions added**: new legacy functions *without* an allowance (a delegate doesn't
   count; it carries `olifant:allow`);
-- **legacy N → M functions**: definitions in the legacy globs, at the base (over the base's own
+- **legacy N → M functions**: function definitions in the legacy globs (`[migrate] count`'s node
+  kinds; without it, every function and method the language's queries capture), at the base (over the base's own
   files, so a file deleted since counts there) and now; a file renamed with `git mv` is not new;
 - **switches**: the registry's, on and off (a trailing `# comment` on a line is fine).
 

@@ -118,10 +118,27 @@ into one. This is what conjure, mutate, stub, plan anchors and the plan fingerpr
 Both paths meet in `unitAnswers :: Syntax IO -> Language -> Maybe FilePath -> Text -> IO
 (Either Text [UnitAnswer])`, the units slot. By rule it gives each `[unit] kinds` match as a
 `UnitAnswer` (its 1-based span, its name by `[unit] name`); with `langUnitProvider` it gives the
-program's answer (`Provider.providedUnits`, memoised by request). `unitsOf` sorts either by
+program's answer (`Provider.providedUnits`, memoised by request). With neither (no `[unit]
+kinds`, no provider) and a linked grammar, it gives every function and class-like definition the
+grammar's queries capture (`TreeSitter.definitionLines`, over `Captures.definitionSpans`): named
+by its `@name`, its span the definition's, widened to the largest `function.outer`/`class.outer`
+capture that ends with it and holds no other definition (a Python decorated def, decorators
+in), a Haskell signature and its equations already one (`adjacent`). Units read
+`Captures.unitDefinitions`: a phrase's definitions plus `@unit.*` captures no phrase reads
+(Rust's `impls.scm` tags a trait impl `@unit.impl`, named by its type, so its methods stay
+`Type.method`), each named by its match's `@name` and `@unit.name` texts in order.
+`Unit.unitLookup` reports a name several units share instead of taking the first; a plan
+anchor reads `unitLookupIn` over `unitsWithKinds`, where a type and its inherent impl
+(`definition.impl`) sharing a name are the type, and says why when it does not resolve
+(`Resolved.rsWhy`). Rust, Python and Haskell
+ship no `kinds` any more; they keep `name`, which `defLine`, `ownerHeader` and the other line
+readers (`App.definesIn`, `ConjureScan`, `Recognize`, `functionText`, `FillPhase`'s top-level
+names) still use. `hasUnits` (in `Olifant.Language`) is `hasUnitRule` or a linked grammar.
+`unitsOf` sorts either by
 start (longer first) and folds it the same way: `defLine` (the first line `name` names, else the
-first), `dedupe`, `joined`, `qualify`. `unitAt` keeps its rule path; with a provider it takes the
-innermost answer holding the line, its body from `bodyOf` as before. `FillPhase`'s top-level
+first), `dedupe`, `joined`, `qualify`. `unitAt` keeps its rule path; with a provider, or with the
+queries' answers, it takes the innermost answer holding the line, its body from `bodyOf` as
+before. `FillPhase`'s top-level
 names (the answers no other answer holds) read a provider through `providerPure`, since the fill
 phase is generic in its monad.
 `unit_words` (`langUnitWords`) is a sentence for prompts (`Errand.projectUnitWords`).
@@ -150,7 +167,12 @@ Every reader of test units goes through one door, `TestUnits.testUnitsOf :: Lang
 -> [TestUnit]` (with `testUnitsReport`, which keeps a provider's failure for doctor; `testAtIn`
 and `testLineIn` are built on it). By rule it is `testUnitsIn` over `[test] unit` and `above`;
 with `testUnitProvider` it is the program's answer, each unit's path the names of the answers
-that strictly hold it, outermost first. The callers (stubs, the fill phase's assertion span and
+that strictly hold it, outermost first. With a linked grammar, `testUnitsReport` calls
+`testUnitsWith` with a span function (from `TreeSitter.definitionLines`): a unit whose rule's
+line starts a definition ends where that definition ends, so a test with a string's outdented
+line, a Rust test's closing brace and a multi-line signature keep their whole span (m3's known
+limits). A unit on a line that starts no definition (hspec's `it`) keeps the outdent rule, as
+does every unit of an unlinked grammar. The callers (stubs, the fill phase's assertion span and
 whole-file test, the scripted runner, conjure through `testCaseAtIn`/`testSourcesIn`) are pure,
 so a provider runs through `Provider.providerPure`, memoised by request; that rests on a
 provider being pure by contract. `TestUnitsSpec` fails if `testUnitsIn` appears in any other
@@ -229,10 +251,12 @@ declared `[targets.*]`), olifant parses in process with tree-sitter, to read the
 anchor phrases from community queries (design 4b §A).
 
 - **The C.** The tree-sitter runtime 0.27.0 (its one-file amalgamation, `cbits/tree-sitter/src/lib.c`)
-  and each linked grammar (`cbits/tree-sitter-rust/parser.c`, `scanner.c`) are `c-sources` in
+  and each linked grammar (`cbits/tree-sitter-rust/parser.c`, `scanner.c`; the same in
+  `cbits/tree-sitter-python/` and `cbits/tree-sitter-haskell/`) are `c-sources` in
   `olifant.cabal`, in both the `library` and the `spec` stanzas. Nothing is installed: no
   Homebrew library, no dylib, no doctor row for it. Both are pinned to the versions ast-grep
-  0.45.3's `Cargo.lock` locks (runtime 0.27.0, tree-sitter-rust 0.24.2), so the two parsers
+  0.45.3's `Cargo.lock` locks (runtime 0.27.0, tree-sitter-rust 0.24.2, tree-sitter-python
+  0.25.0, tree-sitter-haskell 0.23.1), so the two parsers
   read the same trees. Each directory has a `SOURCES` (version, git commit, crate sha256) and
   the upstream `LICENSE`.
 - **The shim.** GHC's FFI cannot pass a `TSNode` (a 32-byte struct) by value, so
@@ -247,8 +271,42 @@ anchor phrases from community queries (design 4b §A).
   Apache-2.0: `@function.inner`, `@class.inner`, `@parameter.inner`, `@call.outer`) and two
   olifant writes: `imports.scm` (an import statement, whole, `@import`) and `impls.scm` (an
   inherent impl named by its type, generics included, as `@definition.impl`; a trait impl is
-  not captured, so no phrase names it). `SOURCES` pins each vendored file to a commit and lists
-  any line olifant removed under "changes".
+  not captured, so no phrase names it). For Python: the grammar's `tags.scm`,
+  nvim-treesitter-textobjects' `textobjects.scm` less its two comment patterns (they use
+  `#offset!` and `#lua-match?`), and olifant's `imports.scm` (`import`, `from … import` and
+  `from __future__ import`). For Haskell all three files are olifant's own, because
+  tree-sitter-haskell ships no `tags.scm` and nvim-treesitter-textobjects' Haskell file has no
+  class bodies: `tags.scm` tags a `signature`, `function` and `bind` as `@definition.function`,
+  `data_type` and `newtype` as `.type`, `class` as `.class`, and `instance` as
+  `@definition.instance` (named by its class for a phrase, `@unit.name` adding its type for its
+  unit: `C Int`);
+  `textobjects.scm` makes a data type's constructors and a class's or instance's declarations
+  `@class.inner`; `imports.scm` captures each `import` in the `imports` block (the block itself
+  runs on to the next declaration under the grammar's layout). They carry no upstream
+  licence. The place to upstream them is tree-sitter-haskell's `queries/tags.scm` (and
+  nvim-treesitter-textobjects for the inner ranges), after which they would be vendored like
+  Rust's. Haskell's `parser.c` is 19.8 MB; it compiles clean at `-O2` in under a second. `SOURCES` pins each vendored file to a commit and lists any line
+  olifant removed under "changes".
+- **The project's queries.** `Catalog.openAt` reads `.olifant/queries/<grammar>/*.scm` for
+  each language whose grammar is linked (`projectQueries`) into `langQueries` (file, text,
+  origin "project"). `TreeSitter.queriesOf` is the set every reader uses: the shipped files,
+  a project file replacing the one of its name, new names added, in name order; `querySet`
+  drops the origins for `capturesOf`, whose cache key already holds the whole set. The
+  generic rule (`treeSitterAnchors`), units and test spans (`definitionLines`), doctor's tries
+  (`genericNames`) and the `queries` row all read it. A set that does not compile is a
+  `catalogBrokenLanguages` entry naming the file, and the language keeps its shipped set.
+- **Predicates.** The C cursor returns a match without judging its predicates;
+  `TreeSitter.patternPredicates` reads each pattern's (`ts_query_predicates_for_pattern`) when
+  the query set compiles, and `passes` drops a match that fails them. Six are known
+  (`knownPredicates`): `#eq?`, `#not-eq?` (against a string or another capture), `#match?`,
+  `#not-match?` (a search, POSIX extended, the engine of the language files' expressions) and
+  `#any-of?`, `#not-any-of?`. Every node a quantified capture holds must pass. Anything else,
+  `#make-range!` (nvim's `@*.outer` ranges, which olifant does not read), `#set!`,
+  `#lua-match?`, fails the file's compile with "unknown predicate", naming the file: a vendored
+  file that uses one has those patterns removed and listed in its `SOURCES`, and the spec
+  "every shipped query compiles and uses only known predicates" holds every linked grammar to
+  it. A capture a predicate reads is kept in the pruned query even when the rule does not read
+  it, and is not returned.
 - **The capture data.** `capturesOf grammar queries text` returns the root node and every
   capture as plain data from `Language/Captures.hs`: a `Cap` (capture name, query file,
   pattern, match number, its `PNode`, the node's parent, its top-level ancestor for `@import`,
@@ -268,7 +326,10 @@ anchor phrases from community queries (design 4b §A).
   (`symbolTable`). Its text and character columns are lazy, since most nodes are only compared.
   A capture's parent is read only for `.inner` captures, and fields only where the rule reads
   them (a definition's `body` and `parameters`, a call's `arguments`), with the children of a
-  parameter or argument list but not of a body (a body's items are its inner captures).
+  parameter or argument list but not of a body (a body's items are its inner captures). One
+  exception: an `.inner` capture that is its parent's whole `body` (Python's textobjects
+  capture the block, where Rust's capture each item) carries its named children as its own
+  `body` field.
 - **The cache.** `capturesOf` keeps the last 16 answers it computed (`answers`, `cacheBound`),
   newest first, keyed by (grammar, query set, text). It is first in, first out: a hit does
   not move its entry, so a text asked about constantly is still dropped after 16 newer ones
@@ -289,7 +350,8 @@ anchor phrases from community queries (design 4b §A).
   `Nothing` for a phrase that is not generic (`genericPhrase` is its shape), else every
   container the phrase names, in the file's order, each with its items. A definition is a
   `definition.*` capture with the `@name` of its match; `functionCaps` and `classCaps` are the
-  engine's table of which captures `function` and `class` mean, and any other kind word
+  engine's table of which captures `function` and `class` mean (`kindOnlyCaps`,
+  `definition.instance`, only a kind word reaches: `instance C`), and any other kind word
   narrows by node type (`struct` → `struct_item`, `mod` → `mod_item`). A definition's items are
   the `function.inner`/`class.inner` captures whose *nearest strictly enclosing* definition it
   is ("strictly": an impl with one method has the method as both item and definition), named
@@ -298,11 +360,27 @@ anchor phrases from community queries (design 4b §A).
   Rust attribute, a decorator): the two become one item (`decorated`), so `end of` spacing is
   measured between whole members and `start of` goes before the decoration. A match holds
   every capture of a `_+` however many (`ots_next` returns the count, `ots_captures` copies
-  them), so a body of hundreds of children is read whole. With no inner
+  them), so a body of hundreds of children is read whole. When the inner capture is the whole
+  body (a Python block), the body is the container and its named children are the items
+  (`wholeBody`). Adjacent function definitions of one name with only white space between
+  are one (`adjacent`: a Haskell signature and its equations, captured each on its own, are
+  one function from the signature to the last equation); class-like ones are not joined. A
+  definition with no inner range and no `body` field (that Haskell function) is its own
+  container and its one item, so `end of` goes after it. With no inner
   capture (an empty body), the container is the definition's `body` field, empty, which
   placement opens. `parameters in F` reads the function's `parameters` field (type parameters
   are a direct child too, so a capture alone would not do), a call is named by its text up to
-  its `arguments` field, and `imports` takes the top-level `@import` statements (`capTop`).
+  its `arguments` field, and `imports` takes the top-level `@import` statements (`capTop`: a
+  direct child of the file, or of a top-level node that holds no definition, Haskell's block);
+  in a file with none, `Resolve.named` puts a first import after the file's header
+  (`headerEnd`) when the language's `[imports] when_empty = "after header"` (Python's), and
+  spaces `end of imports` unless its `[imports] spaced = false` (Python's: a blank line there
+  separates import groups).
+  A phrase's name matches exactly when any definition (or call) has that name; only when none
+  does is it read as a POSIX expression matching a name whole, compiled once per phrase
+  (`nameMatcher`, as the declared targets' `^{= NAME =}$` did: python-htmx's model reads
+  `parameters in [a-z_]+_routes`), so `(<+>)` never means `<>`. `adjacent` is one map lookup
+  per definition.
   `oneContainer` turns the list into "one, none, or matches N places".
 - **Where the rule is asked.** It is the `Syntax` port's `anchorSyntax` field (after
   `runSlotProvider`); `AstGrep.astGrepSyntax` sets it to `TreeSitter.treeSitterAnchors`, which
@@ -316,6 +394,16 @@ anchor phrases from community queries (design 4b §A).
   catalog's target check) and `locateContainers` (every container; a name two definitions
   share gives both) ask the same field. `Anchor/Items.hs`'s up-front "unknown target in any
   language adapter" check lets a generic phrase through when any language's grammar is linked.
+- **What else reads them.** The engine's language words went with m2 (the leftovers): a
+  definition's name (`TreeSitter.definedName`: the `@name` of the definition a text starts
+  with, decorators in; else its first word) for `finding_name`, `Rules`' "a name the base
+  defined" (`Newness.newSince` takes the base's names from `definedNamesIn`) and callers notes;
+  a signature (`signatureHead`: the text up to the definition's `body` field) for
+  `finding_head`; `[migrate]`'s count without a `count` key (`App.countedIn` over
+  `functionMatches`: every `functionCaps` definition); and the folders a listing skips (each
+  language's `ignore`, `Catalog.catalogIgnores`, `Workspace.ignoring`). `Newness`'
+  `definitionKeywords`, `App`'s colon-scanning `signatureHead` and `Workspace.pruned`'s
+  language folders are gone. `TestName`'s string prefixes and `self` move in m4.
 - **Pure.** A parse and a query run are functions of (grammar, queries, text), so
   `capturesOf` is pure and wraps its IO in `unsafePerformIO` (Decision 6 of the m2 plan). Pure
   callers (the anchor rule; later, units and test units) read captures without threading IO.

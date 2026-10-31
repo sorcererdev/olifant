@@ -124,6 +124,18 @@ spec = do
       testAtBy rules (Just "^[[:space:]]*@") py 4 `shouldBe` Just "test_a"
       testAtBy rules Nothing py 4 `shouldBe` Nothing
       testLineBy rules (Just "^[[:space:]]*@") py "test_a" `shouldBe` Just 4
+  describe "spans from the enclosing definition (4b m2: a linked grammar)" $ do
+    it "a test whose string literal has an outdented line keeps its whole span" $ do
+      py <- shippedLanguage "python" []
+      let t = T.unlines ["def test_doc() -> None:", "    text = \"\"\"", "a line at column 0", "\"\"\"", "    assert text"]
+      map (\u -> (tuPath u, tuLines u)) (testUnitsOf py Nothing t) `shouldBe` [(["test_doc"], (1, 5))]
+    it "a brace-ended Rust test ends at its brace" $ do
+      rs <- shippedLanguage "rust" []
+      map (\u -> (tuPath u, tuLines u)) (testUnitsOf rs Nothing rustText) `shouldBe` [(["tests"], (5, 23)), (["tests", "adds"], (13, 16)), (["tests", "panics"], (18, 22))]
+    it "a multi-line signature belongs to its test" $ do
+      py <- shippedLanguage "python" []
+      let t = T.unlines ["def test_wide(", "    n: int,", ") -> None:", "    assert n"]
+      map (\u -> (tuPath u, tuLines u)) (testUnitsOf py Nothing t) `shouldBe` [(["test_wide"], (1, 4))]
   describe "anchor names" $ do
     it "squashes each run outside [A-Za-z0-9_.] to one _" $ do
       anchorName ["Olifant.Plans", "parses \"x\" twice"] `shouldBe` "Olifant.Plans.parses_x_twice"

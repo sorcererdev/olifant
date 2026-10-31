@@ -9,7 +9,7 @@ import Data.Maybe (listToMaybe)
 import Data.Time (diffUTCTime, getCurrentTime)
 import GHC.Conc (getNumCapabilities)
 import Olifant.Anchor (RenderedAnchor (..), locLine, resolveLayers)
-import Olifant.Language (Language, parseLanguage)
+import Olifant.Language (Language (..), parseLanguage)
 import Olifant.Language.Adapter (parseOverShipped)
 import Olifant.Language.AstGrep (astGrepSyntax)
 import System.Directory (getTemporaryDirectory)
@@ -19,7 +19,8 @@ import Data.Map.Strict qualified as M
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
-import Olifant.Language.Captures (Cap (..), PNode (..))
+import Olifant.Language.Captures (Cap (..), PNode (..), anchorFromCaptures)
+import Olifant.Language.Syntax (Match (..))
 import Olifant.Language.TreeSitter (cacheSize, capturesOf, linkedGrammars, queriesFor)
 import Test.Hspec
 
@@ -111,8 +112,58 @@ benchSpec = describe "tree-sitter: timing" $
 
 captureSpec :: Spec
 captureSpec = describe "tree-sitter captures" $ do
-  it "links the rust grammar" $
-    linkedGrammars `shouldBe` ["rust"]
+  it "links the haskell, python and rust grammars" $
+    linkedGrammars `shouldBe` ["haskell", "python", "rust"]
+  it "a project imports.scm replaces the shipped one" $ do
+    rs <- either (error . T.unpack) id . parseOverShipped "rust" "packs/rust-htmx" <$> TIO.readFile "packs/rust-htmx/languages/rust.toml"
+    let own = rs {langQueries = [("imports.scm", "(extern_crate_declaration) @import\n", "project")]}
+        src = "extern crate a;\nuse b::c;\n\nfn f() {}\n"
+        syn = astGrepSyntax "/nonexistent"
+        line l = fmap (fmap locLine) (resolveLayers syn (Just l) Nothing [PhraseAnchor "end of imports"] src)
+    line rs `shouldReturn` Right 2
+    line own `shouldReturn` Right 1
+  describe "Haskell (olifant's own queries)" $ do
+    let hs src = either (error . T.unpack) id (capturesOf "haskell" (queriesFor "haskell") src)
+        containers src ws = case hs src of
+          (root, caps) -> fmap (fmap (map (\(c, items) -> ((fst (matchStart c), fst (matchEnd c)), length items)))) (anchorFromCaptures root caps ws)
+    it "a Haskell function's definition spans its signature and equations" $
+      containers "f :: Int -> Int\nf 0 = 1\nf n = n\n\ng = 2\n" ["function", "f"] `shouldBe` Just (Right [((0, 2), 1)])
+    it "a function without a signature is its equations" $
+      containers "f :: Int -> Int\nf 0 = 1\n\ng 0 = 1\ng n = n\n" ["function", "g"] `shouldBe` Just (Right [((3, 4), 1)])
+    it "`data` is a class-like definition: its constructors are its items" $ do
+      let src = "data E\n  = A\n  | B Int\n  deriving (Show)\n"
+      [n | ("definition.type", n) <- defs (snd (hs src))] `shouldBe` ["E"]
+      containers src ["class", "E"] `shouldBe` Just (Right [((1, 2), 2)])
+      containers src ["data", "E"] `shouldBe` Just (Right [((1, 2), 2)])
+    it "an operator's name is exact beside another operator (review I2)" $
+      containers "(<+>) :: A\na <+> b = b\n\ninstance S X where\n  a <> b = a\n" ["function", "(<+>)"] `shouldBe` Just (Right [((0, 1), 1)])
+    it "a class's and an instance's declarations are their items" $ do
+      let src = "class C a where\n  m :: a -> Int\n  m _ = 1\n\ninstance C Int where\n  m x = x\n"
+      containers src ["instance", "C"] `shouldBe` Just (Right [((5, 5), 1)])
+      -- review I3: `class C` is the class, not its instances
+      -- (its signature and default equation are one item: one `m`)
+      containers src ["class", "C"] `shouldBe` Just (Right [((1, 2), 1)])
+  it "every shipped query compiles and uses only known predicates" $
+    forM_ linkedGrammars $ \g ->
+      either (Just . ((g <> ": ") <>)) (const Nothing) (capturesOf g (queriesFor g) "") `shouldBe` Nothing
+  it "a Python file's classes and functions are captured" $
+    defs (either (error . T.unpack) snd (capturesOf "python" (queriesFor "python") "class A:\n    def m(self):\n        pass\n\ndef f():\n    pass\n"))
+      `shouldBe` [("definition.class", "A"), ("definition.function", "m"), ("definition.function", "f")]
+  describe "predicates (evaluated in Haskell)" $ do
+    -- @import is a capture the rule reads (others are pruned)
+    let idents q = [pText (capNode c) | c <- either (error . T.unpack) snd (capturesOf "rust" [("p.scm", q)] "fn f() { a; b; a; abc; }\n"), capName c == "import"]
+    it "#eq? filters" $ idents "((identifier) @import (#eq? @import \"a\"))" `shouldBe` ["a", "a"]
+    it "#not-eq? filters" $ idents "((identifier) @import (#not-eq? @import \"a\"))" `shouldBe` ["f", "b", "abc"]
+    it "#match? filters (a search, POSIX extended)" $ idents "((identifier) @import (#match? @import \"^a\"))" `shouldBe` ["a", "a", "abc"]
+    it "#not-match? filters" $ idents "((identifier) @import (#not-match? @import \"^a\"))" `shouldBe` ["f", "b"]
+    it "#any-of? filters" $ idents "((identifier) @import (#any-of? @import \"a\" \"b\"))" `shouldBe` ["a", "b", "a"]
+    it "#not-any-of? filters" $ idents "((identifier) @import (#not-any-of? @import \"a\" \"b\"))" `shouldBe` ["f", "abc"]
+    it "#eq? compares two captures, even one the rule does not read" $
+      idents "((expression_statement (identifier) @other) @import (#eq? @other \"b\"))" `shouldBe` ["b;"]
+    it "an unknown predicate is a Left naming the file and the predicate" $
+      either (\e -> "p.scm" `T.isInfixOf` e && "lua-match?" `T.isInfixOf` e) (const False)
+        (capturesOf "rust" [("p.scm", "((identifier) @import (#lua-match? @import \"^a\"))")] "fn f() {}\n")
+        `shouldBe` True
   it "a Rust file's definitions are captured" $ do
     src <- TIO.readFile "packs/rust-htmx/fixtures/app/billing/billing-service/src/service.rs"
     let ds = defs (rust src)

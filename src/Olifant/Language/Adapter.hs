@@ -45,7 +45,7 @@ module Olifant.Language.Adapter
   , defaultUnitWords
   , Provider (..)
   , withProviderRoot
-  , hasUnits
+  , hasUnitRule
   , hasTestUnits
   , mergeLayerTables
   ) where
@@ -159,6 +159,15 @@ data Language = Language
   , langOrigins :: M.Map Text Text
   -- ^ each key (`indent`, `check`, `check.format`) and the layer that set it
   -- last, or `toolchain NAME` for a [check] or [test] key its preset filled
+  , langIgnore :: [Text]
+  -- ^ `ignore`: folder names a project listing never enters (its
+  -- dependencies, build output, caches: Rust's `target`); the catalog's
+  -- languages' together ('Olifant.Catalog.catalogIgnores')
+  , langQueries :: [(FilePath, Text, Text)]
+  -- ^ the project's query files for the grammar (`.olifant/queries/<grammar>/`):
+  -- (file, text, origin), each replacing the shipped file of its name or
+  -- added beside them ('Olifant.Language.TreeSitter.queriesOf'); none: the
+  -- shipped set
   }
   deriving stock (Show)
 
@@ -195,8 +204,13 @@ data ImportMerge = ImportMerge {mergePattern :: Text, mergeWrite :: Template}
 -- module, its separator written @/@) for the files a module may be;
 -- 'imExample' (`example`), a fill that starts with an import line, shown to
 -- the model when its fill may begin with imports: @needs@, the name the
--- import binds, and @fill@, the whole fill.
-data ImportsDef = ImportsDef {imWrite :: Maybe Text, imModuleOf :: Maybe ModuleOf, imResolve :: [Resolve], imPaths :: [Text], imExample :: Maybe (Text, Text)}
+-- import binds, and @fill@, the whole fill; 'imSpaced' (`spaced`, default
+-- true): false when a blank line between imports groups them, so `end of
+-- imports` joins the last import with no blank line; 'imWhenEmpty'
+-- (`when_empty`, as a target's): "after header" puts a file's first import
+-- after its leading comments and docstring (else a file with none is "no
+-- `imports` in this file").
+data ImportsDef = ImportsDef {imWrite :: Maybe Text, imModuleOf :: Maybe ModuleOf, imResolve :: [Resolve], imPaths :: [Text], imExample :: Maybe (Text, Text), imSpaced :: Bool, imWhenEmpty :: Maybe Text}
   deriving stock (Eq, Show)
 
 -- | A pack's `[conjure]`: how conjure reads its architecture. 'cjService'
@@ -506,7 +520,7 @@ originOf lang key = case M.lookup key (langOrigins lang) of
 
 languageFrom :: Presets -> Text -> Maybe FilePath -> Table -> Either Text Language
 languageFrom presets name grammarDir top = do
-  onlyKeysWith [("qualify", "`qualify` is retired: the [check] format decides how patterns are written")] ["files", "comment", "grammar", "targets", "placeholder", "branch", "check", "indent", "holes", "imports", "import_merge", "separator", "line_length", "keywords", "test", "unit", "mutate", "arm_separator", "lone_arm_spaced", "unit_words", "opens_block", "empty_statement", "stub_lines", "conjure", "types", "anchors"] top
+  onlyKeysWith [("qualify", "`qualify` is retired: the [check] format decides how patterns are written")] ["files", "comment", "grammar", "targets", "placeholder", "branch", "check", "indent", "holes", "imports", "import_merge", "separator", "line_length", "keywords", "test", "unit", "mutate", "arm_separator", "lone_arm_spaced", "unit_words", "opens_block", "empty_statement", "stub_lines", "conjure", "types", "anchors", "ignore"] top
   files <- required "files" (list text) top
   comment <- required "comment" text top
   grammar <- required "grammar" grammarFrom top
@@ -542,9 +556,10 @@ languageFrom presets name grammarDir top = do
   unitJoin <- fromMaybe False <$> optional "join" bool unit
   mutate <- fromMaybe [] <$> optional "mutate" (list (table >=> mutateFrom)) top
   unitWords <- fromMaybe defaultUnitWords <$> optional "unit_words" text top
+  ignore <- fromMaybe [] <$> optional "ignore" (list text) top
   armSeparator <- fromMaybe "" <$> optional "arm_separator" text top
   loneArmSpaced <- fromMaybe False <$> optional "lone_arm_spaced" bool top
-  pure (Language name files comment grammar targets placeholder branch check indent holes imports importsDef separator lineLength importMerge keywords test unitKinds unitNames unitJoin unitWords armSeparator loneArmSpaced opensBlock emptyStatement assertion stubLines conjure types unitProvider anchorProvider mutate [] M.empty)
+  pure (Language name files comment grammar targets placeholder branch check indent holes imports importsDef separator lineLength importMerge keywords test unitKinds unitNames unitJoin unitWords armSeparator loneArmSpaced opensBlock emptyStatement assertion stubLines conjure types unitProvider anchorProvider mutate [] M.empty ignore [])
   where
     tmpl = first describeTemplateError . parseTemplate
     -- a slot's value: the rule, or `{ provider = [...] }` alone in its place
@@ -585,7 +600,7 @@ languageFrom presets name grammarDir top = do
     importsFrom = \case
       TText re -> (\r -> (Just r, Nothing)) <$> validRegex "imports" re
       TTable t -> do
-        onlyKeys ["line", "write", "module_of", "resolve", "paths", "example"] t
+        onlyKeys ["line", "write", "module_of", "resolve", "paths", "example", "spaced", "when_empty"] t
         line <- optional "line" (text >=> validRegex "[imports] line") t
         write <- optional "write" (text >=> \w -> tmpl w >>= \tp -> if freeVariables tp `S.isSubsetOf` S.fromList ["module", "owner"] then Right w else Left "`[imports] write` may use only {= module =} and {= owner =}") t
         mo <- optional "module_of" (table >=> \m -> do
@@ -601,7 +616,9 @@ languageFrom presets name grammarDir top = do
         example <- optional "example" (table >=> \e -> do
           onlyKeys ["needs", "fill"] e
           (,) <$> required "needs" text e <*> required "fill" text e) t
-        pure (line, Just (ImportsDef write mo resolve paths example))
+        spaced <- fromMaybe True <$> optional "spaced" bool t
+        whenEmpty <- optional "when_empty" (text >=> \w -> if w == "after header" then Right w else Left "`[imports] when_empty`: expected \"after header\"") t
+        pure (line, Just (ImportsDef write mo resolve paths example spaced whenEmpty))
       other -> Left ("`imports`: expected an expression or an [imports] table, got " <> describeTree other)
     typesFrom t = do
       onlyKeys ["string", "integer", "nothing", "optional", "param", "annotation", "returns", "assigned", "checks_none", "record", "method"] t
@@ -842,8 +859,8 @@ withProviderRoot root lang =
     rooted p = p {provRoot = Just root}
 
 -- | The language can name its units: by `[unit] kinds` or a provider.
-hasUnits :: Language -> Bool
-hasUnits lang = not (null (langUnitKinds lang)) || langUnitProvider lang /= Nothing
+hasUnitRule :: Language -> Bool
+hasUnitRule lang = not (null (langUnitKinds lang)) || langUnitProvider lang /= Nothing
 
 -- | The language can find its tests: by `[test] unit` rules or a provider.
 hasTestUnits :: Language -> Bool

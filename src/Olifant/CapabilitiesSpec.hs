@@ -22,17 +22,17 @@ spec = do
     lookup "stub" [(capName c, capHow c) | c <- capabilities hs] `shouldBe` Just (Right "[test] stub at end of do in spec")
     lookup "mutation" [(capName c, capFix c) | c <- capabilities hs] `shouldBe` Just Nothing
     lookup "mutation" [(capName c, capHow c) | c <- capabilities hs] `shouldBe` Just (Left "[[mutate]]")
-    lookup "units" [(capName c, capHow c) | c <- capabilities hs] `shouldBe` Just (Right "[unit] kinds (ast-grep), named by [unit] name, joined")
+    lookup "units" [(capName c, capHow c) | c <- capabilities hs] `shouldBe` Just (Right "queries (tree-sitter-haskell 0.23.1): each function and class definition")
     lookup "tests" [(capName c, capHow c) | c <- capabilities hs] `shouldBe` Just (Right "[test] format lines, tests_for {= dir =}/{= stem =}Spec.hs")
   it "python.toml: present, its test units pytest.toml's rules, its selection pytest.toml's ids as they are" $ do
     py <- packLanguage "python" "packs/python-htmx"
     map capHow (capabilities py)
-      `shouldBe` [ Right "[unit] kinds (ast-grep), named by [unit] name"
+      `shouldBe` [ Right "queries (tree-sitter-python 0.25.0): each function and class definition"
                  , Right "[check] format pyright-json"
                  , Right "[check] format pyright-json"
                  , Right "[test] format pytest, tests_for {= dir =}/{= stem =}__test.py"
                  , Right "[test] unit, above"
-                 , Right "[targets] 8 targets"
+                 , Right "[targets] 2 targets, generic phrases (queries)"
                  , Right "[holes] block, expr, ident, stmt, text"
                  , Right "[test] select"
                  , Right "[[mutate]] (17 operators)"

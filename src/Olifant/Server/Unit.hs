@@ -13,6 +13,9 @@ module Olifant.Server.Unit
   , unitAnswers
   , unitAround
   , unitNamed
+  , unitLookup
+  , unitLookupIn
+  , unitsWithKinds
   , unitNameIn
   , fingerprint
   ) where
@@ -24,6 +27,7 @@ import Data.ByteString qualified as BS
 import Data.Char (isAlphaNum, isSpace)
 import Data.Functor ((<&>))
 import Data.List (sortOn)
+import Data.Map.Strict qualified as M
 import Data.Text.Encoding (encodeUtf8)
 import Data.Word (Word64)
 import Numeric (showHex)
@@ -34,6 +38,7 @@ import Data.Text qualified as T
 import Olifant.Language (ConjureDef (..), CtorShape (..), Language (..), Match (..), Syntax (..), TestDef (..), describeSyntaxFailure, regexName)
 import Olifant.Provider (UnitAnswer (..), providedUnits)
 import Olifant.Language.TestUnits (TestUnit (..), testCaseUnitAtIn)
+import Olifant.Language.TreeSitter (definitionKinds, definitionLines)
 import Text.Regex.TDFA (Regex, makeRegexM, matchTest)
 
 -- | A unit (1-based lines): its name, its header line, its node's lines,
@@ -53,20 +58,23 @@ data Unit = Unit
 -- Left is one sentence on why there is none.
 unitAt :: Syntax IO -> Language -> Maybe FilePath -> Text -> Int -> IO (Either Text Unit)
 unitAt syntax lang file text line = case langUnitProvider lang of
-  -- a provider: the innermost answer holding the line, its body as a rule's
-  Just _ ->
+  -- a provider (or, with no [unit] kinds, the definitions a linked
+  -- grammar's queries capture): the innermost answer holding the line, its
+  -- body as a rule's
+  _ | byAnswers ->
     unitAnswers syntax lang file text <&> \case
       Left why -> Left why
       Right us -> case sortOn (\u -> (Down (uaLine u), uaEnd u)) [u | u <- us, uaLine u <= line, line <= uaEnd u] of
         u : _ -> let d = defLine lang ls u in Right (Unit (uaName u) d (uaLine u, uaEnd u) (bodyOf lang ls d (uaEnd u)))
         [] -> Left noUnit
-  Nothing
+  _
     | null (langUnitKinds lang) -> pure (Left (noKinds lang))
     | otherwise ->
         querySyntax syntax lang (kindsRule lang) text <&> \case
           Left f -> Left (describeSyntaxFailure f)
           Right ms -> maybe (Left noUnit) Right (pick [(a + 1, z + 1) | Match (a, _) (z, _) _ _ <- ms])
   where
+    byAnswers = isJust (langUnitProvider lang) || (null (langUnitKinds lang) && isJust (definitionLines lang text))
     noUnit = "no function or class at line " <> tshow line
     ls = T.splitOn "\n" text
     lineAt i = fromMaybe "" (listToMaybe (drop (i - 1) ls))
@@ -96,6 +104,11 @@ unitAnswers :: Syntax IO -> Language -> Maybe FilePath -> Text -> IO (Either Tex
 unitAnswers syntax lang file text = case langUnitProvider lang of
   Just p -> providedUnits p file text
   Nothing
+    -- no [unit] kinds and a linked grammar: every function and class-like
+    -- definition its queries capture, named by its @name, decorators in
+    | null (langUnitKinds lang)
+    , Just ds <- definitionKinds lang text ->
+        pure (Right [UnitAnswer n a z (Just k) | (n, k, _, (a, z)) <- sortOn (\(_, _, _, (a, z)) -> (a, Down z)) ds])
     | null (langUnitKinds lang) -> pure (Left (noKinds lang))
     | otherwise ->
         querySyntax syntax lang (kindsRule lang) text <&> \case
@@ -198,9 +211,15 @@ data Named = Named {namedName :: Text, namedLines :: (Int, Int), namedDef :: Int
 -- one indentation separated only by blank lines (or touching) are one: a
 -- Haskell signature and its equations.
 unitsOf :: Syntax IO -> Language -> Maybe FilePath -> Text -> IO (Either Text [Named])
-unitsOf syntax lang file text =
-  unitAnswers syntax lang file text <&> fmap (\us -> qualify (joined (dedupe [((uaLine u, uaEnd u), defLine lang ls u, uaName u) | u <- sortOn (\u -> (uaLine u, Down (uaEnd u))) us])))
+unitsOf syntax lang file text = fmap (map fst) <$> unitsWithKinds syntax lang file text
+
+-- | 'unitsOf', each unit with its answer's kind (a linked grammar's
+-- capture: `definition.impl`, …), when its span is an answer's.
+unitsWithKinds :: Syntax IO -> Language -> Maybe FilePath -> Text -> IO (Either Text [(Named, Maybe Text)])
+unitsWithKinds syntax lang file text =
+  unitAnswers syntax lang file text <&> fmap (\us -> let kinds = M.fromList [((uaLine u, uaEnd u), k) | u <- us, Just k <- [uaKind u]] in map (\n -> (n, M.lookup (namedLines n) kinds)) (named us))
   where
+    named us = qualify (joined (dedupe [((uaLine u, uaEnd u), defLine lang ls u, uaName u) | u <- sortOn (\u -> (uaLine u, Down (uaEnd u))) us]))
     ls = T.splitOn "\n" text
     lineAt i = fromMaybe "" (listToMaybe (drop (i - 1) ls))
     -- (span, def line, bare name)
@@ -238,11 +257,27 @@ unitAround syntax lang file text line =
 -- | The unit called NAME: the exact qualified name (the earliest of several),
 -- or a bare name that is the last part of exactly one qualified name.
 unitNamed :: Text -> [Named] -> Maybe Named
-unitNamed name ns = case sortOn namedLines [n | n <- ns, namedName n == name] of
-  n : _ -> Just n
+unitNamed name = either (const Nothing) Just . unitLookup name
+
+-- | 'unitLookup' over units with their kinds: a type and its inherent impl
+-- sharing a name (a `definition.impl` beside a unit of another kind) are
+-- one thing to an anchor, the type, as before; any other shared name is
+-- ambiguous.
+unitLookupIn :: Text -> [(Named, Maybe Text)] -> Either Text Named
+unitLookupIn name ks = case [n | (n, k) <- ks, namedName n == name, k /= Just "definition.impl"] of
+  [n] | any (\(m, k) -> namedName m == name && k == Just "definition.impl") ks -> Right n
+  _ -> unitLookup name (map fst ks)
+
+-- | 'unitNamed', with why there is none: no such unit, or a name several
+-- units have (never the first of them silently).
+unitLookup :: Text -> [Named] -> Either Text Named
+unitLookup name ns = case sortOn namedLines [n | n <- ns, namedName n == name] of
+  [n] -> Right n
+  dups@(_ : _) -> Left ("`" <> name <> "` names " <> tshow (length dups) <> " units (lines " <> T.intercalate ", " [tshow (fst (namedLines n)) | n <- dups] <> ")")
   [] -> case [n | n <- ns, ("." <> name) `T.isSuffixOf` namedName n] of
-    [n] -> Just n
-    _ -> Nothing
+    [n] -> Right n
+    [] -> Left ("no unit `" <> name <> "`")
+    several -> Left ("`" <> name <> "` names " <> tshow (length several) <> " units (" <> T.intercalate ", " (map namedName several) <> ")")
 
 -- | The name on a unit's line by the language's `[unit] name` expressions:
 -- the first that matches gives its last group (the whole match when it has

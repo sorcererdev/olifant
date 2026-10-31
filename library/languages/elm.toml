@@ -1,6 +1,8 @@
 # Elm: tree-sitter-elm via ast-grep; checks with `elm make`. The grammar is
 # not shipped: the elm pack carries its sources (grammar = { source }).
 files = ["**/*.elm"]
+# Folders a project listing never enters: elm's cache, a front end's packages.
+ignore = ["elm-stuff", "node_modules"]
 # What a unit is, as prompts say it (an anchor @path:Unit).
 unit_words = "a top-level function or type name (Name)"
 comment = "--"

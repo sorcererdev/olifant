@@ -14,6 +14,7 @@ module Olifant.Server.Conjure
   , ResumeChoice (..)
   , Resume (..)
   , conjureAt
+  , testConjure
   , resumeConjure
   ) where
 
@@ -24,7 +25,9 @@ import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.Except (ExceptT (..), except, runExceptT, throwE, withExceptT)
 import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
 import Data.Functor ((<&>))
-import Data.List (isSuffixOf, nub)
+import Data.List (isSuffixOf, nub, sortOn)
+import Data.Ord (Down (..))
+import Olifant.Language.TreeSitter (definitionLines)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
 import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe, mapMaybe)
@@ -42,7 +45,7 @@ import Olifant.Generation.Steer (RoundHole (..), RoundState (..), Seed (..), Ste
 import Olifant.Generation.FillPhase (applyFills, assertionSpan, fillLines, projectFiles)
 import Olifant.Generator (AppliesAt (..), GeneratorWith (..), InputSpec (..), Verify (..), replaceGenerator)
 import Olifant.Holes (HoleSite (..), Marker (..), splitMarkers)
-import Olifant.Language (AddMethod (..), CheckDef (..), CheckReport (..), Checker (..), ConjureDef (..), CtorShape (..), Failure (..), Language (..), PortShape (..), TypesDef (..), TestRun (..), failureLineIn, failureLineWith, failureOf, languageFor, runCheckIn, runTestsIn)
+import Olifant.Language (AddMethod (..), CheckDef (..), CheckReport (..), Checker (..), ConjureDef (..), CtorShape (..), Failure (..), Language (..), PortShape (..), TypesDef (..), TestDef (..), TestRun (..), failureLineIn, failureLineWith, failureOf, languageFor, runCheckIn, runTestsIn)
 import Olifant.Glob (matchesGlob)
 import Text.Regex.TDFA (AllTextSubmatches (..), Regex, makeRegexM, matchM, matchTest)
 import Olifant.Model (Backend (..), ModelConfig (..), Rung (..))
@@ -1330,7 +1333,10 @@ functionConjure lang text (l1, l2) unit testRel testText before = do
 -- the assertion is asked again); the context: the module under test in
 -- full, the notes in the stub's body, and the body on screen when it is no
 -- stub (rejected by the person). The siblings are in the file itself.
--- TID is the test's full id (`path::name`).
+-- TID is the test's full id (`path::name`). A test in the module's own
+-- file (Rust's `mod tests`): the module is the file outside the definition
+-- that holds the test (and the `[test] above` lines over it), so the model
+-- is not shown the test file twice.
 testConjure :: Language -> Text -> (Int, Int) -> Text -> FilePath -> Text -> Either Text (Template, [(Text, Verify [Template])], [(FilePath, Text)])
 testConjure lang text (l1, l2) tid moduleRel moduleText = do
   let ls = T.splitOn "\n" text
@@ -1339,12 +1345,30 @@ testConjure lang text (l1, l2) tid moduleRel moduleText = do
       words' = testWordsIn lang short
       notes = [T.strip l | l <- body, langComment lang `T.isPrefixOf` T.strip l]
       instruction = advisedIn (maybe [] cjAdvice (langConjure lang)) ls (oneLine ("write the body of the test \"" <> words' <> "\": arrange, act, and assert what its name says, one behaviour, against the module in the context; it should fail at its assertion until the code does it"))
+      inline = T.unpack (fst (T.breakOn "::" tid)) == moduleRel
+      shown = if inline then fromMaybe moduleText (outsideTestOf lang moduleText l1) else moduleText
       context =
-        [(moduleRel, moduleText)]
+        [(moduleRel, shown)]
           ++ [("notes in the test's body", T.intercalate "\n" notes) | not (null notes)]
           ++ [(rejectedBody, T.intercalate "\n" (dedent body)) | not (isStubIn lang body)]
   template <- holeOver ls (l1, l2) instruction
   pure (template, [("body", VerifyRedAt tid l1 True)], context)
+
+-- | TEXT without the definition that holds the test at LINE (the test's
+-- own definition's enclosing one, by the grammar's captures), nor the
+-- `[test] above` lines right over it; Nothing when the grammar is not
+-- linked or the test is held by none.
+outsideTestOf :: Language -> Text -> Int -> Maybe Text
+outsideTestOf lang text line = do
+  ds <- definitionLines lang text
+  let spans = [sp | (_, _, sp) <- ds]
+      innermost xs = listToMaybe (sortOn (\(a, z) -> (Down a, z)) xs)
+  (ta, tz) <- innermost [sp | sp@(a, z) <- spans, a <= line, line <= z]
+  (a, z) <- innermost [sp | sp@(a, z) <- spans, a < ta, tz <= z]
+  let ls = T.splitOn "\n" text
+      isAbove l = maybe False (\rx -> matchTest rx (T.unpack l)) (langTest lang >>= testAbove >>= \re -> makeRegexM (T.unpack re) :: Maybe Regex)
+      start = last (a : takeWhile (\i -> i >= 1 && isAbove (ls !! (i - 1))) [a - 1, a - 2 .. 1])
+  pure (T.intercalate "\n" (take (start - 1) ls ++ drop z ls))
 
 -- | A test's after-run in a few words: its own outcome (at its assertion,
 -- before it, passing, not run), then each sibling that passed before and

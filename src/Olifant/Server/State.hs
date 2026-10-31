@@ -45,15 +45,15 @@ import Data.Text qualified as T
 import Data.Time (defaultTimeLocale, formatTime)
 import Olifant.App (Ports (..), Project (..), nearestProject, openProjectWith)
 import Olifant.Fill (ModelFiller)
-import Olifant.Catalog (Catalog (..), PackCache, catalogPackRoots, describeCatalogError, newPackCache)
+import Olifant.Catalog (Catalog (..), PackCache, catalogIgnores, catalogPackRoots, describeCatalogError, newPackCache)
 import Olifant.Model (Backend (..), ModelConfig (..))
 import Olifant.Process (Cancel, neverCancel)
 import Olifant.Server.ConjureNext (PausedConjure)
 import Olifant.Server.LoopTypes (ReconcileAnswer)
 import Olifant.Generator (Generator)
 import Olifant.Recognize (Index, Shingle)
-import Olifant.Workspace (Workspace (..), normalisePath, overlayMany, within)
-import System.FilePath (takeDirectory, (</>))
+import Olifant.Workspace (Workspace (..), ignoring, normalisePath, overlayMany, within)
+import System.FilePath (splitDirectories, takeDirectory, (</>))
 
 -- | The client's settings (`initializationOptions`): how long slow work
 -- waits after typing stops, a model to use instead of the projects', and
@@ -199,7 +199,7 @@ workspaceOf s root =
     disk = within root (pFiles (ssPorts s))
     -- the project's listing, kept while no file may have come or gone
     listed = case M.lookup root (ssListings s) of
-      Just (stamp, paths) | stamp == ssFilesStamp s -> disk {listFiles = \dir -> pure (inside dir paths)}
+      Just (stamp, paths) | stamp == ssFilesStamp s -> disk {listFiles = \dir -> pure (inside dir paths), listFilesSkipping = \names dir -> pure (filter (not . any (`elem` names) . splitDirectories) (inside dir paths))}
       _ -> disk
     inside dir paths = case normalisePath dir of
       "." -> paths
@@ -229,7 +229,7 @@ projectFor file s =
             Just known -> pure known
             Nothing -> fromMaybe (S.fromList paths) <$> pTracked (ssPorts s0) root
           pure s0 {ssListings = M.insert root (ssFilesStamp s0, paths) (ssListings s0), ssEstablished = M.insert root established (ssEstablished s0)}
-      pure (s', (\p -> (root, p {prWorkspace = workspaceOf s' root})) <$> (usable =<< slotOf root s'))
+      pure (s', (\p -> (root, p {prWorkspace = ignoring (catalogIgnores (prCatalog p)) (workspaceOf s' root)})) <$> (usable =<< slotOf root s'))
 
 -- | Why the project a file belongs to does not load (loading it if it was
 -- not), when it does not; the last good catalog, if any, is still served.

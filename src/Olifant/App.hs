@@ -70,7 +70,7 @@ import Olifant.Generation
 import Olifant.Generation.Steer (Steering)
 import Olifant.Generator (AppliesAt (..), ChoiceView (..), Choices (..), Generator, GeneratorDef, GeneratorId (..), GeneratorWith (..), InputSpec (..), InputType (..), Scalar (..), UseStep (..), choiceViews, generatorIdText, generatorName, needsChoices, replaceGenerator, withChoices)
 import Olifant.Holes (HoleSite (..))
-import Olifant.Language (Checker, Language (..), Match (..), Syntax, languageFor, querySyntax, regexName, runTestsIn)
+import Olifant.Language (Checker, Language (..), Match (..), Syntax, functionMatches, languageFor, querySyntax, regexName, runTestsIn, signatureHead)
 import Olifant.Evidence (EvidencePorts (..), evidenceFor)
 import Olifant.Generation.FillPhase (projectFiles)
 import Data.Set qualified as S
@@ -79,13 +79,13 @@ import Olifant.Model (ModelConfig (..), backendModel, curlFillerWith)
 import Olifant.Query (Queries (..), QueryFailure (..), processCommand)
 import Olifant.Newness (NewLines (..), newSince, wholeNew)
 import Olifant.Migration (Extract (..), MigrationReport (..), Strangler (..), Switch (..), bigChanges, readRegistry, switchMarkers, switchPath, unregistered)
-import Olifant.Rules (Exception, FixDef (..), FixOffer (..), Finding (..), Replacement (..), RuleDef (..), Severity (..), checkFiles, definedName, fingerprint, suggestChoice)
+import Olifant.Rules (Exception, FixDef (..), FixOffer (..), Finding (..), Replacement (..), RuleDef (..), Severity (..), checkFiles, definedNameIn, fingerprint, suggestChoice)
 import Olifant.Snippet (Snippet, snippetOf)
 import Olifant.Template (describeTemplateError, render)
 import Olifant.Template qualified as Tm
 import Olifant.Template.Syntax (Segment (..), Template (..))
 import Olifant.Uncovered (uncoveredQuery)
-import Olifant.Workspace (PathState (..), Workspace (..), within)
+import Olifant.Workspace (PathState (..), Workspace (..), ignoring, within)
 import System.FilePath (splitDirectories, takeBaseName, takeDirectory, takeExtension, takeFileName, (</>))
 import Olifant.Doctor (Check, DoctorInput (..), DoctorPorts, doctor)
 
@@ -153,13 +153,13 @@ nearestProject ws home = go
 openProject :: Ports -> FilePath -> IO (Either CatalogError Project)
 openProject ports root =
   openProjectCatalog (pFiles ports) (CatalogPaths root (pUserConfigDir ports) (pHomeDir ports))
-    <&> fmap (\cat -> Project root cat (within root (pFiles ports)))
+    <&> fmap (\cat -> Project root cat (ignoring (catalogIgnores cat) (within root (pFiles ports))))
 
 -- | 'openProject', its packs from a cache shared with other projects.
 openProjectWith :: PackCache -> Ports -> FilePath -> IO (Either CatalogError Project)
 openProjectWith cache ports root =
   openProjectCatalogCached cache (pFiles ports) (CatalogPaths root (pUserConfigDir ports) (pHomeDir ports))
-    <&> fmap (\cat -> Project root cat (within root (pFiles ports)))
+    <&> fmap (\cat -> Project root cat (ignoring (catalogIgnores cat) (within root (pFiles ports))))
 
 -- | Whether editors offer a generator (`menu`, default true): false keeps
 -- it off every editor surface (the ⚡ menu, the picker, ghosts,
@@ -341,7 +341,7 @@ newnessWith base project rel text =
   base (prRoot project) (baseRefOf project) rel <&> \case
     Left why -> NoBase why
     Right (_, Nothing) -> AllNew
-    Right (_, Just b) -> newSince b text
+    Right (_, Just b) -> newSince (languageFor (catalogLanguages (prCatalog project)) rel) b text
 
 -- | How far the migration has come ([migrate]; none without it): legacy
 -- definitions now and at the base, those new since (not delegates, which
@@ -353,10 +353,9 @@ migrationFor ports project = case catalogMigrate cat of
   Just mig -> do
     paths <- listFiles ws "."
     let legacy = [p | p <- paths, any (`matchesGlob` p) (mgLegacy mig)]
-        kinds = J.object ["any" J..= [J.object ["kind" J..= k] | k <- mgCount mig]]
         defs text p = case languageFor (catalogLanguages cat) p of
           Nothing -> pure []
-          Just lang -> either (const []) id <$> querySyntax (pSyntax ports) lang kinds text
+          Just lang -> countedIn ports mig lang text
     perFile <- forM legacy $ \p -> do
       text <- fromMaybe "" <$> readText ws p
       now <- defs text p
@@ -368,7 +367,7 @@ migrationFor ports project = case catalogMigrate cat of
       let newness = case base of
             Left why -> NoBase why
             Right (_, Nothing) -> AllNew
-            Right (_, Just b) -> newSince b text
+            Right (_, Just b) -> newSince (languageFor (catalogLanguages cat) p) b text
           ls = T.lines text
           -- a delegate carries the bug-fix-only rule's allowance on the line above
           allowed m = let l = fst (matchStart m) in l > 0 && maybe False (\r -> ("olifant:allow " <> r) `T.isInfixOf` (ls !! (l - 1))) (stBugFixOnly =<< catalogStrangler cat)
@@ -433,7 +432,7 @@ newWorkHints ports project newness files = case catalogMigrate cat of
     case languageFor (catalogLanguages cat) f of
       Nothing -> pure []
       Just lang -> do
-        ms <- either (const []) id <$> querySyntax (pSyntax ports) lang (J.object ["any" J..= [J.object ["kind" J..= k] | k <- mgCount mig]]) text
+        ms <- countedIn ports mig lang text
         n <- newness f text
         let ranged = [(((fst (matchStart m) + 1, 1), (fst (matchEnd m) + 1, snd (matchEnd m) + 1)), m) | m <- ms]
             big = bigChanges (mgNewWorkLines mig) n (map fst ranged)
@@ -501,28 +500,13 @@ relativeTo indent found = case T.lines found of
   [] -> found
   l : ls -> T.intercalate "\n" (l : [fromMaybe x (T.stripPrefix indent x) | x <- ls])
 
--- | A definition's signature: its lines up to the colon that ends it, the
--- first `:` outside brackets and strings (`def f(\n    a,\n) -> dict:`);
--- the first line when there is none.
-signatureHead :: Text -> Text
-signatureHead found = case go (0 :: Int) Nothing (T.unpack found) 0 of
-  Just n -> T.intercalate "\n" (take (n + 1) (T.lines found))
-  Nothing -> fromMaybe "" (listToMaybe (T.lines found))
-  where
-    go _ _ [] _ = Nothing
-    go depth (Just q) (c : cs) line
-      | c == '\\' = case cs of
-          d : rest -> go depth (Just q) rest (if d == '\n' then line + 1 else line)
-          [] -> Nothing
-      | c == q = go depth Nothing cs line
-      | otherwise = go depth (Just q) cs (if c == '\n' then line + 1 else line)
-    go depth Nothing (c : cs) line
-      | c == '\n' = go depth Nothing cs (line + 1)
-      | c `elem` ("\"'" :: String) = go depth (Just c) cs line
-      | c `elem` ("([{" :: String) = go (depth + 1) Nothing cs line
-      | c `elem` (")]}" :: String) = go (max 0 (depth - 1)) Nothing cs line
-      | c == ':' && depth == 0 = Just line
-      | otherwise = go depth Nothing cs line
+-- | The definitions a migration counts in a legacy file: `[migrate] count`'s
+-- node kinds (an ast-grep query); with none, the language's functions, by
+-- its queries (none for an unlinked grammar).
+countedIn :: Ports -> MigrateConfig -> Language -> Text -> IO [Match]
+countedIn ports mig lang text
+  | null (mgCount mig) = pure (fromMaybe [] (functionMatches lang text))
+  | otherwise = either (const []) id <$> querySyntax (pSyntax ports) lang (J.object ["any" J..= [J.object ["kind" J..= k] | k <- mgCount mig]]) text
 
 -- | What "new" is measured from: the base ref ([migrate] base; main).
 baseRefOf :: Project -> Text
@@ -758,7 +742,7 @@ fixSteps ports project rule rel line n given = do
                   -- first line has none; the replacement adds it back to every line);
                   -- `finding_head`: a definition's whole signature, to its colon
                   found = maybe "" (\rp -> relativeTo (rpIndent rp) (rpFinding rp)) (foReplace o)
-                  env = M.map Tm.VText (M.insert "finding_name" (definedName found) (M.insert "finding_switch_path" (switchPath (stSwitchGuard =<< catalogStrangler cat) found) (M.insert "finding_head" (signatureHead found) (M.insert "finding" found sets))))
+                  env = M.map Tm.VText (M.insert "finding_name" (definedNameIn fileLang found) (M.insert "finding_switch_path" (switchPath (stSwitchGuard =<< catalogStrangler cat) found) (M.insert "finding_head" (maybe (fromMaybe "" (listToMaybe (T.lines found))) (`signatureHead` found) fileLang) (M.insert "finding" found sets))))
                   defs = [d | r <- catalogRules cat, ruleId r == rule, d <- drop (n - 1) (ruleFixes r)]
                   replacement = case foReplace o of
                     Nothing -> Right []
@@ -769,7 +753,7 @@ fixSteps ports project rule rel line n given = do
               context <- fmap catMaybes . traverse (\t -> either (const (pure Nothing)) (\p -> fmap (T.unpack p,) <$> readText ws (T.unpack p)) (render env t)) $ concatMap fdContext (take 1 defs)
               -- a definition rewritten in place keeps its callers: say who they are
               warnings <- case foReplace o of
-                Just rp | isDefinition fileLang found -> callersNote (definedName found) <$> callersOf ws fileLang rel (rpLines rp) (definedName found)
+                Just rp | isDefinition fileLang found -> callersNote (definedNameIn fileLang found) <$> callersOf ws fileLang rel (rpLines rp) (definedNameIn fileLang found)
                 _ -> pure []
               pure $ case replacement of
                 Left why -> Left (FixFailed why)

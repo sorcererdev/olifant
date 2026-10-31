@@ -8,6 +8,7 @@
 module Olifant.Language.TestUnits
   ( TestUnit (..)
   , testUnitsIn
+  , testUnitsWith
   , testUnitsOf
   , testUnitsReport
   , testAtIn
@@ -32,6 +33,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Language.Adapter (Language (..), TestDef (..), UnitRule (..), regexName)
 import Olifant.Provider (UnitAnswer (..), decodeUnits, lineCount, providerPure, textRequest)
+import Olifant.Language.TreeSitter (definitionLines)
 import Text.Regex.TDFA (AllTextSubmatches (..), Regex, makeRegexM, matchM, matchTest)
 
 -- | A test or a group: its path (enclosing groups, then its name) and its
@@ -46,7 +48,15 @@ data TestUnit = TestUnit {tuPath :: [Text], tuLines :: (Int, Int)}
 -- over it (with their continuation lines: deeper, or closing a bracket);
 -- its parents are the units whose lines hold it.
 testUnitsIn :: [UnitRule] -> Maybe Text -> Text -> [TestUnit]
-testUnitsIn rules above text = [TestUnit (parentsOf sp ++ [n]) sp | (sp, n) <- spans]
+testUnitsIn = testUnitsWith Nothing
+
+-- | 'testUnitsIn', with a span function: given a unit's line (where its rule
+-- matched), the lines of the definition starting there (a linked grammar's
+-- captures). Where it gives one, the unit ends where the definition ends
+-- (a string's outdented line, a Rust test's closing brace, a multi-line
+-- signature are its own); elsewhere, and without it, the outdent rule.
+testUnitsWith :: Maybe (Int -> Maybe (Int, Int)) -> [UnitRule] -> Maybe Text -> Text -> [TestUnit]
+testUnitsWith spanAt rules above text = [TestUnit (parentsOf sp ++ [n]) sp | (sp, n) <- spans]
   where
     isAbove = maybe (const False) matcher above
     namers = [(fmap unescape . maybe (regexName (urPattern r)) (groupOf (urPattern r)) (urName r), matcher <$> urAfter r) | r <- rules]
@@ -64,7 +74,7 @@ testUnitsIn rules above text = [TestUnit (parentsOf sp ++ [n]) sp | (sp, n) <- s
           | isAbove (lineAt j) = go (j - 1)
           | otherwise = False
     starts = [(i, l, n) | (i, l) <- ls, Just n <- [nameAt i l]]
-    spans = [((headOf i l, endOf i l), n) | (i, l, n) <- starts]
+    spans = [((headOf i l, maybe (endOf i l) snd (spanAt >>= ($ i))), n) | (i, l, n) <- starts]
     endOf i l =
       let rest = [x | x@(j, _) <- ls, j > i]
           body = takeWhile (\(_, x) -> blank x || indentOf x > indentOf l) rest
@@ -177,9 +187,11 @@ testUnitsOf lang file text = either (const []) id (testUnitsReport lang file tex
 testUnitsReport :: Language -> Maybe FilePath -> Text -> Either Text [TestUnit]
 testUnitsReport lang file text = case langTest lang >>= testUnitProvider of
   Just p -> byContainment <$> (providerPure p (textRequest file text []) >>= decodeUnits (lineCount text))
-  Nothing -> Right (testUnitsIn rules above text)
+  Nothing -> Right (testUnitsWith (definitionAt <$> definitionLines lang text) rules above text)
   where
     (rules, above) = rulesOf lang
+    -- the outermost definition whose own lines start on the unit's line
+    definitionAt ds i = listToMaybe (sortOn (\(_, z) -> Down z) [own | (_, own@(a, _), _) <- ds, a == i])
     byContainment answers =
       let ordered = sortOn (\u -> (uaLine u, Down (uaEnd u))) answers
           spanOf u = (uaLine u, uaEnd u)

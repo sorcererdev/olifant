@@ -5,10 +5,10 @@ module Olifant.Capabilities
   , capabilities
   ) where
 
-import Data.Maybe (isJust, isNothing)
+import Data.Maybe (fromMaybe, isJust, isNothing)
 import Data.Text (Text)
 import Data.Text qualified as T
-import Olifant.Language (ConjureDef (..), CheckDef (..), Language (..), Provider (..), StubDef (..), TestDef (..), TypesDef (..), defaultUnitNames, grammarLinked, missingFormats, supportsMissing)
+import Olifant.Language (ConjureDef (..), CheckDef (..), Language (..), Provider (..), StubDef (..), TestDef (..), TypesDef (..), defaultUnitNames, grammarLabel, grammarLinked, linkedGrammarOf, missingFormats, supportsMissing)
 
 -- | A capability, how it is provided (Right) or the key that would enable
 -- it (Left), and the dotted key its presence depends on (whose layer
@@ -45,8 +45,9 @@ capabilities lang =
     provided table p = Right (table <> " provider " <> T.unwords (provArgv p))
     units
       | Just p <- langUnitProvider lang = provided "[unit]" p
-      | null (langUnitKinds lang) = Left "[unit] kinds"
-      | otherwise = Right ("[unit] kinds (ast-grep)" <> (if hasNames then ", named by [unit] name" else "") <> (if langUnitJoin lang then ", joined" else ""))
+      | not (null (langUnitKinds lang)) = Right ("[unit] kinds (ast-grep)" <> (if hasNames then ", named by [unit] name" else "") <> (if langUnitJoin lang then ", joined" else ""))
+      | Just g <- linkedGrammarOf lang = Right ("queries (" <> fromMaybe g (grammarLabel g) <> "): each function and class definition")
+      | otherwise = Left "[unit] kinds"
     hasNames = langUnitNames lang /= defaultUnitNames
     diagnostics = case check of
       Nothing -> Left "[check]"

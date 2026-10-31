@@ -4,6 +4,7 @@ module Olifant.Workspace
   ( Workspace (..)
   , PathState (..)
   , pruned
+  , ignoring
   , memoryWorkspace
   , diskWorkspace
   , within
@@ -35,6 +36,9 @@ data Workspace m = Workspace
   , writeText :: FilePath -> Text -> m ()
   , fileExists :: FilePath -> m Bool
   , listFiles :: FilePath -> m [FilePath]
+  , listFilesSkipping :: [FilePath] -> FilePath -> m [FilePath]
+  -- ^ 'listFiles' never entering a folder of these names (disk: the walk
+  -- does not descend into them)
   , inspectPath :: FilePath -> m PathState
   , removeFile :: FilePath -> m ()
   -- ^ Delete a file if it exists (blessing snapshots; generation never deletes).
@@ -59,6 +63,7 @@ memoryWorkspace initial = do
                     "." -> ""
                     d -> addTrailingPathSeparator d
               pure [drop (length prefix) f | f <- M.keys files, prefix `isPrefixOf` f]
+          , listFilesSkipping = \names dir -> skipNames names <$> listFiles ws dir
           , inspectPath = \p -> do
               files <- readIORef ref
               let key = normalisePath p
@@ -84,12 +89,8 @@ diskWorkspace root =
         createDirectoryIfMissing True (takeDirectory full)
         BS.writeFile full (encodeUtf8 t)
     , fileExists = doesFileExist . (root </>)
-    , listFiles = \dir -> do
-        let base = root </> dir
-        isDir <- doesDirectoryExist base
-        if not isDir
-          then pure []
-          else gitFiles base >>= maybe (sort <$> walk base "") pure
+    , listFiles = listSkipping []
+    , listFilesSkipping = listSkipping
     , inspectPath = \p -> do
         let full = root </> p
         isFile <- doesFileExist full
@@ -106,6 +107,12 @@ diskWorkspace root =
     -- Inside a git work tree, the project is what git says it is: tracked and
     -- new files, minus anything .gitignore excludes (and tracked files that
     -- were deleted). Outside one, walk, never descending into 'pruned'.
+    listSkipping names dir = do
+      let base = root </> dir
+      isDir <- doesDirectoryExist base
+      if not isDir
+        then pure []
+        else gitFiles base >>= maybe (sort <$> walk names base "") (pure . skipNames names)
     gitFiles base =
       findExecutable "git" >>= \case
         Nothing -> pure Nothing
@@ -119,15 +126,15 @@ diskWorkspace root =
                   Just . sort . nub <$> filterM (doesFileExist . (base </>)) paths
                 _ -> pure Nothing
             _ -> pure Nothing
-    walk base rel = do
-      entries <- filter (`notElem` pruned) <$> listDirectory (if null rel then base else base </> rel)
+    walk names base rel = do
+      entries <- filter (\e -> e `notElem` pruned && e `notElem` names) <$> listDirectory (if null rel then base else base </> rel)
       concat
         <$> forM
           entries
           ( \e -> do
               let relE = if null rel then e else rel </> e
               isDir <- doesDirectoryExist (base </> relE)
-              if isDir then walk base relE else pure [relE]
+              if isDir then (if "." `isPrefixOf` e then pure [] else walk names base relE) else pure [relE]
           )
 
 -- | View a workspace from a subdirectory.
@@ -148,16 +155,17 @@ hidePath path0 ws =
     { readText = \p -> if hidden p then pure Nothing else readText ws p
     , fileExists = \p -> if hidden p then pure False else fileExists ws p
     , inspectPath = \p -> if hidden p then pure Absent else inspectPath ws p
-    , listFiles = \dir -> do
-        fs <- listFiles ws dir
-        let prefix = case normalisePath dir of
-              "." -> ""
-              d -> d <> "/"
-        pure [f | f <- fs, not (hidden (prefix <> f))]
+    , listFiles = \dir -> unhide dir <$> listFiles ws dir
+    , listFilesSkipping = \names dir -> unhide dir <$> listFilesSkipping ws names dir
     }
   where
     path = normalisePath path0
     hidden p = normalisePath p == path
+    unhide dir fs =
+      let prefix = case normalisePath dir of
+            "." -> ""
+            d -> d <> "/"
+       in [f | f <- fs, not (hidden (prefix <> f))]
 
 overlayMany :: Monad m => Map FilePath Text -> Workspace m -> Workspace m
 overlayMany docs0 ws =
@@ -165,18 +173,19 @@ overlayMany docs0 ws =
     { readText = \p -> maybe (readText ws p) (pure . Just) (open p)
     , fileExists = \p -> maybe (fileExists ws p) (const (pure True)) (open p)
     , inspectPath = \p -> maybe (inspectPath ws p) (pure . Readable) (open p)
-    , listFiles = \dir -> do
-        fs <- listFiles ws dir
-        let prefix = case normalisePath dir of
-              "." -> ""
-              d -> d <> "/"
-            listed = S.fromList fs
-            extra = [rel | t <- M.keys docs, prefix `isPrefixOf` t, let rel = drop (length prefix) t, rel `S.notMember` listed]
-        pure (fs ++ extra)
+    , listFiles = \dir -> withDocs [] dir <$> listFiles ws dir
+    , listFilesSkipping = \names dir -> withDocs names dir <$> listFilesSkipping ws names dir
     }
   where
     docs = M.mapKeys normalisePath docs0
     open p = M.lookup (normalisePath p) docs
+    withDocs names dir fs =
+      let prefix = case normalisePath dir of
+            "." -> ""
+            d -> d <> "/"
+          listed = S.fromList fs
+          extra = skipNames names [rel | t <- M.keys docs, prefix `isPrefixOf` t, let rel = drop (length prefix) t, rel `S.notMember` listed]
+       in fs ++ extra
 
 within :: FilePath -> Workspace m -> Workspace m
 within dir ws =
@@ -185,6 +194,7 @@ within dir ws =
     , writeText = writeText ws . inside
     , fileExists = fileExists ws . inside
     , listFiles = listFiles ws . inside
+    , listFilesSkipping = \names -> listFilesSkipping ws names . inside
     , inspectPath = inspectPath ws . inside
     , removeFile = removeFile ws . inside
     }
@@ -206,7 +216,21 @@ isSafeRelative p = not (isAbsolute p) && n /= "." && ".." `notElem` splitDirecto
   where
     n = normalisePath p
 
--- | Directories that hold dependencies, build output or VCS data: never part
--- of what generators and queries see, and never walked.
+-- | The engine's own: VCS data, never part of what generators and queries
+-- see. A walk (outside git) also skips every dot-folder (`.venv`,
+-- `.pytest_cache`) but the folder it starts in. A language's dependency
+-- and build folders (`target`, `node_modules`) are its `ignore`, applied
+-- with 'ignoring' where a project's workspace is built from its catalog.
 pruned :: [FilePath]
-pruned = [".git", "node_modules", "elm-stuff", "dist-newstyle", "target", ".venv", "__pycache__", ".pytest_cache"]
+pruned = [".git"]
+
+-- | A workspace whose listings leave out every path through one of these
+-- folder names (the catalog's languages' `ignore`).
+ignoring :: Functor m => [FilePath] -> Workspace m -> Workspace m
+ignoring [] ws = ws
+ignoring names ws = ws {listFiles = listFilesSkipping ws names, listFilesSkipping = \more -> listFilesSkipping ws (names ++ more)}
+
+-- | Paths through none of these folder names.
+skipNames :: [FilePath] -> [FilePath] -> [FilePath]
+skipNames [] = id
+skipNames names = filter (not . any (`elem` names) . splitDirectories)

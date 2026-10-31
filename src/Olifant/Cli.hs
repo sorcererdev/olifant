@@ -49,7 +49,7 @@ import Olifant.Cursor (isSnippet)
 import Olifant.Generator (AppliesAt (..), Generator, generatorName, EnvError (..), GeneratorId (..), GeneratorWith (..), generatorIdText)
 import Olifant.Language (Checker, Language (..), Syntax, languageFor)
 import Olifant.Process (Cancel, neverCancel)
-import Olifant.Workspace (PathState (..), Workspace (..), isSafeRelative, overlay, within)
+import Olifant.Workspace (PathState (..), Workspace (..), ignoring, isSafeRelative, overlay, within)
 import System.FilePath (dropTrailingPathSeparator, makeRelative, normalise, splitDirectories, takeBaseName, takeDirectory, takeFileName, (</>))
 import System.Exit (ExitCode (..))
 import GHC.Clock (getMonotonicTime)
@@ -877,7 +877,7 @@ portsOf rt = Ports (rtRoot rt) (rtSyntax rt) (rtChecker rt) (rtVerifier rt) (rtT
 
 -- | The project Olifant runs in, reading disk.
 projectOf :: Runtime -> Catalog -> Project
-projectOf rt cat = Project (rtProjectDir rt) cat (within (rtProjectDir rt) (rtRoot rt))
+projectOf rt cat = Project (rtProjectDir rt) cat (ignoring (catalogIgnores cat) (within (rtProjectDir rt) (rtRoot rt)))
 
 -- | `.olifant/baseline.toml` (spec §5.10): (rule, file, fingerprint) entries.
 readBaseline :: Text -> Either Text [((Text, Text, Text), Int)]

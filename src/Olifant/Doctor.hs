@@ -17,7 +17,7 @@ import Data.Text qualified as T
 import Olifant.Capabilities (Capability (..), capabilities)
 import Olifant.Evidence (Evidence (..), Proof (..))
 import Olifant.Catalog (PlansConfig (..))
-import Olifant.Language (CheckDef (..), Language (..), TestDef (..), checkProgram, grammarLabel, linkedGrammarOf, originOf, queriesFor)
+import Olifant.Language (CheckDef (..), Language (..), TestDef (..), checkProgram, grammarLabel, linkedGrammarOf, originOf, queriesOf)
 import System.FilePath (dropExtension)
 import Olifant.Model (Backend (..), ModelConfig (..))
 
@@ -89,8 +89,12 @@ doctor ports di = do
     -- the tree-sitter grammar and queries the generic anchor phrases read
     queriesRow lang = case linkedGrammarOf lang of
       Just g ->
-        let files = [T.pack (dropExtension f) | (f, _) <- queriesFor g]
-         in Check (langName lang <> ": queries") Ok (fromMaybe g (grammarLabel g) <> "; " <> T.intercalate ", " files <> " (shipped)") Nothing
+        -- the files of each origin, in name order: the project's first
+        let qs = queriesOf lang
+            origins = [o | o <- nubOrd' ([o | (_, _, o) <- qs, o /= "shipped"] ++ ["shipped"]), o `elem` [o' | (_, _, o') <- qs]]
+            group o = T.intercalate ", " [T.pack (dropExtension f) | (f, _, o') <- qs, o' == o] <> " (" <> o <> ")"
+            nubOrd' = foldr (\x acc -> x : filter (/= x) acc) []
+         in Check (langName lang <> ": queries") Ok (fromMaybe g (grammarLabel g) <> "; " <> T.intercalate ", " (map group origins)) Nothing
       Nothing -> Check (langName lang <> ": queries") Warn "no linked grammar (anchors from [targets.*] only)" Nothing
     -- the evidence row a capability takes
     proofOf cap ev = lookup cap [("units", evUnits ev), ("test units", evTestUnits ev), ("tests", evTests ev), ("anchors", evAnchors ev), ("holes", evHoles ev)]

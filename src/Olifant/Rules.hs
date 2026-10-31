@@ -16,7 +16,7 @@ module Olifant.Rules
   , parseSeverity
   , checkFiles
   , ruleCovers
-  , definedName
+  , definedNameIn
   , fingerprint
   , markBaselined
   , suggestChoice
@@ -43,7 +43,8 @@ import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Olifant.Actions (matchPathSlots)
 import Olifant.Glob (matchesGlob)
-import Olifant.Newness (NewLines (..), definedName, wasDefined, wholeNew)
+import Olifant.Newness (NewLines (..), wasDefined, wholeNew)
+import Olifant.Language.TreeSitter (definedName)
 import Olifant.Language (Language (..), Match (..), Rule, Syntax (..), describeSyntaxFailure, languageFor, renderRule, ruleFromTree)
 import Olifant.Template (Template, Value (..), describeTemplateError, freeVariables, parseTemplate, render)
 import Olifant.Toml (Table, inKey, list, onlyKeys, optional, parseToml, required, table, text)
@@ -226,6 +227,16 @@ ruleCovers legacy r f
   | ruleFiles r == "{legacy}" = if any (`matchesGlob` f) legacy then Just [] else Nothing
   | otherwise = matchPathSlots (ruleFiles r) f
 
+-- | The name a definition's text defines ('definedName', by its language's
+-- queries); with no language, its first word. `finding_name` and the
+-- "a name the base defined" test read it.
+definedNameIn :: Maybe Language -> Text -> Text
+definedNameIn lang what = case lang of
+  Just l -> definedName l what
+  Nothing -> case T.words what of
+    w : _ -> w
+    [] -> ""
+
 -- | The rules' findings in FILES. LEGACY: the `[migrate] legacy` globs (a
 -- rule's `files = "{legacy}"`); NEWIN: which lines of a file are new since
 -- the base (asked only for files an `only = "new"` rule applies to).
@@ -261,7 +272,7 @@ checkFiles syntax langs config legacy newIn rules paths readFile' files = do
       newness <- if any (ruleOnlyNew . fst) applicable then newIn f else pure AllNew
       -- wholly new, and not a name the base defined (a bug fix may rewrite a
       -- small function whole)
-      let isNew rng what = wholeNew newness rng && not (wasDefined newness (definedName what))
+      let isNew rng what = wholeNew newness rng && not (wasDefined newness (definedNameIn lang what))
           stands r rng what = not (ruleOnlyNew r) || isNew rng what
       raw0 <- concat <$> traverse (\(r, slots) -> found f content lang r slots (stands r)) applicable
       let onlyNew = [ruleId r | (r, _) <- applicable, ruleOnlyNew r]
@@ -323,7 +334,7 @@ checkFiles syntax langs config legacy newIn rules paths readFile' files = do
     -- each fix definition with its offer (a fix whose inputs don't render is not offered)
     -- `finding_name`: the found definition's name (after def/class/fn/struct)
     pairs f slots r what =
-      let env = M.fromList ([(k, VText v) | (k, v) <- slots] ++ [("dir", VText (T.pack (takeDirectory f))), ("stem", VText (T.pack (takeBaseName f))), ("file", VText (T.pack f)), ("finding_name", VText (definedName what))])
+      let env = M.fromList ([(k, VText v) | (k, v) <- slots] ++ [("dir", VText (T.pack (takeDirectory f))), ("stem", VText (T.pack (takeBaseName f))), ("file", VText (T.pack f)), ("finding_name", VText (definedNameIn (languageFor langs f) what))])
        in [ (d, FixOffer (fdGenerator d) (fdLabel d) (sortOn fst sets) Nothing [])
           | d <- ruleFixes r
           , Right sets <- [maybe (Right slots) (traverse (\(k, t) -> (k,) <$> either (Left . describeTemplateError) Right (render env t))) (fdWith d)]

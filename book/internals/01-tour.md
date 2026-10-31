@@ -1043,11 +1043,15 @@ record with `supportFor` (`Language/Support.hs:16`) — `elmSupport`, `ghcSuppor
 `complete` edits, `gather` (`:55`) collects every file the check needs, meaning the adapter's
 `files` globs plus its `context` (`elm.json`; a Haskell adapter's `*.cabal` and
 `cabal.project`; Rust's `**/Cargo.toml` and `Cargo.lock`; Python's `pyproject.toml` and
-`uv.lock`), *as they will be after phase 1*, leaving out anything under a `Workspace.pruned`
-directory. For Python that matters: `.venv` holds thousands of `.py` files, so `pruned` has
-`.venv`, `__pycache__` and `.pytest_cache` beside `.git`, `node_modules`, `elm-stuff`,
-`dist-newstyle` and `target` (`Workspace.hs:183`), which the disk workspace never walks
-either. Then `loop` (`:63`) runs, carrying that
+`uv.lock`), *as they will be after phase 1*, leaving out anything the project's workspace does
+not list. For Python that matters: `.venv` holds thousands of `.py` files. The engine keeps out
+only `.git` (`Workspace.pruned`) and, in a walk outside git, dot-folders; each language's
+`ignore` (Python's `.venv`, `__pycache__`, `.pytest_cache`, `node_modules`; Rust's `target`;
+Haskell's `dist-newstyle`; Elm's `elm-stuff`) is joined in `Catalog.catalogIgnores` and applied
+with `Workspace.ignoring` where a project's workspace is built from its catalog
+(`App.openProject`, `openProjectWith`, `Cli.projectOf`, `Server.State`'s project lookup).
+`ignoring` makes `listFiles` the workspace's `listFilesSkipping`, so the disk walk never
+descends into those folders (a git listing is filtered). Then `loop` (`:63`) runs, carrying that
 `support` record alongside the language:
 
 ```haskell

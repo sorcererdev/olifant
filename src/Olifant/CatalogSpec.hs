@@ -134,7 +134,7 @@ spec = describe "catalog" $ do
   describe "[migrate] (strangling a legacy codebase)" $ do
     it "reads legacy, base, switches, new_work_lines and count, with defaults" $ do
       withCatalog [("/proj/.olifant/config.toml", "[migrate]\nlegacy = [\"legacy/**\"]\n")] $ \_ cat ->
-        catalogMigrate cat `shouldBe` Just (MigrateConfig ["legacy/**"] "main" Nothing 15 ["function_definition"])
+        catalogMigrate cat `shouldBe` Just (MigrateConfig ["legacy/**"] "main" Nothing 15 [])
       withCatalog [("/proj/.olifant/config.toml", "[migrate]\nlegacy = [\"old/**\"]\nbase = \"trunk\"\nswitches = \"src/app/switches.py\"\nnew_work_lines = 30\ncount = [\"function_item\"]\n")] $ \_ cat ->
         catalogMigrate cat `shouldBe` Just (MigrateConfig ["old/**"] "trunk" (Just "src/app/switches.py") 30 ["function_item"])
     it "is nothing without [migrate]" $
@@ -166,6 +166,22 @@ spec = describe "catalog" $ do
       originOf l "unit.kinds" `shouldBe` Just "project"
       langAnchorProvider l `shouldBe` Just (Provider ["./tools/anchor.sh"] (Just "/proj"))
       originOf l "anchors" `shouldBe` Just "pack p"
+    it "a project's .olifant/queries/<grammar>/ file is the language's, over the shipped one (4b m2)" $ do
+      Right cat <- openWith [("/proj/.olifant/config.toml", "languages = [\"rust\"]\n"), ("/proj/.olifant/queries/rust/imports.scm", "(extern_crate_declaration) @import\n")]
+      map langQueries (catalogLanguages cat) `shouldBe` [[("imports.scm", "(extern_crate_declaration) @import\n", "project")]]
+      catalogBrokenLanguages cat `shouldBe` []
+    it "a project query that does not compile is a load error naming the file and byte" $ do
+      Right cat <- openWith [("/proj/.olifant/config.toml", "languages = [\"rust\"]\n"), ("/proj/.olifant/queries/rust/imports.scm", "(no_such_node) @import\n")]
+      map fst (catalogBrokenLanguages cat) `shouldBe` ["/proj/.olifant/queries/rust/imports.scm"]
+      map snd (catalogBrokenLanguages cat) `shouldSatisfy` all (\e -> "imports.scm" `T.isInfixOf` e && "byte" `T.isInfixOf` e)
+    it "`ignore` reaches the walk: a Rust project lists no target/ file, a Python-only one does (4b m2)" $ do
+      let tree = [("/proj/target/x.rs", "fn x() {}\n"), ("/proj/src/a.rs", "fn a() {}\n")]
+          listed langs = do
+            (root, _) <- memoryWorkspace (("/proj/.olifant/config.toml", "languages = [" <> langs <> "]\n") : tree)
+            Right cat <- openProjectCatalog root projectOnly
+            listFiles (ignoring (catalogIgnores cat) (within "/proj" root)) "."
+      listed "\"rust\"" >>= (`shouldSatisfy` (\ps -> "src/a.rs" `elem` ps && all (not . ("target/" `isPrefixOf`)) ps))
+      listed "\"python\"" >>= (`shouldSatisfy` ("target/x.rs" `elem`))
     it "a project's selection provider replaces the shipped [test.select] whole" $ do
       Right cat <- openWith [cfg, ("/packs/p/generators/g/generator.toml", gen "python"), ("/proj/.olifant/languages/python.toml", "[test]\nselect = { provider = [\"sh\", \"tools/select.sh\"] }\n")]
       let [l] = catalogLanguages cat

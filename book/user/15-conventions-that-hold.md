@@ -373,9 +373,9 @@ With no base (no git, or no `main`), the rule does not guess: it is inactive, an
 as a hint naming why (`rule \`legacy-bug-fix-only\` (only new code) is inactive: no ref
 \`main\``).
 
-A fix on such a rule may use `{= finding_name =}` (the found definition's name) in its `with`,
-and its `replace` may use `{= finding_head =}` (a definition's whole signature, to the colon
-that ends it). `{= finding =}` is the node's code as if it started at column 0; the replacement
+A fix on such a rule may use `{= finding_name =}` (the found definition's name, by the
+language's queries) in its `with`, and its `replace` may use `{= finding_head =}` (a
+definition's whole signature: its text up to its body, `def f(\n    a,\n) -> dict:`). `{= finding =}` is the node's code as if it started at column 0; the replacement
 is indented back to where the node was. A file renamed since the base (`git mv`) is compared
 with its old self, so moving code is not new work.
 

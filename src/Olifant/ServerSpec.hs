@@ -20,6 +20,7 @@ import Olifant.Mutate (Mutant (..))
 import Olifant.Language (Failure (..), Match (..), Rewrite (..), Runner (..), Syntax (..), TestRun (..))
 import System.Directory (canonicalizePath, doesDirectoryExist, doesFileExist, listDirectory)
 import System.Directory qualified as Dir
+import Olifant.Server.Conjure qualified as Conjure
 import Olifant.Server.ConjureNext (OfferRow (..), PausedConjure (..), RoundView (..), Title (..), offerText, pruned)
 import Olifant.Generation.Steer (noSeed)
 import System.FilePath (makeRelative, (</>))
@@ -55,6 +56,14 @@ import Test.Hspec.Hedgehog (hedgehog)
 
 spec :: Spec
 spec = describe "Olifant.Server (projects across roots, open documents, jobs)" $ do
+  it "an inline Rust test's conjure: the module is the file outside its test mod, once" $ do
+    let file = T.unlines ["pub fn one() -> i32 {", "    1", "}", "", "#[cfg(test)]", "mod tests {", "    use super::*;", "", "    #[test]", "    fn is_one() {", "        todo!(\"write this test\");", "    }", "}"]
+        rs = shippedLanguageNow "rust"
+    case Conjure.testConjure rs file (11, 11) "src/a.rs::tests::is_one" "src/a.rs" file of
+      Left why -> expectationFailure (T.unpack why)
+      Right (_, _, context) -> do
+        map fst context `shouldBe` ["src/a.rs"]
+        lookup "src/a.rs" context `shouldBe` Just (T.unlines ["pub fn one() -> i32 {", "    1", "}", ""])
   it "(a) routes each file to its nearest project; a nested project wins over its parent" $ do
     (s0, _) <- server
     (s1, a) <- projectFor "/r1/src/x.py" s0

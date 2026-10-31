@@ -7,7 +7,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Doctor
 import Olifant.Evidence (Evidence (..), Proof (..))
-import Olifant.Language (Language, parseLanguage, shippedLanguage)
+import Olifant.Language (Language (..), parseLanguage, shippedLanguage)
 import Olifant.Catalog (PlansConfig (..), defaultPlans)
 import Olifant.Model (Backend (..), ModelConfig (..), defaultModelConfig)
 import Test.Hspec
@@ -139,6 +139,11 @@ spec = describe "olifant doctor (spec §4.7)" $ do
         row n = head [(checkStatus c, checkDetail c, checkFix c) | c <- cs, checkName c == n]
     row "rust: queries" `shouldBe` (Ok, "tree-sitter-rust 0.24.2; impls, imports, tags, textobjects (shipped)", Nothing)
     row "elm: queries" `shouldBe` (Warn, "no linked grammar (anchors from [targets.*] only)", Nothing)
+  it "a queries row names a project's query file and its origin" $ do
+    rust <- shippedLanguage "rust" []
+    let own = rust {langQueries = [("imports.scm", "(extern_crate_declaration) @import\n", "project")]}
+        cs = runIdentity (doctor (ports ["ast-grep", "cargo"] (Right ()) []) ((input local) {diLanguages = [own]}))
+    [checkDetail c | c <- cs, checkName c == "rust: queries"] `shouldBe` ["tree-sitter-rust 0.24.2; imports (project), impls, tags, textobjects (shipped)"]
   it "evidence replaces how, origin kept; tests not run keep their text, ok" $ do
     rust <- shippedLanguage "rust" []
     let ev = Evidence (Proven "3 found in 2 files (e.g. src/a.rs:1 add)") (Unproven "not seen (no test file in the 40 sampled)") (Unproven "not run (olifant doctor --run)") (Proven "end of struct X (src/a.rs:3)") (Proven "expr wrappers parse with their placeholders")

@@ -1,0 +1,9 @@
+# Tree-sitter queries for the Haskell grammar: all olifant's own (written here, not vendored).
+# The grammar (cbits/tree-sitter-haskell): tree-sitter-haskell 0.23.1, the crate ast-grep 0.45.3 locks
+# (crates.io sha256 977c51e504548cba13fc27cb5a2edab2124cf6716a1934915d07ab99523b05a4).
+# tree-sitter-haskell ships highlights, injections and locals only; nvim-treesitter-textobjects'
+# haskell file has no class bodies. Upstreaming tags.scm to tree-sitter/tree-sitter-haskell
+# (queries/tags.scm) would let olifant vendor it like Rust's and Python's.
+tags.scm         olifant: @definition.function (signature, function, bind), .type (data, newtype), .class (class, instance)
+textobjects.scm  olifant: @class.inner (a data type's constructors, a class's or instance's declarations)
+imports.scm      olifant: each import declaration in the imports block

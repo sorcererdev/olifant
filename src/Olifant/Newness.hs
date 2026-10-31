@@ -1,6 +1,6 @@
 -- | Which lines of a file are new since a base: what "new work" is, for
 -- rules that judge only new code (`only = "new"`, the strangler work).
-module Olifant.Newness (NewLines (..), newLinesOf, newSince, wholeNew, newCount, wasDefined, definedName, lcsPairs) where
+module Olifant.Newness (NewLines (..), newLinesOf, newSince, wholeNew, newCount, wasDefined, lcsPairs) where
 
 import Data.Array qualified as A
 import Data.IntMap.Strict qualified as IM
@@ -10,6 +10,8 @@ import Data.Set qualified as S
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Maybe (listToMaybe)
+import Olifant.Language.Adapter (Language)
+import Olifant.Language.TreeSitter (definedNamesIn)
 
 -- | A file's new lines (1-based): all of it (no base version: a new or
 -- untracked file), some, or unknown (no base: why).
@@ -115,13 +117,10 @@ newCount n ((l1, _), (l2, _)) = case n of
   NewIn s _ -> length (filter (`S.member` s) [l1 .. l2])
 
 -- | A file's newness against its base text: the new lines, and the names
--- the base defines.
-newSince :: Text -> Text -> NewLines
-newSince base now = NewIn (newLinesOf base now) (S.fromList [n | l <- T.lines base, let n = definedName l, defines l, not (T.null n)])
-  where
-    defines l = case T.words (T.stripStart l) of
-      kw : _ -> kw `elem` definitionKeywords
-      [] -> False
+-- the base defines (its definitions, by the language's queries; none
+-- without a language or a linked grammar).
+newSince :: Maybe Language -> Text -> Text -> NewLines
+newSince lang base now = NewIn (newLinesOf base now) (S.fromList (maybe [] (`definedNamesIn` base) lang))
 
 -- | Whether a name was defined at the base (unknown base: no).
 wasDefined :: NewLines -> Text -> Bool
@@ -129,14 +128,4 @@ wasDefined n name = case n of
   NewIn _ names -> name `S.member` names
   _ -> False
 
--- | The name a definition's first line defines (after def/class/fn/struct/…);
--- else its first word.
-definedName :: Text -> Text
-definedName what = case T.words (T.map (\c -> if c `elem` ("(:<{" :: String) then ' ' else c) (maybe "" id (listToMaybe (T.lines what)))) of
-  kw : name : _ | kw `elem` definitionKeywords -> if kw `elem` ["async", "pub"] then definedName (T.unwords (name : drop 2 (T.words what))) else name
-  w : _ -> w
-  [] -> ""
-
-definitionKeywords :: [Text]
-definitionKeywords = ["def", "async", "class", "fn", "pub", "struct", "enum", "trait"]
 

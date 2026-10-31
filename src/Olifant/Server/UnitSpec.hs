@@ -62,6 +62,21 @@ spec = do
     isStubIn python ["    ...", "    pass", "    assert ...", "    # kills: x", "    raise NotImplementedError(\"olifant: h\")"] `shouldBe` True
     isStubIn python ["    assert x == 1"] `shouldBe` False
  describe "Olifant.Server.Unit (units by name)" $ do
+  it "units come from queries when [unit] kinds is absent" $ do
+    let noQuery = querying (\_ _ _ -> error "the [unit] kinds query ran")
+    map langUnitKinds [python, haskell, rust] `shouldBe` [[], [], []]
+    unitsOf noQuery python Nothing "class Foo:\n    def bar(self):\n        pass\n\n\ndef f():\n    pass\n"
+      `shouldReturn` Right [Named "Foo" (1, 3) 1, Named "Foo.bar" (2, 3) 2, Named "f" (6, 7) 6]
+    unitsOf noQuery rust Nothing "struct A;\n\nimpl A {\n    fn new() -> A {\n        A\n    }\n}\n"
+      `shouldReturn` Right [Named "A" (1, 1) 1, Named "A" (3, 7) 3, Named "A.new" (4, 6) 4]
+  it "a Rust trait impl's methods are qualified by its type, as on main (review I3)" $ do
+    let noQuery = querying (\_ _ _ -> error "the [unit] kinds query ran")
+    Right ns <- unitsOf noQuery rust Nothing "trait T { fn f(&self); }\nstruct A;\nstruct B;\nimpl T for A {\n    fn f(&self) {}\n}\nimpl T for B {\n    fn f(&self) {}\n}\n"
+    map namedName ns `shouldSatisfy` (\names -> "A.f" `elem` names && "B.f" `elem` names && "f" `notElem` names)
+  it "Haskell instances are named by their head, so no name repeats (review I3)" $ do
+    let noQuery = querying (\_ _ _ -> error "the [unit] kinds query ran")
+    Right ns <- unitsOf noQuery haskell Nothing "class C a where\n  m :: a -> Int\n\ninstance C Int where\n  m x = x\n\ninstance C Bool where\n  m _ = 1\n"
+    map namedName ns `shouldBe` ["C", "C.m", "C Int", "C Int.m", "C Bool", "C Bool.m"]
   it "names and qualifies python units" $ do
     r <- unitsOf (spans [(0, 5), (1, 2), (3, 4)]) python Nothing "class Foo:\n    def bar(self):\n        pass\n    def baz(self):\n        pass\n"
     fmap (map namedName) r `shouldBe` Right ["Foo", "Foo.bar", "Foo.baz"]
@@ -73,9 +88,18 @@ spec = do
     fmap namedName (unitNamed "Foo.bar" ns) `shouldBe` Just "Foo.bar"
     fmap namedName (unitNamed "bar" ns) `shouldBe` Just "Foo.bar"
     unitNamed "nope" ns `shouldBe` Nothing
-  it "a repeated name gives the earliest; an ambiguous bare name none" $ do
-    fmap namedLines (unitNamed "f" [Named "f" (5, 6) 5, Named "f" (1, 2) 1]) `shouldBe` Just (1, 2)
-    unitNamed "m" [Named "A.m" (2, 3) 2, Named "B.m" (5, 6) 5] `shouldBe` Nothing
+  it "a repeated name is ambiguous, said so; an ambiguous bare name too (review I3)" $ do
+    unitLookup "f" [Named "f" (5, 6) 5, Named "f" (1, 2) 1] `shouldBe` Left "`f` names 2 units (lines 1, 5)"
+    unitNamed "f" [Named "f" (5, 6) 5, Named "f" (1, 2) 1] `shouldBe` Nothing
+    unitLookup "m" [Named "A.m" (2, 3) 2, Named "B.m" (5, 6) 5] `shouldBe` Left "`m` names 2 units (A.m, B.m)"
+    unitLookup "nope" [Named "A.m" (2, 3) 2] `shouldBe` Left "no unit `nope`"
+  it "a Rust struct and its inherent impl sharing a name: the anchor is the struct, as main (coordinator ruling)" $ do
+    let noQuery = querying (\_ _ _ -> error "the [unit] kinds query ran")
+        text = "struct A;\n\nimpl A {\n    fn new() -> A {\n        A\n    }\n}\n\nfn f() {}\nstruct B;\nfn f() {}\n"
+    Right ks <- unitsWithKinds noQuery rust Nothing text
+    fmap namedLines (unitLookupIn "A" ks) `shouldBe` Right (1, 1)
+    fmap namedLines (unitLookupIn "A.new" ks) `shouldBe` Right (4, 6)
+    either (T.isInfixOf "names 2 units") (const False) (unitLookupIn "f" ks) `shouldBe` True
   it "names haskell units" $ do
     unitNameIn haskell "data Catalog = Catalog" `shouldBe` Just "Catalog"
     unitNameIn haskell "instance Show Foo where" `shouldBe` Just "Show Foo"
@@ -86,7 +110,8 @@ spec = do
     r `shouldBe` Right [Named "go" (1, 3) 1]
   it "names haskell operators and multi-line signatures" $ do
     r <- unitsOf (spans [(0, 0), (1, 1)]) haskell Nothing "(<+>) :: A -> A -> A\na <+> b = b\n"
-    fmap (map namedName) r `shouldBe` Right ["(<+>)", "a"] -- an infix equation is named by its first word, as today; not joined
+    -- 4b m2: from captures, an infix equation is its operator's, joined to its signature
+    r `shouldBe` Right [Named "(<+>)" (1, 2) 1]
     r2 <- unitsOf (spans [(0, 2), (3, 3)]) haskell Nothing "run\n  :: Int\n  -> Int\nrun = id\n"
     r2 `shouldBe` Right [Named "run" (1, 4) 1]
   it "joins across blank lines, not across other code" $ do

@@ -294,12 +294,13 @@ example   = "end of struct BillingService"
 | `[check]` | `preset` names a check Olifant knows (`pyright`, `cargo`; [below](#presets-check-and-test)), and its keys are filled in from it; a key you write wins. Without a preset: `command` runs in a scratch copy of the project's files (those matching `files`, plus `context`). An argument that is exactly `{= files =}` becomes the list of source files; `{= cache =}`, anywhere in an argument, becomes a cache directory for this language that outlives the scratch copy (`~/.cache/olifant/check/<language>`). `root` (optional) lists files that mark a package's root: a check, an `uncovered` query and a hole's `verify` then run only in the judged files' package — the nearest folder above them holding one of these files (`root_pick = "outermost"`: the outermost) — with `files` and `context` read from that folder, and the report's paths made the project's again. Files judged in different packages, or no marker, check the whole project. `exclusive = true` is for a tool that keeps a build cache it cannot share between runs at once (cargo's target dir): each check gets a cache no other check uses while it runs (`{= cache =}` is then one of a few slots per workspace, each kept warm), so checks running together — the language server's, two projects' — never read each other's builds. `format` picks a *compiler support* record — the code that reads that compiler's report (from stderr, or stdout for cargo and pyright), decides whether a candidate constructor is visible at a site, writes a reported pattern the way the site should, and names the declaration a line sits in. Known formats: `elm-json` (Elm), `ghc-json` (GHC), `pyright-json` (pyright) and `rustc-json` (cargo), and the generic `sarif`, `errorformat` and `olifant-json`; `convert` runs a command that turns any tool's output into olifant-json ([check formats](#check-formats)). A command that starts with `env NAME=value …` runs the program after the settings, and that program is the one that must be installed (`env UV_PROJECT_ENVIRONMENT=… uv run …` needs `uv`; `olifant doctor` checks it) |
 | `[test]` | how this language's tests run, for the editor's test, conjure and mutate ([chapter 18](18-tdd-in-the-editor.md)) and `verify = "tests"`: `preset` (`pytest`) or `command` (`{= tests =}` becomes the test ids), `format` (`pytest`, `lines`, `tap`, `junit-xml`, `olifant-json`) or `convert`, `context`, `root`; and `tests_for`, a module's test file (`{= dir =}/{= stem =}__test.py`). `[test.select]`, `file_group`, `unit`, `exclusive` and `timeout` say how one test is run and found. See [presets](#presets-check-and-test) and [test formats](#test-formats) |
 | `[[mutate]]` | mutation operators, for `mutate` ([chapter 18](18-tdd-in-the-editor.md)): each a `name`, a `pattern` or ast-grep `rule`, and a `fix` or `transform = "increment"`. Python ships seventeen |
+| `ignore` | folder names a project's listings never enter (dependencies, build output, caches): Rust's `["target"]`, Python's `[".venv", "__pycache__", ".pytest_cache", "node_modules"]`, Haskell's `["dist-newstyle"]`, Elm's `["elm-stuff", "node_modules"]`. The project's languages' lists are joined; olifant itself keeps out only `.git` and, in a walk outside git, dot-folders |
 | `unit_words` | what a unit is in this language, as the plan prompts say it: "<Unit> is <unit_words> defined in that file". Python's is "a top-level class or function name (Name) or a method (Class.method)"; a project whose languages disagree, or one without the key, gets "a top-level function or type name (Name), or a method (Type.method)" |
-| `[unit]` | `kinds`: the tree-sitter node kinds of a definition (a function, method or class) in this language, for `:Durandal conjure` ([chapter 18](18-tdd-in-the-editor.md#conjuring)): the innermost node of these kinds around the cursor is the unit conjured. Python's are `function_definition`, `class_definition` and `decorated_definition` (written inline, `unit = { kinds = [...] }`); Rust, Elm and Haskell list theirs. Without it, `conjure` says the language has no unit kinds. `name` (optional): a list of POSIX expressions over a unit's line; the first that matches names the unit by its **last group** (the whole match when it has none). A unit is named by the first line of its span that has a name (Python's decorated def by its `def` line). Without it, a unit is named by its line's first identifier. `join = true` (default false): units of one name, at one indentation, separated only by blank lines (or touching), are one unit — a Haskell signature and its equations. See [the Haskell example](#a-second-example-haskell). `kinds = { provider = [...] }` in place of the list: a program names the units instead ([providers](#providers-answering-a-slot-with-a-program)); its answers are qualified (`Outer.Inner`) by containment, and a unit's definition line is still the first of its lines that `name` names (else its first) |
+| `[unit]` | `kinds`: the tree-sitter node kinds of a definition (a function, method or class) in this language, for `:Durandal conjure` ([chapter 18](18-tdd-in-the-editor.md#conjuring)): the innermost node of these kinds around the cursor is the unit conjured. Elm lists its own. A language whose grammar olifant links in (Rust, Python, Haskell) needs none: its units are every function and class-like definition the grammar's queries capture, named by its `@name` there (`[unit] name` then only finds a unit's definition line), a decorated definition with its decorators, a Haskell signature with its equations. A Rust trait impl is a unit named by its type (its methods are `Type.method`, as before), and a Haskell instance by its head (`C Int`, its methods `C Int.m`). A plan anchor naming a type and its inherent impl (both `A`) is the type, as before; any other name several units share is reported as ambiguous, never resolved to the first. Without `kinds`, a provider or a linked grammar, `conjure` says the language has no unit kinds. A test's span, where its line starts a definition, is that definition's too (a string's outdented line, a Rust test's closing brace and a multi-line signature are the test's). `name` (optional): a list of POSIX expressions over a unit's line; the first that matches names the unit by its **last group** (the whole match when it has none). A unit is named by the first line of its span that has a name (Python's decorated def by its `def` line). Without it, a unit is named by its line's first identifier. `join = true` (default false): units of one name, at one indentation, separated only by blank lines (or touching), are one unit — a Haskell signature and its equations. See [the Haskell example](#a-second-example-haskell). `kinds = { provider = [...] }` in place of the list: a program names the units instead ([providers](#providers-answering-a-slot-with-a-program)); its answers are qualified (`Outer.Inner`) by containment, and a unit's definition line is still the first of its lines that `name` names (else its first) |
 | `[holes.KIND]` | the kinds of typed hole this language has: what an unfilled one is written as (`placeholder`) and where a fill must parse (`wrap`). See [hole kinds](#hole-kinds-holeskind), below |
 | `keywords` | the language's reserved words (optional). Recognition keeps them as they are when it reads code by shape; every other name becomes its case shape ([chapter 16](16-the-language-server.md#recognition-this-looks-like-a-command)). The words in the pack's templates count too |
 | `separator`, `line_length` | what follows each item in brackets (`","`), and the longest line (default 88). With a separator an item can join a one-line container: inline when it fits, else the container goes one item per line ([chapter 3](03-anchors.md#rules-worth-knowing)). Python: `,`/88; Rust: `,`/100; Elm has none (its commas lead), so a one-line Elm list still refuses |
-| `[imports]` | how this language imports. `line`: a POSIX expression matching one import line (Python's: `^(from [A-Za-z0-9_.]+ import [A-Za-z0-9_., ]+\|import …)$`; `imports = "…"`, a string, is the same key on its own). With it, a model's fill may **begin with import lines**: they are not code for the hole but join the file's imports, after its last top-level import (or, in a file with none, after its leading comments and docstring), each only once. The model is told it may; the fill's parse check sees only its code; `--plan` shows a created file with the imports where they went. Without the key a fill is code only, so a fill that needs a name the file lacks fails its check. `example = { needs, fill }` (optional): the example the model is shown, a fill that starts with the import of the name it `needs`; Python's `{ needs = "date", fill = "from datetime import date\n\ndate.fromisoformat(text)" }`. Without it the model is told the rule with no example |
+| `[imports]` | how this language imports. `line`: a POSIX expression matching one import line (Python's: `^(from [A-Za-z0-9_.]+ import [A-Za-z0-9_., ]+\|import …)$`; `imports = "…"`, a string, is the same key on its own). With it, a model's fill may **begin with import lines**: they are not code for the hole but join the file's imports, after its last top-level import (or, in a file with none, after its leading comments and docstring), each only once. The model is told it may; the fill's parse check sees only its code; `--plan` shows a created file with the imports where they went. Without the key a fill is code only, so a fill that needs a name the file lacks fails its check. `example = { needs, fill }` (optional): the example the model is shown, a fill that starts with the import of the name it `needs`; Python's `{ needs = "date", fill = "from datetime import date\n\ndate.fromisoformat(text)" }`. Without it the model is told the rule with no example. `spaced = false` (default `true`): a blank line between imports groups them, so `end of imports` (the generic phrase) joins the last import with no blank line; Python sets it. `when_empty = "after header"`: in a file with no import, `end of imports` goes after its leading comments and docstring (else it is "no `imports` in this file"); Python sets it |
 | `[imports]` (2) | `write`: the line a test file imports a unit with, a template over `{= module =}` and `{= owner =}` (the unit's first dotted segment: a method's class). Python's `from {= module =} import {= owner =}`, Haskell's `import {= module =}`; Rust has none (its tests sit in the file's `mod tests`, under `use super::*;`). Without it a stub writes no import. `module_of = { strip, drop, separator }`: how a path becomes a module — strip the first `strip` expression that matches, drop the extension, drop trailing segments that `drop` lists, join with `separator` (default `.`). Python's `{ strip = ["^src/"], drop = ["__init__"] }` (`src/a/b.py` is `a.b`, `pkg/__init__.py` is `pkg`); Haskell's strips `^src/` or `^test/`; Rust's `{ strip = ["^(.*/)?src/"], drop = ["lib", "main", "mod"], separator = "::" }` (`crates/m/src/money/rates.rs` is `money::rates`, `src/lib.rs` the crate root) |
 | `[imports]` (3) | `[[imports.resolve]]` and `paths`: which project files an import line names, for a conjure's context. Each resolve is `{ pattern, module, names }`: an expression over a stripped line, the group holding its modules (comma-separated, each less its alias) and, optionally, the group holding names imported from it, each of which may be a module too (`module.name`). The first resolve that matches a line counts. `paths` are templates over `{= path =}` (the module, its separator as `/`); the first that is a file is the module's. Python's two resolves read `from a.b import x, y` (`a.b`, `a.b.x`, `a.b.y`) and `import a.b, c`; its paths are `src/{= path =}.py` and `src/{= path =}/__init__.py`. Without `resolve`, a conjure sees no imported files |
 | `opens_block` | an expression over a line (its comment cut) that opens a block: Python's `':[[:space:]]*(#.*)?$'`, Rust's `'[{][[:space:]]*$'`, Haskell's a line ending in `do`, `=` or `$`. A model that answers a hole of lines with the whole file is cut back to the hole's lines, from the block that opens above it . Without it, such a fill is not cut |
@@ -330,18 +331,21 @@ grammar     = "haskell"
 placeholder = 'error "{= message =}"'
 branch      = "{= pattern =} -> {= body =}"
 
-[targets.data]
-phrase    = "data NAME"
-container = { kind = "data_constructors", inside = { kind = "data_type", regex = "^data {= NAME =}\\b" } }
-items     = { kind = "data_constructor" }
-example   = "end of data CatalogError"
-
 [check]
 preset = "cabal-repl"
 
 [test]
 preset = "hspec"
 ```
+
+Its anchors are the generic phrases ([chapter 3](03-anchors.md#the-generic-phrases)) read
+from olifant's own Haskell queries (tree-sitter-haskell ships no tags), plus one declared
+target, `do in FUNCTION` (a function's outermost `do` block). `end of data SampleError` goes
+after the last constructor; `end of function f` after f's last equation (a function is its
+signature and its equations, so `f` is one place, not three); `end of class C` (the class, never
+its instances) and `end of instance C` (C's instances, named by the class: one instance is
+one place) after the last declaration in its `where`; `end of imports` after the last
+import declaration.
 
 The `cabal-repl` preset runs `cabal repl -v0 --builddir={= cache =}/dist-repl-{= context =}
 --repl-options=-fno-code --repl-options=-fdiagnostics-as-json --repl-options=-Wincomplete-patterns
@@ -532,21 +536,25 @@ Cases within match statement do not exhaustively handle all values
   fill any of them, and a `complete` edit names the class bare (`complete = "{=
   failure|pascal =}"`).
 
-The adapter's targets:
+The adapter's anchors: two declared targets, and the generic phrases from tree-sitter
+queries ([chapter 3](03-anchors.md#the-generic-phrases); `library/queries/python/`):
 
 ```
 $ olifant anchors python --human
 python: at = "<start of|end of|before|after> <target>"
 
 targets:
-  call NAME               e.g. end of call CancelBooking
-  call NAME in FUNCTION   e.g. end of call CreateBooking in create
-  class NAME              e.g. end of class BookingService
-  function NAME           e.g. end of function create_app
-  imports                 e.g. end of imports
   match on NAME           e.g. end of match on failure
-  parameters in FUNCTION  e.g. end of parameters in floor_routes
   union NAME              e.g. end of union CreateBookingFailure
+
+from queries (tree-sitter-python 0.25.0):
+  function NAME           e.g. end of function main
+  class NAME              e.g. end of class BillingService
+  KIND NAME               e.g. end of struct BillingService
+  parameters in FUNCTION  e.g. end of parameters in new
+  call NAME               e.g. end of call BillingService::new
+  call NAME in FUNCTION   e.g. end of call BillingService::new in main
+  imports                 e.g. end of imports
 
 built in (any file):
   before|after marker TEXT
@@ -554,6 +562,14 @@ built in (any file):
   before|after last line matching REGEX
   start of|end of file
 ```
+
+In Python, `end of class BookingService` goes after the class's last statement (a docstring,
+a method, a decorated method whole), at its indentation; `end of function create_app` the
+same for a function. `call NAME` and `parameters in FUNCTION` take every argument or
+parameter as an item, so a one-line call grows keeping them all. `end of imports` joins the
+last import with no blank line (`[imports] spaced = false`) and, in a file with none, goes
+after its leading comments and docstring. The examples the listing shows are the engine's,
+the same for every language.
 
 `union NAME` is a failure union written one member per line, in parentheses, which is the
 pack's convention:
@@ -603,8 +619,8 @@ src/bistro/web/bookings/failures.py:18
 
 There is no `module` target: `start of file` and `end of file` are built in.
 
-Olifant never looks inside `.venv`, `__pycache__` or `.pytest_cache`, as it never looks
-inside `node_modules` or `target` ([chapter 6](06-queries-and-choices.md)). The pack's
+Olifant never looks inside `.venv`, `__pycache__`, `.pytest_cache` or `node_modules`: they
+are the Python language's `ignore` ([chapter 6](06-queries-and-choices.md)). The pack's
 fixture and tests are in [chapter 10](10-testing-generators.md#the-python-pack), and its two
 generators, chained in an editor, in [chapter 14](14-editors-and-actions.md#the-python-chain).
 
@@ -812,11 +828,12 @@ outside `[A-Za-z0-9_.]` written as one `_`: `it "parses \"x\" twice"` under `des
 "Olifant.Plans"` is `@src/Olifant/PlansSpec.hs:Olifant.Plans.parses_x_twice`, and pytest's
 `TestX::test_y` is `TestX.test_y`. Two tests with the same anchor name: the first is found.
 
-**Known limits of rules.** Test units are line rules, not syntax trees, so: a pattern inside a
-string or a comment counts as a test; a unit ends at an outdent, not at its closing brace, so
-Rust relies on rustfmt's layout; and a signature split over several lines (attributes, then a
-`fn` whose name is on another line) is missed. These are the reasons a syntax-tree provider
-(ast-grep, Rust first) may replace them later.
+**Known limits of rules.** Test units are found by line rules, so a pattern inside a string
+or a comment counts as a test, and a `fn` whose name is on another line than `fn` is missed.
+Where the language's grammar is linked (Rust, Python, Haskell), a unit whose line starts a
+definition ends where the definition ends: at a Rust test's closing brace, past a string's
+outdented line or a signature's `) -> None:` at column 0. Elsewhere (hspec's `it`, an unlinked
+grammar) a unit ends at an outdent.
 | `exclusive` | the runner keeps a build cache: each run gets a slot (`{= cache =}` is the slot's), as `[check] exclusive` |
 | `timeout` | seconds a run may take, over the editor's default |
 
@@ -1036,8 +1053,9 @@ A target is a phrase shape and two ast-grep rules:
 - `example`: shown by `olifant anchors`.
 - `spaced` (default `true`): when the items next to the new one are separated by a blank
   line, the new one gets one too (Elm case branches, Rust methods). `false` where a blank
-  line means something else: Python's `imports` sets it, because a blank line there
-  separates import groups, and a new import joins the last group.
+  line means something else, as between Python's import groups, where a new import joins the
+  last group. (Python's `imports` is now a generic phrase; the same fact is its `[imports]
+  spaced = false`.)
 
 The rules are ast-grep's rule language (`kind`, `regex`, `inside`, `has`, `not`, `any`,
 `stopBy`, `field`). Two idioms from the Elm adapter are worth copying:
@@ -1050,12 +1068,38 @@ The rules are ast-grep's rule language (`kind`, `regex`, `inside`, `has`, `not`,
 ast-grep needs a `kind` on every item rule, which is why `list in FUNCTION` lists every
 expression kind a list element can be.
 
-`call NAME` and `call NAME in FUNCTION` are a call's arguments (`wire` passes a command
-its adapter in `main.py`, a fake in a test); `parameters in FUNCTION` a function's
-parameters (`web-command` gives a router factory its command). All three want one item per
-line, and an empty `CancelBooking()` opens. `imports` sets `spaced = false` (a blank line
-between imports is a group, so a new import joins the last group) and `when_empty = "after
-header"` (in a file with no imports, the first goes under the docstring).
+Python's `call NAME`, `call NAME in FUNCTION` and `parameters in FUNCTION` are generic phrases
+now, not targets: a call's arguments (`wire` passes a command its adapter in `main.py`, a fake
+in a test) and a function's parameters (`web-command` gives a router factory its command).
+All three want one item per line, and an empty `CancelBooking()` opens. Its `imports` is a
+generic phrase too; the two facts its old target carried are the language's `[imports]
+spaced = false` (a blank line between imports is a group, so a new import joins the last
+group) and `[imports] when_empty = "after header"` (in a file with no imports, the first goes
+under the docstring).
+
+### Overriding a language's queries
+
+The generic phrases, units and test spans of a language whose grammar olifant links in (Rust,
+Python, Haskell) are read through tree-sitter query files shipped inside olifant
+(`library/queries/<grammar>/`: `tags.scm`, `textobjects.scm`, `imports.scm`, and Rust's
+`impls.scm`). A project can put its own beside them, in `.olifant/queries/<grammar>/`:
+
+- a file with a shipped file's name **replaces** it (`.olifant/queries/rust/imports.scm`
+  holding `(extern_crate_declaration) @import` makes `end of imports` go after the
+  `extern crate` lines only);
+- a file with a new name is **added** to the set;
+- the predicates `#eq?`, `#not-eq?`, `#match?`, `#not-match?`, `#any-of?` and `#not-any-of?`
+  work (`#match?` is a POSIX extended search); any other predicate or directive is an error.
+
+The captures olifant reads are `@definition.*` with `@name` (a definition and its name),
+`@function.inner`, `@class.inner` (a definition's items), `@function.outer`, `@class.outer`
+(a unit's whole span), `@parameter.inner`, `@call.outer` and `@import`. A query set that does
+not compile is a load error naming the file (and the byte, for a syntax error; an unknown
+predicate is named instead), and the language is used with its shipped queries. `olifant doctor`'s `queries` row names each file's origin:
+
+```
+✓ rust: queries — tree-sitter-rust 0.24.2; imports (project), impls, tags, textobjects (shipped)
+```
 
 ### Conjure's shapes: `[conjure]`
 
