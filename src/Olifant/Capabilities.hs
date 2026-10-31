@@ -5,7 +5,7 @@ module Olifant.Capabilities
   , capabilities
   ) where
 
-import Data.Maybe (isJust)
+import Data.Maybe (isJust, isNothing)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Language (ConjureDef (..), CheckDef (..), Language (..), StubDef (..), TestDef (..), TypesDef (..), defaultUnitNames, supportsMissing)
@@ -61,7 +61,8 @@ capabilities lang =
       Just sd -> Right ("[test] stub" <> maybe "" (" at " <>) (sdAt sd))
       Nothing -> Left "[test] stub"
     shapes = case langConjure lang of
-      Just cj | parts@(_ : _) <- [n | (n, True) <- [("port", isJust (cjPort cj)), ("fake", isJust (cjFake cj)), ("constructor", isJust (cjConstructor cj))]] -> Right ("[conjure] " <> T.intercalate ", " parts)
+      Just cj | parts@(_ : _) <- [n | (n, True) <- [("port", isJust (cjPort cj)), ("port.add", isJust (cjAddMethod cj)), ("fake", isJust (cjFake cj)), ("constructor", isJust (cjConstructor cj)), ("advice", not (null (cjAdvice cj)))]] ->
+        Right ("[conjure] " <> T.intercalate ", " parts <> (if isJust (cjPort cj) && isNothing (cjAddMethod cj) then " (no [conjure.port] add: a method a port lacks is yours to add)" else ""))
       _ -> Left "[conjure] (conjure works at the floor: the test and its fill, no ports)"
     messages = case keysOf "[check]" [("undefined", maybe False (not . null . checkUndefined) check), ("missing_member", maybe False (isJust . checkMissingMember) check)] of
       "" -> Left "[check] undefined, missing_member (no undefined names read from the check)"

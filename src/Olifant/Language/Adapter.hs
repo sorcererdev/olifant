@@ -21,6 +21,8 @@ module Olifant.Language.Adapter
   , ConjureDef (..)
   , TypesDef (..)
   , PortShape (..)
+  , AddMethod (..)
+  , Advice (..)
   , FakeShape (..)
   , CtorShape (..)
   , ModuleOf (..)
@@ -187,8 +189,27 @@ data ImportsDef = ImportsDef {imWrite :: Maybe Text, imModuleOf :: Maybe ModuleO
 -- | A pack's `[conjure]`: how conjure reads its architecture. 'cjService'
 -- (`service`), a path template over @{= app =}@ and @{= service =}@ a
 -- module's path starts with (binding the wire's sets); the port, fake and
--- constructor shapes, each absent when the pack declares none.
-data ConjureDef = ConjureDef {cjService :: Maybe Text, cjPort :: Maybe PortShape, cjFake :: Maybe FakeShape, cjConstructor :: Maybe CtorShape}
+-- constructor shapes, each absent when the pack declares none; 'cjAddMethod'
+-- (`[conjure.port] add`, `adapters`), the generators that add a method a port
+-- lacks (none: the person adds it); 'cjAdvice' (`[[conjure.advice]]`), what a
+-- test file's lines add to the instruction that writes a test's body.
+data ConjureDef = ConjureDef {cjService :: Maybe Text, cjPort :: Maybe PortShape, cjFake :: Maybe FakeShape, cjConstructor :: Maybe CtorShape, cjAddMethod :: Maybe AddMethod, cjAdvice :: [Advice]}
+  deriving stock (Eq, Show)
+
+-- | `[conjure.port] add` and `adapters`: 'amGenerator' (`add`), the id of a
+-- snippet generator placed on a blank line after a port's last line, its holes
+-- named as `[types] method` names a signature's parts (@name@, @params@,
+-- @returns@); 'amAdapters' (`adapters`), the id of a generator run after it,
+-- given the slots of its `[applies_at] path` over the port's file and @name@,
+-- @params@, @returns@ and @signature@ (each only when it declares the input).
+data AddMethod = AddMethod {amGenerator :: Text, amAdapters :: Maybe Text}
+  deriving stock (Eq, Show)
+
+-- | `[[conjure.advice]]`: 'avWhen' (`when`), an expression over a test
+-- file's lines; 'avSay' (`say`), the sentence the instruction that writes a
+-- test's body gains when one of them matches (the first advice to match, by
+-- line, then by order).
+data Advice = Advice {avWhen :: Text, avSay :: Text}
   deriving stock (Eq, Show)
 
 -- | `[types]`: the facts a new method's signature is made of, in the language's own words.
@@ -557,13 +578,22 @@ languageFrom presets name grammarDir top = do
       TypesDef <$> o "string" <*> o "integer" <*> o "nothing" <*> over "optional" ["type"] <*> over "param" ["name", "type"] <*> optional "annotation" (named "annotation") t <*> optional "returns" (text >=> validRegex "[types] returns") t <*> optional "assigned" (text >=> validRegex "[types] assigned") t <*> optional "record" (named "record") t <*> over "method" ["name", "params", "returns"]
         <*> (fromMaybe [] <$> optional "checks_none" (list (named "checks_none")) t)
     conjureFrom t = do
-      onlyKeys ["service", "port", "fake", "constructor"] t
+      onlyKeys ["service", "port", "fake", "constructor", "advice"] t
       let re k = text >=> validRegex ("[conjure] " <> k)
+      port <- optional "port" (table >=> \p -> do
+        onlyKeys ["files", "start", "method", "add", "adapters"] p
+        shape <- PortShape <$> (fromMaybe [] <$> optional "files" (list text) p) <*> required "start" (re "port start") p <*> required "method" (re "port method") p
+        add <- optional "add" text p
+        adapters <- optional "adapters" text p
+        case (add, adapters) of
+          (Nothing, Just _) -> Left "`[conjure.port] adapters` needs `add` (the generator that adds the method)"
+          _ -> Right (shape, (`AddMethod` adapters) <$> add)) t
+      advice <- fromMaybe [] <$> optional "advice" (list (table >=> \a -> do
+        onlyKeys ["when", "say"] a
+        Advice <$> required "when" (re "advice when") a <*> required "say" text a)) t
       ConjureDef
         <$> optional "service" text t
-        <*> optional "port" (table >=> \p -> do
-          onlyKeys ["files", "start", "method"] p
-          PortShape <$> (fromMaybe [] <$> optional "files" (list text) p) <*> required "start" (re "port start") p <*> required "method" (re "port method") p) t
+        <*> pure (fst <$> port)
         <*> optional "fake" (table >=> \f -> do
           onlyKeys ["bound", "classes", "prefixes", "keyword", "stub"] f
           FakeShape <$> required "bound" (re "fake bound") f
@@ -574,6 +604,8 @@ languageFrom presets name grammarDir top = do
         <*> optional "constructor" (table >=> \c -> do
           onlyKeys ["files", "owner", "start", "param"] c
           CtorShape <$> (fromMaybe [] <$> optional "files" (list text) c) <*> required "owner" (re "constructor owner") c <*> required "start" (re "constructor start") c <*> required "param" (re "constructor param") c) t
+        <*> pure (snd =<< port)
+        <*> pure advice
     importMergeFrom t = do
       onlyKeys ["pattern", "write"] t
       re <- required "pattern" text t

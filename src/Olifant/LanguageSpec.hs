@@ -117,6 +117,12 @@ spec = do
       either (const True) (const False) (lang ["[conjure]", "ports = 1"]) `shouldBe` True
       either (const True) (const False) (lang ["[conjure.port]", "method = '^def '"]) `shouldBe` True
       either (const True) (const False) (lang ["[conjure.port]", "start = '('", "method = '^def '"]) `shouldBe` True
+    it "parses the port's add and adapters and the advice; adapters without add is an error" $ do
+      let Right l = lang ["[conjure.port]", "start = '^class ([a-z]+)'", "method = '^def '", "add = \"m\"", "adapters = \"a\"", "[[conjure.advice]]", "when = '^def h\\('", "say = \"use h\""]
+      (langConjure l >>= cjAddMethod) `shouldBe` Just (AddMethod "m" (Just "a"))
+      fmap cjAdvice (langConjure l) `shouldBe` Just [Advice "^def h\\(" "use h"]
+      (lang ["[conjure.port]", "start = '^class ([a-z]+)'", "method = '^def '"] >>= maybe (Left "none") Right . langConjure) `shouldSatisfy` either (const False) (\c -> cjAddMethod c == Nothing && null (cjAdvice c))
+      either (const True) (const False) (lang ["[conjure.port]", "start = '^class ([a-z]+)'", "method = '^def '", "adapters = \"a\""]) `shouldBe` True
   describe "[types] and undefined names: checked as they load" $ do
     let lang = parseLanguage "python" "/pack" . T.unlines . (["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\""] ++)
         bad = either (const True) (const False)
