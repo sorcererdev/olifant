@@ -5,7 +5,7 @@ module Olifant.Server.ConjureScanSpec (spec) where
 import Data.Maybe (fromJust)
 import Data.Text qualified as T
 import Olifant.Decide
-import Olifant.Language (ConjureDef (..), Language (..), PortShape (..), shippedLanguageNow)
+import Olifant.Language (Advice (..), ConjureDef (..), Language (..), PortShape (..), shippedLanguageNow)
 import Olifant.Language.TestUnits (testSourceIn)
 import Olifant.Server.ConjureNextSpec (cancelTestText, pyHtmx)
 import Olifant.Server.ConjureScan
@@ -110,6 +110,19 @@ spec = describe "ConjureScan (Olifant.Server.ConjureScan)" $ do
     portEnd ps "BookingRepository" "class BookingRepository(Protocol):\n    def table(self) -> None: ...\n\n    def save(self) -> None: ...\n" `shouldBe` Just 5
     portEnd ps "BookingRepository" "class BookingRepository(Protocol):\n    def save(self) -> None: ...\n\n\nclass Other:\n    pass\n" `shouldBe` Just 3
     portEnd ps "Nope" "class BookingRepository(Protocol):\n    def save(self) -> None: ...\n" `shouldBe` Nothing
+    -- no blank line after it (the end of the file, the next class at once): the line after
+    -- its last all the same, which 'blankAt' makes blank for the snippet
+    portEnd ps "BookingRepository" "class BookingRepository(Protocol):\n    def save(self) -> None: ..." `shouldBe` Just 3
+    portEnd ps "BookingRepository" "class BookingRepository(Protocol):\n    def save(self) -> None: ...\nclass Other:\n    pass\n" `shouldBe` Just 3
+  it "(k2) blankAt: a blank line stays; else one is put there, at the end too" $ do
+    blankAt 2 "a\n\nb" `shouldBe` "a\n\nb"
+    blankAt 2 "a\nb" `shouldBe` "a\n\nb"
+    blankAt 2 "a" `shouldBe` "a\n"
+  it "(k3) advisedIn: the first advice to match a test file's line adds its sentence" $ do
+    let advice = [Advice "^def command\\(" "use command()", Advice "^def query\\(" "use query()"]
+    advisedIn advice ["import x", "def query():", "def command():"] "write it" `shouldBe` "write it; use query()"
+    advisedIn advice ["def other():"] "write it" `shouldBe` "write it"
+    advisedIn [] ["def command():"] "write it" `shouldBe` "write it"
   it "(n) the shapes are the pack's: a Rust-shaped trait reads as a port; no fake shape, no fake" $ do
     let rustPorts = PortShape ["ports/*.rs"] "^pub trait ([[:alnum:]_]+)" "^(async )?fn "
     portsIn rustPorts [("ports/invoice_repository.rs", "#[async_trait]\npub trait InvoiceRepository: Send + Sync + 'static {\n    async fn get_invoice(&self, id: String) -> Result<Invoice, RepositoryFailure>;\n}\n")]

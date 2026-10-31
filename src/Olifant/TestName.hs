@@ -1,11 +1,8 @@
 -- | The names a new test gets: a survivor's stub named from its mutant,
--- a name its test file does not define yet; and the sentence a test file
--- with the pack's helper adds to an instruction.
+-- a name its test file does not define yet.
 module Olifant.TestName
   ( stubNameFor,
     uniqueTestName,
-    helpedIn,
-    helperSentenceFor,
   )
 where
 
@@ -15,15 +12,6 @@ import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Mutate (Mutant (..))
-
--- | An instruction in a test file (its lines) with the pack's helper: the
--- arranged adapters go through it ('helperSentenceFor').
-helpedIn :: [Text] -> Text -> Text
-helpedIn ls t = maybe t (\h -> t <> "; " <> helperSentenceFor h) (listToMaybe [h | l <- ls, h <- ["command", "query"], ("def " <> h <> "(") `T.isPrefixOf` l])
-
--- | 'helperSentence' for a helper named for what it builds (`command`, `query`).
-helperSentenceFor :: Text -> Text
-helperSentenceFor h = "build the " <> h <> " with the helper, passing the adapters you arranged (`" <> h <> "(booking_repository=repository)`); never call the helper bare after arranging a repository"
 
 -- | The name of a survivor's test, from its mutant: a literal's first four
 -- words (`string`), else the operator and the names on the mutated line

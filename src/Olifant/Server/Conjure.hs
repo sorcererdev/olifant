@@ -39,18 +39,17 @@ import Olifant.Decide (Answer (..), Confidence (..), Decider (..), Question)
 import Olifant.Fill (Filler (..), ModelFiller (..), Stance (..))
 import Olifant.Generation (HoleStatus (..), Plan (..), PlannedHole (..), ProgressEvent (..), Step (..), describeConflict, describeGenerationError)
 import Olifant.Generation.Steer (RoundHole (..), RoundState (..), Seed (..), Steer (..), Steering (..), noSeed)
-import Olifant.TestName (helpedIn)
 import Olifant.Generation.FillPhase (applyFills, assertionSpan, fillLines, projectFiles)
-import Olifant.Generator (AppliesAt (..), GeneratorWith (..), Verify (..), replaceGenerator)
+import Olifant.Generator (AppliesAt (..), GeneratorWith (..), InputSpec (..), Verify (..), replaceGenerator)
 import Olifant.Holes (HoleSite (..), Marker (..), splitMarkers)
-import Olifant.Language (CheckDef (..), CheckReport (..), Checker (..), ConjureDef (..), CtorShape (..), Failure (..), Language (..), PortShape (..), TypesDef (..), TestRun (..), failureLineIn, failureLineWith, failureOf, languageFor, runCheckIn, runTestsIn)
+import Olifant.Language (AddMethod (..), CheckDef (..), CheckReport (..), Checker (..), ConjureDef (..), CtorShape (..), Failure (..), Language (..), PortShape (..), TypesDef (..), TestRun (..), failureLineIn, failureLineWith, failureOf, languageFor, runCheckIn, runTestsIn)
 import Olifant.Glob (matchesGlob)
 import Text.Regex.TDFA (AllTextSubmatches (..), Regex, makeRegexM, matchM, matchTest)
 import Olifant.Model (Backend (..), ModelConfig (..), Rung (..))
 import Olifant.Process (cancelled)
 import Olifant.Server.Actions (fillerFor, rungFiller)
 import Olifant.Server.ConjureNext (undefinedLabelIn, Cause (..), Decided (..), DiagnosisFacts (..), Next (..), Offer (..), OfferFacts (..), OfferRow (..), PausedAnswer (..), Title (..), addsReason, knownNote, offerRow, fixMoves, paramPort, reconjureWhy, roundWords, testFix, fixWords, methodWords, pausedJson, refusedSentence, shortName, testEntries, trigger, withoutKnown, PausedConjure (..), Policy (..), PolicyFacts (..), Proposal (..), RoundContext (..), RoundRecord (..), RoundView, Standing (..), causeWords, conjureNextQuestion, diagnosis, involved, isRepeat, isTrade, nextFrom, offersAt, pausedLifetime, policy, pruned, roundRecord, ConjureStep (..), StepKind (..), fixAgain, proposalStep, LatestFailure (..), rootFirst, roundSummary, roundView, spent, suspectFirst, undefinedNamesIn, undefinedIn, withHint)
-import Olifant.Server.ConjureScan (Fake (..), Port (..), conjurePortQuestion, ctorParamsIn, derivePortIn, deriveParam, fakeCalls, fakeIn, methodSignature, methodText, missingMemberIn, portCandidates, portEnd, portFrom, portsIn, servicePaths, siblingsOf, takesPortIn)
+import Olifant.Server.ConjureScan (Fake (..), Port (..), advisedIn, blankAt, conjurePortQuestion, ctorParamsIn, derivePortIn, deriveParam, fakeCalls, fakeIn, methodSignature, methodText, missingMemberIn, portCandidates, portEnd, portFrom, portsIn, servicePaths, siblingsOf, takesPortIn)
 import Olifant.Server.Site (Site (..), appendStepLine, importedContext, runOver, siteAt, siteTestFile, tshow)
 import Olifant.Server.Edits (FileEdit (..), smallestChange, unifiedDiff)
 import Olifant.Server.State (ServerConfig (..), ServerState (..), deciderUnder)
@@ -60,7 +59,7 @@ import Olifant.Server.Stub (namePrefixesIn, testWordsIn)
 import Olifant.Server.Unit (isStubIn, Unit (..), ownerHeader, testOrUnitAt, testUnitAt, unitAt)
 import Olifant.Template (Template, describeTemplateError, parseTemplate)
 import Olifant.Workspace (Workspace (..), normalisePath, overlayMany)
-import System.FilePath (joinPath, takeBaseName, takeDirectory, takeFileName, (</>))
+import System.FilePath (joinPath, takeBaseName, takeFileName, (</>))
 import Text.Printf (printf)
 
 -- | A conjure's answer: the conjured file (absolute), the unit, the edits
@@ -680,7 +679,8 @@ conjureWith progress path line selected resuming s0 = do
                   Just (q, m) -> do
                     sf <- service
                     let moduleText = M.findWithDefault (siteModuleText site) (siteModuleRel site) (cWrites c)
-                        sig = listToMaybe [p | p <- sfPorts sf, ptName p == q] >>= \p -> methodSignature lang m p attempt moduleText (cTestText c)
+                        -- a signature only where the pack can add the method (`[conjure.port] add`)
+                        sig = (langConjure lang >>= cjAddMethod) >> listToMaybe [p | p <- sfPorts sf, ptName p == q] >>= \p -> methodSignature lang m p attempt moduleText (cTestText c)
                     pure (Just (q, m, sig))
               decider = deciderUnder (ssCancel s) s project
               -- the service the wire's inputs come from (read once)
@@ -1060,35 +1060,43 @@ wirePlan s project writes gid sets = case findEntry cat gid of
     ports = ssPorts s
     changed plan = M.filterWithKey (\r t -> M.lookup r (planBefore plan) /= Just (Just t)) (planWrites plan)
 
--- | The method M (its parameters PS after self, returning R) added to the port Q over the
--- project with the conjure's WRITES on top, the service's SETS (@app@, @service@): the pack's
--- @port-method@ at the line that ends Q's Protocol, its holes filled with the signature as
--- the person would fill its tab stops, then @port-method-adapters@ over that for each adapter
--- beside it (their bodies filled by FILLER) and the contract test's stub. The Protocol's file
--- and each file changed (root-relative, before, after); Left: why not.
+-- | The method M (its parameters PS, returning R) added to the port Q over the project with
+-- the conjure's WRITES on top, the service's SETS: the pack's `[conjure.port] add` placed on a
+-- blank line after Q's last line (made blank when it is not), its holes filled with the
+-- signature as the person would fill its tab stops (@name@, @params@, @returns@, the parts
+-- `[types] method` names), then its `adapters`, when it names one, over that, given the slots
+-- of its `[applies_at] path` over Q's file, the SETS, and @name@, @params@, @returns@ and
+-- @signature@, each only when it declares that input (the bodies it leaves FILLER fills).
+-- The port's file and each file changed (root-relative, before, after); Left: why not.
 portMethodPlan :: ServerState -> Language -> Project -> (ProgressEvent -> IO ()) -> ModelFiller IO -> Map FilePath Text -> [(Text, Text)] -> Text -> Text -> Text -> Text -> IO (Either Text (FilePath, [(FilePath, Text, Text)]))
 portMethodPlan s lang project progress filler writes sets q m ps r = runExceptT $ do
-  (app, service) <- maybe (throwE "the unit's app and service are not known") pure ((,) <$> lookup "app" sets <*> lookup "service" sets)
   ps' <- maybe (throwE ("no `[conjure.port]` for " <> langName lang <> ": conjure finds no ports")) pure (langConjure lang >>= cjPort)
+  am <- maybe (throwE ("no `[conjure.port] add` for " <> langName lang <> ": add " <> m <> " to " <> q <> " yourself")) pure (langConjure lang >>= cjAddMethod)
   base <- maybe (throwE ("no `[conjure] service` for " <> langName lang <> ": conjure cannot find the service")) pure (serviceBase (langConjure lang) sets)
   found <- lift (filesUnder ws base (psFiles ps'))
   texts <- lift (traverse (\f -> (f,) <$> readText ws f) found)
   (protoRel, protoText) <- maybe (throwE ("no port " <> q <> " under " <> T.pack base)) pure (listToMaybe [(f, t) | (f, Just t) <- texts, any ((== q) . ptName) (portsIn ps' [(f, t)])])
-  line <- maybe (throwE ("no blank line ends " <> q <> " for port-method")) pure (portEnd ps' q protoText)
-  method0 <- load "port-method"
-  let here = project {prWorkspace = ws}
-  method <- lift (placeAt ports here (protoRel, line) [method0]) >>= either throwE (maybe (throwE "port-method placed nothing") pure . listToMaybe)
+  line <- maybe (throwE ("no port " <> q <> " in " <> T.pack protoRel)) pure (portEnd ps' q protoText)
+  let addId = amGenerator am
+  method0 <- load addId
+  let here = project {prWorkspace = overlayMany (M.singleton protoRel (blankAt line protoText)) ws}
+  method <- lift (placeAt ports here (protoRel, line) [method0]) >>= either throwE (maybe (throwE (addId <> " placed nothing")) pure . listToMaybe)
   planned <- lift (planWith ports here planOptions {poAt = Just (protoRel, line), poSnippet = True, poCancel = ssCancel s} [Step method M.empty]) >>= either (throwE . describeGenerationError) pure
-  marked <- maybe (throwE "port-method wrote no method there") pure (M.lookup protoRel (planMarked planned))
+  marked <- maybe (throwE (addId <> " wrote no method there")) pure (M.lookup protoRel (planMarked planned))
   let values = [("name", m), ("params", ps), ("returns", r)]
-  protoAfter <- T.concat <$> traverse (either (\mk -> maybe (throwE ("port-method has a hole `" <> markerName mk <> "` the signature does not fill")) pure (lookup (markerName mk) values)) pure) (splitMarkers marked)
-  adapters <- load "port-method-adapters"
-  let folder = takeFileName (takeDirectory protoRel)
-      inputs = [("app", app), ("service", service), ("port", T.pack folder), ("name", m), ("signature", methodText (langTypes lang >>= tyMethod) m ps r)]
-      ws' = overlayMany (M.singleton protoRel protoAfter) ws
-  plan <- lift (planWith ports project {prWorkspace = ws'} planOptions {poFiller = Just filler, poProgress = progress, poCancel = ssCancel s} [Step adapters (M.fromList inputs)]) >>= either (throwE . describeGenerationError) pure
-  unless (null (planConflicts plan)) (throwE (T.intercalate "; " (map describeConflict (planConflicts plan))))
-  let changed = [(f, t) | (f, t) <- M.toList (planWrites plan), M.lookup f (planBefore plan) /= Just (Just t), f /= protoRel]
+  protoAfter <- T.concat <$> traverse (either (\mk -> maybe (throwE (addId <> " has a hole `" <> markerName mk <> "` the signature does not fill")) pure (lookup (markerName mk) values)) pure) (splitMarkers marked)
+  let ws' = overlayMany (M.singleton protoRel protoAfter) ws
+  changed <- case amAdapters am of
+    Nothing -> pure []
+    Just adaptersId -> do
+      adapters <- load adaptersId
+      let declared = map inputName (genInputs adapters)
+          slots = fromMaybe [] (genAppliesAt adapters >>= \ap -> matchPathSlots (apPath ap) protoRel)
+          offered = slots ++ sets ++ values ++ [("signature", methodText (langTypes lang >>= tyMethod) m ps r)]
+          inputs = [(k, v) | k <- nub declared, Just v <- [lookup k offered]]
+      plan <- lift (planWith ports project {prWorkspace = ws'} planOptions {poFiller = Just filler, poProgress = progress, poCancel = ssCancel s} [Step adapters (M.fromList inputs)]) >>= either (throwE . describeGenerationError) pure
+      unless (null (planConflicts plan)) (throwE (T.intercalate "; " (map describeConflict (planConflicts plan))))
+      pure [(f, t) | (f, t) <- M.toList (planWrites plan), M.lookup f (planBefore plan) /= Just (Just t), f /= protoRel]
   befores <- lift (traverse (\(f, t) -> (\b -> (f, fromMaybe "" b, t)) <$> readText ws f) changed)
   pure (protoRel, (protoRel, protoText, protoAfter) : befores)
   where
@@ -1326,7 +1334,7 @@ testConjure lang text (l1, l2) tid moduleRel moduleText = do
       short = snd (T.breakOnEnd "::" tid)
       words' = testWordsIn lang short
       notes = [T.strip l | l <- body, langComment lang `T.isPrefixOf` T.strip l]
-      instruction = helpedIn ls (oneLine ("write the body of the test \"" <> words' <> "\": arrange, act, and assert what its name says, one behaviour, against the module in the context; it should fail at its assertion until the code does it"))
+      instruction = advisedIn (maybe [] cjAdvice (langConjure lang)) ls (oneLine ("write the body of the test \"" <> words' <> "\": arrange, act, and assert what its name says, one behaviour, against the module in the context; it should fail at its assertion until the code does it"))
       context =
         [(moduleRel, moduleText)]
           ++ [("notes in the test's body", T.intercalate "\n" notes) | not (null notes)]

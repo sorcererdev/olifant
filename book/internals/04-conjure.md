@@ -28,7 +28,7 @@ book's [step log](../user/18-tdd-in-the-editor.md#the-step-log).
 
 | module | what it holds |
 |---|---|
-| `Server/Conjure.hs` (1,454 lines) | the command: `conjureAt` (`:168`) and `resumeConjure` (`:178`) both end in `conjureWith` (`:357`); building the hole (`functionConjure` `:1295`, `testConjure` `:1322`); the fill (`fill` `:1415`); the steering hook (`steer` `:1133`); the wire (`wireFor` `:989`) and the port method (`portMethodPlan` `:1069`) |
+| `Server/Conjure.hs` (1,462 lines) | the command: `conjureAt` (`:167`) and `resumeConjure` (`:177`) both end in `conjureWith` (`:356`); building the hole (`functionConjure` `:1303`, `testConjure` `:1330`); the fill (`fill` `:1423`); the steering hook (`steer` `:1140`); the wire (`wireFor` `:989`) and the port method (`portMethodPlan` `:1071`) |
 | `Server/ConjureNext.hs` (1,042) | the **pure rules**: the policy (`policy` `:495`), Jev's question (`conjureNextQuestion` `:633`) and how to read its answer (`nextFrom` `:663`), the offers (`offersAt` `:440`), the diagnosis (`diagnosis` `:543`), the pause's wire shape (`PausedAnswer`, `pausedJson` `:850`), `PausedConjure`, the round records |
 | `Server/ConjureScan.hs` (402) | **pure reading of source** by the pack's shapes: the fakes a test builds and never passes in (`unpassedFake` `:55`, `fakeIn`), the service's ports (`portsIn` `:172`), a fake's port (`derivePort` `:188`), a constructor's parameters (`ctorParamsIn`), Jev's port question (`conjurePortQuestion` `:246`), a new method's signature (`methodSignature` `:293`) |
 | `Generation/Steer.hs` | the contract between a fill loop and its steerer: `RoundState`, `Steer = Again | Climb filler | Pause why`, `Steering` |
@@ -179,12 +179,22 @@ Two behaviours go past writing a body. Both lean on the **pack's generators**, r
   inputs that binds (`app`, `service`) and the derived `param`/`port` are given to the wire
   generator, planned over the working files (`wirePlan`, `:1045`); its writes join the
   conjure's, and land with it as one edit.
-- **A port method** (`portMethodPlan`, `:1069`): when the check says a port the unit takes lacks
-  a method (`CauseMethod`), the pause offers `add <m> to <Port>`; on `port`, the pack's
-  `port-method` generator is placed at the end of the Protocol's block, its holes filled from
-  the signature `methodSignature` made from `[types]` facts, then `port-method-adapters` runs
-  for each adapter beside it with the rung's model writing the bodies. The result is a
-  `Proposal` to accept or reject like a re-conjured test.
+- **A port method** (`portMethodPlan`, `:1071`): when the check says a port the unit takes lacks
+  a method (`CauseMethod`), the pause offers `add <m> to <Port>`, but only when the language's
+  `[conjure.port] add` names a generator (`methodWall` gives no signature otherwise, so the pause
+  asks the person to add it). On `port`, that generator is placed on the line after the port's
+  block (`portEnd`, `ConjureScan.hs:350`; `blankAt` `:360` makes that line blank, since a snippet
+  replaces the line it is placed on), its holes `name`, `params`, `returns` filled from the
+  signature `methodSignature` made from `[types]` facts. Then the generator `[conjure.port]
+  adapters` names, if any, is planned over that, the rung's model writing the bodies it leaves.
+  Its inputs are what it declares out of: the slots of its own `[applies_at] path` matched on the
+  port's file (`matchPathSlots`), the service's sets, `name`, `params`, `returns` and
+  `signature` (`[types] method` rendered). The result is a `Proposal` to accept or reject like a
+  re-conjured test. In python-htmx, `add = "port-method"`, `adapters = "port-method-adapters"`.
+- **Advice for a test's body** (`advisedIn`, `ConjureScan.hs:413`): `testConjure` adds to the
+  model's instruction the `say` of the first `[[conjure.advice]]` whose `when` matches a line of
+  the test file. python-htmx's two tell the model to build the command (or query) through the
+  stub's `command()` helper.
 
 ### Two things called `[conjure]`
 
@@ -197,13 +207,15 @@ first is `Maybe Text` on `Catalog`, the second `Maybe ConjureDef` on `Language`.
 
 ## The `[conjure]` shapes, and the floor
 
-`ConjureDef` (`Language/Adapter.hs`) is `{cjService, cjPort, cjFake, cjConstructor}`, each
-optional, parsed by `conjureFrom` (`Adapter.hs:559`). Which function reads what:
+`ConjureDef` (`Language/Adapter.hs`) is `{cjService, cjPort, cjFake, cjConstructor, cjAddMethod,
+cjAdvice}`, each optional, parsed by `conjureFrom` (`Adapter.hs:580`). Which function reads what:
 
 | key | type | read by |
 |---|---|---|
-| `service` | path template over `app`, `service` | `servicePaths` (`ConjureScan.hs:393`): what binds `app`/`service`; `serviceBase` in `Conjure.hs` |
-| `[conjure.port]` `files`, `start`, `method` | `PortShape` | `portsIn` (`:172`): the ports of a service, the methods of each; `portEnd` where a port's block ends |
+| `service` | path template over `app`, `service` | `servicePaths` (`ConjureScan.hs:400`): what binds `app`/`service`; `serviceBase` in `Conjure.hs` |
+| `[conjure.port]` `files`, `start`, `method` | `PortShape` | `portsIn` (`:174`): the ports of a service, the methods of each; `portEnd` where a port's block ends |
+| `[conjure.port]` `add`, `adapters` | `AddMethod` | `portMethodPlan`: the generators that add a method a port lacks; `methodWall` offers the port row only with `add` |
+| `[[conjure.advice]]` `when`, `say` | `[Advice]` | `advisedIn`: a sentence for `testConjure`'s instruction |
 | `[conjure.fake]` `bound`, `classes`, `prefixes`, `keyword`, `stub` | `FakeShape` | `fakeIn`/`unpassedFake` (`:55`): a test's fake; `derivePort` strips a prefix to name the port; `handFake` hands a fake to a helper |
 | `[conjure.constructor]` `files`, `owner`, `start`, `param` | `CtorShape` | `ctorParamsIn`: what siblings call a port's parameter (`deriveParam`); `takesPortIn`: whether the class takes it |
 | `[types]` | `TypesDef` | `methodSignature` (`:293`), `methodText`: a new port method's signature from the call and the fake |
@@ -227,15 +239,25 @@ files (`Server/Conjure.hs`, `ConjureScan.hs`, `ConjureNext.hs`, `Site.hs`, `Unit
 `lambda`, `"self`, `NameError`, `AssertionError`, `pyright`, `pytest`, `"#"`. Its `allowed` list
 is empty; adding to it is the admission that a language leaked back in. The list is of *strings
 that were once in the code*, not a proof: it catches a Python literal in those six files and
-nothing else. A literal in `Stub.hs`, a generator id in `portMethodPlan` (`"port-method"`) or
-`"port"` as an input name (see rough spots) is invisible to it. The broader rule, that the
+nothing else (a literal in `Stub.hs` is invisible to it). It also holds `"app"` and `"service"`,
+python-htmx's layout, which the port method once passed by name.
+
+Its second check, **the engine holds no pack**, reads every engine source under `src/` and `app/`
+(specs and `testdata` left out). It fails on a line that names a shipped pack (a hyphenated name
+anywhere, `elm`/`rails`/`redwood` as a string literal or before `/`), a shipped generator id
+with a hyphen (read from `packs/*/generators/` when it runs, so a new pack's generators are
+covered), or `def command(`, `def query(`, `booking_repository`. One-word ids (`port`, `wire`,
+`query`) are not checked: they are the engine's own words too. `packAllowed` lists the lines
+that remain, all in the migrate subsystem (`App.hs`, `Cli.hs`, `Cli/Options.hs`,
+`Server/Actions.hs`, `Server/Preview.hs`: the strangler pack's name and its
+`extract-command`/`extract-query`), pending their own change. The broader rule, that the
 engine never branches on a language's name, is `NeutralSpec` ([chapter 5](05-languages.md#the-rule-and-the-specs-that-hold-it)).
 
 ## Testing it
 
 - `Server/ConjureNextSpec` (33 examples): the policy, the question's wording, `nextFrom`'s gates,
   offers, diagnosis sentences, round records. Start here for a rule.
-- `Server/ConjureScanSpec` (17): fakes, ports, constructors, signatures, on text.
+- `Server/ConjureScanSpec` (19): fakes, ports, constructors, signatures, a port's end, advice, on text.
 - `LspSpec`'s `conjureSpec` (`LspSpec.hs:1024`): `olifant/conjure` over pipes with a scripted
   runner and filler: pause as a result, resume `stop` keeping a body, a token works once,
   `reconjure` answers a proposal, reject returns the pause, a refused re-conjure keeps its
@@ -266,11 +288,11 @@ Run one with `cabal test --test-options='--match "olifant/conjure"'`, in the mai
   Its branches (stop, reject, reconjure of a flagged test, port, reconjure, the normal fill)
   are `case resuming of` arms that each end in `Paused`/`Landed`. The pure parts live in
   `ConjureNext`; the sequence is not decomposed further.
-- **Python is gone from the code but not from the pack contract.** `portMethodPlan` loads
-  generators by the fixed ids `port-method` and `port-method-adapters` and passes a `port` input
-  that is the Protocol file's folder name; the wire's `applies_at` path template is the only
-  config. `ConjureNeutralSpec` cannot see that, and another pack with ports must ship generators
-  of those names.
+- **The wire's and the port method's input names are a contract.** The wire generator is given
+  `param` and `port` (with its path's slots); the port method's generators `name`, `params`,
+  `returns`, `signature`. These are the engine's words (`[conjure.fake] keyword` and `[types]
+  method` use them too), so a pack's generators must use them; a generator that does not
+  declare one is simply not given it.
 - **`ResumePort` is accepted and undocumented on the wire.** `Lsp.resumeOf` parses `"port"`, the
   user book mentions `wire` but not `port` in the choice list, and the `InvalidParams` message
   lists seven choices.

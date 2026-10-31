@@ -14,6 +14,11 @@ service = "src/{= app =}/{= service =}"
 files = ["ports/**/*.py"]
 start = '^class ([[:alnum:]_]+)\(Protocol\):'
 method = '^def '
+# A method a port lacks: port-method writes it into the Protocol (a snippet
+# whose holes are name, params, returns), then port-method-adapters adds it
+# to every adapter beside it, with a red contract test.
+add = "port-method"
+adapters = "port-method-adapters"
 
 [conjure.fake]
 bound = '^[[:space:]]+([[:alnum:]_]+)[[:space:]]*=[[:space:]]*([[:alnum:]_]+)\('
@@ -27,3 +32,14 @@ files = ["commands/**/*.py", "queries/**/*.py"]
 owner = '^class ([[:alnum:]_]+)'
 start = 'def __init__\('
 param = '^([[:alnum:]_]+)[[:space:]]*:[[:space:]]*([^=]*[^=[:space:]])'
+
+# A test file whose stub has the `command()` (or `query()`) helper: the
+# model writing a test's body is told to build it through the helper.
+[[conjure.advice]]
+when = '^def command\('
+say = "build the command with the helper, passing the adapters you arranged (`command(booking_repository=repository)`); never call the helper bare after arranging a repository"
+
+[[conjure.advice]]
+when = '^def query\('
+say = "build the query with the helper, passing the adapters you arranged (`query(booking_repository=repository)`); never call the helper bare after arranging a repository"
+

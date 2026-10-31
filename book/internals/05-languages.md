@@ -22,7 +22,7 @@ olifant doctor
 ✓ python: tests — [test] format pytest, tests_for {= dir =}/{= stem =}__test.py · from toolchain pytest
 ✓ python: test selection — pytest ids · from pack python-htmx
 ✓ python: mutation — [[mutate]] (17 operators) · from shipped
-✓ python: conjure shapes — [conjure] port, fake, constructor · from pack python-htmx
+✓ python: conjure shapes — [conjure] port, port.add, fake, constructor, advice · from pack python-htmx
 …
 ```
 
@@ -173,11 +173,14 @@ runs, caps (`capMutants 20`) and orders them. Only `python.toml` has any (17 ope
 ### `[types]`, `[conjure]`
 
 `langTypes` (`TypesDef`: `string, integer, nothing, optional, param, annotation, returns,
-assigned, checks_none, record, method`) and `langConjure` (`ConjureDef`: `service`, `port`,
-`fake`, `constructor`) belong to the pack and are read only by conjure, in
-`Server/Conjure.hs` and `Server/ConjureScan.hs`: [chapter 4](04-conjure.md#the-conjure-shapes-and-the-floor)
+assigned, checks_none, record, method`) and `langConjure` (`ConjureDef`: `service`, `port`
+with its `add` and `adapters`, `fake`, `constructor`, `advice`) belong to the pack and are read
+only by conjure, in `Server/Conjure.hs` and `Server/ConjureScan.hs`: [chapter 4](04-conjure.md#the-conjure-shapes-and-the-floor)
 has the table of which field feeds which function. A language without them conjures at the
-floor.
+floor. What a pack *does* there is named here too: `[conjure.port] add` and `adapters` are the
+ids of the pack's generators that add a method a port lacks, so the engine names no generator
+of its own. The `conjure shapes` row lists `port.add` and `advice` when present, and says
+"(no [conjure.port] add: a method a port lacks is yours to add)" for a port without `add`.
 
 ### The rest
 
@@ -227,7 +230,10 @@ Two specs enforce it.
   way.
 - **`ConjureNeutralSpec`** (`src/Olifant/ConjureNeutralSpec.hs`) is the stricter check for the
   conjure modules, banning Python's *syntax* (`"def "`, `__init__`, `"assert "`, `pytest`, …) in
-  six files ([chapter 4](04-conjure.md#no-python-in-conjure)).
+  six files ([chapter 4](04-conjure.md#no-python-in-conjure)). Its second check bans, in every
+  engine source, the shipped packs' names and hyphenated generator ids (read from `packs/`), so
+  a pack's generator cannot be named by the engine; the migrate subsystem's lines are its
+  allowlist.
 
 Neither understands intent. `CapabilitiesSpec` and `DoctorSpec` ("a capability a language lacks
 is a warning naming the key") and `CatalogSpec`'s layering examples ("one language per name, its

@@ -28,6 +28,8 @@ module Olifant.Server.ConjureScan
   , methodSignature
   , methodText
   , portEnd
+  , advisedIn
+  , blankAt
   , siblingsOf
   , servicePaths
   ) where
@@ -40,7 +42,7 @@ import Data.Ord (Down (..))
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Decide (Answer (..), Question, choice, confident)
-import Olifant.Language (CheckDef (..), ConjureDef (..), CtorShape (..), MissingMember (..), FakeShape (..), Language (..), PortShape (..), TypesDef (..), isTestFile, regexName)
+import Olifant.Language (Advice (..), CheckDef (..), ConjureDef (..), CtorShape (..), MissingMember (..), FakeShape (..), Language (..), PortShape (..), TypesDef (..), isTestFile, regexName)
 import Data.Array qualified
 import System.FilePath (splitDirectories)
 import Text.Regex.TDFA (AllTextSubmatches (..), Regex, makeRegexM, matchAll, matchM, matchTest, (=~))
@@ -343,19 +345,24 @@ methodSignature lang m port body moduleText testText = do
     idents t = [w | w <- T.split (not . isIdent) t, not (T.null w), isUpper (T.head w)]
 
 -- | The line (1-based) a method goes in the file TEXT to end the port Q (by the shape's
--- `start`): the line after its last, when that is blank or the end of the file; none when Q is
--- not there.
+-- `start`): the line after its block's last (the block as 'portsIn' reads it); none when Q
+-- is not there. That line may be past the file's end or not blank: 'blankAt' makes it one.
 portEnd :: PortShape -> Text -> Text -> Maybe Int
 portEnd ps q text = do
-  let ls = T.splitOn "\n" text
-      numbered = zip [1 :: Int ..] ls
+  let numbered = zip [1 :: Int ..] (T.splitOn "\n" text)
   start <- listToMaybe [i | (i, l) <- numbered, Just (_ : n : _) <- [groups (psStart ps) l], n == q]
   let body = takeWhile (\(_, l) -> T.null (T.strip l) || isSpace (T.head l)) (drop start numbered)
       lastLine = maybe start fst (listToMaybe (reverse [x | x@(_, l) <- body, not (T.null (T.strip l))]))
-      next = lastLine + 1
-  case drop (next - 1) ls of
-    l : _ | T.null (T.strip l) -> Just next
-    _ -> Nothing
+  pure (lastLine + 1)
+
+-- | TEXT with a blank line at LINE (1-based), for a snippet that replaces the line it is
+-- placed on: as it is when that line is blank, else with an empty line put there.
+blankAt :: Int -> Text -> Text
+blankAt line text = case drop (line - 1) ls of
+  l : _ | T.null (T.strip l) -> text
+  _ -> T.intercalate "\n" (take (line - 1) ls ++ [""] ++ drop (line - 1) ls)
+  where
+    ls = T.splitOn "\n" text
 
 -- | 'unpassedFake' by a pack's `[conjure.fake]`; none without one.
 fakeIn :: Maybe ConjureDef -> Text -> Maybe Fake
@@ -400,3 +407,10 @@ servicePaths cj rel = case cj >>= cjService of
           Just k -> Just [(T.strip k, p)]
           Nothing -> if x == p then Just [] else Nothing
      in if length parts >= length segs + 1 then maybe [] concat (sequence (zipWith bind segs parts)) else []
+
+-- | An instruction T in a test file (its lines LS) with the pack's ADVICE (`[[conjure.advice]]`):
+-- the sentence of the first advice whose `when` matches a line (by line, then by order) added.
+advisedIn :: [Advice] -> [Text] -> Text -> Text
+advisedIn advice ls t = maybe t (\say -> t <> "; " <> say) (listToMaybe [avSay a | l <- ls, a <- advice, matches (avWhen a) l])
+  where
+    matches re l = maybe False (`matchTest` T.unpack l) (makeRegexM (T.unpack re) :: Maybe Regex)

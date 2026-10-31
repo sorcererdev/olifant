@@ -35,7 +35,7 @@ spec = do
                  , Right "pytest ids"
                  , Right "[[mutate]] (17 operators)"
                  , Right "[test] stub"
-                 , Right "[conjure] port, fake, constructor"
+                 , Right "[conjure] port, port.add, fake, constructor, advice"
                  , Right "[check] undefined, missing_member"
                  , Right "[test] undefined, failure"
                  , Right "stub_lines (4)"
