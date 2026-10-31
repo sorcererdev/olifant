@@ -93,6 +93,13 @@ spec = do
     unitNamed "f" [Named "f" (5, 6) 5, Named "f" (1, 2) 1] `shouldBe` Nothing
     unitLookup "m" [Named "A.m" (2, 3) 2, Named "B.m" (5, 6) 5] `shouldBe` Left "`m` names 2 units (A.m, B.m)"
     unitLookup "nope" [Named "A.m" (2, 3) 2] `shouldBe` Left "no unit `nope`"
+  it "a Rust struct and its inherent impl sharing a name: the anchor is the struct, as main (coordinator ruling)" $ do
+    let noQuery = querying (\_ _ _ -> error "the [unit] kinds query ran")
+        text = "struct A;\n\nimpl A {\n    fn new() -> A {\n        A\n    }\n}\n\nfn f() {}\nstruct B;\nfn f() {}\n"
+    Right ks <- unitsWithKinds noQuery rust Nothing text
+    fmap namedLines (unitLookupIn "A" ks) `shouldBe` Right (1, 1)
+    fmap namedLines (unitLookupIn "A.new" ks) `shouldBe` Right (4, 6)
+    either (T.isInfixOf "names 2 units") (const False) (unitLookupIn "f" ks) `shouldBe` True
   it "names haskell units" $ do
     unitNameIn haskell "data Catalog = Catalog" `shouldBe` Just "Catalog"
     unitNameIn haskell "instance Show Foo where" `shouldBe` Just "Show Foo"

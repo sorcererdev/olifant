@@ -127,8 +127,10 @@ in), a Haskell signature and its equations already one (`adjacent`). Units read
 `Captures.unitDefinitions`: a phrase's definitions plus `@unit.*` captures no phrase reads
 (Rust's `impls.scm` tags a trait impl `@unit.impl`, named by its type, so its methods stay
 `Type.method`), each named by its match's `@name` and `@unit.name` texts in order.
-`Unit.unitLookup` reports a name several units share instead of taking the first, and a plan
-anchor that does not resolve says why (`Resolved.rsWhy`). Rust, Python and Haskell
+`Unit.unitLookup` reports a name several units share instead of taking the first; a plan
+anchor reads `unitLookupIn` over `unitsWithKinds`, where a type and its inherent impl
+(`definition.impl`) sharing a name are the type, and says why when it does not resolve
+(`Resolved.rsWhy`). Rust, Python and Haskell
 ship no `kinds` any more; they keep `name`, which `defLine`, `ownerHeader` and the other line
 readers (`App.definesIn`, `ConjureScan`, `Recognize`, `functionText`, `FillPhase`'s top-level
 names) still use. `hasUnits` (in `Olifant.Language`) is `hasUnitRule` or a linked grammar.

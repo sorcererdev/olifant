@@ -54,7 +54,7 @@ import Olifant.Catalog (Catalog (..), PlansConfig (..))
 import Olifant.Language.Adapter (languageFor)
 import Olifant.Plans (Anchor (..), Line (..), Section (..), Verdict (..), parsePlan, sectionOf)
 import Olifant.Server.State (ServerState (..))
-import Olifant.Server.Unit (Named (..), fingerprint, unitLookup, unitsOf)
+import Olifant.Server.Unit (Named (..), fingerprint, unitLookupIn, unitsOf, unitsWithKinds)
 import Olifant.Workspace (Workspace (..), normalisePath)
 import System.FilePath (isAbsolute, takeExtension, (</>))
 
@@ -84,7 +84,7 @@ resolveAnchor :: ServerState -> Project -> Anchor -> IO Resolved
 resolveAnchor s p a = do
   text <- maybe (pure Nothing) (safely Nothing . readText (prWorkspace p)) (confined (anPath a))
   found <- case (text, languageFor (catalogLanguages (prCatalog p)) rel) of
-    (Just t, Just lang) -> safely (Left Nothing) (either (const (Left Nothing)) (either (Left . Just) Right . unitLookup (anUnit a)) <$> unitsOf (pSyntax (ssPorts s)) lang (Just rel) t)
+    (Just t, Just lang) -> safely (Left Nothing) (either (const (Left Nothing)) (either (Left . Just) Right . unitLookupIn (anUnit a)) <$> unitsWithKinds (pSyntax (ssPorts s)) lang (Just rel) t)
     _ -> pure (Left Nothing)
   let unit = either (const Nothing) Just found
   pure (Resolved rel (normalisePath (prRoot p </> rel)) unit (fingerprint <$> text <*> fmap namedLines unit) text (either id (const Nothing) found))

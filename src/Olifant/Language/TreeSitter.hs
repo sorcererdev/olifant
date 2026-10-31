@@ -13,6 +13,7 @@ module Olifant.Language.TreeSitter
   ( capturesOf
   , cacheSize
   , definitionLines
+  , definitionKinds
   , definedName
   , definedNamesIn
   , signatureHead
@@ -158,11 +159,15 @@ treeSitterAnchors lang _ ws source = pure $ case langGrammar lang of
 -- and inclusive, in order ('definitionSpans'). Units and test-unit spans
 -- read it.
 definitionLines :: Language -> Text -> Maybe [(Text, (Int, Int), (Int, Int))]
-definitionLines lang source = case langGrammar lang of
+definitionLines lang source = map (\(n, _, own, unit) -> (n, own, unit)) <$> definitionKinds lang source
+
+-- | 'definitionLines' with each definition's capture (`definition.impl`, …).
+definitionKinds :: Language -> Text -> Maybe [(Text, Text, (Int, Int), (Int, Int))]
+definitionKinds lang source = case langGrammar lang of
   BuiltInGrammar g
     | g `elem` linkedGrammars
     , Right (root, caps) <- capturesOf g (querySet lang) source ->
-        Just [(n, linesOf own, linesOf unit) | (n, own, unit) <- definitionSpans root caps]
+        Just [(dsName d, dsCapture d, linesOf (dsNode d), linesOf (dsUnit d)) | d <- definitionsWith root caps]
   _ -> Nothing
   where
     -- a node that ends at a line's start ends on the line before
