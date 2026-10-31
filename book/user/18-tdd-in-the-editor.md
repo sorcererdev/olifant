@@ -474,6 +474,20 @@ its `when` file exists ([chapter 9](09-packs-and-language-adapters.md#test-comma
 say `verify = "tests"` to be verified by the module's tests ([chapter 12](12-holes-and-models.md)).
 `olifant doctor` has a line for the runner (`test runner uv (python)`).
 
+The preset leaves the project's pytest `addopts` alone: they apply to Olifant's runs too. When
+they parallelise (`-n 8` with pytest-xdist) or slow a single test's run, a project layer can turn
+them off for Olifant:
+
+```toml
+# .olifant/languages/python.toml
+[test]
+preset  = "pytest"
+command = ["{= root =}/.venv/bin/pytest", "-q", "-rA", "--tb=short", "-p", "no:cacheprovider", "-p", "no:xdist", "-o", "addopts=", "{= tests =}"]
+```
+
+`-o addopts=` drops all of them, the ones the tests need too (pytest-django's `--ds=…`,
+`--reuse-db`): put those back after it.
+
 ## Limits
 
 - **Mutation ships for Python only.** Another language mutates once its `[[mutate]]` operators
