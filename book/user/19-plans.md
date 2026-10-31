@@ -160,7 +160,9 @@ create`, or HEAD when nothing differs; untracked files too). When the `do` answe
 tree however it ended, the change since that reference becomes a **review**, kept under
 `.olifant/state/reviews/<plan>/` until you answer it. The window shows the step, what the model
 said, the tests after it and the commands it was refused, in words, beside the diff file by file
-(`[` `]`); the answers are:
+(`[` `]`). A refused command over several lines (a heredoc) shows as its first line and a count,
+and any row longer than 3 lines is cut there with `… N more lines (d details)`; `d` has them
+whole. The answers are:
 
 | key | choice | does |
 |---|---|---|
