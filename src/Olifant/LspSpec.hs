@@ -930,8 +930,24 @@ scaleSpec = sequential . describe "a plain client; latency at 5,000 files" $ do
       let median = sort times !! 10
       liftIO (putStrLn ("      recognition, planned: first " <> show (round first :: Int) <> " ms, then median " <> show (round median :: Int) <> " ms, max " <> show (round (maximum times) :: Int) <> " ms"))
       median `shouldSatisfy` (< 50)
+  -- The first request loads the project, so it grows with the files. Two
+  -- guards that hold on a loaded machine (the full suite's): it reads none
+  -- of the 5,000 files (counted at the workspace port), and they cost at
+  -- most 3 times the load of the project without them, both timed here
+  -- (each the fastest of two fresh sessions, after one to warm the
+  -- process), so load slows both alike. Was: under 500 ms, which a loaded
+  -- run passed 520.
   it "(e) answers fast in a project of 5,000 files: the first request, then from warm" $
     withPython [] $ \ports dir -> do
+      let firstRequestWith ps = fmap fst . inProcessWith ps dir $ do
+            doc <- openDoc "src/bistro/booking/queries/get_day_schedule.py" "python"
+            t0 <- liftIO getCurrentTime
+            _ <- getCodeActions doc (Range (Position 18 4) (Position 18 4))
+            t1 <- liftIO getCurrentTime
+            pure (realToFrac (diffUTCTime t1 t0) * 1000 :: Double)
+          firstRequest = firstRequestWith ports
+      _ <- firstRequest
+      small <- min <$> firstRequest <*> firstRequest
       forM_ [1 .. 5000 :: Int] $ \i -> do
         let p = dir </> "src/bistro/bulk" </> ("m" <> show (i `div` 100)) </> ("mod_" <> show i <> ".py")
         createDirectoryIfMissing True (takeDirectory p)
@@ -958,8 +974,15 @@ scaleSpec = sequential . describe "a plain client; latency at 5,000 files" $ do
         liftIO (putStrLn ("      inlay hints just after an edit: median " <> show (round (median editedMs) :: Int) <> " ms, max " <> show (round (maximum editedMs) :: Int) <> " ms"))
         pure (firstMs, actionsMs, hintsMs, completionMs)
       let line name xs = "      " <> name <> ": median " <> show (round (median xs) :: Int) <> " ms, max " <> show (round (maximum xs) :: Int) <> " ms"
-      liftIO (mapM_ putStrLn ["      first request (loads the project): " <> show (round firstMs :: Int) <> " ms", line "code actions" actionsMs, line "inlay hints" hintsMs, line "completion" completionMs])
-      firstMs `shouldSatisfy` (< 500)
+      -- and, whatever the machine's load, it reads none of them
+      bulkReads <- newIORef (0 :: Int)
+      let disk = pFiles ports
+          counting = disk {readText = \p -> when ("/bulk/" `isInfixOf` p) (atomicModifyIORef' bulkReads (\n -> (n + 1, ()))) >> readText disk p}
+      bulk <- min firstMs <$> firstRequestWith ports {pFiles = counting}
+      reads <- readIORef bulkReads
+      liftIO (mapM_ putStrLn ["      first request (loads the project): " <> show (round bulk :: Int) <> " ms; without the 5,000 files " <> show (round small :: Int) <> " ms", line "code actions" actionsMs, line "inlay hints" hintsMs, line "completion" completionMs])
+      reads `shouldBe` 0
+      (bulk, small) `shouldSatisfy` (\(b, s0) -> b < 4 * s0)
       (median actionsMs, median hintsMs, median completionMs) `shouldSatisfy` (\(a, h, c) -> a < 50 && h < 50 && c < 50)
 
 -- | Projects side by side under one root: (folder, pack, fixture app).
