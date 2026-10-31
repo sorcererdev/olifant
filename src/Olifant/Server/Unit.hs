@@ -34,7 +34,6 @@ import Data.Text qualified as T
 import Olifant.Language (ConjureDef (..), CtorShape (..), Language (..), Match (..), Syntax (..), TestDef (..), describeSyntaxFailure, regexName)
 import Olifant.Provider (UnitAnswer (..), providedUnits)
 import Olifant.Language.TestUnits (TestUnit (..), testCaseUnitAtIn)
-import Olifant.Server.Site (tshow)
 import Text.Regex.TDFA (Regex, makeRegexM, matchTest)
 
 -- | A unit (1-based lines): its name, its header line, its node's lines,
@@ -76,6 +75,9 @@ unitAt syntax lang text line = case langUnitProvider lang of
     unitOf (a, z) = do
       (d, n) <- listToMaybe [(i, n) | i <- [a .. z], Just n <- [unitNameIn lang (lineAt i)]]
       pure (Unit n d (a, z) (bodyOf lang ls d z))
+
+tshow :: Show a => a -> Text
+tshow = T.pack . show
 
 -- | Why a language without `[unit] kinds` (or a provider) has no units.
 noKinds :: Language -> Text

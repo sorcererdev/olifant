@@ -263,18 +263,28 @@ one type, so everything downstream is the same code.
 ## Doctor: capabilities and evidence
 
 `Olifant.Capabilities.capabilities :: Language -> [Capability]` (`Capabilities.hs:24`) is a list
-of thirteen rows, one function of the `Language` each: `units`, `diagnostics`, `missing cases`,
-`tests`, `test units`, `test selection`, `mutation`, `stub`, `conjure shapes`, `messages`,
-`test messages`, `stub bodies`, `signature facts`. A `Capability` is its name, how it is
-provided (`Right how`) or the key that would enable it (`Left key`), `capKey` (the dotted key
-whose layer doctor names with `originOf`), and an optional `capFix` for a capability no single
-key enables. `Doctor.doctor` (`Doctor.hs:~60`) turns a `Right` into an `Ok` row with `· from
-<origin>` and a `Left` into a `Warn` row with the fix: "add KEY to
-.olifant/languages/NAME.toml" unless `capFix` says otherwise.
+of fifteen rows, one function of the `Language` each: `units`, `diagnostics`, `missing cases`,
+`tests`, `test units`, `anchors`, `holes`, `test selection`, `mutation`, `stub`, `conjure
+shapes`, `messages`, `test messages`, `stub bodies`, `signature facts`. A `Capability` is its
+name, how it is provided (`Right how`) or the key that would enable it (`Left key`), `capKey`
+(the dotted key whose layer doctor names with `originOf`), and an optional `capFix` for a
+capability no single key enables.
+
+`Doctor.doctor` makes a row from a `Capability` plus, for five of them, a `Proof`
+(`DoctorInput`'s `diEvidence`, by language, which `App.doctorChecks` fills with
+`Evidence.evidenceFor` through `App.evidencePorts`). A `Left` is a `Warn` row with the fix: "add
+KEY to .olifant/languages/NAME.toml" unless `capFix` says otherwise; no evidence is asked. A
+`Right` with no evidence is an `Ok` row with `how · from <origin>`. With evidence (`units`, `test
+units`, `tests`, `anchors`, `holes`): `Proven` is `Ok` with the evidence text in place of `how`;
+`Unproven` is `Warn`, except the tests row when doctor did not run tests (`diRan`, from `doctor
+--run`), which stays `Ok` with `how (not run: olifant doctor --run)`; `Disproven` is `Warn` with
+the fix "regenerate the key or supply a provider (see chapter 9, Providers)". The origin is kept
+on every row, and evidence never makes a row `Bad`, so doctor's exit code rule is unchanged.
+The language server's `olifant.doctor` passes `False` for `run`.
 
 To add a capability: add a row in `capabilities`, a `capKey` that `originOf` can resolve, and an
 example to `CapabilitiesSpec` (its "a bare language" example counts the absences, so it changes
-from thirteen). The user book's doctor table ([chapter 2](../user/02-running-generators.md)) lists
+from fifteen). The user book's doctor table ([chapter 2](../user/02-running-generators.md)) lists
 the rows, so it changes too.
 
 ### Evidence: each slot on a sample of the project

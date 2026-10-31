@@ -475,7 +475,9 @@ $ olifant check --json
 
 Generators need more than Olifant: `ast-grep` to place code, each language's compiler for
 `complete` edits, and a model for holes. `olifant doctor`, run in a project, checks each one
-and says how to fix what is missing:
+and says how to fix what is missing. For each language it also tries the language's rules on
+the project's own code (a sample of up to 40 of its files), so a row shows what was found, not
+only which key provides it:
 
 ```
 $ olifant doctor
@@ -488,11 +490,13 @@ $ olifant doctor
 ✗ test runner cargo (rust) — `cargo` is not on this PATH: /Users/you/.local/bin:/opt/homebrew/bin:/usr/bin:/bin
   fix: install Rust with rustup; cargo lives in ~/.cargo/bin, or /opt/homebrew/opt/rustup/bin with Homebrew's rustup (keg-only: add it to PATH, then restart your editor from a new shell)
 ✓ model — qwen3-coder:30b answers at http://localhost:11434/v1
-✓ rust: units — [unit] kinds (ast-grep), named by [unit] name · from shipped
+✓ rust: units — 132 found in 40 files (e.g. src/billing/service.rs:11 BillingService) · from shipped
 ✓ rust: diagnostics — [check] format rustc-json · from toolchain cargo
 ✓ rust: missing cases — [check] format rustc-json · from toolchain cargo
-✓ rust: tests — [test] format lines, tests_for {= dir =}/{= stem =}.rs · from toolchain cargo-test
-✓ rust: test units — [test] unit, above · from shipped
+✓ rust: tests — [test] format lines, tests_for {= dir =}/{= stem =}.rs (not run: olifant doctor --run) · from toolchain cargo-test
+✓ rust: test units — 9 found in 3 test files (e.g. src/billing/money.rs:20 adds) · from shipped
+✓ rust: anchors — end of struct BillingService (src/billing/service.rs:14) · end of enum RefundInvoiceFailure (src/billing/refund_invoice.rs:27); ✗ mod NAME: not found; not tried: literal NAME in FUNCTION, call NAME in FUNCTION · from shipped
+✓ rust: holes — block, expr, stmt wrappers parse with their placeholders · from shipped
 ✓ rust: test selection — [test] select · from toolchain cargo-test
 ! rust: mutation — absent
   fix: add [[mutate]] to .olifant/languages/rust.toml
@@ -519,10 +523,15 @@ and each capability the layer that set its key (`toolchain cargo`: the preset fi
 | `ast-grep` | `ast-grep` on this process's `PATH` |
 | `check tool EXE (LANGUAGE)` | the first word of each adapter's `[check] command` (`cargo`, `elm`, `cabal`) on this process's `PATH`, which is printed when it is missing |
 | `test runner EXE (LANGUAGE)` | the first word of each adapter's `[test] command`, as for the check tool; its detail ends with the language's `tests_for` |
-| `LANGUAGE: CAPABILITY` | what each language can do, and the key that would enable what it cannot (a `warn`, never an error), thirteen rows in this order: **units** (`[unit] kinds`, and `name`, `join`), **diagnostics** (`[check]`, its format, and `convert`), **missing cases** (a `[check] format` that reads them: `ghc-json`, `pyright-json`, `rustc-json`, `elm-json`, `olifant-json`), **tests** (`[test]`, its format and `tests_for`), **test units** (`[test] unit`; pytest's rules come with the `pytest` preset), **test selection** (`[test] select`, which the pytest toolchain sets to pass its ids as they are; without it a run is whole files), **mutation** (`[[mutate]]`, with the number of operators), **stub** (`[test] stub`), **conjure shapes** (the parts of a pack's `[conjure]`; absent means conjure works at the floor), **messages** (`[check] undefined`, `missing_member`), **test messages** (`[test] undefined`, `[test.failure]`), **stub bodies** (`stub_lines`) and **signature facts** (`[types]`). Each row ends with the layer that set its key. [Chapter 9](09-packs-and-language-adapters.md) has the keys |
+| `LANGUAGE: CAPABILITY` | what each language can do, and the key that would enable what it cannot (a `warn`, never an error), fifteen rows in this order: **units** (`[unit] kinds`, and `name`, `join`), **diagnostics** (`[check]`, its format, and `convert`), **missing cases** (a `[check] format` that reads them: `ghc-json`, `pyright-json`, `rustc-json`, `elm-json`, `olifant-json`), **tests** (`[test]`, its format and `tests_for`), **test units** (`[test] unit`; pytest's rules come with the `pytest` preset), **anchors** (`[targets.*]`, or an `anchors` provider), **holes** (`[holes.*]`), **test selection** (`[test] select`, which the pytest toolchain sets to pass its ids as they are; without it a run is whole files), **mutation** (`[[mutate]]`, with the number of operators), **stub** (`[test] stub`), **conjure shapes** (the parts of a pack's `[conjure]`; absent means conjure works at the floor), **messages** (`[check] undefined`, `missing_member`), **test messages** (`[test] undefined`, `[test.failure]`), **stub bodies** (`stub_lines`) and **signature facts** (`[types]`). Each row ends with the layer that set its key. [Chapter 9](09-packs-and-language-adapters.md) has the keys. Five rows show **evidence** from the sample instead of the key: **units** (how many, with one), **test units** (in the sample's test files; "not seen (no test file in the 40 sampled)" when there is none), **anchors** (each target with at most one parameter tried on the sample's unit names until it resolves; a target that never does is marked `✗` with its last miss; targets with more parameters are "not tried"), **holes** (each kind's placeholder parses inside its `wrap`), and **tests** (only with `--run`). Evidence that fails or is not seen is a `warn` (with "regenerate the key or supply a provider" when a rule found nothing), never an error |
 | `recognize model` | only with `[recognize] model` set ([chapter 16](16-the-language-server.md#recognition-this-looks-like-a-command)): ok when it names a backend under `[model.backends]`, an `error` when it does not |
 | `plans runner RUNNER` | `[plans] runner` ([chapter 19](19-plans.md#plans)), `claude` by default, on this process's `PATH`, with the errand timeout and `do_tools` when set; missing is an `error`: install Claude Code, or set `[plans] runner` |
 | `model` | `[model]` ([chapter 12](12-holes-and-models.md#configuring-a-model)): none is a `warn`, with the snippet to add; a `default` with no such backend is an `error`. An `openai-compatible` default must list its model at `URL/models` within 3 seconds (else `warn`: `curl: (7) Failed to connect …`, or `` the server answers but has no model `NAME` ``); for `anthropic`, only that the key's environment variable is set, never its value and never a request |
+
+`olifant doctor --run` also runs one sample test file per language through its runner, and
+the tests row says what came back (`ran uv on src/a__test.py, 4 results parsed (pytest)`) or
+why the run broke. Without `--run` no tests run, so doctor stays quick (and the editor's
+doctor never runs them).
 
 `✓` is ok, `!` a warning, `✗` an error, each followed by `fix:` when there is one. The exit
 code is 1 if any check is an error, 0 otherwise (warnings included). `--json` prints

@@ -18,7 +18,7 @@ import Olifant.Language (ConjureDef (..), CheckDef (..), Language (..), Provider
 data Capability = Capability {capName :: Text, capHow :: Either Text Text, capKey :: Text, capFix :: Maybe Text}
   deriving stock (Eq, Show)
 
--- | Units, diagnostics, missing cases, tests, test units, test selection,
+-- | Units, diagnostics, missing cases, tests, test units, anchors, holes, test selection,
 -- mutation, stub, conjure shapes, the check's and the runner's messages,
 -- stub bodies, signature facts.
 capabilities :: Language -> [Capability]
@@ -28,6 +28,8 @@ capabilities lang =
   , Capability "missing cases" missingCases "check.format" Nothing
   , Capability "tests" tests "test.format" Nothing
   , Capability "test units" testUnits "test.unit" Nothing
+  , Capability "anchors" anchors "targets" Nothing
+  , Capability "holes" holes "holes" Nothing
   , Capability "test selection" selection "test.select" Nothing
   , Capability "mutation" mutation "mutate" Nothing
   , Capability "stub" stub "test.stub" Nothing
@@ -59,6 +61,12 @@ capabilities lang =
       | Just p <- test >>= testUnitProvider = provided "[test] unit" p
       | maybe False (not . null . testUnitRules) test = Right ("[test] unit" <> (if maybe False (isJust . testAbove) test then ", above" else ""))
       | otherwise = Left "[test] unit"
+    anchors = case (langTargets lang, langAnchorProvider lang) of
+      ([], Nothing) -> Left "[targets.*]"
+      (ts, p) -> Right (T.intercalate ", " (["[targets] " <> T.pack (show (length ts)) <> " targets" | not (null ts)] ++ ["anchors provider " <> T.unwords (provArgv q) | Just q <- [p]]))
+    holes = case langHoles lang of
+      [] -> Left "[holes.*]"
+      ks -> Right ("[holes] " <> T.intercalate ", " (map fst ks))
     stub = case test >>= testStub of
       Just sd -> Right ("[test] stub" <> maybe "" (" at " <>) (sdAt sd))
       Nothing -> Left "[test] stub"

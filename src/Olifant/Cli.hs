@@ -479,8 +479,8 @@ runCommand rt cwd fmt cat = \case
                      ]
         emit rt fmt (object (["regions" .= regionsJson, "findings" .= map (findingJson olds) fs, "exceptions" .= map exceptionJson exs, "errors" .= (broken ++ gitProblem)] ++ ["migration" .= migrationJson m | Just m <- [mig]] ++ reportJson fs)) human
         pure (if failed then ExitFailure 1 else ExitSuccess)
-  DoctorCmd -> do
-    checks <- doctorChecks (portsOf rt) (projectOf rt cat)
+  DoctorCmd run -> do
+    checks <- doctorChecks (portsOf rt) (projectOf rt cat) run
     let mark = \case Ok -> "✓" :: Text; Warn -> "!"; Bad -> "✗"
     emit rt fmt (doctorJson checks) (T.unlines (concat [[mark (checkStatus c) <> " " <> checkName c <> " — " <> checkDetail c] ++ ["  fix: " <> f | Just f <- [checkFix c]] | c <- checks]))
     pure (if any ((== Bad) . checkStatus) checks then ExitFailure 1 else ExitSuccess)

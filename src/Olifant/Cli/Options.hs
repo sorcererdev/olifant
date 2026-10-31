@@ -32,7 +32,7 @@ data Options = Options {optFormat :: Maybe Format, optCommand :: Command}
   deriving stock (Eq, Show)
 
 -- | 'ListCmd': --detail. 'AnchorsCmd': a language's `at` targets. 'WhereCmd': file, phrase.
-data Command = ListCmd Bool | ShowCmd Text [(Text, Text)] | GenCmd GenOptions | AnchorsCmd Text | WhereCmd FilePath Text | SyncCmd SyncMode | SchemaCmd | NewCmd Text (Maybe Text) | ActionsCmd FilePath (Maybe (Int, Int)) Bool | DoctorCmd | CheckCmd Bool (Maybe FilePath) Bool Bool Bool (Maybe Text) | FixCmd Text FilePath (Int, Int) Int [(Text, Text)] GenOptions | CompleteCmd FilePath (Int, Int) Bool | InitCmd Text Text (Maybe FilePath) Bool | InitMigrateCmd [FilePath] (Maybe Text) (Maybe Text) | LspCmd | AnticipateCmd FilePath Int (Maybe FilePath) (Maybe FilePath)
+data Command = ListCmd Bool | ShowCmd Text [(Text, Text)] | GenCmd GenOptions | AnchorsCmd Text | WhereCmd FilePath Text | SyncCmd SyncMode | SchemaCmd | NewCmd Text (Maybe Text) | ActionsCmd FilePath (Maybe (Int, Int)) Bool | DoctorCmd Bool | CheckCmd Bool (Maybe FilePath) Bool Bool Bool (Maybe Text) | FixCmd Text FilePath (Int, Int) Int [(Text, Text)] GenOptions | CompleteCmd FilePath (Int, Int) Bool | InitCmd Text Text (Maybe FilePath) Bool | InitMigrateCmd [FilePath] (Maybe Text) (Maybe Text) | LspCmd | AnticipateCmd FilePath Int (Maybe FilePath) (Maybe FilePath)
   | -- | `plans cost`: errands against Claude Code sessions, per branch.
     -- 'pcoTranscripts' overrides @~/.claude/projects/<slug>@.
     PlansCostCmd {pcoBranch :: Maybe Text, pcoSince :: Maybe Day, pcoJson :: Bool, pcoTranscripts :: Maybe FilePath}
@@ -114,7 +114,7 @@ parseOptions args = case execParserPure defaultPrefs parserInfo args of
             <> cmd "schema" (pure SchemaCmd) "Print the generator.toml format as a JSON Schema"
             <> cmd "check" checkP "Check the conventions: regions up to date and rules kept (exit 1 on drift or an error); --file FILE [--content -] for one file; --report lists rules and exceptions"
             <> cmd "fix" fixP "Apply a rule's fix where it found something: the fix's generator, and the code it replaces, as one plan (--plan to preview)"
-            <> cmd "doctor" (pure DoctorCmd) "Check what generators need here (tools on this PATH, packs, the model) and how to fix it"
+            <> cmd "doctor" (DoctorCmd <$> switch (long "run" <> help "Also run one sample test file per language, to prove its test command and report format")) "Check what generators need here (tools on this PATH, packs, the model, each language's slots on a sample of this project) and how to fix it"
             <> cmd "actions" (actionsP) "The generators that apply at a position (for editors): --at FILE:LINE:COL [--content -]"
             <> cmd "init" initP "Start a project from a pack's starter in an empty folder: init --pack PACK NAME [--dir DIR] [--plan]; or, in an existing repo, init --migrate PATH [--migrate PATH]… [--pack PACK]: strangle the legacy code under PATH"
             <> cmd "lsp" (pure LspCmd) "Run the language server over stdin/stdout (editors start it; every Olifant project in the editor's folders)"

@@ -14,8 +14,8 @@ import Data.Text.IO qualified as TIO
 import Data.Time (UTCTime (..), fromGregorian)
 import Olifant.Actions (Action (..))
 import Olifant.App
-import Olifant.Doctor (DoctorPorts (..))
-import Olifant.Language (noChecker, noRunner)
+import Olifant.Doctor (Check (..), DoctorPorts (..))
+import Olifant.Language (Runner (..), TestRun (..), noChecker, noRunner)
 import Olifant.Language.AstGrep (astGrepSyntax)
 import Olifant.Language.Check (noVerifier)
 import Olifant.Rules (Finding (..), FixOffer (..))
@@ -27,6 +27,16 @@ import Test.Hspec
 
 spec :: Spec
 spec = describe "Olifant.App" $ do
+  it "doctor --run passes a runner; plain doctor does not" $
+    withPythonProject [] $ \ports project -> do
+      let tests cs = head [checkDetail c | c <- cs, checkName c == "python: tests"]
+          ran = ports {pTester = \_ -> Runner (\_ ids _ -> pure (Right (TestRun [i <> "::t" | i <- ids] [] Nothing)))}
+      plain <- doctorChecks ports project False
+      tests plain `shouldSatisfy` T.isInfixOf "(not run: olifant doctor --run)"
+      units <- pure (head [checkDetail c | c <- plain, checkName c == "python: units"])
+      units `shouldSatisfy` T.isInfixOf " found in "
+      run <- doctorChecks ran project True
+      tests run `shouldSatisfy` (\d -> "ran uv on " `T.isPrefixOf` d && "1 results parsed (pytest)" `T.isInfixOf` d)
   it "finds a file's rule findings with their fixes' choices (the operation check and the server share)" $
     withPythonProject [(closeTable, closeTableText)] $ \ports project -> do
       (fs, _) <- findings ports project [closeTable]

@@ -325,7 +325,8 @@ handlers env =
           found <- liftIO (maybe (pure Nothing) (\u -> projectOfRequest env (object ["textDocument" .= object ["uri" .= u]])) uri)
           case found of
             Nothing -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) "olifant.doctor needs a document of an Olifant project" Nothing))
-            Just project -> liftIO (doctorChecks (envPorts env) project) >>= respond . Right . InL . doctorJson
+            -- never `--run`: the editor's doctor runs no tests
+            Just project -> liftIO (doctorChecks (envPorts env) project False) >>= respond . Right . InL . doctorJson
         other -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) ("no command " <> other) Nothing))
     , notificationHandler SMethod_WorkspaceDidChangeWorkspaceFolders (\_ -> pure ())
     , notificationHandler SMethod_WorkspaceDidChangeConfiguration (\_ -> pure ())

@@ -15,6 +15,7 @@ import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Capabilities (Capability (..), capabilities)
+import Olifant.Evidence (Evidence (..), Proof (..))
 import Olifant.Catalog (PlansConfig (..))
 import Olifant.Language (CheckDef (..), Language (..), TestDef (..), checkProgram, originOf)
 import Olifant.Model (Backend (..), ModelConfig (..))
@@ -38,6 +39,11 @@ data DoctorInput = DoctorInput
     diRecognizeModel :: Maybe Text
   , -- | `[plans]`: the runner errands start, its timeout and `do` tools
     diPlans :: PlansConfig
+  , -- | each language's evidence ('Olifant.Evidence'), by name; a language
+    -- without any shows how each capability is provided, as before
+    diEvidence :: [(Text, Evidence)]
+  , -- | `doctor --run`: the tests row's evidence comes from a run
+    diRan :: Bool
   }
 
 -- | The outside world the doctor looks at.
@@ -63,13 +69,23 @@ doctor ports di = do
     -- what each language can do; an absent capability names its key
     capabilityRows lang =
       [ case capHow c of
-          Right how -> Check name Ok (how <> maybe "" (" · from " <>) (originOf lang (capKey c))) Nothing
+          Right how ->
+            let origin = maybe "" (" · from " <>) (originOf lang (capKey c))
+             in case lookup (langName lang) (diEvidence di) >>= \ev -> proofOf (capName c) ev of
+                  Nothing -> Check name Ok (how <> origin) Nothing
+                  Just (Proven t) -> Check name Ok (t <> origin) Nothing
+                  -- tests are run only with `doctor --run`: not run is no warning
+                  Just (Unproven _) | capName c == "tests", not (diRan di) -> Check name Ok (how <> " (not run: olifant doctor --run)" <> origin) Nothing
+                  Just (Unproven t) -> Check name Warn (t <> origin) Nothing
+                  Just (Disproven t) -> Check name Warn (t <> origin) (Just "regenerate the key or supply a provider (see chapter 9, Providers)")
           Left key ->
             let (k, note) = T.breakOn " (" key
              in Check name Warn "absent" (Just (fromMaybe ("add " <> k <> " to .olifant/languages/" <> langName lang <> ".toml" <> note) (capFix c)))
       | c <- capabilities lang
       , let name = langName lang <> ": " <> capName c
       ]
+    -- the evidence row a capability takes
+    proofOf cap ev = lookup cap [("units", evUnits ev), ("test units", evTestUnits ev), ("tests", evTests ev), ("anchors", evAnchors ev), ("holes", evHoles ev)]
     plansRunner = do
       let plans = diPlans di
           runner = T.pack (pcRunner plans)
