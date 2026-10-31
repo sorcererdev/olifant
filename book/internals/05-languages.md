@@ -202,6 +202,37 @@ of its own. The `conjure shapes` row lists `port.add` and `advice` when present,
 | `[test] name` | `Server/Stub.testAffixesIn`: the text before and after the words, which a survivor's stub name (`TestName.stubNameFor`) is put between; uniqueness is against the file's tests by `[test] unit` |
 | `opens_block`, `empty_statement`, `stub_lines` | `Server/Unit.hs` (`bodyOf`, `isStubIn`), `FillPhase` (cutting a whole-file answer back to a hole) |
 
+## Slots and providers
+
+A **slot** is one question the engine asks of a language: the units in a text, its test units,
+where an anchor phrase lands, the arguments that select some tests. A rule in the language file
+answers each by default; `{ provider = [...] }` in the rule's place hands it to a program
+([chapter 9](../user/09-packs-and-language-adapters.md), "Providers"). Either way the answer has
+one type, so everything downstream is the same code.
+
+`Olifant.Provider` (`Provider.hs`) is the protocol:
+
+- `Provider` is the argv and the root it runs from (`provRoot`, set by the catalog).
+  `runProvider :: Provider -> Value -> IO (Either Text Value)` adds `"v": 1` to the request
+  (`withVersion`), resolves `argv[0]` (against the root when it holds a `/`, else on `PATH`) and
+  runs it through `Process.runBytesCancellable` with a 10 s limit (`providerTimeout`), cwd the
+  root. Its `Left` is one line: "`x` is not installed", "it timed out (10 s)", stderr's first
+  line, "it exited N and said nothing", or "its answer is not JSON: …".
+- The answer types: `UnitAnswer` (`name`, `line`, `end`, optional `kind`; units and test units),
+  `AnchorAnswer` (`line`, `column`), and an argv for a selection. `decodeUnits n` checks a units
+  answer whole against a text of `n` lines (no line before 1, no `end` before `line` or past
+  `n`, no repeated span) and names the first bad entry; a half-good answer is never used.
+  `decodeAnchor` allows `line` one past the end (the end of the file); `decodeArgs` wants a
+  list of strings.
+- `providerPure :: Provider -> Value -> Either Text Value` is `runProvider` from pure code,
+  through `unsafePerformIO`, memoised for the process in a `NOINLINE` `MVar` keyed by argv,
+  root and the encoded request. The request holds the file's path and text, so the long-lived
+  server asks again after an edit; the memo starts over past 512 answers. It is sound because a
+  provider is pure by contract (the same request gives the same answer), which chapter 9's
+  protocol section states. It exists for test units, which are read in pure code at many call
+  sites; threading IO through conjure, the fill phase and stubs instead would be a large
+  refactor for an escape hatch. The other slots are read in IO and call `runProvider`.
+
 ## Doctor's capability table
 
 `Olifant.Capabilities.capabilities :: Language -> [Capability]` (`Capabilities.hs:24`) is a list
