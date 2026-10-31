@@ -252,6 +252,13 @@ one type, so everything downstream is the same code.
   protocol section states. It exists for test units, which are read in pure code at many call
   sites; threading IO through conjure, the fill phase and stubs instead would be a large
   refactor for an escape hatch. The other slots are read in IO and call `runProvider`.
+- Where each slot asks: units in `Server/Unit.unitAnswers`; test units in
+  `TestUnits.testUnitsOf`; an anchor in `Anchor/Resolve`'s `named`, when no `[targets.*]` shape
+  matches the phrase, through the **Syntax** port's `runSlotProvider` (anchors resolve in any
+  monad; `astGrepSyntax` runs `runProvider`, `noSyntax` and `querying` fakes answer "no
+  provider runner"); a selection in `Check.processRunner` (request `{"tests": [ids]}`, the
+  answer replacing `{= tests =}`). Diagnostics and test results are `convert`
+  (`Check.convertReport`), whose stdin now carries `"v": 1` too.
 
 ## Doctor's capability table
 

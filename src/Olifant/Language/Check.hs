@@ -41,6 +41,7 @@ import Data.List (isPrefixOf, nub, sort)
 import Data.Maybe (fromMaybe, isJust)
 import Data.Set qualified as S
 import Olifant.Workspace (pruned)
+import Olifant.Provider (decodeArgs, runProvider)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
 import Data.Text (Text)
@@ -144,16 +145,24 @@ processRunner token secs = Runner $ \lang ids files -> case langTest lang of
           | otherwise = ($ Nothing)
         requested = requestedFiles lang td ids files
         -- an argument twice (a flag each test repeats: `--exact`) once
-        args = maybe (map T.unpack ids) (\sel -> map T.unpack (nub (concatMap (selected lang td files sel) ids))) (testSelect td)
-    around $ \slot ->
-      scratchRun token limit lang "olifant-test" (testCommand td) ctx slot (testConvert td) (\a -> if a == "{= tests =}" then Just args else Nothing) files <&> \case
-        Left ScratchEmpty -> Left "empty test command"
-        Left ScratchNoProgram -> Left "the test command runs no program"
-        Left (ScratchMissing program) -> Left ("`" <> program <> "` is not installed (needed to run the tests)")
-        Left (ScratchFailed why) -> Left why
-        Right Cancelled -> Left "cancelled"
-        Right TimedOut -> Right (TestRun [] [] (Just ("the tests timed out (" <> T.pack (show limit) <> " s)")))
-        Right (Finished code out err) -> Right (readTestReport td requested code out err)
+        byRule = maybe (map T.unpack ids) (\sel -> map T.unpack (nub (concatMap (selected lang td files sel) ids))) (testSelect td)
+        run args =
+          around $ \slot ->
+            scratchRun token limit lang "olifant-test" (testCommand td) ctx slot (testConvert td) (\a -> if a == "{= tests =}" then Just args else Nothing) files <&> \case
+              Left ScratchEmpty -> Left "empty test command"
+              Left ScratchNoProgram -> Left "the test command runs no program"
+              Left (ScratchMissing program) -> Left ("`" <> program <> "` is not installed (needed to run the tests)")
+              Left (ScratchFailed why) -> Left why
+              Right Cancelled -> Left "cancelled"
+              Right TimedOut -> Right (TestRun [] [] (Just ("the tests timed out (" <> T.pack (show limit) <> " s)")))
+              Right (Finished code out err) -> Right (readTestReport td requested code out err)
+    -- a selection provider answers the arguments instead of [test.select]
+    case testSelectProvider td of
+      Nothing -> run byRule
+      Just p ->
+        runProvider p (object ["tests" .= ids]) >>= \answer -> case answer >>= decodeArgs of
+          Left why -> pure (Left ("the test selection provider: " <> why))
+          Right args -> run (map T.unpack args)
 
 -- | The file of a test id (the id itself for a file's).
 fileOfId :: TestId -> FilePath
@@ -248,7 +257,7 @@ reportInput check support out err
   | otherwise = err
 
 -- | A `convert` command, run in the scratch directory with
--- @{"exit": N, "stdout": "…", "stderr": "…"}@ on stdin and a 60 s limit:
+-- @{"v": 1, "exit": N, "stdout": "…", "stderr": "…"}@ on stdin and a 60 s limit:
 -- what it prints is the report; a non-zero exit is Left with what it said
 -- on stderr.
 convertReport :: [Text] -> FilePath -> ExitCode -> ByteString -> ByteString -> IO (Either Text ByteString)
@@ -265,7 +274,7 @@ convertReport argv dir code out err = case argv of
           Right TimedOut -> Left "it timed out (60 s)"
           Right Cancelled -> Left "cancelled"
   where
-    input = object ["exit" .= exitNumber code, "stdout" .= TE.decodeUtf8With lenientDecode out, "stderr" .= TE.decodeUtf8With lenientDecode err]
+    input = object ["v" .= (1 :: Int), "exit" .= exitNumber code, "stdout" .= TE.decodeUtf8With lenientDecode out, "stderr" .= TE.decodeUtf8With lenientDecode err]
     exitNumber = \case
       ExitSuccess -> 0
       ExitFailure n -> n

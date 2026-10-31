@@ -32,6 +32,7 @@ import Data.Text qualified as T
 import Olifant.Anchor.Phrase
 import Olifant.Language
 import Olifant.Holes (hasMarkers, splitMarkers)
+import Olifant.Provider (AnchorAnswer (..), decodeAnchor, lineCount, textRequest)
 import Olifant.Template (Value (VText), describeTemplateError)
 import Text.Regex.TDFA (Regex, makeRegexM, matchTest)
 
@@ -154,16 +155,26 @@ resolveOne syntax lang anchor content = case anchor of
               (h : _) ->
                 let i = if which == FirstLine then h else last hits
                  in (\line -> located line (indentAt i) (runAround i)) <$> beforeAfter pos i "line"
-    named l pos ws =
-      itemsOfTarget syntax l (positionWords pos) ws content <&> \case
-        Left (why, tool) -> Left (Miss used why tool)
-        Right Nothing -> Left (miss "not found")
-        Right (Just (_, []))
-          | Just "after header" <- targetWhenEmpty =<< target, pos `elem` [StartOf, EndOf] ->
-              let h = headerEnd ls
-               in Right ((located h "" (regionOf 0 (max 0 (length ls - 1)))) {locSpacing = if h == 0 then NoSpacing else BlankBefore})
-        Right (Just (c, items)) -> (\loc -> if maybe True targetSpaced target then loc else loc {locSpacing = NoSpacing}) <$> place l separator pos c items
+    named l pos ws = case (target, langAnchorProvider l) of
+      -- a phrase no declared target knows: the anchors provider, if any
+      (Nothing, Just p) -> provided p
+      _ -> declared
       where
+        provided p =
+          runSlotProvider syntax p (textRequest Nothing content [("phrase", Aeson.String used)]) <&> \case
+            Left why -> Left (miss ("the anchors provider: " <> why))
+            Right v -> case decodeAnchor (lineCount content) v of
+              Left why -> Left (miss ("the anchors provider: " <> why))
+              Right Nothing -> Left (miss ("the anchors provider does not know `" <> used <> "`"))
+              Right (Just a) -> Right (located (aaLine a - 1) (T.replicate (aaColumn a - 1) " ") content)
+        declared = itemsOfTarget syntax l (positionWords pos) ws content <&> \case
+            Left (why, tool) -> Left (Miss used why tool)
+            Right Nothing -> Left (miss "not found")
+            Right (Just (_, []))
+              | Just "after header" <- targetWhenEmpty =<< target, pos `elem` [StartOf, EndOf] ->
+                  let h = headerEnd ls
+                   in Right ((located h "" (regionOf 0 (max 0 (length ls - 1)))) {locSpacing = if h == 0 then NoSpacing else BlankBefore})
+            Right (Just (c, items)) -> (\loc -> if maybe True targetSpaced target then loc else loc {locSpacing = NoSpacing}) <$> place l separator pos c items
         target = case [t | t <- langTargets l, Just _ <- [matchShape t ws]] of
           t : _ -> Just t
           [] -> Nothing

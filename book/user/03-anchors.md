@@ -73,6 +73,13 @@ $ olifant where src/Main.elm "end of cases in update"
 error: `end of cases in update`: unknown target `cases in update` for elm; did you mean `end of case in update`? (targets: case in FUNCTION, imports, list in FUNCTION, record NAME, type NAME)
 ```
 
+A language can also hand phrases its targets do not know to a program: `anchors = { provider
+= [...] }` in its language file ([chapter 9](09-packs-and-language-adapters.md#providers-answering-a-slot-with-a-program)).
+Such a phrase (the whole `at` text) goes to the provider before "unknown target"; it answers
+the line the new lines start at and their indentation, or `null` ("the anchors provider does
+not know `…`"), and the text is inserted as at any target, with no blank line added. A phrase a
+declared target matches never goes to the provider.
+
 ## Fallbacks
 
 `at` can be a list, tried in order; the first that resolves wins and the plan records

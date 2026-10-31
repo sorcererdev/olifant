@@ -19,7 +19,7 @@ import Olifant.Language.Presets (shippedPresets)
 import Olifant.Toml (mergeTables, parseToml)
 import Olifant.Language.AstGrep (astGrepSyntax)
 import Olifant.Server (Unit (..), unitAt)
-import System.Directory (doesDirectoryExist, findExecutable, getTemporaryDirectory, listDirectory)
+import System.Directory (doesDirectoryExist, findExecutable, getCurrentDirectory, getTemporaryDirectory, listDirectory)
 import System.Environment (lookupEnv)
 import System.FilePath (takeExtension, (</>))
 import Olifant.Template (Value (..))
@@ -322,6 +322,18 @@ spec = do
           files = M.fromList [(specFile, "module Olifant.PlansSpec (spec) where\n"), ("out.txt", "")]
       Right run <- runTests (processRunner neverCancel 60) lang [T.pack specFile] files
       trBroken run `shouldSatisfy` maybe False ("bad args" `T.isInfixOf`)
+    it "a selection provider's argv runs in place of {= tests =}; a failing one is the run's Left" $
+      withSystemTempDirectory "olifant-select" $ \out -> do
+        here <- getCurrentDirectory
+        let selLang script = let Right l = parseLanguage "x" "/x" (T.unlines
+                                    [ "files = [\"**/*.x\"]", "comment = \"#\"", "grammar = \"x\""
+                                    , "[test]", "command = [\"sh\", \"-c\", \"printf '%s\\\\n' \\\"$@\\\" > " <> T.pack (out </> "argv") <> "; echo '{}'\", \"x\", \"{= tests =}\"]"
+                                    , "tests_for = \"{= stem =}_t.x\"", "format = \"olifant-json\""
+                                    , "select = { provider = [\"sh\", \"" <> T.pack (here </> "src/Olifant/testdata/providers" </> script) <> "\"] }"
+                                    ]) in l
+        Right _ <- runTests (processRunner neverCancel 60) (selLang "selects.sh") ["a_t.x::t1"] (M.fromList [("a_t.x", "")])
+        lines <$> readFile (out </> "argv") `shouldReturn` ["--only", "picked"]
+        runTests (processRunner neverCancel 60) (selLang "fails.sh") ["a_t.x::t1"] (M.fromList [("a_t.x", "")]) `shouldReturn` Left "the test selection provider: no grammar"
     it "the [test] timeout wins over the caller's" $ do
       let Right lang = parseLanguage "haskell" "/h" (hsToml ["command = [\"sleep\", \"5\"]", "timeout = 1"])
       Right run <- runTests (processRunner neverCancel 60) lang [T.pack specFile] (M.fromList [(specFile, "module Olifant.PlansSpec (spec) where\n")])

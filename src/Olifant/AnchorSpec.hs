@@ -17,6 +17,9 @@ import Olifant.Anchor
 import Olifant.Language
 import Olifant.Query (AstQuery (..), AstSelect (..), QueryFailure (..))
 import Olifant.Template (Value (..), parseTemplate)
+import Olifant.Provider (runProvider)
+import System.Directory (getCurrentDirectory)
+import System.FilePath ((</>))
 import Test.Hspec
 import Test.Hspec.Hedgehog (hedgehog)
 
@@ -77,8 +80,36 @@ caseTarget = lang
 source :: Text
 source = T.unlines ["update msg =", "  -- lead", "    case x of", "        A ->", "            1", "", "", "        B ->", "            2", "tail"]
 
+-- | 'fakeSyntax' in IO, running providers for real.
+providingSyntax :: Syntax IO
+providingSyntax = (querying (\l r t -> pure (runIdentity (querySyntax fakeSyntax l r t)))) {runSlotProvider = runProvider}
+
+-- | 'caseTarget' with its anchors answered by a script.
+withAnchors :: FilePath -> IO Language
+withAnchors script = do
+  here <- getCurrentDirectory
+  pure caseTarget {langAnchorProvider = Just (Provider ["sh", T.pack ("testdata/providers" </> script)] (Just (here </> "src/Olifant")))}
+
 resolveSpec :: Spec
 resolveSpec = do
+  describe "an anchors provider (4b m1)" $ do
+    it "a phrase no target knows goes to the anchors provider" $ do
+      lang <- withAnchors "anchor.sh"
+      Right loc <- resolveLayers providingSyntax (Just lang) [PhraseAnchor "end of the imports"] source
+      (locLine loc, locIndent loc, locSpacing loc) `shouldBe` (2, "    ", NoSpacing)
+      let (_, new) = insertLines loc "snippet" source
+      take 4 (T.lines new) `shouldBe` ["update msg =", "  -- lead", "    snippet", "    case x of"]
+    it "a declared target is never sent to the provider" $ do
+      lang <- withAnchors "fails.sh"
+      fmap locLine <$> resolveLayers providingSyntax (Just lang) [PhraseAnchor "end of case in update"] source `shouldReturn` Right 9
+    it "a provider that fails is a miss with its reason, not a missing tool" $ do
+      lang <- withAnchors "fails.sh"
+      resolveLayers providingSyntax (Just lang) [PhraseAnchor "end of the imports"] source
+        `shouldReturn` Left [Miss "end of the imports" "the anchors provider: no grammar" False]
+    it "without a runner (noSyntax, a plain querying fake) the provider is a miss" $ do
+      lang <- withAnchors "anchor.sh"
+      resolveLayers (querying (\_ _ _ -> pure (Right []))) (Just lang) [PhraseAnchor "end of the imports"] source
+        `shouldReturn` Left [Miss "end of the imports" "the anchors provider: no provider runner" False]
   describe "resolveLayers" $ do
     let resolve anchors = runIdentity (resolveLayers fakeSyntax (Just caseTarget) anchors source)
     it "puts `end of` after the last top-level item, at its indentation" $

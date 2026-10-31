@@ -63,6 +63,14 @@ spec = do
             ])
       r <- runCheck processChecker lang (M.fromList [("a.hs", "x = 1\n")])
       fmap reportBroken r `shouldBe` Right [("a.hs", "seen")]
+    it "convert's stdin has v 1" $ do
+      let Right lang = parseLanguage "x" "/x" (T.unlines
+            [ "files = [\"**/*.hs\"]", "comment = \"--\"", "grammar = \"haskell\""
+            , "[check]", "command = [\"sh\", \"-c\", \"echo said\"]"
+            , "convert = [\"sh\", \"-c\", \"in=$(cat); echo \\\"$in\\\" | grep -q '\\\"v\\\":1' && echo '{\\\"broken\\\":[{\\\"file\\\":\\\"a.hs\\\",\\\"message\\\":\\\"v1\\\"}]}' || { echo nope >&2; exit 1; }\"]"
+            ])
+      r <- runCheck processChecker lang (M.fromList [("a.hs", "x = 1\n")])
+      fmap reportBroken r `shouldBe` Right [("a.hs", "v1")]
     it "a failing tool whose converted report is empty is a failed check with the tool's stderr" $ do
       let Right lang = parseLanguage "x" "/x" (T.unlines
             [ "files = [\"**/*.hs\"]", "comment = \"--\"", "grammar = \"haskell\""

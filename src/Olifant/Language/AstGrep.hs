@@ -13,6 +13,7 @@ import Data.Text.Encoding qualified as TE
 import Data.Text.Encoding.Error (lenientDecode)
 import Data.Word (Word64)
 import Numeric (showHex)
+import Olifant.Provider (runProvider)
 import Olifant.Language.Adapter
 import Olifant.Process (runBytes)
 import Olifant.Language.Syntax
@@ -43,7 +44,8 @@ astGrepSyntax cache =
   Syntax
     { querySyntax = \lang rule source -> fmap (map (\(Found m _) -> m)) <$> scan cache lang rule Nothing source,
       rewriteSyntax = \lang rule fixed source ->
-        fmap (map (\(Found (Match s e t b) r) -> Rewrite s e t (fromMaybe t r) b)) <$> scan cache lang rule (Just fixed) source
+        fmap (map (\(Found (Match s e t b) r) -> Rewrite s e t (fromMaybe t r) b)) <$> scan cache lang rule (Just fixed) source,
+      runSlotProvider = runProvider
     }
 
 -- | `sg scan` one inline rule (with its `fix`, if any) over a text.

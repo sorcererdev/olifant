@@ -366,7 +366,8 @@ generators, and below).
 -- src/Olifant/Language/Syntax.hs:22
 data Syntax m = Syntax
   { querySyntax :: Language -> Value -> Text -> m (Either SyntaxFailure [Match]),
-    rewriteSyntax :: Language -> Value -> Text -> Text -> m (Either SyntaxFailure [Rewrite])
+    rewriteSyntax :: Language -> Value -> Text -> Text -> m (Either SyntaxFailure [Rewrite]),
+    runSlotProvider :: Provider -> Value -> m (Either Text Value)
   }
 
 -- src/Olifant/Language/Check.hs:65
