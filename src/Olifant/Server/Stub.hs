@@ -25,7 +25,7 @@ import Olifant.Anchor (Located (..), RenderedAnchor (..), Spacing (..), insertLi
 import Olifant.Generation.FillPhase (addImports)
 import Olifant.Language (ImportsDef (..), Language (..), ModuleOf (..), StubDef (..), TestDef (..), moduleOf, regexName)
 import System.FilePath (takeExtension)
-import Olifant.Language.TestUnits (TestUnit (..), anchorName, testUnitsIn)
+import Olifant.Language.TestUnits (TestUnit (..), anchorName, testUnitsOf)
 import Olifant.Mutate (Mutant (..))
 import Olifant.Naming (wordsName)
 import Olifant.Server.Edits (FileEdit (..), smallestChange)
@@ -77,9 +77,7 @@ stubWith given path line0 survivor s0 =
           testFile = siteTestFile site
           testText0 = siteTestText site
           base = fromMaybe "" testText0
-          rules = maybe [] testUnitRules td
-          above = td >>= testAbove
-          defined = [n | u <- testUnitsIn rules above base, Just n <- [listToMaybe (reverse (tuPath u))]]
+          defined = [n | u <- testUnitsOf lang base, Just n <- [listToMaybe (reverse (tuPath u))]]
           name = case given of
             Just n -> uniqueAmong n defined
             Nothing -> maybe (uniqueAmong (testNameIn lang (unitWordsOf unit)) defined) (\m -> stubNameFor m (testAffixesIn lang) (langComment lang) defined (langKeywords lang)) survivor
@@ -130,7 +128,7 @@ stubWith given path line0 survivor s0 =
             Nothing -> FileEdit testFile Nothing True ((0, 0), (0, 0)) new
             Just _ -> let (range, t) = smallestChange base new in FileEdit testFile (fst <$> M.lookup testFile (ssDocs s)) False range t
           -- its name as an anchor names it: the path of the test at its line
-          anchored = maybe name (anchorName . tuPath) (listToMaybe [u | u <- reverse (testUnitsIn rules above new), fst (tuLines u) <= at, at <= snd (tuLines u)])
+          anchored = maybe name (anchorName . tuPath) (listToMaybe [u | u <- reverse (testUnitsOf lang new), fst (tuLines u) <= at, at <= snd (tuLines u)])
       lift (appendStepLine (ssPorts s) (siteRoot site) ["stub", "person", T.pack (siteModuleRel site) <> "::" <> unit, "stubbed " <> name <> maybe "" (\m -> " (kills line " <> tshow (muLine m) <> ")") survivor])
       pure (StubAnswer testFile at anchored edit)
 

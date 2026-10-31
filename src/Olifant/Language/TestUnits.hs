@@ -8,6 +8,10 @@
 module Olifant.Language.TestUnits
   ( TestUnit (..)
   , testUnitsIn
+  , testUnitsOf
+  , testUnitsReport
+  , testAtIn
+  , testLineIn
   , testAtBy
   , testLineBy
   , anchorName
@@ -27,6 +31,7 @@ import Data.Ord (Down (..))
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Language.Adapter (Language (..), TestDef (..), UnitRule (..), regexName)
+import Olifant.Provider (UnitAnswer (..), decodeUnits, lineCount, providerPure, textRequest)
 import Text.Regex.TDFA (AllTextSubmatches (..), Regex, makeRegexM, matchM, matchTest)
 
 -- | A test or a group: its path (enclosing groups, then its name) and its
@@ -111,8 +116,12 @@ matcher re = case makeRegexM (T.unpack re) :: Maybe Regex of
 -- line after a unit's last line is still in it, as far as the next line
 -- that is not.
 testAtBy :: [UnitRule] -> Maybe Text -> Text -> Int -> Maybe Text
-testAtBy rules above text line =
-  T.intercalate "::" . tuPath <$> listToMaybe (sortOn (\u -> (Down (fst (tuLines u)), snd (tuLines u))) [u | u <- testUnitsIn rules above text, let (a, z) = tuLines u, a <= line, line <= throughBlanks z])
+testAtBy rules above text = testAtOver (testUnitsIn rules above text) text
+
+-- | 'testAtBy' over units already found.
+testAtOver :: [TestUnit] -> Text -> Int -> Maybe Text
+testAtOver units text line =
+  T.intercalate "::" . tuPath <$> listToMaybe (sortOn (\u -> (Down (fst (tuLines u)), snd (tuLines u))) [u | u <- units, let (a, z) = tuLines u, a <= line, line <= throughBlanks z])
   where
     ls = T.lines text
     throughBlanks z = z + length (takeWhile (T.null . T.strip) (drop z ls))
@@ -120,7 +129,22 @@ testAtBy rules above text line =
 -- | The first line of the unit whose 'anchorName' is NAME (a plan anchor's
 -- dotted name: `Olifant.Plans.parsePlan`, `TestX.test_y`).
 testLineBy :: [UnitRule] -> Maybe Text -> Text -> Text -> Maybe Int
-testLineBy rules above text name = listToMaybe [fst (tuLines u) | u <- testUnitsIn rules above text, anchorName (tuPath u) == name]
+testLineBy rules above text = testLineOver (testUnitsIn rules above text)
+
+-- | 'testLineBy' over units already found.
+testLineOver :: [TestUnit] -> Text -> Maybe Int
+testLineOver units name = listToMaybe [fst (tuLines u) | u <- units, anchorName (tuPath u) == name]
+
+-- | The test at LINE (1-based) of a test file in LANG, named as its ids
+-- name it after `path::` ('testAtBy'), by 'testUnitsOf'. A language with no
+-- test units has no test at any line.
+testAtIn :: Language -> Text -> Int -> Maybe Text
+testAtIn lang text = testAtOver (testUnitsOf lang text) text
+
+-- | The first line of the test or group a plan anchor names by its dotted
+-- name ('anchorName'), by 'testUnitsOf'; Nothing with none.
+testLineIn :: Language -> Text -> Text -> Maybe Int
+testLineIn lang text = testLineOver (testUnitsOf lang text)
 
 -- | A test's name in a plan anchor: its path joined by @.@, each run of
 -- characters outside @[A-Za-z0-9_.]@ written as one @_@
@@ -139,6 +163,28 @@ anchorName = T.intercalate "." . map squash
 rulesOf :: Language -> ([UnitRule], Maybe Text)
 rulesOf lang = maybe ([], Nothing) (\td -> (testUnitRules td, testAbove td)) (langTest lang)
 
+-- | The test units of TEXT in LANG: the one door every reader uses. By
+-- rule, 'testUnitsIn' over its `[test] unit` and `above`. By provider, its
+-- answers, each one's path the names of the answers that strictly hold it
+-- (outermost first), then its own. A provider that fails gives none.
+testUnitsOf :: Language -> Text -> [TestUnit]
+testUnitsOf lang text = either (const []) id (testUnitsReport lang text)
+
+-- | 'testUnitsOf', with why a provider gave none (for doctor). Read from
+-- pure code, a provider runs through 'providerPure': it is pure by
+-- contract, and its answer is memoised by request (the text).
+testUnitsReport :: Language -> Text -> Either Text [TestUnit]
+testUnitsReport lang text = case langTest lang >>= testUnitProvider of
+  Just p -> byContainment <$> (providerPure p (textRequest Nothing text []) >>= decodeUnits (lineCount text))
+  Nothing -> Right (testUnitsIn rules above text)
+  where
+    (rules, above) = rulesOf lang
+    byContainment answers =
+      let ordered = sortOn (\u -> (uaLine u, Down (uaEnd u))) answers
+          spanOf u = (uaLine u, uaEnd u)
+          holds o u = spanOf o /= spanOf u && uaLine o <= uaLine u && uaEnd u <= uaEnd o
+       in [TestUnit ([uaName o | o <- ordered, holds o u] ++ [uaName u]) (spanOf u) | u <- ordered]
+
 -- | The test case at LINE (1-based) of a test file in LANG, named as
 -- 'testAtBy' names it: the innermost unit there when no other unit lies
 -- inside it (a group's own lines, a class or a describe, are none).
@@ -149,8 +195,7 @@ testCaseAtIn lang text line = T.intercalate "::" . tuPath <$> testCaseUnitAtIn l
 testCaseUnitAtIn :: Language -> Text -> Int -> Maybe TestUnit
 testCaseUnitAtIn lang text line = (listToMaybe (sortOn (\u -> (Down (fst (tuLines u)), snd (tuLines u))) [u | u <- units, let (a, z) = tuLines u, a <= line, line <= throughBlanks z]) >>= leaf)
   where
-    (rules, above) = rulesOf lang
-    units = testUnitsIn rules above text
+    units = testUnitsOf lang text
     ls = T.lines text
     throughBlanks z = z + length (takeWhile (T.null . T.strip) (drop z ls))
     leaf u = if any (\o -> o /= u && fst (tuLines u) <= fst (tuLines o) && snd (tuLines o) <= snd (tuLines u)) units then Nothing else Just u
@@ -160,8 +205,7 @@ testCaseUnitAtIn lang text line = (listToMaybe (sortOn (\u -> (Down (fst (tuLine
 testCaseLineIn :: Language -> Text -> Text -> Maybe Int
 testCaseLineIn lang text name = listToMaybe (sort [fst (tuLines u) | u <- units, T.intercalate "::" (tuPath u) == name, not (any (inside u) units)])
   where
-    (rules, above) = rulesOf lang
-    units = testUnitsIn rules above text
+    units = testUnitsOf lang text
     -- a case is a leaf: no other unit lies inside it
     inside u o = o /= u && fst (tuLines u) <= fst (tuLines o) && snd (tuLines o) <= snd (tuLines u)
 
@@ -181,7 +225,7 @@ testSourceIn lang name text = lookup name (testSourcesIn lang text)
 -- order, with its source: from the line its rule matched (lines `above` it
 -- left out) to its end, trailing blank lines dropped.
 testSourcesIn :: Language -> Text -> [(Text, Text)]
-testSourcesIn lang text = [(n, T.intercalate "\n" (drop (own a z - a) (slice a z))) | u <- testUnitsIn rules above text, Just n <- [listToMaybe (reverse (tuPath u))], let (a, z) = tuLines u]
+testSourcesIn lang text = [(n, T.intercalate "\n" (drop (own a z - a) (slice a z))) | u <- testUnitsOf lang text, Just n <- [listToMaybe (reverse (tuPath u))], let (a, z) = tuLines u]
   where
     (rules, above) = rulesOf lang
     ls = T.lines text

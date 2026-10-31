@@ -28,7 +28,7 @@ import GHC.Clock (getMonotonicTime)
 import Olifant.App (Project (..))
 import Olifant.Catalog (catalogLanguages)
 import Olifant.Language (Failure (..), Language (..), TestDef (..), TestRun (..), FailureDef, failureLineWith, failureOf, languageFor, ownedBy, testsForFile)
-import Olifant.Language.TestUnits (testAtBy, testLineBy)
+import Olifant.Language.TestUnits (testAtIn, testLineIn)
 import Olifant.Server.Site (appendStepLine, runOver, tshow)
 import Olifant.Server.State (ServerState (..), projectFor)
 import Olifant.Workspace (Workspace (..), normalisePath)
@@ -204,18 +204,3 @@ testsJson a =
     , "seconds" .= taSeconds a
     ]
 
--- | The test at LINE (1-based) of a test file in LANG, named as its ids
--- name it after `path::`: by the `[test] unit` rules (and `above`). A
--- language with no rules has no test at any line.
-testAtIn :: Language -> Text -> Int -> Maybe Text
-testAtIn lang = case langTest lang of
-  Just td | not (null (testUnitRules td)) -> testAtBy (testUnitRules td) (testAbove td)
-  _ -> \_ _ -> Nothing
-
--- | The first line of the test or group a plan anchor names by its dotted
--- name (`Olifant.Plans.parsePlan`, `TestX.test_y`; 'anchorName'), by the
--- `[test] unit` rules; Nothing with none.
-testLineIn :: Language -> Text -> Text -> Maybe Int
-testLineIn lang = case langTest lang of
-  Just td | not (null (testUnitRules td)) -> testLineBy (testUnitRules td) (testAbove td)
-  _ -> \_ _ -> Nothing

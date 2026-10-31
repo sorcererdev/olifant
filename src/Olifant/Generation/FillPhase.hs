@@ -23,7 +23,7 @@ import Olifant.Generation.Tools (ProgressEvent (..), Tools (..))
 import Olifant.Holes (HoleSite (..), dedented)
 import Olifant.Language.Header (headerEnd)
 import Olifant.Provider (UnitAnswer (..), decodeUnits, lineCount, providerPure, textRequest)
-import Olifant.Language.TestUnits (TestUnit (..), testUnitsIn)
+import Olifant.Language.TestUnits (TestUnit (..), testUnitsOf)
 import Olifant.Language
 import Olifant.Workspace (Workspace (..), pruned)
 import Olifant.Template (Value (..), render)
@@ -656,7 +656,7 @@ looksLikeFile lang names code = any defines tops || any (atTop . fst . tuLines) 
     top l = not (" " `T.isPrefixOf` l) && not ("\t" `T.isPrefixOf` l)
     tops = filter top ls
     defines l = maybe False (`elem` names) (unitNameOf lang l)
-    tests = maybe [] (\td -> testUnitsIn (testUnitRules td) (testAbove td) (T.intercalate "\n" ls)) (langTest lang)
+    tests = testUnitsOf lang (T.intercalate "\n" ls)
     atTop i = maybe False (\l -> top l && not (T.null (T.strip l))) (listToMaybe (drop (i - 1) ls))
 
 -- | The names of TEXT's units at column 0 by the language's `[unit] name`
@@ -687,10 +687,10 @@ passesAgainstRaise = "this test passes against a body that raises: it asserts no
 -- none without such a test or an assertion in it.
 assertionSpan :: Language -> Text -> Text -> Maybe (Int, Int)
 assertionSpan lang name text = do
-  td <- langTest lang
+  _ <- langTest lang
   let want = T.splitOn "::" name
       ls = T.splitOn "\n" text
-  u <- listToMaybe [u | u <- testUnitsIn (testUnitRules td) (testAbove td) text, want `isSuffixOf` tuPath u]
+  u <- listToMaybe [u | u <- testUnitsOf lang text, want `isSuffixOf` tuPath u]
   let (a0, z) = tuLines u
   a <- listToMaybe [i | i <- [a0 + 1 .. z], Just l <- [listToMaybe (drop (i - 1) ls)], any (`matches` l) (langAssertion lang)]
   pure (a, z)

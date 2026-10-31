@@ -38,7 +38,7 @@ import Data.Scientific (toBoundedInteger)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Read qualified as TR
-import Olifant.Language.TestUnits (TestUnit (..), testUnitsIn)
+import Olifant.Language.TestUnits (TestUnit (..), testUnitsOf)
 import Olifant.Language.Adapter (FailureDef (..), GotExpected (..), Language (..), TestDef (..), regexName)
 import Text.Regex.TDFA (AllTextSubmatches (..), Regex, makeRegexM, matchM, (=~))
 import System.Exit (ExitCode (..))
@@ -113,9 +113,9 @@ scriptedRunner script = Runner $ \lang ids files ->
     -- the file's outermost tests by the language's `[test] unit` rules (a
     -- group's tests are not listed: the script names them)
     defined lang text = case langTest lang of
-      Just td -> [n | TestUnit [n] _ <- testUnitsIn (testUnitRules td) (testAbove td) text, not (isGroup n text td)]
+      Just _ -> [n | TestUnit [n] _ <- testUnitsOf lang text, not (isGroup n text lang)]
       Nothing -> []
-    isGroup n text td = any (\u -> take 1 (tuPath u) == [n] && length (tuPath u) > 1) (testUnitsIn (testUnitRules td) (testAbove td) text)
+    isGroup n text lang = any (\u -> take 1 (tuPath u) == [n] && length (tuPath u) > 1) (testUnitsOf lang text)
     failureIn = \case
       Object o -> Just (Failure (KM.lookup "line" o >>= \case Number n -> toBoundedInteger n; _ -> Nothing) (case KM.lookup "message" o of Just (String m) -> m; _ -> "failed") (case KM.lookup "output" o of Just (String x) -> x; _ -> ""))
       _ -> Nothing

@@ -5,7 +5,8 @@ import Data.List (isSuffixOf)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
-import Olifant.Language (UnitRule (..), shippedLanguage)
+import Olifant.Language (Language (..), Provider (..), TestDef (..), UnitRule (..), shippedLanguage)
+import System.Directory (getCurrentDirectory)
 import Olifant.Language.TestUnits
 import Control.Applicative ((<|>))
 import Control.Monad (guard)
@@ -75,6 +76,19 @@ pyFiles dir = do
 
 spec :: Spec
 spec = do
+  describe "testUnitsOf: the one door to test units (4b m1)" $ do
+    it "only testUnitsOf reads test units: testUnitsIn appears in no other module" $ do
+      files <- haskellSources "src"
+      found <- concat <$> mapM (\f -> (\t -> [(f, i) | (i, l) <- zip [1 :: Int ..] (T.lines t), "testUnitsIn" `T.isInfixOf` l]) <$> TIO.readFile f) [f | f <- files, not ("Spec.hs" `isSuffixOf` f), f /= "src/Olifant/Language/TestUnits.hs"]
+      found `shouldBe` []
+    it "a test-units provider gives paths by containment" $ do
+      lang <- providing "test-units.sh"
+      testUnitsOf lang (T.unlines (replicate 9 "x")) `shouldBe` [TestUnit ["describe"] (1, 9), TestUnit ["describe", "it"] (2, 4)]
+      testCaseAtIn lang (T.unlines (replicate 9 "x")) 3 `shouldBe` Just "describe::it"
+    it "a failing provider: no test units, the reason in testUnitsReport" $ do
+      lang <- providing "fails.sh"
+      testUnitsOf lang "a\nb\n" `shouldBe` []
+      testUnitsReport lang "a\nb\n" `shouldBe` Left "no grammar"
   it "names the test at a line by its describe path" $ do
     testAtBy hspecUnit Nothing specText 5 `shouldBe` Just "Olifant.Plans::(a) reads a step"
     testAtBy hspecUnit Nothing specText 7 `shouldBe` Just "Olifant.Plans::parsePlan::x/y, z"
@@ -239,3 +253,19 @@ testAt text line
       r <- T.stripPrefix "def " (T.strip l) <|> T.stripPrefix "async def " (T.strip l)
       let n = T.takeWhile (\c -> isAlphaNum c || c == '_') r
       if T.null n || not ("(" `T.isPrefixOf` T.drop (T.length n) r) then Nothing else Just n
+
+-- | The shipped python with its test units answered by a script.
+providing :: FilePath -> IO Language
+providing script = do
+  here <- getCurrentDirectory
+  py <- shippedLanguage "python" []
+  let p = Provider ["sh", T.pack ("testdata/providers" </> script)] (Just (here </> "src/Olifant"))
+  pure py {langTest = (\td -> td {testUnitProvider = Just p}) <$> langTest py}
+
+-- | Every Haskell file under a folder.
+haskellSources :: FilePath -> IO [FilePath]
+haskellSources dir = do
+  entries <- map (dir </>) <$> listDirectory dir
+  dirs <- filterM doesDirectoryExist entries
+  nested <- concat <$> mapM haskellSources dirs
+  pure ([f | f <- entries, f `notElem` dirs, ".hs" `isSuffixOf` f] ++ nested)

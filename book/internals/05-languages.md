@@ -139,12 +139,22 @@ the parser (`parsePytest`, or `TestFormats.parseLines | parseTap | parseJunit | 
 
 The **shape** keys are the language's own, parsed even when there is no runner (a table holding
 only shapes makes no `TestDef`: `testShapeKeys`): `unit` (rules: `langTest … testUnitRules`,
-with `after` and `above`) is read by `Language/TestUnits.hs` for tests and groups, and by
+with `after` and `above`, or `testUnitProvider`) is read by `Language/TestUnits.hs` for tests and groups, and by
 `Server/Unit.testUnitAt`; `assertion` (`langAssertion`) by conjure (red at the assertion),
 `Server/Order.hs` and `FillPhase` (the split of a test's two holes); `name`
 (`testNaming`) by `Server/Stub.hs`; `[test.stub]` (`testStub`, `StubDef`) by `Stub.stubWith`;
 `[test.failure]` (`FailureDef`) by `Language.Test.failureLineWith`/`gotExpectedWith`;
 `undefined` (`testUndefined`) by `ConjureNext.undefinedIn`.
+
+Every reader of test units goes through one door, `TestUnits.testUnitsOf :: Language -> Text
+-> [TestUnit]` (with `testUnitsReport`, which keeps a provider's failure for doctor; `testAtIn`
+and `testLineIn` are built on it). By rule it is `testUnitsIn` over `[test] unit` and `above`;
+with `testUnitProvider` it is the program's answer, each unit's path the names of the answers
+that strictly hold it, outermost first. The callers (stubs, the fill phase's assertion span and
+whole-file test, the scripted runner, conjure through `testCaseAtIn`/`testSourcesIn`) are pure,
+so a provider runs through `Provider.providerPure`, memoised by request; that rests on a
+provider being pure by contract. `TestUnitsSpec` fails if `testUnitsIn` appears in any other
+non-spec module.
 
 `format` is the one place a name is code: `knownTestFormats` (`Language/Support.hs`) lists
 `pytest, lines, tap, junit-xml, olifant-json`, and `readTestReport` dispatches on it. A format
