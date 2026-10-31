@@ -17,7 +17,7 @@ import Data.Text qualified as T
 import Olifant.Capabilities (Capability (..), capabilities)
 import Olifant.Evidence (Evidence (..), Proof (..))
 import Olifant.Catalog (PlansConfig (..))
-import Olifant.Language (CheckDef (..), Language (..), TestDef (..), checkProgram, chooseTestCommand, grammarLabel, linkedGrammarOf, originOf, queriesOf)
+import Olifant.Language (CheckDef (..), Language (..), TestDef (..), checkProgram, chooseCheckCommand, chooseTestCommand, grammarLabel, linkedGrammarOf, originOf, queriesOf)
 import System.FilePath (dropExtension, (</>))
 import Olifant.Model (Backend (..), ModelConfig (..))
 
@@ -130,24 +130,25 @@ doctor ports di = do
           pure (Check name Bad ("`" <> T.pack exe <> "` is not on this PATH: " <> path) (Just fix))
     languageTools lang =
       (++)
-        <$> maybe (pure []) (\c -> commandTool "check tool" lang (checkInstall c) (checkCommand c)) (langCheck lang)
+        <$> maybe (pure []) (checkTool lang) (langCheck lang)
         <*> maybe (pure []) (testRunner lang) (langTest lang)
-    -- one line for a command's program, named by what it is for
-    commandTool kind lang install command = case checkProgram command of
-      Just exe -> pure <$> tool (kind <> " " <> exe <> " (" <> langName lang <> ")") (T.unpack exe) (fromMaybe ("install " <> exe <> " and make sure it is on the PATH your editor starts with") install)
-      Nothing -> pure []
-    -- the command candidate the project's files choose, named as written
-    -- (`{= root =}/` dropped), found at the project root, and why
+    atProject f = maybe (pure False) (\r -> dpExists ports (r </> f)) (diProject di)
+    checkTool lang c0 =
+      chooseCheckCommand atProject c0 >>= commandRow "check tool" "[check]" lang (\c -> (checkCommand c, checkInstall c, ""))
     testRunner lang td0 =
-      chooseTestCommand (\f -> maybe (pure False) (\r -> dpExists ports (r </> f)) (diProject di)) td0 >>= \case
-        Left why -> pure [Check ("test runner (" <> langName lang <> ")") Bad why (Just "add the file a [test] command candidate names, or a candidate without `when`")]
-        Right (td, why) -> case checkProgram (testCommand td) of
-          Nothing -> pure []
-          Just exe -> do
-            let shown = T.replace "{= root =}/" "" exe
-                found = T.unpack (T.replace "{= root =}" (maybe "." T.pack (diProject di)) exe)
-            c <- tool ("test runner " <> shown <> " (" <> langName lang <> ")") found (fromMaybe ("install " <> shown <> " and make sure it is on the PATH your editor starts with") (testInstall td))
-            pure [if checkStatus c == Ok then c {checkDetail = checkDetail c <> maybe "" ("; " <>) why <> "; tests_for = " <> testsFor td} else c]
+      chooseTestCommand atProject td0 >>= commandRow "test runner" "[test]" lang (\td -> (testCommand td, testInstall td, "; tests_for = " <> testsFor td))
+    -- one line for the command candidate the project's files choose, named
+    -- by what it is for and as written (`{= root =}/` dropped), found at the
+    -- project root, and why
+    commandRow kind table lang parts = \case
+      Left why -> pure [Check (kind <> " (" <> langName lang <> ")") Bad why (Just ("add the file a " <> table <> " command candidate names, or a candidate without `when`"))]
+      Right (def, why) -> let (command, install, more) = parts def in case checkProgram command of
+        Nothing -> pure []
+        Just exe -> do
+          let shown = T.replace "{= root =}/" "" exe
+              found = T.unpack (T.replace "{= root =}" (maybe "." T.pack (diProject di)) exe)
+          c <- tool (kind <> " " <> shown <> " (" <> langName lang <> ")") found (fromMaybe ("install " <> shown <> " and make sure it is on the PATH your editor starts with") install)
+          pure [if checkStatus c == Ok then c {checkDetail = checkDetail c <> maybe "" ("; " <>) why <> more} else c]
     modelCheck = case (mcDefault (diModel di), mcBackends (diModel di)) of
       (Nothing, []) -> pure (Check "model" Warn "no [model] configured: holes stay placeholders" (Just modelSnippet))
       (Nothing, _) -> pure (Check "model" Warn "[model] has backends but no default" (Just "set `default = \"NAME\"` under [model]"))

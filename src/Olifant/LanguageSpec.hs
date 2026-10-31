@@ -19,7 +19,7 @@ import Olifant.Language.Presets (shippedPresets)
 import Olifant.Toml (mergeTables, parseToml)
 import Olifant.Language.AstGrep (astGrepSyntax)
 import Olifant.Server (Unit (..), unitAt)
-import System.Directory (createDirectoryIfMissing, doesDirectoryExist, findExecutable, getCurrentDirectory, getPermissions, getTemporaryDirectory, listDirectory, setOwnerExecutable, setPermissions)
+import System.Directory (createDirectoryIfMissing, removeFile, doesDirectoryExist, findExecutable, getCurrentDirectory, getPermissions, getTemporaryDirectory, listDirectory, setOwnerExecutable, setPermissions)
 import System.Environment (lookupEnv)
 import System.FilePath (takeExtension, (</>))
 import Olifant.Template (Value (..))
@@ -404,6 +404,27 @@ spec = do
               ])
         _ <- runTestsIn (processRunner neverCancel 60) (withProviderRoot proj lang0) ["a_t.x"] (M.fromList [("a_t.x", ""), ("a.x", "in the run\n")])
         readFile (proj </> "seen") `shouldReturn` ("<p>hi</p>\nin the run\nsame\n" <> (if inGit then "" else "secret.log\n"))
+    it "[check]: {= root =} is the package folder on disk, the program too; command candidates as in [test]" $
+      withSystemTempDirectory "olifant-check-root" $ \proj -> do
+        createDirectoryIfMissing True (proj </> "pkg" </> "bin")
+        let tool = proj </> "pkg" </> "bin" </> "check"
+        writeFile tool "#!/bin/sh\nprintf '%s' \"$1\" > \"$1/said\"\necho 'a.x:1:1: from the venv'\n"
+        p <- getPermissions tool
+        setPermissions tool (setOwnerExecutable True p)
+        let Right lang0 = parseLanguage "x" "/x" (T.unlines
+              [ "files = [\"**/*.x\"]", "comment = \"#\"", "grammar = \"x\""
+              , "[check]", "format = \"errorformat\"", "root = [\"marker.cfg\"]"
+              , "command = [{ when = [\"bin/check\"], command = [\"{= root =}/bin/check\", \"{= root =}\"] }, { command = [\"sh\", \"-c\", \"echo 'a.x:1:1: from PATH'\"] }]"
+              , "[check.errorformat]", "pattern = '^([^:]+):([0-9]+):[0-9]+: (.*)$'", "file = 1", "line = 2", "message = 3"
+              ])
+            lang = withProviderRoot proj lang0
+            files = M.fromList [("pkg/a.x", "x"), ("pkg/marker.cfg", "")]
+            said r = either (T.pack . show) (T.intercalate "," . map snd . reportBroken) r
+        said <$> runCheckIn processChecker lang "pkg" files `shouldReturn` "from the venv"
+        readFile (proj </> "pkg" </> "said") `shouldReturn` (proj </> "pkg")
+        removeFile tool
+        said <$> runCheckIn processChecker lang "pkg" files `shouldReturn` "from PATH"
+        either (T.isInfixOf "`[check] command`") (const False) (parseLanguage "x" "/x" "files = [\"**/*.x\"]\ncomment = \"#\"\ngrammar = \"x\"\n[check]\nformat = \"sarif\"\ncommand = [{ when = 1 }]\n") `shouldBe` True
     it "a run uses the first command candidate whose `when` file is in the files or on disk" $
       withSystemTempDirectory "olifant-pick" $ \proj -> do
         let Right lang0 = parseLanguage "x" "/x" (T.unlines

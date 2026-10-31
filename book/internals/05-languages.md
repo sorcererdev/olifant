@@ -161,10 +161,10 @@ listing (`Workspace.diskWorkspace` `listFilesSkipping`, the language's `ignore` 
 clones (`cbits/olifant_clone.c`, APFS `clonefile`) or copies each file the run's map lacks, so
 templates and binary fixtures come byte for byte while the map's (edited, mutated) texts win. A
 check or a `verify` passes no folder and sees only its map. A `command` that is a list of
-`{ when, command, context }` tables parses into `testCandidates` (`TestCandidate`), with
-`testCommand` the unconditional one's until a choice; `Adapter.chooseTestCommand` takes an
-existence test and returns the `TestDef` with the first fitting candidate's command and context,
-and why (`uv.lock found`). It is called where the folder is known: `processRunner` (a `when`
+`{ when, command, context }` tables parses into `testCandidates` (`CommandCandidate`, the
+parser's `commandFrom`), with `testCommand` the unconditional one's until a choice;
+`Adapter.chooseCommand` takes an existence test and the candidates and returns the first fitting
+one and why (`uv.lock found`), and `chooseTestCommand` the `TestDef` with its command and context. It is called where the folder is known: `processRunner` (a `when`
 file among the run's files or under `testDir`), the doctor's runner row (`Doctor.doctor`'s
 `testRunner`, through the `dpExists` port, from the project root) and `Server/Plans.projectTests` (a `do`'s printed command, `{= root =}`
 filled). `checkScope` copies every candidate's `context`. The pytest preset is data only: its
@@ -232,6 +232,13 @@ list of formats that can also say which `case` lacks which constructor, which is
 olifant-json (`convertReport`, `Check.hs:254`). `undefined` and `missing_member` are the check's
 words for a name or a member that is missing (`ConjureNext.undefinedIn`,
 `ConjureScan.missingMemberIn`). `checkProgram` (`:290`) names the program doctor looks for.
+A check knows its folder on disk as a test run does: `CheckDef.checkDir`, set by
+`withProviderRoot` and narrowed to the package by `runCheckIn`. `runIn` makes it absolute,
+picks the command with `Adapter.chooseCheckCommand` (the same `chooseCommand` over
+`checkCandidates`, a `when` file among the files or under `checkDir`, `existsFor`) and fills
+`{= root =}` with `{= cache =}` and `{= context =}` through `fillVars`, the helper `scratchRun`
+uses, before `runChosenCheck` runs it. The doctor's `check tool` and `test runner` rows are one
+`commandRow` over the chosen candidate (`Doctor.hs`).
 
 ### `[[mutate]]`: ways to break the code
 
