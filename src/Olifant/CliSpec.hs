@@ -280,7 +280,7 @@ runInBaseFiles syntax base baseFiles dir stdinText files tty args = do
         , rtSyntax = syntax
         , rtChecker = const noChecker
         , rtGitChanged = \_ _ -> pure (Right ([], ["src/b.x"]))
-        , rtDoctor = DoctorPorts (\e -> pure (if take 4 e == "nope" then Nothing else Just ("/bin/" <> e))) (pure "/usr/bin") (\_ -> pure (Right ())) (\_ -> pure False), rtTracked = \_ -> pure Nothing, rtBaseText = base, rtBaseFiles = baseFiles, rtBaseStamp = \_ _ -> pure ""
+        , rtDoctor = DoctorPorts (\e -> pure (if take 4 e == "nope" then Nothing else Just ("/bin/" <> e))) (pure "/usr/bin") (\_ -> pure (Right ())) (\_ -> pure False) (\_ -> pure False), rtTracked = \_ -> pure Nothing, rtBaseText = base, rtBaseFiles = baseFiles, rtBaseStamp = \_ _ -> pure ""
         , rtGitInit = \_ _ -> pure (Right ()), rtVerifier = const noVerifier, rtTester = \_ _ -> noRunner
         }
       args
@@ -305,7 +305,7 @@ runInitWith committed files args = do
         , rtOut = \t -> modifyIORef' out (<> t), rtErr = \t -> modifyIORef' err (<> t)
         , rtSyntax = noSyntax, rtChecker = const noChecker
         , rtGitChanged = \_ _ -> pure (Right ([], []))
-        , rtDoctor = DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False), rtTracked = \_ -> pure Nothing, rtBaseText = \_ _ _ -> pure (Left "no base in tests"), rtBaseFiles = \_ _ -> pure (Left "no base"), rtBaseStamp = \_ _ -> pure ""
+        , rtDoctor = DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False) (\_ -> pure False), rtTracked = \_ -> pure Nothing, rtBaseText = \_ _ _ -> pure (Left "no base in tests"), rtBaseFiles = \_ _ -> pure (Left "no base"), rtBaseStamp = \_ _ -> pure ""
         , rtGitInit = \d m -> modifyIORef' gits (++ [(d, m)]) >> pure committed, rtVerifier = const noVerifier, rtTester = \_ _ -> noRunner
         }
       args

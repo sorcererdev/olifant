@@ -16,7 +16,7 @@ olifant doctor
 
 ```
 ✓ language python — loaded (shipped, pack python-htmx)
-✓ test runner uv (python) — /opt/homebrew/bin/uv; tests_for = {= dir =}/{= stem =}__test.py
+✓ test runner uv (python) — /opt/homebrew/bin/uv; uv.lock found; tests_for = {= dir =}/{= stem =}__test.py
 ✓ python: units — [unit] kinds (ast-grep), named by [unit] name · from shipped
 ✓ python: diagnostics — [check] format pyright-json · from toolchain pyright
 ✓ python: tests — [test] format pytest, tests_for {= dir =}/{= stem =}__test.py · from toolchain pytest
@@ -147,11 +147,23 @@ phase is generic in its monad.
 
 `[test]` is two things in one table. The **runner** keys (`command`, `context`, `format`, `root`,
 `tests_for`, `exclusive`, `timeout`, `install`, `[test.select]`, `[test.lines]`, `file_group`,
-`convert`) make a `TestDef`. They are read by `Language/Check.hs`: `processRunner` (`:135`) runs
-a scratch copy of the project's files (`scratchRun`, `:105`), `readTestReport` (`:187`) picks
+`convert`) make a `TestDef`. They are read by `Language/Check.hs`: `processRunner` (`:142`) runs
+a scratch copy of the project's files (`scratchRun`, `:107`), `readTestReport` (`:210`) picks
 the parser (`parsePytest`, or `TestFormats.parseLines | parseTap | parseJunit | parseTestJson`),
-`selected` (`:176`) turns a test id into arguments with `[test.select]`, and `runTestsIn`
-(`:453`) is the entry the server uses. `tests_for` is read by `Server/Tests.hs`
+`selected` (`:199`) turns a test id into arguments with `[test.select]`, and `runTestsIn`
+(`:476`) is the entry the server uses. A run knows its folder on disk, `TestDef.testDir`: the
+catalog sets it to the project root as it roots the providers (`Adapter.withProviderRoot`), and
+`runTestsIn` narrows it to the package its `root` markers find; `processRunner` passes it to
+`scratchRun` as `{= root =}` (made absolute), expanded in the program too, so a command can
+name a venv in the project although it runs in a scratch copy. A `command` that is a list of
+`{ when, command, context }` tables parses into `testCandidates` (`TestCandidate`), with
+`testCommand` the unconditional one's until a choice; `Adapter.chooseTestCommand` takes an
+existence test and returns the `TestDef` with the first fitting candidate's command and context,
+and why (`uv.lock found`). It is called where the folder is known: `processRunner` (a `when`
+file among the run's files or under `testDir`), the doctor's runner row (`Doctor.doctor`'s
+`testRunner`, through the `dpExists` port, from the project root) and `Server/Plans.projectTests` (a `do`'s printed command, `{= root =}`
+filled). `checkScope` copies every candidate's `context`. The pytest preset is data only: its
+four candidates live in `library/toolchains/pytest.toml`. `tests_for` is read by `Server/Tests.hs`
 (`testsForFile`, `placeOf`) and `Language.Test.testsForFile`.
 
 The **shape** keys are the language's own, parsed even when there is no runner (a table holding
@@ -172,7 +184,12 @@ that strictly hold it, outermost first. With a linked grammar, `testUnitsReport`
 line starts a definition ends where that definition ends, so a test with a string's outdented
 line, a Rust test's closing brace and a multi-line signature keep their whole span (m3's known
 limits). A unit on a line that starts no definition (hspec's `it`) keeps the outdent rule, as
-does every unit of an unlinked grammar. The callers (stubs, the fill phase's assertion span and
+does every unit of an unlinked grammar. It also passes the grammar's class definitions (capture
+`definition.class`, from `TreeSitter.definitionKinds`): a class holding a unit is a group of it,
+whatever its name, unless a rule matched its line; a class holding none is no unit. So a pytest
+method's id is `ElectionTests::test_x` for a Django `TestCase` subclass, as for `class TestX`,
+with no class rule; Rust's structs and Haskell's type classes hold no tests, so their ids are
+unchanged. The callers (stubs, the fill phase's assertion span and
 whole-file test, the scripted runner, conjure through `testCaseAtIn`/`testSourcesIn`) are pure,
 so a provider runs through `Provider.providerPure`, memoised by request; that rests on a
 provider being pure by contract. `TestUnitsSpec` fails if `testUnitsIn` appears in any other

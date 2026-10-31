@@ -33,7 +33,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Language.Adapter (Language (..), TestDef (..), UnitRule (..), regexName)
 import Olifant.Provider (UnitAnswer (..), decodeUnits, lineCount, providerPure, textRequest)
-import Olifant.Language.TreeSitter (definitionLines)
+import Olifant.Language.TreeSitter (definitionKinds)
 import Text.Regex.TDFA (AllTextSubmatches (..), Regex, makeRegexM, matchM, matchTest)
 
 -- | A test or a group: its path (enclosing groups, then its name) and its
@@ -48,16 +48,24 @@ data TestUnit = TestUnit {tuPath :: [Text], tuLines :: (Int, Int)}
 -- over it (with their continuation lines: deeper, or closing a bracket);
 -- its parents are the units whose lines hold it.
 testUnitsIn :: [UnitRule] -> Maybe Text -> Text -> [TestUnit]
-testUnitsIn = testUnitsWith Nothing
+testUnitsIn = testUnitsWith Nothing []
 
 -- | 'testUnitsIn', with a span function: given a unit's line (where its rule
 -- matched), the lines of the definition starting there (a linked grammar's
 -- captures). Where it gives one, the unit ends where the definition ends
 -- (a string's outdented line, a Rust test's closing brace, a multi-line
 -- signature are its own); elsewhere, and without it, the outdent rule.
-testUnitsWith :: Maybe (Int -> Maybe (Int, Int)) -> [UnitRule] -> Maybe Text -> Text -> [TestUnit]
-testUnitsWith spanAt rules above text = [TestUnit (parentsOf sp ++ [n]) sp | (sp, n) <- spans]
+-- CLASSES are the grammar's class definitions (name, own lines, unit
+-- lines): one holding a unit is a group, whatever it is called (pytest's
+-- `ElectionTests(TestCase)` as its `TestX`), unless a rule already matched
+-- its line; one holding none is no unit.
+testUnitsWith :: Maybe (Int -> Maybe (Int, Int)) -> [(Text, (Int, Int), (Int, Int))] -> [UnitRule] -> Maybe Text -> Text -> [TestUnit]
+testUnitsWith spanAt classes rules above text = [TestUnit (parentsOf sp ++ [n]) sp | (sp, n) <- units]
   where
+    ruled = [(sp, n) | ((sp, n), _) <- spans]
+    holds (b, y) (a, z) = b <= a && z <= y && (b, y) /= (a, z)
+    groups = [(sp, n) | (n, (own, _), sp) <- classes, own `notElem` map snd spans, any (holds sp . fst) ruled]
+    units = sortOn (\((a, z), _) -> (a, Down z)) (ruled ++ groups)
     isAbove = maybe (const False) matcher above
     namers = [(fmap unescape . maybe (regexName (urPattern r)) (groupOf (urPattern r)) (urName r), matcher <$> urAfter r) | r <- rules]
     ls = zip [1 :: Int ..] (T.lines text)
@@ -74,7 +82,7 @@ testUnitsWith spanAt rules above text = [TestUnit (parentsOf sp ++ [n]) sp | (sp
           | isAbove (lineAt j) = go (j - 1)
           | otherwise = False
     starts = [(i, l, n) | (i, l) <- ls, Just n <- [nameAt i l]]
-    spans = [((headOf i l, maybe (endOf i l) snd (spanAt >>= ($ i))), n) | (i, l, n) <- starts]
+    spans = [(((headOf i l, maybe (endOf i l) snd (spanAt >>= ($ i))), n), i) | (i, l, n) <- starts]
     endOf i l =
       let rest = [x | x@(j, _) <- ls, j > i]
           body = takeWhile (\(_, x) -> blank x || indentOf x > indentOf l) rest
@@ -92,7 +100,7 @@ testUnitsWith spanAt rules above text = [TestUnit (parentsOf sp ++ [n]) sp | (sp
           | otherwise = top
           where
             x = lineAt j
-    parentsOf (a, z) = [n | ((b, y), n) <- spans, b < a, z <= y]
+    parentsOf sp = [n | (o, n) <- units, holds o sp]
 
 -- | Group N of RE's match in a line, stripped; Nothing when it does not
 -- match or the group is empty.
@@ -187,9 +195,13 @@ testUnitsOf lang file text = either (const []) id (testUnitsReport lang file tex
 testUnitsReport :: Language -> Maybe FilePath -> Text -> Either Text [TestUnit]
 testUnitsReport lang file text = case langTest lang >>= testUnitProvider of
   Just p -> byContainment <$> (providerPure p (textRequest file text []) >>= decodeUnits (lineCount text))
-  Nothing -> Right (testUnitsWith (definitionAt <$> definitionLines lang text) rules above text)
+  Nothing -> Right (testUnitsWith (definitionAt <$> defs) classes rules above text)
   where
     (rules, above) = rulesOf lang
+    kinds = definitionKinds lang text
+    defs = map (\(n, _, own, unit) -> (n, own, unit)) <$> kinds
+    -- a class (the tags convention's `definition.class`) may group tests
+    classes = [(n, own, unit) | Just ds <- [kinds], (n, cap, own, unit) <- ds, cap == "definition.class"]
     -- the outermost definition whose own lines start on the unit's line
     definitionAt ds i = listToMaybe (sortOn (\(_, z) -> Down z) [own | (_, own@(a, _), _) <- ds, a == i])
     byContainment answers =

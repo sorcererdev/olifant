@@ -132,12 +132,15 @@ testsProof ports lang testFiles = case (langTest lang, epRun ports) of
   (_, Nothing) -> pure (Unproven "not run (olifant doctor --run)")
   (Just td, Just run) -> case testFiles of
     [] -> pure (Unproven ("not run: no test file in the " <> count sampleSize <> " sampled"))
-    f : _ ->
+    f : _ -> do
+      -- the program of the command candidate the project's files choose
+      chosen <- chooseTestCommand (fmap isJust . epRead ports) td
+      let program = either (const Nothing) (checkProgram . testCommand . fst) chosen
       run lang [T.pack f] >>= \case
         Left why -> pure (Disproven why)
         Right r | Just why <- trBroken r -> pure (Disproven (T.pack f <> ": " <> why))
         Right r ->
-          pure (Proven ("ran " <> fromMaybe "the test command" (checkProgram (testCommand td)) <> " on " <> T.pack f <> ", " <> count (length (trPassed r) + length (trFailed r)) <> " results parsed (" <> testFormat td <> ")"))
+          pure (Proven ("ran " <> maybe "the test command" (T.replace "{= root =}/" "") program <> " on " <> T.pack f <> ", " <> count (length (trPassed r) + length (trFailed r)) <> " results parsed (" <> testFormat td <> ")"))
 
 -- | Holes: each kind's placeholder, put in its `wrap`, parses.
 holesProof :: EvidencePorts -> Language -> IO Proof

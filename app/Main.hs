@@ -10,7 +10,7 @@ import Olifant.GitInit (gitInit)
 import Olifant.Cli (DoctorPorts (..), Runtime (..), parseDiffHunks, runCli)
 import Olifant.Model (probeBackend)
 import Data.Maybe (fromMaybe, isJust)
-import System.Directory (findExecutable)
+import System.Directory (doesFileExist, findExecutable)
 import System.Environment (lookupEnv)
 import System.Process (readProcessWithExitCode)
 import Olifant.Language (processCheckerWith, processRunner, processVerifierCancellable)
@@ -65,6 +65,7 @@ main = do
               (T.pack . fromMaybe "" <$> lookupEnv "PATH")
               probeBackend
               (fmap isJust . lookupEnv . T.unpack)
+              doesFileExist
         }
       $ args
   case result of

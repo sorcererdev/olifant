@@ -45,6 +45,8 @@ module Olifant.Language.Adapter
   , defaultUnitWords
   , Provider (..)
   , withProviderRoot
+  , TestCandidate (..)
+  , chooseTestCommand
   , hasUnitRule
   , hasTestUnits
   , mergeLayerTables
@@ -391,8 +393,45 @@ data TestDef = TestDef
   -- ^ `unit = { provider = [...] }`: a program answers the test-units slot
   , testSelectProvider :: Maybe Provider
   -- ^ `select = { provider = [...] }`: a program turns ids into arguments
+  , testCandidates :: [TestCandidate]
+  -- ^ `command = [{ when, command, context }, …]`: the commands to choose
+  -- from ('chooseTestCommand'); none for a bare `command`
+  , testDir :: Maybe FilePath
+  -- ^ the folder on disk a run's files are relative to, @{= root =}@: the
+  -- project's (set at load, 'withProviderRoot'), narrowed to the package by
+  -- 'Olifant.Language.Check.runTestsIn'; unknown for a language read alone
   }
   deriving stock (Eq, Show)
+
+-- | One candidate of a `[test] command` list: its command, used when one
+-- of its @when@ files exists under the package (always, without @when@),
+-- with its own @context@ globs (the table's, without).
+data TestCandidate = TestCandidate {tcWhen :: [Text], tcCommand :: [Text], tcContext :: Maybe [Text]}
+  deriving stock (Eq, Show)
+
+-- | The test definition a run uses: its first candidate whose `when` names
+-- a file that EXISTS (a path from the package's root) as its command and
+-- context, and why it was chosen (`uv.lock found`; with no `when`, the
+-- earlier candidates' files missing). A bare command is its own choice,
+-- with no reason. Left when no candidate fits.
+chooseTestCommand :: Monad m => (FilePath -> m Bool) -> TestDef -> m (Either Text (TestDef, Maybe Text))
+chooseTestCommand exists td = go [] (testCandidates td)
+  where
+    go _ [] | null (testCandidates td) = pure (Right (td, Nothing))
+    go missed [] = pure (Left ("no [test] command fits here: no " <> orList (reverse missed)))
+    go missed (c : rest) = case tcWhen c of
+      [] -> pure (Right (use c, if null missed then Nothing else Just ("no " <> orList (reverse missed))))
+      ws -> firstM ws >>= \case
+        Just w -> pure (Right (use c, Just (w <> " found")))
+        Nothing -> go (reverse ws ++ missed) rest
+    firstM = \case
+      [] -> pure Nothing
+      w : ws -> exists (T.unpack w) >>= \b -> if b then pure (Just w) else firstM ws
+    use c = td {testCommand = tcCommand c, testContext = fromMaybe (testContext td) (tcContext c)}
+    orList = \case
+      [] -> ""
+      [a] -> a
+      xs -> T.intercalate ", " (init xs) <> " or " <> last xs
 
 -- | `[test.stub]`: a new test. 'sdTest' (`test`), its text, a template
 -- over @{= name =}@, @{= unit =}@, @{= module =}@, @{= indent =}@ and
@@ -701,7 +740,8 @@ languageFrom presets name grammarDir top = do
       case select of
         Just (Select a b _) | any ("{= group =}" `T.isInfixOf`) (a ++ b), Nothing <- fileGroup, not hasModuleOf -> Left "[test.select] uses {= group =}, which needs `file_group` (or [imports] module_of)"
         _ -> Right ()
-      TestDef <$> required "command" (list text) t <*> (fromMaybe [] <$> optional "context" (list text) t) <*> pure format
+      (command, candidates) <- required "command" commandFrom t
+      TestDef command <$> (fromMaybe [] <$> optional "context" (list text) t) <*> pure format
         <*> (fromMaybe [] <$> optional "root" (list text) t) <*> required "tests_for" text t
         <*> pure linesFormat <*> pure convert
         <*> pure unitRules
@@ -717,6 +757,18 @@ languageFrom presets name grammarDir top = do
         <*> optional "failure" (table >=> failureFrom) t
         <*> pure unitProvider
         <*> pure selectProvider
+        <*> pure candidates
+        <*> pure Nothing
+    -- a bare command, or candidates: the unconditional one's command until
+    -- one is chosen ('chooseTestCommand')
+    commandFrom v = case list text v of
+      Right argv -> Right (argv, [])
+      Left _ -> do
+        cs <- first ("`[test] command`: expected a command or a list of { when, command, context }: " <>) (list (table >=> candidateFrom) v)
+        Right (maybe [] tcCommand (find (null . tcWhen) cs), cs)
+    candidateFrom c = do
+      onlyKeys ["when", "command", "context"] c
+      TestCandidate <$> (fromMaybe [] <$> optional "when" (list text) c) <*> required "command" (list text) c <*> optional "context" (list text) c
     templateOver key vars src = do
       tp <- first (\e -> "`" <> key <> "`: " <> describeTemplateError e) (parseTemplate src)
       if freeVariables tp `S.isSubsetOf` S.fromList vars then Right src else Left ("`" <> key <> "` may use only " <> T.intercalate ", " ["{= " <> v <> " =}" | v <- vars])
@@ -847,13 +899,14 @@ mergeLayerTables = M.unionWith (flip merge)
       | otherwise = TTable (mergeLayerTables old new)
     merge new _ = new
 
--- | Every provider of the language runs from the project root.
+-- | Every provider of the language runs from the project root, and its
+-- test runs know it ('testDir', @{= root =}@).
 withProviderRoot :: FilePath -> Language -> Language
 withProviderRoot root lang =
   lang
     { langUnitProvider = rooted <$> langUnitProvider lang
     , langAnchorProvider = rooted <$> langAnchorProvider lang
-    , langTest = (\td -> td {testUnitProvider = rooted <$> testUnitProvider td, testSelectProvider = rooted <$> testSelectProvider td}) <$> langTest lang
+    , langTest = (\td -> td {testUnitProvider = rooted <$> testUnitProvider td, testSelectProvider = rooted <$> testSelectProvider td, testDir = Just root}) <$> langTest lang
     }
   where
     rooted p = p {provRoot = Just root}

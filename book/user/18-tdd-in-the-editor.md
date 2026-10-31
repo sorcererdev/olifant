@@ -458,16 +458,35 @@ preset    = "pytest"
 tests_for = "{= dir =}/{= stem =}__test.py"
 ```
 
-- **`preset = "pytest"`**: pytest through `uv`, in Olifant's own venv for the project, its
-  output read for which test failed, where and why. You never name the venv.
+- **`preset = "pytest"`**: pytest as the project runs it, its output read for which test
+  failed, where and why. With a `uv.lock`, through `uv`, in Olifant's own venv for the project;
+  else the project's `.venv/bin/pytest` or `venv/bin/pytest` (a poetry or pip venv); else
+  `pytest` from PATH. You never name the venv. `olifant doctor` says which it chose and why
+  (`test runner .venv/bin/pytest (python) — …; .venv/bin/pytest found`). A test's id is
+  pytest's: `path::Class::test_y` for a method of any class (a Django `TestCase` subclass too).
 - **`tests_for`**: the test file of a module, `{= dir =}` its folder and `{= stem =}` its name
   without the extension. `close_table.py`'s tests are `close_table__test.py`.
 
-When no preset fits, `command` (with `{= tests =}` for the test ids), `format` (`pytest`),
-`context` and `root` are the overrides, as for `[check]`
-([chapter 9](09-packs-and-language-adapters.md#presets-check-and-test)). A generator's hole may
+When no preset fits, `command` (with `{= tests =}` for the test ids and `{= root =}` for the
+package folder on disk, since tests run in a scratch copy), `format` (`pytest`), `context` and
+`root` are the overrides, as for `[check]`; `command` may be a list of candidates, each used when
+its `when` file exists ([chapter 9](09-packs-and-language-adapters.md#test-command-candidates)). A generator's hole may
 say `verify = "tests"` to be verified by the module's tests ([chapter 12](12-holes-and-models.md)).
 `olifant doctor` has a line for the runner (`test runner uv (python)`).
+
+The preset leaves the project's pytest `addopts` alone: they apply to Olifant's runs too. When
+they parallelise (`-n 8` with pytest-xdist) or slow a single test's run, a project layer can turn
+them off for Olifant:
+
+```toml
+# .olifant/languages/python.toml
+[test]
+preset  = "pytest"
+command = ["{= root =}/.venv/bin/pytest", "-q", "-rA", "--tb=short", "-p", "no:cacheprovider", "-p", "no:xdist", "-o", "addopts=", "{= tests =}"]
+```
+
+`-o addopts=` drops all of them, the ones the tests need too (pytest-django's `--ds=…`,
+`--reuse-db`): put those back after it.
 
 ## Limits
 

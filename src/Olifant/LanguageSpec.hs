@@ -19,7 +19,7 @@ import Olifant.Language.Presets (shippedPresets)
 import Olifant.Toml (mergeTables, parseToml)
 import Olifant.Language.AstGrep (astGrepSyntax)
 import Olifant.Server (Unit (..), unitAt)
-import System.Directory (doesDirectoryExist, findExecutable, getCurrentDirectory, getTemporaryDirectory, listDirectory)
+import System.Directory (createDirectoryIfMissing, doesDirectoryExist, findExecutable, getCurrentDirectory, getPermissions, getTemporaryDirectory, listDirectory, setOwnerExecutable, setPermissions)
 import System.Environment (lookupEnv)
 import System.FilePath (takeExtension, (</>))
 import Olifant.Template (Value (..))
@@ -35,6 +35,7 @@ import Olifant.Output (anchorsHuman, anchorsJson)
 import Olifant.Process (neverCancel)
 import Data.IORef (newIORef, readIORef, writeIORef)
 import Test.Hspec
+import Data.Functor.Identity (Identity (..))
 
 cb :: Text
 cb = "src/bistro/booking/commands/cancel_booking__test.py"
@@ -69,6 +70,30 @@ spec = do
       testRoot t `shouldBe` ["pyproject.toml"]
       testsFor t `shouldBe` "{= dir =}/{= stem =}__test.py"
       last (testCommand t) `shouldBe` "{= tests =}"
+    it "(a2) the pytest preset picks the runner the project uses: uv, a venv's, or PATH's" $ do
+      let Right lang = py ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[test]", "preset = \"pytest\""]
+          Just t = langTest lang
+          pick present = runIdentity (chooseTestCommand (\f -> Identity (f `elem` present)) t)
+          Right (uv, uvWhy) = pick ["uv.lock", ".venv/bin/pytest"]
+          Right (venv, venvWhy) = pick [".venv/bin/pytest"]
+          Right (plain, _) = pick ["venv/bin/pytest"]
+          Right (path, pathWhy) = pick []
+      (take 1 (drop 3 (testCommand uv)), uvWhy) `shouldBe` (["run"], Just "uv.lock found")
+      testContext uv `shouldBe` ["pyproject.toml", "uv.lock"]
+      (take 1 (testCommand venv), venvWhy, testContext venv) `shouldBe` (["{= root =}/.venv/bin/pytest"], Just ".venv/bin/pytest found", ["pyproject.toml"])
+      take 1 (testCommand plain) `shouldBe` ["{= root =}/venv/bin/pytest"]
+      (take 1 (testCommand path), pathWhy) `shouldBe` (["pytest"], Just "no uv.lock, .venv/bin/pytest or venv/bin/pytest")
+      map last [testCommand uv, testCommand venv, testCommand plain, testCommand path] `shouldBe` replicate 4 "{= tests =}"
+    it "(a3) a bare command is its own choice; candidates must each have a command; none fitting is an error" $ do
+      let x = parseLanguage "x" "/x" . T.unlines . (["files = [\"**/*.x\"]", "comment = \"#\"", "grammar = \"x\"", "[test]", "format = \"tap\"", "tests_for = \"t\""] ++)
+          Right bare = x ["command = [\"run\"]"]
+          Just bt = langTest bare
+      runIdentity (chooseTestCommand (const (Identity True)) bt) `shouldBe` Right (bt, Nothing)
+      x ["command = [{ when = [\"a\"] }]"] `shouldSatisfy` either ("command" `T.isInfixOf`) (const False)
+      let Right picky = x ["command = [{ when = [\"a\", \"b\"], command = [\"one\"] }]"]
+          Just pt = langTest picky
+      fmap (testCommand . fst) (runIdentity (chooseTestCommand (\f -> Identity (f == "b")) pt)) `shouldBe` Right ["one"]
+      runIdentity (chooseTestCommand (const (Identity False)) pt) `shouldBe` Left "no [test] command fits here: no a or b"
     it "(b) the table's own keys win over the preset's" $ do
       let Right lang = py ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[test]", "preset = \"pytest\"", "tests_for = \"tests/test_{= stem =}.py\"", "root = [\"setup.cfg\"]"]
       fmap testRoot (langTest lang) `shouldBe` Just ["setup.cfg"]
@@ -174,7 +199,7 @@ spec = do
       out <- TIO.readFile "src/Olifant/Language/testdata/pytest/all-passed.txt"
       parsePytest ExitSuccess out `shouldSatisfy` \r -> null (trFailed r) && length (trPassed r) == 4 && trBroken r == Nothing
     it "(c) testsForFile: the module's test file" $
-      testsForFile (TestDef [] [] "pytest" [] "{= dir =}/{= stem =}__test.py" Nothing [] [] Nothing Nothing False Nothing [] Nothing Nothing Nothing Nothing [] Nothing Nothing Nothing) "src/bistro/booking/commands/close_table.py"
+      testsForFile (TestDef [] [] "pytest" [] "{= dir =}/{= stem =}__test.py" Nothing [] [] Nothing Nothing False Nothing [] Nothing Nothing Nothing Nothing [] Nothing Nothing Nothing [] Nothing) "src/bistro/booking/commands/close_table.py"
         `shouldBe` "src/bistro/booking/commands/close_table__test.py"
     it "(d) a run that could not start is broken, not red" $ do
       out <- TIO.readFile "src/Olifant/Language/testdata/pytest/broken.txt"
@@ -335,6 +360,42 @@ spec = do
         Right _ <- runTests (processRunner neverCancel 60) (selLang "selects.sh") ["a_t.x::t1"] (M.fromList [("a_t.x", "")])
         lines <$> readFile (out </> "argv") `shouldReturn` ["--only", "picked"]
         runTests (processRunner neverCancel 60) (selLang "fails.sh") ["a_t.x::t1"] (M.fromList [("a_t.x", "")]) `shouldReturn` Left "the test selection provider: no grammar"
+    it "{= root =} is the package folder on disk (the project's without root markers), the program too" $
+      withSystemTempDirectory "olifant-root" $ \proj -> do
+        createDirectoryIfMissing True (proj </> "pkg" </> "bin")
+        let runner = proj </> "pkg" </> "bin" </> "run"
+        writeFile runner "#!/bin/sh\nprintf '%s' \"$1\" > \"$1/said\"\necho '{\"passed\":[\"a_t.x::t1\"]}'\n"
+        p <- getPermissions runner
+        setPermissions runner (setOwnerExecutable True p)
+        let Right lang0 = parseLanguage "x" "/x" (T.unlines
+              [ "files = [\"**/*.x\"]", "comment = \"#\"", "grammar = \"x\""
+              , "[test]", "command = [\"{= root =}/bin/run\", \"{= root =}\", \"{= tests =}\"]", "root = [\"marker.cfg\"]"
+              , "tests_for = \"{= stem =}_t.x\"", "format = \"olifant-json\""
+              ])
+            lang = withProviderRoot proj lang0
+        Right run <- runTestsIn (processRunner neverCancel 60) lang ["pkg/a_t.x"] (M.fromList [("pkg/a_t.x", ""), ("pkg/marker.cfg", "")])
+        trPassed run `shouldBe` ["pkg/a_t.x::t1"]
+        readFile (proj </> "pkg" </> "said") `shouldReturn` (proj </> "pkg")
+        let Right bare = parseLanguage "x" "/x" (T.unlines
+              [ "files = [\"**/*.x\"]", "comment = \"#\"", "grammar = \"x\""
+              , "[test]", "command = [\"sh\", \"-c\", \"printf '%s' \\\"$0\\\" > \\\"$0/said\\\"; echo '{}'\", \"{= root =}\"]"
+              , "tests_for = \"{= stem =}_t.x\"", "format = \"olifant-json\""
+              ])
+        _ <- runTestsIn (processRunner neverCancel 60) (withProviderRoot proj bare) ["a_t.x"] (M.fromList [("a_t.x", "")])
+        readFile (proj </> "said") `shouldReturn` proj
+    it "a run uses the first command candidate whose `when` file is in the files or on disk" $
+      withSystemTempDirectory "olifant-pick" $ \proj -> do
+        let Right lang0 = parseLanguage "x" "/x" (T.unlines
+              [ "files = [\"**/*.x\"]", "comment = \"#\"", "grammar = \"x\""
+              , "[test]", "tests_for = \"{= stem =}_t.x\"", "format = \"olifant-json\""
+              , "command = [{ when = [\"flag.cfg\"], command = [\"sh\", \"-c\", \"echo '{\\\"passed\\\":[\\\"a_t.x::first\\\"]}'\"] }, { command = [\"sh\", \"-c\", \"echo '{\\\"passed\\\":[\\\"a_t.x::second\\\"]}'\"] }]"
+              ])
+            lang = withProviderRoot proj lang0
+            ran fs = either (const []) trPassed <$> runTestsIn (processRunner neverCancel 60) lang ["a_t.x"] (M.fromList fs)
+        ran [("a_t.x", "")] `shouldReturn` ["a_t.x::second"]
+        ran [("a_t.x", ""), ("flag.cfg", "")] `shouldReturn` ["a_t.x::first"]
+        writeFile (proj </> "flag.cfg") ""
+        ran [("a_t.x", "")] `shouldReturn` ["a_t.x::first"]
     it "the [test] timeout wins over the caller's" $ do
       let Right lang = parseLanguage "haskell" "/h" (hsToml ["command = [\"sleep\", \"5\"]", "timeout = 1"])
       Right run <- runTests (processRunner neverCancel 60) lang [T.pack specFile] (M.fromList [(specFile, "module Olifant.PlansSpec (spec) where\n")])
