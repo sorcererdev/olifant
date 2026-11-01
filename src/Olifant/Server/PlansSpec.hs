@@ -40,12 +40,33 @@ spec = describe "Olifant.Server.Plans (anchors in the server)" $ do
     rsUnit <$> resolveAnchor s proj (Anchor "notes.txt" "X" 0 0) `shouldReturn` Nothing
   it "diagnoses stale and missing anchors on their columns" $ do
     (s, proj) <- planServer
-    ds <- planDiagnostics s proj "/r1/plans/t.md" "- a @src/a.py:Foo.bar ✓ 0000000\n- b @src/a.py:Gone\n- c @src/a.py:Foo.bar\n"
+    (ds, _) <- planDiagnostics s proj "/r1/plans/t.md" "- a @src/a.py:Foo.bar ✓ 0000000\n- b @src/a.py:Gone\n- c @src/a.py:Foo.bar\n"
     map (\d -> (d ^. L.message, d ^. L.range . L.start . L.line, d ^. L.severity)) ds
-      `shouldBe` [("✗ changed since 0000000", 0, Just DiagnosticSeverity_Information), ("? not found", 1, Just DiagnosticSeverity_Hint)]
+      `shouldBe` [("changed since this was verified", 0, Just DiagnosticSeverity_Information), ("? not found", 1, Just DiagnosticSeverity_Hint)]
+  it "evidence under a question raises no changed-since" $ do
+    (s, proj) <- planServer
+    (ds, _) <- planDiagnostics s proj "/r1/plans/t.md" "- ? q\n  - grounded @src/a.py:Foo.bar ✓ 0000000\n  - ✓ fine @src/a.py:Foo.bar ✓ 0000000\n"
+    ds `shouldBe` []
+  it "a claim outside any question raises changed since this was verified" $ do
+    (s, proj) <- planServer
+    (ds, _) <- planDiagnostics s proj "/r1/plans/t.md" "- a @src/a.py:Foo.bar ✓ 0000000\n"
+    map (\d -> (d ^. L.message, d ^. L.severity)) ds `shouldBe` [("changed since this was verified", Just DiagnosticSeverity_Information)]
+  it "a step's changed anchor raises nothing" $ do
+    (s, proj) <- planServer
+    (ds, _) <- planDiagnostics s proj "/r1/plans/t.md" "- [ ] a @src/a.py:Foo.bar ✓ 0000000\n- [x] b @src/a.py:Foo.bar ✓ 0000000\n"
+    ds `shouldBe` []
+  it "inside a ticked step only not found is raised" $ do
+    (s, proj) <- planServer
+    (ds, _) <- planDiagnostics s proj "/r1/plans/t.md" "- [x] a\n  - claim @src/a.py:Foo.bar ✓ 0000000\n  - claim @src/a.py:Gone\n"
+    map (\d -> (d ^. L.message, d ^. L.range . L.start . L.line)) ds `shouldBe` [("? not found", 2)]
+  it "returns the fingerprints it read" $ do
+    (s, proj) <- planServer
+    (_, prints) <- planDiagnostics s proj "/r1/plans/t.md" "- a @src/a.py:Foo.bar\n- b @src/a.py:Gone\n"
+    fmap (fmap T.length) (M.lookup ("src/a.py", "Foo.bar") prints) `shouldBe` Just (Just 7)
+    M.lookup ("src/a.py", "Gone") prints `shouldBe` Just Nothing
   it "a diagnostic's range is the anchor's UTF-16 columns" $ do
     (s, proj) <- planServer
-    ds <- planDiagnostics s proj "/r1/plans/t.md" "- 𝔸 é @src/a.py:Gone\n"
+    (ds, _) <- planDiagnostics s proj "/r1/plans/t.md" "- 𝔸 é @src/a.py:Gone\n"
     map (\d -> (d ^. L.range . L.start . L.character, d ^. L.range . L.end . L.character)) ds `shouldBe` [(7, 21)]
   it "an anchor outside the root, or absolute, is never read: not found" $ do
     (s, proj) <- planServer
@@ -54,7 +75,7 @@ spec = describe "Olifant.Server.Plans (anchors in the server)" $ do
     abs' <- resolveAnchor s proj (Anchor "/r1/src/a.py" "Foo.bar" 0 0)
     (rsUnit abs', rsText abs') `shouldBe` (Nothing, Nothing)
     fmap namedName . rsUnit <$> resolveAnchor s proj (Anchor "src/../src/a.py" "Foo.bar" 0 0) `shouldReturn` Just "Foo.bar"
-    ds <- planDiagnostics s proj "/r1/plans/t.md" "- a @../a.py:Foo\n- b @/r1/src/a.py:Foo.bar\n- c @src/../src/a.py:Foo.bar\n"
+    (ds, _) <- planDiagnostics s proj "/r1/plans/t.md" "- a @../a.py:Foo\n- b @/r1/src/a.py:Foo.bar\n- c @src/../src/a.py:Foo.bar\n"
     map (\d -> (d ^. L.message, d ^. L.range . L.start . L.line)) ds `shouldBe` [("? not found", 0), ("? not found", 1)]
     map (^. L.label) <$> anchorItems s proj "- x @../a.py:" `shouldReturn` []
     map (^. L.label) <$> anchorItems s proj "- x @/r1/src/a.py:" `shouldReturn` []

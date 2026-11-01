@@ -1280,7 +1280,7 @@ diagnosticsOf env path = do
   fs <- withSnapshot env (findingsFor path)
   text <- documentText env path
   plan <- withSnapshot env (\s -> projectFor path s >>= \case
-    (s', Just (_, project)) | isPlanPath project path -> (s',) <$> planDiagnostics s' project path text
+    (s', Just (_, project)) | isPlanPath project path -> (s',) . fst <$> planDiagnostics s' project path text
     (s', _) -> pure (s', []))
   let ls = T.splitOn "\n" text
       lineText n = fromMaybe "" (listToMaybe (drop (n - 1) ls))

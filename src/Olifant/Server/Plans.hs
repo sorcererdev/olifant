@@ -127,19 +127,26 @@ resolveAll s p as = M.fromList <$> mapM (\a -> (key a,) <$> resolveAnchor s p a)
 key :: Anchor -> (FilePath, Text)
 key a = (anPath a, anUnit a)
 
--- | A plan's anchors that no longer hold: one verified at another
--- fingerprint (information), one whose unit is not found (a hint), each
--- over the anchor's columns on its line.
-planDiagnostics :: ServerState -> Project -> FilePath -> Text -> IO [Diagnostic]
+-- | A plan's anchors that no longer hold, over the anchor's columns on its
+-- line: one whose unit is not found (a hint, anywhere), and a claim of the
+-- user's own verified at another fingerprint (information; "changed since
+-- this was verified"), but not inside a question (evidence is history) nor
+-- a ticked step. Steps raise no changed-since. With them, the fingerprints
+-- read: every resolved anchor's, Nothing for a unit not found.
+planDiagnostics :: ServerState -> Project -> FilePath -> Text -> IO ([Diagnostic], AnchorPrints)
 planDiagnostics s p _ text = do
-  let anchored = [(l, a) | l <- parsePlan text, Just a <- [lnAnchor l]]
+  let ls = parsePlan text
+      anchored = [(l, a) | l <- ls, Just a <- [lnAnchor l]]
   resolved <- resolveAll s p (map snd anchored)
-  pure (mapMaybe (\(l, a) -> diagnose l a =<< M.lookup (key a) resolved) anchored)
+  pure
+    ( mapMaybe (\(l, a) -> diagnose ls l a =<< M.lookup (key a) resolved) anchored
+    , M.map (\r -> rsFingerprint r <* rsUnit r) resolved )
   where
-    diagnose l a r = case (rsUnit r, lnVerdict l, rsFingerprint r) of
+    diagnose ls l a r = case (rsUnit r, lnVerdict l, rsFingerprint r) of
       (Nothing, _, _) -> Just (at l a DiagnosticSeverity_Hint "? not found")
-      (Just _, Verified fp, Just now) | fp /= now -> Just (at l a DiagnosticSeverity_Information ("✗ changed since " <> fp))
+      (Just _, Verified fp, Just now) | fp /= now, lnKind l == Claim, not (any (shelters . lnKind) (ancestorsIn ls l)) -> Just (at l a DiagnosticSeverity_Information "changed since this was verified")
       _ -> Nothing
+    shelters = \case Question -> True; Step True -> True; _ -> False
     at l a sev msg = Diagnostic (columns l a) (Just sev) Nothing Nothing (Just "olifant") msg Nothing Nothing Nothing
     columns l a =
       let row = fromIntegral (lnRow l)
@@ -170,12 +177,8 @@ planTokenModifiers = ["done", "stale", "notFound"]
 planTokens :: AnchorPrints -> [Line] -> [PlanToken]
 planTokens prints ls = concatMap tokensOf ls
   where
-    -- the nearest preceding step or question with a smaller indent
-    parentOf l = case [p | p <- reverse (takeWhile ((< lnRow l) . lnRow) ls), isSQ (lnKind p), lnIndent p < lnIndent l] of
-      p : _ -> Just p
-      [] -> Nothing
-    isSQ = \case Step _ -> True; Question -> True; _ -> False
-    ancestors l = maybe [] (\p -> p : ancestors p) (parentOf l)
+    parentOf = parentIn ls
+    ancestors = ancestorsIn ls
     below l = any (\a -> lnKind a == Step True) (ancestors l)
     tokensOf l = case lnKind l of
       Heading _ -> []
@@ -233,6 +236,18 @@ planTokens prints ls = concatMap tokensOf ls
             | (c, n, ty, ms) <- spans
             , let col k = utf16Length (T.take k txt)
             ]
+
+-- | A line's parent: the nearest preceding step or question with a smaller indent.
+parentIn :: [Line] -> Line -> Maybe Line
+parentIn ls l = case [p | p <- reverse (takeWhile ((< lnRow l) . lnRow) ls), isSQ (lnKind p), lnIndent p < lnIndent l] of
+  p : _ -> Just p
+  [] -> Nothing
+  where
+    isSQ = \case Step _ -> True; Question -> True; _ -> False
+
+-- | A line's parent, its parent's, and so on.
+ancestorsIn :: [Line] -> Line -> [Line]
+ancestorsIn ls l = maybe [] (\p -> p : ancestorsIn ls p) (parentIn ls l)
 
 -- | The ranges a plan folds besides its excerpts: a ticked step with
 -- children, and a question with an unanchored claim directly under it,
