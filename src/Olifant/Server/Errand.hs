@@ -65,7 +65,7 @@ statusName = \case
 -- | The flags after the runner's name; @testTools@ are the project's test commands (for 'Do').
 runnerArgs :: PlansConfig -> Verb -> [Text] -> Maybe Text -> [String]
 runnerArgs cfg verb testTools resume =
-  ["-p", "--output-format", "json", "--model", T.unpack (pcModel cfg)]
+  ["-p", "--output-format", "json", "--model", T.unpack (pcModel cfg), "--permission-prompts", "none"]
     -- a reopen: the do's thread, in a fork so the run has its own session
     ++ maybe [] (\sid -> ["--resume", T.unpack sid, "--fork-session"]) resume
     ++ case verb of
@@ -266,6 +266,8 @@ errandPrompt verb unitWords testCmd plan ls target grounded =
         , "When you are finished, your final message is only"
         , "one line per unit you created or changed, exactly"
         , "DONE @<path>:<Unit>"
+        , "and one line per file you changed that holds no such unit (a stylesheet, a template, a data file), exactly"
+        , "DONE @<path>"
         , "or, if you cannot do it, one line, exactly"
         , "BLOCKED <why, one sentence>"
         , anchorRule unitWords, noProse ]
@@ -358,16 +360,19 @@ parseDo ls target rows = (blocks, dropped)
       Step _ -> lnIndent l < lnIndent target
       _ -> False
     ind = lnIndent stepLine + 2
-    parsed = map (classifyDo ind) rows
+    parsed = [c | c <- map (classifyDo ind) rows, not (isFileDone c)]
+    isFileDone = \case
+      Right (Right (Left _)) -> True
+      _ -> False
     -- the step's own anchor (and a test child's) is no `also`
     own a = any (same a) [b | Just b <- [lnAnchor stepLine, lnAnchor target]]
     anchors = filter (not . own) (nub' [a | Right (Left a) <- parsed])
     nub' = foldl (\acc a -> if any (same a) acc then acc else acc ++ [a]) []
     same a b = anPath a == anPath b && anUnit a == anUnit b
-    blocked = take 1 [w | Right (Right w) <- parsed]
+    blocked = take 1 [w | Right (Right (Right w)) <- parsed]
     questions = [g | Left (Just g) <- parsed]
     usedDone = length [() | Right (Left _) <- parsed]
-    usedBlocked = length [() | Right (Right _) <- parsed]
+    usedBlocked = length [() | Right (Right (Right _)) <- parsed]
     dropped = length [() | Left Nothing <- parsed] + (usedDone - length (nub' [a | Right (Left a) <- parsed])) + (usedBlocked - length blocked)
     unanchored = case lnAnchor stepLine of
       Nothing | Step _ <- lnKind stepLine -> True
@@ -381,13 +386,17 @@ parseDo ls target rows = (blocks, dropped)
     fixFirst x = x
     blocks = [Block (lnRow stepLine) Nothing gs | not (null gs)]
 
--- | One line of a `do`'s answer: a DONE anchor, a BLOCKED reason, a
--- question ghost (indented by IND), or out of the grammar.
-classifyDo :: Int -> Text -> Either (Maybe Ghost) (Either Anchor Text)
+-- | One line of a `do`'s answer: a DONE anchor, a DONE of a file with no
+-- unit (`DONE @<path>`, or a path with a unit the anchor syntax cannot
+-- hold, such as a CSS selector), a BLOCKED reason, a question ghost
+-- (indented by IND), or out of the grammar.
+classifyDo :: Int -> Text -> Either (Maybe Ghost) (Either Anchor (Either FilePath Text))
 classifyDo ind l
   | Just r <- T.stripPrefix "DONE" l, T.isPrefixOf " " r || T.isPrefixOf "\t" r
   , Just a <- exactAnchor (T.strip r) = Right (Left a)
-  | Just r <- T.stripPrefix "BLOCKED" l, T.isPrefixOf " " r, not (T.null (T.strip r)) = Right (Right (T.strip r))
+  | Just r <- T.stripPrefix "DONE" l, T.isPrefixOf " " r || T.isPrefixOf "\t" r
+  , Just f <- fileOnly (T.strip r) = Right (Right (Left f))
+  | Just r <- T.stripPrefix "BLOCKED" l, T.isPrefixOf " " r, not (T.null (T.strip r)) = Right (Right (Right (T.strip r)))
   | "- ? " `T.isPrefixOf` l = Left (Just (Ghost (pad ind l) Nothing))
   | otherwise = Left Nothing
   where
@@ -396,6 +405,13 @@ classifyDo ind l
         Just a | anStart a == 0, anEnd a == T.length r -> Just a
         _ -> Nothing
       Nothing -> Nothing
+    -- "@<path>" alone, or "@<path>:<anything>": the path up to the first colon or space
+    fileOnly r = case T.stripPrefix "@" r of
+      Just p
+        | let path = T.takeWhile (\c -> c /= ':' && c /= ' ' && c /= '\t') p
+        , not (T.null path)
+        , T.length path == T.length p || T.isPrefixOf ":" (T.drop (T.length path) p) -> Just (T.unpack path)
+      _ -> Nothing
 
 -- | Whether a `do`'s answer reported in its grammar (a DONE or a BLOCKED
 -- line), though it may leave no ghost: DONE of the step's own unit only.

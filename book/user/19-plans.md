@@ -103,9 +103,9 @@ wins: `planEvidence`, `planAlso` and `planJournal` to `Comment`, `planQuestion` 
     project's test command, which its prompt names exactly (no pipe, no `cd`) as the one shell
     command it may run, the path as you configured it (an absolute program inside the project
     is allowed by its relative path too). Its prompt says up front that files change only through
-    its Edit and Write tools, never a shell heredoc, `cat >`, `sed -i` or `python -`. It is told Olifant
+    its Edit and Write tools, never a shell heredoc, `cat >`, `sed -i` or `python -`. Any other command is refused, and the refusal is final: the runner tells it not to try again. It is told Olifant
     runs the step's tests after it, so tests it could not run are no reason to answer `BLOCKED`. A
-    `DONE` of the step's own unit is no `also` line. In a git repository a `do` ends in a review ([below](#reviews-and-the-journal)): its diff, and `revert` to undo it.
+    `DONE` of the step's own unit is no `also` line. A file with no unit (a stylesheet, a template, a data file) it reports as `DONE @<path>`, which counts as an answer and leaves no line (a `DONE @<path>:<selector>` that the anchor syntax cannot hold counts the same). In a git repository a `do` ends in a review ([below](#reviews-and-the-journal)): its diff, and `revert` to undo it.
   The prompt holds the plan and the bodies of the units it anchors. The answer is read against the
   grammar: lines outside it are dropped, anchors that do not resolve are kept as `? not found`,
   and both are counted in the notification. An answer with nothing in the grammar is an error.
@@ -128,7 +128,7 @@ In `.olifant/config.toml`, all optional:
 | key | default | meaning |
 |---|---|---|
 | `dir` | `"plans"` | the folder, under the project, of plans (durandal.nvim's `plans.dir` must match) |
-| `runner` | `"claude"` | the command run; `CLAUDECODE` is unset for it |
+| `runner` | `"claude"` | the command run; `CLAUDECODE` is unset for it; it must accept `--permission-prompts` (Claude Code 2.1.259 or later) |
 | `model` | `"sonnet"` | passed as `--model` |
 | `timeout` | `300` | seconds before an errand is killed |
 | `do_tools` | `[]` | extra `--allowedTools` entries for `do` (beyond Read, Grep, Glob, Edit, Write and the test command) |

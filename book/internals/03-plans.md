@@ -121,6 +121,8 @@ starting).
 4. **Run the runner** (`runClaude`, `Errand.hs:74`): `[plans] runner` with `-p
    --output-format json --model <model>` and `--allowedTools Read,Grep,Glob` (a `do` adds
    `Edit`, `Write`, the test tool and `[plans] do_tools`, and `--permission-mode acceptEdits`).
+   `--permission-prompts none` (every verb): a refused call is denied at once and the runner
+   tells the model it will stay denied, so a denial costs one turn and is never retried.
    The test tool (`doTestTools`, `Errand.hs`; `testTools` in `Server/Plans.hs`) is the command as
    the prompt prints it, up to its `{= tests =}` slot, as a prefix pattern
    (`Bash(uv run --frozen pytest -q*)`), and, when its program is an absolute path inside the
@@ -131,7 +133,9 @@ starting).
 5. **Read the answer** (`parseAnswer`): lines outside the grammar are dropped and counted;
    anchors that do not resolve are kept as `? not found` and counted. The result is `Block`s of
    `Ghost` lines to insert after a row. An answer with nothing in the grammar is `Empty`, an
-   error.
+   error. A `do`'s lines go through `classifyDo`: `DONE @<path>:<Unit>`, `DONE @<path>` for a
+   file with no unit (or a path whose unit the anchor syntax cannot hold, such as a CSS selector;
+   this answers the `do` without a ghost, see `doAnswered`), `BLOCKED <why>`, or a `- ?` line.
 6. **Record it.** Every ending that reached the runner appends an `AnErrand` record to
    `errands.jsonl` and a `plan-<verb>` line to the step log. The id (`errandId`,
    `Telemetry.hs:172`) is the runner's session id when it answered, so the editor's later
@@ -383,7 +387,8 @@ temp folder, scripts the model answers with a recorded decider (`scDecideAnswers
   `Loop` and `Journal` (the loop's re-mark of pending test children, the journal's lines as
   facts).
 - **`runClaude` is named for one runner.** `[plans] runner` is any command that takes the flags
-  of `runnerArgs` and prints Claude Code's JSON; nothing checks that, and `denialsIn` reads
+  of `runnerArgs` (`--permission-prompts` needs Claude Code 2.1.259 or later) and prints Claude
+  Code's JSON; nothing checks that, and `denialsIn` reads
   Claude's `permission_denials` shape.
 - **A review is a snapshot of the whole tree.** Reverting a `do` restores the reference, not a
   reverse patch, so a file you edited after the `do` is reverted with it, and two open reviews
