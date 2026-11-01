@@ -98,6 +98,9 @@ data Env = Env
     envCancel :: Cancel
   , -- | held while a plan's `do` runs: one edits the tree at a time
     envDoing :: MVar ()
+  , -- | each plan's anchor fingerprints as the diagnostics pass last read
+    -- them: what its semantic tokens mark stale
+    envPlanPrints :: IORef (M.Map FilePath AnchorPrints)
   }
 
 -- | A suggestion's plan, for the document version it was planned against.
@@ -138,9 +141,10 @@ advertise out
       Just (Object o)
         | Just (Object result) <- KM.lookup "result" o
         , Just (Object caps) <- KM.lookup "capabilities" result ->
-            -- inline completion (lsp-types predates it); no semantic tokens,
-            -- which lsp advertises by default though nothing answers them
-            let caps' = KM.delete "semanticTokensProvider" (KM.insert "inlineCompletionProvider" (Bool True) caps)
+            -- inline completion (lsp-types predates it); semantic tokens with
+            -- the plan legend (only plans have tokens: full, no range, no delta)
+            let legend = object ["tokenTypes" .= planTokenTypes, "tokenModifiers" .= planTokenModifiers]
+                caps' = KM.insert "semanticTokensProvider" (object ["legend" .= legend, "full" .= True]) (KM.insert "inlineCompletionProvider" (Bool True) caps)
              in Aeson.encode (Object (KM.insert "result" (Object (KM.insert "capabilities" (Object caps') result)) o))
       _ -> out
 
@@ -150,7 +154,7 @@ serverDefinition ports = do
   -- a conjure asks the document's version as the editor has it now, not as
   -- its snapshot saw it, before its edits land
   modifyMVar_ state (\s -> pure s {ssLiveDoc = Just (\path -> M.lookup path . ssDocs <$> readMVar state)})
-  env <- Env ports state <$> newJobs <*> newIORef (0, M.empty) <*> newIORef False <*> newIORef S.empty <*> newIORef M.empty <*> newIORef M.empty <*> pure neverCancel <*> newMVar ()
+  env <- Env ports state <$> newJobs <*> newIORef (0, M.empty) <*> newIORef False <*> newIORef S.empty <*> newIORef M.empty <*> newIORef M.empty <*> pure neverCancel <*> newMVar () <*> newIORef M.empty
   pure
     ServerDefinition
       { parseConfig = \_ _ -> Right ()
@@ -337,14 +341,19 @@ handlers env =
     , notificationHandler SMethod_WorkspaceDidChangeConfiguration (\_ -> pure ())
     , -- rule findings, pulled (spec §2)
       requestHandler SMethod_TextDocumentDiagnostic $ \req respond -> do
-        items <- case uriToFilePath (req ^. L.params . L.textDocument . L.uri) of
-          Nothing -> pure []
+        (items, printsChanged) <- case uriToFilePath (req ^. L.params . L.textDocument . L.uri) of
+          Nothing -> pure ([], False)
           Just path -> liftIO $ do
             broken <- withSnapshot env (brokenFor path)
             -- a project that does not load says why, on top of every file (review I6)
             let why w = Diagnostic (Range (Position 0 0) (Position 0 0)) (Just DiagnosticSeverity_Error) (Just (InR "config")) Nothing (Just "olifant") ("this project's Olifant configuration does not load: " <> w) Nothing Nothing Nothing
-            (maybe [] (pure . why) broken ++) . map fst <$> diagnosticsOf env path
+            before <- M.lookup path <$> readIORef (envPlanPrints env)
+            found <- map fst <$> diagnosticsOf env path
+            after <- M.lookup path <$> readIORef (envPlanPrints env)
+            pure (maybe [] (pure . why) broken ++ found, before /= after)
         respond (Right (DocumentDiagnosticReport (InL (RelatedFullDocumentDiagnosticReport AString Nothing items Nothing))))
+        -- a changed unit turns a plan's ✓ stale without another edit
+        when printsChanged semanticTokensChanged
     , -- the fixes of the findings on the lines asked about, resolved lazily
       requestHandler SMethod_TextDocumentCodeAction $ \req respond -> do
         let Range (Position from _) (Position to _) = req ^. L.params . L.range
@@ -726,12 +735,25 @@ handlers env =
                     ++ excerptLenses uri ls )
             _ -> pure []
         respond (Right (InL lenses))
-    , -- a plan's excerpts fold: opening row to closing row
+    , -- a plan's spans, classified (the legend is 'planTokenTypes'); any other file has none
+      requestHandler SMethod_TextDocumentSemanticTokensFull $ \req respond -> do
+        encoded <- case uriToFilePath (req ^. L.params . L.textDocument . L.uri) of
+          Nothing -> pure []
+          Just path -> liftIO $ planContext env path >>= \case
+            Just (p, _, text) | isPlanPath p path -> do
+              prints <- M.findWithDefault M.empty path <$> readIORef (envPlanPrints env)
+              pure (encodePlanTokens (planTokens prints (parsePlan text)))
+            _ -> pure []
+        respond (Right (InL (SemanticTokens Nothing encoded)))
+    , -- a plan's excerpts, ticked steps and answered questions fold
       requestHandler SMethod_TextDocumentFoldingRange $ \req respond -> do
         ranges <- case uriToFilePath (req ^. L.params . L.textDocument . L.uri) of
           Nothing -> pure []
           Just path -> liftIO (planContext env path) <&> \case
-            Just (p, _, text) | isPlanPath p path -> [FoldingRange (fromIntegral o) Nothing (fromIntegral c) Nothing Nothing Nothing | (_, o, c) <- excerptSpans (parsePlan text)]
+            Just (p, _, text) | isPlanPath p path ->
+              let ls = parsePlan text
+                  region o c = FoldingRange (fromIntegral o) Nothing (fromIntegral c) Nothing (Just FoldingRangeKind_Region) Nothing
+               in [region o c | (_, o, c) <- excerptSpans ls] ++ [region o c | (o, c) <- planFolds ls]
             _ -> []
         respond (Right (InL ranges))
     , -- a plan against the work: facts to apply, ghost blocks to place
@@ -1280,7 +1302,9 @@ diagnosticsOf env path = do
   fs <- withSnapshot env (findingsFor path)
   text <- documentText env path
   plan <- withSnapshot env (\s -> projectFor path s >>= \case
-    (s', Just (_, project)) | isPlanPath project path -> (s',) <$> planDiagnostics s' project path text
+    (s', Just (_, project)) | isPlanPath project path -> planDiagnostics s' project path text >>= \(ds, prints) -> do
+      atomicModifyIORef' (envPlanPrints env) (\m -> (M.insert path prints m, ()))
+      pure (s', ds)
     (s', _) -> pure (s', []))
   let ls = T.splitOn "\n" text
       lineText n = fromMaybe "" (listToMaybe (drop (n - 1) ls))
@@ -1726,6 +1750,22 @@ errandJson verb a =
     ]
 
 -- | The open reviews changed: the editor asks for the lenses again.
+semanticTokensChanged :: LspM () ()
+semanticTokensChanged = void (sendRequest SMethod_WorkspaceSemanticTokensRefresh Nothing (\_ -> pure ()))
+
+-- | Tokens as the protocol's flat list: five integers each (line and
+-- column as deltas from the token before, length, type index, modifier
+-- bits), by the legend's order.
+encodePlanTokens :: [PlanToken] -> [UInt]
+encodePlanTokens ts = concat (zipWith one (Nothing : map Just ts) ts)
+  where
+    one prev t =
+      let sameRow = fmap ptRow prev == Just (ptRow t)
+          dRow = maybe (ptRow t) (\q -> ptRow t - ptRow q) prev
+          dCol = case prev of Just q | sameRow -> ptCol t - ptCol q; _ -> ptCol t
+       in map fromIntegral [dRow, dCol, ptLen t, index planTokenTypes (ptType t), sum [2 ^ i | m <- ptMods t, i <- [index planTokenModifiers m]]]
+    index xs x = length (takeWhile (/= x) xs)
+
 lensesChanged :: LspM () ()
 lensesChanged = void (sendRequest SMethod_WorkspaceCodeLensRefresh Nothing (\_ -> pure ()))
 
