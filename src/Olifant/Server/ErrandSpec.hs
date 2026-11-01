@@ -119,6 +119,15 @@ spec = describe "Olifant.Server.Errand (the claude -p runner)" $ do
       map ghText (concatMap blLines (fst test)) `shouldBe` []
       snd test `shouldBe` 0
       (doAnswered "DONE @tests/t.py:test_it\n", doAnswered "BLOCKED no port", doAnswered "Sure, done.") `shouldBe` (True, True, False)
+    it "do takes a DONE of a file with no unit (the real endings of three nightvote dos)" $ do
+      -- hand-entry-fixes rows 37, 40 and 43 changed only static/css/desk.css and ended so
+      let real = ["DONE @static/css/desk.css:.rd-box", "DONE @static/css/desk.css:.rd-box small", "DONE @static/css/desk.css:.rd-box small[hidden]"]
+      map doAnswered real `shouldBe` [True, True, True]
+      map (parseAnswer Do ls step) real `shouldBe` replicate 3 ([], 0)
+      doAnswered "DONE @static/css/desk.css" `shouldBe` True
+      let (bs, dropped) = parseAnswer Do ls step "DONE @static/css/desk.css\nDONE @src/c.py:Baz\n"
+      (map ghText (concatMap blLines bs), dropped) `shouldBe` (["- [ ] the step   @src/c.py:Baz"], 0)
+      (doAnswered "DONE @", doAnswered "DONE @:Foo", doAnswered "DONE the css") `shouldBe` (False, False, False)
     it "never fails on odd input" $ do
       parseAnswer Ask ls q "" `shouldBe` ([], 0)
       fst (parseAnswer Validate ls heading "AFTER:") `shouldBe` []
@@ -181,6 +190,7 @@ spec = describe "Olifant.Server.Errand (the claude -p runner)" $ do
       d `shouldSatisfy` T.isInfixOf "no `cd`"
       d `shouldSatisfy` T.isInfixOf "never a reason for BLOCKED"
       errandPrompt Do pyWords Nothing plan ls step [] `shouldSatisfy` T.isInfixOf "never a reason for BLOCKED"
+      errandPrompt Do pyWords Nothing plan ls step [] `shouldSatisfy` T.isInfixOf "one line per file you changed that holds no such unit (a stylesheet, a template, a data file), exactly\nDONE @<path>\n"
       errandPrompt Do pyWords Nothing plan ls step [] `shouldSatisfy` (not . T.isInfixOf "run the relevant tests")
     it "cuts a long body at 2000 characters and limits grounding to 20 units" $ do
       T.length (cutBody (T.replicate 3000 "x")) `shouldBe` 2002

@@ -133,7 +133,9 @@ starting).
 5. **Read the answer** (`parseAnswer`): lines outside the grammar are dropped and counted;
    anchors that do not resolve are kept as `? not found` and counted. The result is `Block`s of
    `Ghost` lines to insert after a row. An answer with nothing in the grammar is `Empty`, an
-   error.
+   error. A `do`'s lines go through `classifyDo`: `DONE @<path>:<Unit>`, `DONE @<path>` for a
+   file with no unit (or a path whose unit the anchor syntax cannot hold, such as a CSS selector;
+   this answers the `do` without a ghost, see `doAnswered`), `BLOCKED <why>`, or a `- ?` line.
 6. **Record it.** Every ending that reached the runner appends an `AnErrand` record to
    `errands.jsonl` and a `plan-<verb>` line to the step log. The id (`errandId`,
    `Telemetry.hs:172`) is the runner's session id when it answered, so the editor's later
