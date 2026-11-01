@@ -13,7 +13,7 @@ import Olifant.App (Ports (..), Project)
 import Olifant.Doctor (DoctorPorts (..))
 import Olifant.Language (Match (..), noChecker, noRunner, querying)
 import Olifant.Language.Check (noVerifier)
-import Olifant.Plans (Anchor (..))
+import Olifant.Plans (Anchor (..), parsePlan)
 import Olifant.Process (gitStateStamp)
 import Olifant.Server (ServerState, newServerState, projectFor)
 import Olifant.Server.Plans
@@ -87,6 +87,59 @@ spec = describe "Olifant.Server.Plans (anchors in the server)" $ do
     fs <- planFiles s proj "## A\n- a @src/a.py:Foo.bar\n## B\n- [ ] b @src/a.py:Gone\n"
     map (\f -> (fiSection f, fiRow f, fiLine f)) fs `shouldBe` [("A", 1, Just 2), ("B", 3, Nothing)]
     map fiAbs fs `shouldBe` [Just "/r1/src/a.py", Just "/r1/src/a.py"]
+
+  describe "planTokens" $ do
+    let fixture = T.unlines
+          [ "## Plan"                                              -- 0
+          , "- [ ] open step @src/a.py:Foo"                          -- 1
+          , "  - test: it works @src/a.py:Foo.bar ○"                -- 2
+          , "  - also @src/a.py:Foo.bar"                             -- 3
+          , "- [x] ticked @src/a.py:Foo ✓ 0123456"                  -- 4
+          , "  - 25 Oct 21:31 · do (sonnet) · answered"            -- 5
+          , "  - ? nested question"                                 -- 6
+          , "    - the answer"                                      -- 7
+          , "- ? a question"                                        -- 8
+          , "  - grounded @src/a.py:Foo.bar ✓ 0123456"              -- 9
+          , "  - plain words"                                       -- 10
+          , "  - ✓ fine @src/a.py:Gone ? not found"                 -- 11
+          , "prose here"                                            -- 12
+          , "```"                                                   -- 13
+          , "- [ ] in a fence"                                      -- 14
+          , "```" ]                                                 -- 15
+        ls = parsePlan fixture
+        cst = [(ptCol t, ptLen t, ptType t) | t <- planTokens M.empty (parsePlan "- [x] DB migration @src/a.py:Comparison2018 ✓ 01849a0")]
+    it "classifies every line kind" $
+      map (\t -> (ptRow t, ptType t)) (planTokens M.empty ls)
+        `shouldBe` [ (1, "planMarker"), (1, "planStep"), (1, "planAnchorPath"), (1, "planAnchorUnit")
+                   , (2, "planMarker"), (2, "planTest"), (2, "planAnchorPath"), (2, "planAnchorUnit"), (2, "planVerdict")
+                   , (3, "planMarker"), (3, "planAnchorPath"), (3, "planAnchorUnit")
+                   , (4, "planMarker"), (4, "planStepDone"), (4, "planAnchorPath"), (4, "planAnchorUnit"), (4, "planVerdict"), (4, "planFingerprint")
+                   , (5, "planMarker"), (5, "planJournal")
+                   , (6, "planMarker"), (6, "planQuestion")
+                   , (7, "planMarker"), (7, "planClaim")
+                   , (8, "planMarker"), (8, "planQuestion")
+                   , (9, "planMarker"), (9, "planEvidence"), (9, "planAnchorPath"), (9, "planAnchorUnit"), (9, "planVerdict"), (9, "planFingerprint")
+                   , (10, "planMarker"), (10, "planClaim")
+                   , (11, "planMarker"), (11, "planVerdict"), (11, "planEvidence"), (11, "planAnchorPath"), (11, "planAnchorUnit"), (11, "planVerdict") ]
+    it "marker, path, unit, verdict and fingerprint columns" $
+      cst `shouldBe` [(0, 6, "planMarker"), (6, 12, "planStepDone"), (19, 10, "planAnchorPath"), (29, 14, "planAnchorUnit"), (44, 1, "planVerdict"), (46, 7, "planFingerprint")]
+    it "columns are UTF-16 with a wide character before the anchor" $
+      [(ptCol t, ptLen t, ptType t) | t <- planTokens M.empty (parsePlan "- 𝔸 · x @src/a.py:F ✓ abcdef0")]
+        `shouldBe` [(0, 2, "planMarker"), (2, 6, "planClaim"), (9, 10, "planAnchorPath"), (19, 1, "planAnchorUnit"), (21, 1, "planVerdict"), (23, 7, "planFingerprint")]
+    it "done on the subtree of a ticked step, not on the step" $
+      [(ptRow t, ptMods t) | t <- planTokens M.empty ls, ptRow t `elem` [4, 5, 6, 7, 8], ptType t `elem` ["planStepDone", "planJournal", "planQuestion", "planClaim"]]
+        `shouldBe` [(4, []), (5, ["done"]), (6, ["done"]), (7, ["done"]), (8, [])]
+    it "stale only when the map's fingerprint differs; notFound when the map says Nothing; neither when absent" $ do
+      let mods prints = [(ptRow t, ptType t, ptMods t) | t <- planTokens prints (parsePlan "- [x] a @src/a.py:Foo ✓ 0123456\n"), ptType t `elem` ["planVerdict", "planFingerprint", "planAnchorUnit"]]
+          key = ("src/a.py", "Foo")
+      mods M.empty `shouldBe` [(0, "planAnchorUnit", []), (0, "planVerdict", []), (0, "planFingerprint", [])]
+      mods (M.fromList [(key, Just "0123456")]) `shouldBe` [(0, "planAnchorUnit", []), (0, "planVerdict", []), (0, "planFingerprint", [])]
+      mods (M.fromList [(key, Just "9999999")]) `shouldBe` [(0, "planAnchorUnit", []), (0, "planVerdict", ["stale"]), (0, "planFingerprint", ["stale"])]
+      mods (M.fromList [(key, Nothing)]) `shouldBe` [(0, "planAnchorUnit", ["notFound"]), (0, "planVerdict", []), (0, "planFingerprint", [])]
+    it "tokens never overlap and are ascending" $ do
+      let ts = planTokens M.empty ls
+          ends = [(ptRow t, ptCol t, ptCol t + ptLen t) | t <- ts]
+      and [(r, c) < (r', c') && (r < r' || e <= c') | ((r, c, e), (r', c', _)) <- zip ends (drop 1 ends)] `shouldBe` True
 
 -- | /r1 with the python pack, `src/a.py` (class Foo with def bar) and a
 -- plan; a syntax whose units are Foo (lines 0-2) and Foo.bar (1-2).

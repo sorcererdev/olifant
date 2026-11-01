@@ -7,6 +7,11 @@ module Olifant.Server.Plans
   , Resolved (..)
   , resolveAnchor
   , planDiagnostics
+  , AnchorPrints
+  , PlanToken (..)
+  , planTokenTypes
+  , planTokenModifiers
+  , planTokens
   , anchorItems
   , newStepSnippet
   , newStepText
@@ -34,7 +39,7 @@ import Data.Map.Strict qualified as M
 import Data.Maybe (catMaybes, fromMaybe, isJust, mapMaybe)
 import Data.Text.Encoding qualified as TE
 import Olifant.Language.Adapter (Language (..), TestDef (..), chooseTestCommand)
-import Olifant.Plans (Kind (..), childrenOf)
+import Olifant.Plans (Kind (..), childrenOf, testState)
 import Olifant.Process (Cancel, runBytes)
 import Olifant.Server.Errand (Block (..), Ghost (..), Grounded (..), RunFailure (..), RunResult (..), Status (..), Verb (..), cutBody, doAnswered, doTestCommand, doTestTools, errandPrompt, projectUnitWords, groundingLimit, parseAnswer, runClaude, statusName)
 import Olifant.Server.LoopTypes (Fact (..))
@@ -139,6 +144,94 @@ planDiagnostics s p _ text = do
       let row = fromIntegral (lnRow l)
           col n = fromIntegral (utf16Length (T.take n (lnText l)))
        in Range (Position row (col (anStart a))) (Position row (col (anEnd a)))
+
+-- | (path, unit) -> the unit's fingerprint now; Nothing = not found. A key
+-- that is absent has not been read yet.
+type AnchorPrints = M.Map (FilePath, Text) (Maybe Text)
+
+-- | One span of a plan: row, column and length in UTF-16 code units, its
+-- legend type and its modifiers.
+data PlanToken = PlanToken {ptRow :: Int, ptCol :: Int, ptLen :: Int, ptType :: Text, ptMods :: [Text]}
+  deriving stock (Eq, Show)
+
+-- | The semantic-token legend, in order.
+planTokenTypes, planTokenModifiers :: [Text]
+planTokenTypes =
+  [ "planMarker", "planStep", "planStepDone", "planQuestion", "planEvidence", "planClaim", "planTest"
+  , "planAlso", "planJournal", "planAnchorPath", "planAnchorUnit", "planVerdict", "planFingerprint" ]
+planTokenModifiers = ["done", "stale", "notFound"]
+
+-- | What every span of a plan is, from the parser's lines alone (no I/O):
+-- markers, each kind's text, and an anchor's path, unit, verdict and
+-- fingerprint. `done` marks the lines below a ticked step; `stale` and
+-- `notFound` come from the fingerprints the diagnostics pass last read
+-- (a key absent from them is neither). Ascending and never overlapping.
+planTokens :: AnchorPrints -> [Line] -> [PlanToken]
+planTokens prints ls = concatMap tokensOf ls
+  where
+    -- the nearest preceding step or question with a smaller indent
+    parentOf l = case [p | p <- reverse (takeWhile ((< lnRow l) . lnRow) ls), isSQ (lnKind p), lnIndent p < lnIndent l] of
+      p : _ -> Just p
+      [] -> Nothing
+    isSQ = \case Step _ -> True; Question -> True; _ -> False
+    ancestors l = maybe [] (\p -> p : ancestors p) (parentOf l)
+    below l = any (\a -> lnKind a == Step True) (ancestors l)
+    tokensOf l = case lnKind l of
+      Heading _ -> []
+      Prose -> []
+      kind ->
+        let txt = lnText l
+            ind = lnIndent l
+            end = T.length (T.stripEnd txt)
+            markerLen = case kind of
+              Step _ -> 6; Question -> 4; TestChild -> 8; AlsoChild -> 7; _ -> 2
+            marker = (ind, markerLen, "planMarker", [])
+            mark = testState l
+            -- an evidence line's mark and a test child's trailing mark
+            (afterMarker, evMark) = case kind of
+              Evidence -> (ind + 3 + T.length (T.takeWhile (== ' ') (T.drop (ind + 3) txt)), [(ind + 2, 1, "planVerdict", [])])
+              AlsoChild -> (ind + markerLen, [])
+              _ -> (ind + markerLen, [])
+            textEnd = case (kind, mark) of
+              (TestChild, Just _) -> end - 1
+              _ -> end
+            tail' = case (kind, mark) of
+              (TestChild, Just _) -> [(end - 1, 1, "planVerdict", [])]
+              _ -> []
+            textType = case kind of
+              Step False -> "planStep"
+              Step True -> "planStepDone"
+              Question -> "planQuestion"
+              TestChild -> "planTest"
+              AlsoChild -> "planAlso"
+              Journal -> "planJournal"
+              Evidence -> "planEvidence"
+              Claim | Just _ <- lnAnchor l, Just p <- parentOf l, lnKind p == Question -> "planEvidence"
+              _ -> "planClaim"
+            piece from to = [(from, n, textType, []) | let n = T.length (T.stripEnd (T.take (to - from) (T.drop from txt))), to > from, n > 0]
+            anchored = case lnAnchor l of
+              Nothing -> piece afterMarker textEnd
+              Just a ->
+                let pathLen = 2 + T.length (T.pack (anPath a))
+                    unitStart = anStart a + pathLen
+                    spaces = T.length (T.takeWhile (== ' ') (T.drop (anEnd a) txt))
+                    v = anEnd a + spaces
+                    fresh = M.lookup (anPath a, anUnit a) prints
+                    stale = case (lnVerdict l, fresh) of (Verified fp, Just (Just now)) | now /= fp -> ["stale"]; _ -> []
+                    missing = ["notFound" | fresh == Just Nothing]
+                    (verdict, vEnd) = case lnVerdict l of
+                      Verified _ -> ([(v, 1, "planVerdict", stale), (v + 2, 7, "planFingerprint", stale)], v + 9)
+                      NotFound -> ([(v, 11, "planVerdict", [])], v + 11)
+                      NoVerdict -> ([], anEnd a)
+                 in piece afterMarker (anStart a)
+                      ++ [(anStart a, pathLen, "planAnchorPath", []), (unitStart, T.length (anUnit a), "planAnchorUnit", missing)]
+                      ++ verdict
+                      ++ piece vEnd textEnd
+            spans = marker : evMark ++ anchored ++ tail'
+         in [ PlanToken (lnRow l) (col c) (utf16Length (T.take n (T.drop c txt))) ty (["done" | below l] ++ ms)
+            | (c, n, ty, ms) <- spans
+            , let col k = utf16Length (T.take k txt)
+            ]
 
 utf16Length :: Text -> Int
 utf16Length = T.foldl' (\n c -> n + if fromEnum c > 0xFFFF then 2 else 1) 0
