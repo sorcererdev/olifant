@@ -65,7 +65,7 @@ statusName = \case
 -- | The flags after the runner's name; @testTools@ are the project's test commands (for 'Do').
 runnerArgs :: PlansConfig -> Verb -> [Text] -> Maybe Text -> [String]
 runnerArgs cfg verb testTools resume =
-  ["-p", "--output-format", "json", "--model", T.unpack (pcModel cfg)]
+  ["-p", "--output-format", "json", "--model", T.unpack (pcModel cfg), "--permission-prompts", "none"]
     -- a reopen: the do's thread, in a fork so the run has its own session
     ++ maybe [] (\sid -> ["--resume", T.unpack sid, "--fork-session"]) resume
     ++ case verb of

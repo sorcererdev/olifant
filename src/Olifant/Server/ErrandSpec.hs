@@ -26,12 +26,12 @@ spec = describe "Olifant.Server.Errand (the claude -p runner)" $ do
         d <- getCurrentDirectory
         pure cfg {pcRunner = d </> "src/Olifant/Server/testdata/claude-shim.sh"}
   it "builds read-only args for ask and validate, edit args for do" $ do
-    runnerArgs cfg Ask [] Nothing `shouldBe` ["-p", "--output-format", "json", "--model", "sonnet", "--allowedTools", "Read,Grep,Glob"]
+    runnerArgs cfg Ask [] Nothing `shouldBe` ["-p", "--output-format", "json", "--model", "sonnet", "--permission-prompts", "none", "--allowedTools", "Read,Grep,Glob"]
     runnerArgs cfg Validate [] Nothing `shouldBe` runnerArgs cfg Ask [] Nothing
     runnerArgs cfg {pcDoTools = ["Bash(cabal test*)"]} Do ["Bash(uv run pytest*)"] Nothing
-      `shouldBe` ["-p", "--output-format", "json", "--model", "sonnet", "--permission-mode", "acceptEdits", "--allowedTools", "Read,Grep,Glob,Edit,Write,Bash(uv run pytest*),Bash(cabal test*)"]
+      `shouldBe` ["-p", "--output-format", "json", "--model", "sonnet", "--permission-prompts", "none", "--permission-mode", "acceptEdits", "--allowedTools", "Read,Grep,Glob,Edit,Write,Bash(uv run pytest*),Bash(cabal test*)"]
   it "resumes a do's thread in a fork of its session" $
-    drop 4 (runnerArgs cfg Do [] (Just "s1")) `shouldBe` ["sonnet", "--resume", "s1", "--fork-session", "--permission-mode", "acceptEdits", "--allowedTools", "Read,Grep,Glob,Edit,Write"]
+    drop 4 (runnerArgs cfg Do [] (Just "s1")) `shouldBe` ["sonnet", "--permission-prompts", "none", "--resume", "s1", "--fork-session", "--permission-mode", "acceptEdits", "--allowedTools", "Read,Grep,Glob,Edit,Write"]
   it "runs the shim, parses result, seconds and cost, and unsets CLAUDECODE" $ do
     c <- shimCfg
     old <- lookupEnv "CLAUDECODE"
