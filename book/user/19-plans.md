@@ -45,6 +45,50 @@ is the `describe "parsePlan"` inside it. A test name with spaces or punctuation
 (`it "(a) reads a step"`) cannot be an anchor's name, so a step anchors the `describe` around
 it. A name the file does not have says so: `Nope is not in src/Olifant/PlansSpec.hs`.
 
+## How a plan reads
+
+The file stays exactly as the grammar has it: `cat`, `git diff`, GitHub and another editor all show
+the same text. The engine says what each span of a plan is (standard semantic tokens, a legend of
+`plan…` types) and which ranges fold (standard folding ranges); the editor draws it. In
+durandal.nvim, off the cursor line:
+
+- **Markers are glyphs.** `- [ ]` is `☐`, `- [x]` is `☑`, `- ?` is `?` in the question colour,
+  `- test:` is `·`, `- also` is `+`. The dash of a claim, an evidence line or a journal line, the
+  `@path:` of an anchor and the 7-hex after a `✓` are hidden; evidence keeps its `✓`/`✗`. The
+  unit's name stays, and `gd` on it goes to the unit as before.
+- **Evidence recedes.** Evidence under a question (an anchored claim), `also` lines and journal
+  lines are dim; a conclusion (an unanchored claim under a question) is plain text; a question
+  stands out. A `✓` whose unit has changed since is dimmer still.
+- **Done work folds.** A ticked step with children and an answered question (one with an
+  unanchored child under it) are closed when you enter the plan. A question's fold line is the
+  question, ` — `, and its conclusion (the last unanchored child, so a note you add later wins),
+  cut to the window, then `▸ N` hidden lines; a ticked step's is `☑`, its text, its unit and `✓`.
+  A question with only evidence has no conclusion yet, so it stays open. Open steps always read in
+  full. Folds close on entry only: one that forms while you look (an answer landing under a
+  question, a `do`'s journal lines, a tick, a review's `a`) starts open and stays open until you
+  next enter the plan. `zo` opens a fold, `zR` opens all, and `<leader>mpe` toggles the fold under
+  the cursor.
+- **The cursor line is raw.** On the line you are on, in every mode, the file's text shows, so
+  what you edit is what the file has. Moving off it hides the markers again; a line shifts left by
+  up to five columns between the two.
+- **Diagnostics are signs.** A plan line is prose, so olifant's diagnostics in a plan buffer are
+  signs and underlines on the anchor, with no virtual text beside the words. `changed since this
+  was verified` is raised only for a claim of your own outside any question; evidence under a
+  question and steps raise none (a step answers with the loop, and the dimmed `✓` is the evidence's
+  signal), and inside a ticked step only `? not found` is.
+
+```lua
+plans = {
+  conceal = true,   -- false: keep the colours and folds, hide nothing
+  glyphs = {},      -- override: todo, done, question, test, also, dash, path, hex
+  fold_done = true, -- false: on entry close only excerpts, leave done work open
+}
+```
+
+Colours are the standard `@lsp.type.plan…` groups, linked with `default` so a colourscheme
+wins: `planEvidence`, `planAlso` and `planJournal` to `Comment`, `planQuestion` to `Title`,
+`planAnchorUnit` to `Identifier`, and the `stale` modifier to `Comment`.
+
 ## What the server does
 
 - Diagnostics: a missing anchor (`? not found`), and `changed since this was verified` on a claim
@@ -258,7 +302,8 @@ The fair comparison is a head-to-head: the same change made both ways.
 | `<leader>mpy` / `<leader>mpn` | accept / reject the ghost block on the line: a validate's, a no-git do's, or an ask's with `review_answers` (an accepted verified claim gains its `✓ <fp>`) |
 | `<leader>mpc` | force a reconcile (and run the touched steps' tests) |
 | `<leader>mpx` | on a step (or a line under it): mark it done (ticked, `✓` its unit now, a live excerpt frozen) or reopen it (code actions "Mark done" / "Reopen step") |
-| `<leader>mpe` | on a step: its unit's code under it as an excerpt ("Show the code here"; frozen at once under a ticked step), or, where there is one, open or close its fold; where it cannot, the reason (LSP `disabled`) |
+| `<leader>mpe` | on a step: its unit's code under it as an excerpt ("Show the code here"; frozen at once under a ticked step), or, where there is one, open or close its fold; where it cannot, the reason (LSP `disabled`). In a fold of done work or an answered question, it (like `zo`) opens or closes that fold |
+| `plans = { conceal, glyphs, fold_done }` | the reading layer ([above](#how-a-plan-reads)): hide markers, paths and hashes off the cursor line; override a glyph; close done work on entry |
 | `<leader>ms` / `<leader>mt` | on a step: stub a test under it / run its tests and tick it |
 | `<leader>mpr` | review the `do` or the reading of the step here (else the plan's first) |
 | `<leader>mp<CR>` | start a step under this line (the engine's "New step below") |
