@@ -29,7 +29,7 @@ import Data.Bifunctor (first)
 import Data.Map.Strict qualified as M
 import Data.Functor ((<&>))
 import Data.List (find)
-import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe)
+import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe, mapMaybe)
 import Olifant.Template (render)
 import Olifant.Template qualified as Tm
 import Data.Text (Text)
@@ -48,6 +48,7 @@ import Olifant.Generation
 import Olifant.Cursor (isSnippet)
 import Olifant.Generator (AppliesAt (..), Generator, generatorName, EnvError (..), GeneratorId (..), GeneratorWith (..), generatorIdText)
 import Olifant.Language (Checker, Language (..), Syntax, languageFor)
+import Olifant.Landings (Landing (..), landingFor, landingsOf, shortSubject)
 import Olifant.Process (Cancel, neverCancel)
 import Olifant.Workspace (PathState (..), Workspace (..), ignoring, isSafeRelative, overlay, within)
 import System.FilePath (dropTrailingPathSeparator, makeRelative, normalise, splitDirectories, takeBaseName, takeDirectory, takeFileName, (</>))
@@ -561,7 +562,7 @@ runCommand rt cwd fmt cat = \case
           Right gens0 -> placeCursor rt cwd cat g gens0 >>= \case
             Left why -> failWith rt fmt 2 "usage" why Nothing []
             Right gens -> runStepsWith [] (any isSnippet gens0) rt cwd fmt cat g [] (zipWith (\gen s -> Step gen (M.fromList (specSets s))) gens ss)
-  PlansCostCmd onlyBranch since asJson transcripts -> runPlansCost rt cat onlyBranch since asJson transcripts
+  PlansCostCmd onlyBranch since asJson transcripts by onlyPlan -> runPlansCost rt cat onlyBranch since asJson transcripts by onlyPlan
   FixCmd rule file (line, _) n given g ->
     fixSteps (portsOf rt) (projectOf rt cat) rule (projectPath rt cwd file) line n given >>= \case
       Left (FixNotFound why) -> failWith rt fmt 3 "finding_not_found" why (Just "run `olifant check --file` to see the findings") []
@@ -571,11 +572,12 @@ runCommand rt cwd fmt cat = \case
       Right (context, steps, warnings) -> runStepsWith warnings False rt cwd fmt cat g context steps
 
 -- | `olifant plans cost`: the errand records of the project and Claude
--- Code's transcripts of it, one row per branch. Unreadable record lines,
--- unpriced models and a missing transcript directory are notes on stderr,
--- never failures.
-runPlansCost :: Runtime -> Catalog -> Maybe Text -> Maybe Day -> Bool -> Maybe FilePath -> IO ExitCode
-runPlansCost rt cat onlyBranch since asJson transcripts = do
+-- Code's transcripts of it, one row per plan and landing (the PR its work
+-- reached), or per branch with @--by branch@. Unreadable record lines,
+-- unpriced models, a missing transcript directory and no git history are
+-- notes on stderr, never failures.
+runPlansCost :: Runtime -> Catalog -> Maybe Text -> Maybe Day -> Bool -> Maybe FilePath -> By -> Maybe FilePath -> IO ExitCode
+runPlansCost rt cat onlyBranch since asJson transcripts by onlyPlan = do
   let root = rtProjectDir rt
       ws = rtRoot rt
       prices = pcPrices (catalogPlans cat)
@@ -587,26 +589,54 @@ runPlansCost rt cat onlyBranch since asJson transcripts = do
   unless present $ note ("no Claude Code transcripts at " <> T.pack dir)
   messages <- if present then readTranscripts (listFiles ws) (readText ws) dir else pure []
   let mine b = maybe True (== b) onlyBranch
+      ofPlan p = maybe True (== p) onlyPlan
       counted = [m | m <- countedMessages since records messages, mine (branchName (msBranch m))]
       unpriced = nub [msModel m | m <- counted, msTokens m /= Tokens 0 0 0 0, isNothing (messageCost prices m)]
-      rows = filter (mine . rowBranch) (costRows prices since records messages)
-      errands = [e | AnErrand e <- records, after since (erAt e), mine (branchName (erBranch e))]
   forM_ unpriced $ \m -> note ("no price for " <> m <> "; counted as $0")
-  if asJson
-    then rtOut rt (encodeJson (object ["rows" .= map rowJson rows, "errands" .= map (recordJson . AnErrand) errands]) <> "\n")
-    else rtOut rt (costTable rows)
+  case by of
+    ByBranch -> do
+      let rows = filter (mine . rowBranch) (costRows prices since records messages)
+          errands = [e | AnErrand e <- records, after since (erAt e), mine (branchName (erBranch e))]
+      if asJson
+        then rtOut rt (encodeJson (object ["rows" .= map rowJson rows, "errands" .= map (recordJson . AnErrand) errands]) <> "\n")
+        else rtOut rt (costTable rows)
+    ByPlan -> do
+      let kept = [r | r <- records, case r of AnErrand e -> mine (branchName (erBranch e)); AReconcile c -> mine (branchName (rcBranch c)); _ -> True]
+          planOf = \case AnErrand e -> Just (erPlan e); AReconcile c -> Just (rcPlan c); _ -> Nothing
+          recordAt = \case AnErrand e -> Just (erAt e); AReconcile c -> Just (rcAt c); _ -> Nothing
+          -- every plan's landings are read, so a session lands in the next landing of any plan
+          plans = nub (mapMaybe planOf [r | r <- kept, maybe False (after since) (recordAt r)])
+      history <- landingsOf (rtGit rt) root plans
+      landings <- case history of
+        Left why -> note ("no git history (" <> why <> "); nothing has landed") >> pure [(p, []) | p <- plans]
+        Right ls -> pure ls
+      let (planRows, trailing) = landingRows prices since [r | r <- kept, maybe True ofPlan (planOf r)] counted landings
+          errands = [e | AnErrand e <- kept, after since (erAt e), ofPlan (erPlan e)]
+      if asJson
+        then
+          rtOut rt . (<> "\n") . encodeJson $
+            object
+              [ "plans" .= map planJson planRows, "after" .= fmap rowFields trailing
+              , "errands" .= map (recordJson . AnErrand) errands ]
+        else rtOut rt (landingTable (planRows, trailing))
   pure ExitSuccess
   where
-    rowJson r =
-      object
-        [ "branch" .= rowBranch r, "errands" .= rowErrands r, "reconciles" .= rowReconciles r
-        , "reconcile_seconds" .= rowReconcileSeconds r, "accepted" .= rowAccepted r, "decided" .= rowDecided r
-        , "undecided" .= rowUndecided r, "errand_cost" .= rowErrandCost r, "sessions" .= rowSessions r
-        , "session_cost" .= rowSessionCost r, "total_cost" .= (rowErrandCost r + rowSessionCost r), "last" .= stamp (rowLast r) ]
+    rowJson r = object (("branch" .= rowBranch r) : rowPairs r)
+    rowFields r = object (rowPairs r)
+    rowPairs r =
+      [ "errands" .= rowErrands r, "reconciles" .= rowReconciles r
+      , "reconcile_seconds" .= rowReconcileSeconds r, "accepted" .= rowAccepted r, "decided" .= rowDecided r
+      , "undecided" .= rowUndecided r, "errand_cost" .= rowErrandCost r, "sessions" .= rowSessions r
+      , "session_cost" .= rowSessionCost r, "total_cost" .= (rowErrandCost r + rowSessionCost r), "last" .= stamp (rowLast r) ]
+    planJson p =
+      object $
+        ["plan" .= prPlan p] ++ rowPairs (prTotal p)
+          ++ [ "landings" .= [object (["label" .= ldLabel l, "commit" .= ldCommit l, "subject" .= ldSubject l, "at" .= stamp (ldAt l)] ++ rowPairs r) | (l, r) <- prLandings p]
+             , "open" .= fmap rowFields (prOpen p) ]
     stamp = T.pack . formatTime defaultTimeLocale "%Y-%m-%dT%H:%M:%SZ"
 
--- | One branch's line of `plans cost`. Accepted, decided and undecided
--- count ghost blocks of the branch's answered (ok) errands.
+-- | One line of `plans cost`: a branch, a plan, or a landing. Accepted, decided and undecided
+-- count ghost blocks of the bucket's answered (ok) errands.
 data Row = Row
   { rowBranch :: Text, rowErrands :: Int, rowReconciles :: Int, rowReconcileSeconds :: Double, rowAccepted :: Int, rowDecided :: Int, rowUndecided :: Int
   , rowErrandCost :: Double, rowSessions :: Int, rowSessionCost :: Double, rowLast :: UTCTime }
@@ -627,8 +657,34 @@ countedMessages since records messages = [m | m <- messages, msSession m `S.notM
   where
     errandSessions = S.fromList [s | AnErrand e <- records, Just s <- [erSession e]]
 
--- | The rows, newest activity first. A block's last outcome counts; an
+-- | Each errand's blocks' outcomes; the later record of a block wins
+-- (fromListWith passes the new one first).
+outcomesOf :: [Record] -> M.Map Text (M.Map Int Text)
+outcomesOf records = M.fromListWith M.union [(orId o, M.singleton (orBlock o) (orOutcome o)) | AnOutcome o <- records]
+
+-- | One line from a bucket's records (which must not all be empty). An
 -- errand with no cost (it failed) costs 0 but still counts as an errand.
+rowOf :: [(Text, Price)] -> M.Map Text (M.Map Int Text) -> Text -> [ErrandRecord] -> [ReconcileRecord] -> [Message] -> Row
+rowOf prices outcomes label es rs ms =
+  Row
+    { rowBranch = label
+    , rowErrands = length es
+    , rowReconciles = length rs
+    , rowReconcileSeconds = sum [sec | r <- rs, (_, sec) <- rcClimbs r]
+    , rowAccepted = length (filter (== "accepted") outs)
+    , rowDecided = length outs
+    , rowUndecided = sum [max 0 (erBlocks e - length (blocksOf e)) | e <- oks]
+    , rowErrandCost = sum (map (fromMaybe 0 . erCost) es)
+    , rowSessions = S.size (S.fromList (map msSession ms))
+    , rowSessionCost = sum (map (fromMaybe 0 . messageCost prices) ms)
+    , rowLast = maximum (map erAt es ++ map rcAt rs ++ map msAt ms)
+    }
+  where
+    oks = filter ((== Errand.Ok) . erStatus) es
+    outs = concatMap blocksOf oks
+    blocksOf e = [o | (b, o) <- M.toList (M.findWithDefault M.empty (erId e) outcomes), b >= 0, b < erBlocks e]
+
+-- | The rows per branch, newest activity first.
 costRows :: [(Text, Price)] -> Maybe Day -> [Record] -> [Message] -> [Row]
 costRows prices since records messages = sortOn (Down . rowLast) (map row branches)
   where
@@ -636,41 +692,72 @@ costRows prices since records messages = sortOn (Down . rowLast) (map row branch
     msgs = countedMessages since records messages
     reconciles = [r | AReconcile r <- records, after since (rcAt r)]
     branches = nub (map (branchName . erBranch) errands ++ map (branchName . rcBranch) reconciles ++ map (branchName . msBranch) msgs)
-    -- the later record of a block wins (fromListWith passes the new one first)
-    outcomes = M.fromListWith M.union [(orId o, M.singleton (orBlock o) (orOutcome o)) | AnOutcome o <- records]
-    blocksOf e = [o | (b, o) <- M.toList (M.findWithDefault M.empty (erId e) outcomes), b >= 0, b < erBlocks e]
+    outcomes = outcomesOf records
     row b =
-      let es = filter ((== b) . branchName . erBranch) errands
-          ms = filter ((== b) . branchName . msBranch) msgs
-          rs = filter ((== b) . branchName . rcBranch) reconciles
-          oks = filter ((== Errand.Ok) . erStatus) es
-          outs = concatMap blocksOf oks
-       in Row
-            { rowBranch = b
-            , rowErrands = length es
-            , rowReconciles = length rs
-            , rowReconcileSeconds = sum [sec | r <- rs, (_, sec) <- rcClimbs r]
-            , rowAccepted = length (filter (== "accepted") outs)
-            , rowDecided = length outs
-            , rowUndecided = sum [max 0 (erBlocks e - length (blocksOf e)) | e <- oks]
-            , rowErrandCost = sum (map (fromMaybe 0 . erCost) es)
-            , rowSessions = S.size (S.fromList (map msSession ms))
-            , rowSessionCost = sum (map (fromMaybe 0 . messageCost prices) ms)
-            , rowLast = maximum (map erAt es ++ map rcAt rs ++ map msAt ms)
-            }
+      rowOf prices outcomes b
+        (filter ((== b) . branchName . erBranch) errands)
+        (filter ((== b) . branchName . rcBranch) reconciles)
+        (filter ((== b) . branchName . msBranch) msgs)
+
+-- | A plan's line, its landings (oldest first) and what has not landed.
+data PlanRows = PlanRows {prPlan :: FilePath, prTotal :: Row, prLandings :: [(Landing, Row)], prOpen :: Maybe Row}
+
+-- | Per plan, per landing: an errand or reconcile belongs to the first
+-- landing of its plan at or after it (none: not landed), a message (of the
+-- already counted sessions given, so not filtered again) to the first
+-- landing of any plan at or after it. The second result is the row of
+-- messages after the last landing (Nothing when none). A landing with
+-- nothing in it is dropped, a plan with no errand or reconcile is absent;
+-- plans newest activity first.
+landingRows :: [(Text, Price)] -> Maybe Day -> [Record] -> [Message] -> [(FilePath, [Landing])] -> ([PlanRows], Maybe Row)
+landingRows prices since records msgs landings = (sortOn (Down . rowLast . prTotal) (map planRows plans), trailing)
+  where
+    errands = [e | AnErrand e <- records, after since (erAt e)]
+    reconciles = [r | AReconcile r <- records, after since (rcAt r)]
+    plans = nub (map erPlan errands ++ map rcPlan reconciles)
+    outcomes = outcomesOf records
+    allLandings = sortOn ldAt (concatMap snd landings)
+    ofPlan p = fromMaybe [] (lookup p landings)
+    key l = (ldPlan l, ldCommit l)
+    msgsAt l = [m | m <- msgs, fmap key (landingFor allLandings (msAt m)) == Just (key l)]
+    errandsAt p l = [e | e <- errands, erPlan e == p, fmap key (landingFor (ofPlan p) (erAt e)) == fmap key l]
+    reconcilesAt p l = [r | r <- reconciles, rcPlan r == p, fmap key (landingFor (ofPlan p) (rcAt r)) == fmap key l]
+    nonEmpty es rs ms = not (null es && null rs && null ms)
+    trailing = case [m | m <- msgs, Nothing <- [landingFor allLandings (msAt m)]] of
+      [] -> Nothing
+      ms -> Just (rowOf prices outcomes "(since the last landing)" [] [] ms)
+    planRows p =
+      let buckets = [(l, errandsAt p (Just l), reconcilesAt p (Just l), msgsAt l) | l <- ofPlan p]
+          shown = [(l, rowOf prices outcomes (ldLabel l <> " " <> shortSubject 50 (ldSubject l)) es rs ms) | (l, es, rs, ms) <- buckets, nonEmpty es rs ms]
+          openEs = errandsAt p Nothing
+          openRs = reconcilesAt p Nothing
+          open = if nonEmpty openEs openRs [] then Just (rowOf prices outcomes "(not landed)" openEs openRs []) else Nothing
+          total = rowOf prices outcomes (T.pack p) (concat [es | (_, es, _, _) <- buckets] ++ openEs) (concat [rs | (_, _, rs, _) <- buckets] ++ openRs) (concat [ms | (_, _, _, ms) <- buckets])
+       in PlanRows p total shown open
 
 -- | The rows as a table: columns two spaces apart, money to the cent.
 costTable :: [Row] -> Text
-costTable rows = T.unlines (map line (header : map cells rows))
+costTable rows = rowTable "branch" [(rowBranch r, r) | r <- rows]
+
+-- | The plan and landing rows as a table: a plan's line, its landings
+-- indented under it, then the messages after the last landing.
+landingTable :: ([PlanRows], Maybe Row) -> Text
+landingTable (plans, trailing) = rowTable "plan / landing" (concatMap one plans ++ [(rowBranch r, r) | Just r <- [trailing]])
   where
-    header = ["branch", "errands", "reconciles", "reconcile s", "accepted", "errand $", "sessions", "session $", "total $"]
-    cells r =
-      [ rowBranch r, tshow (rowErrands r), tshow (rowReconciles r), T.pack (showFFloat (Just 1) (rowReconcileSeconds r) ""), tshow (rowAccepted r) <> "/" <> tshow (rowDecided r) <> " (" <> tshow (rowUndecided r) <> " ?)"
+    one p = (T.pack (prPlan p), prTotal p) : [("  " <> rowBranch r, r) | (_, r) <- prLandings p] ++ [("  " <> rowBranch r, r) | Just r <- [prOpen p]]
+
+-- | Rows under a header, the first column their label.
+rowTable :: Text -> [(Text, Row)] -> Text
+rowTable first labelled = T.unlines (map line (header : map cells labelled))
+  where
+    header = [first, "errands", "reconciles", "reconcile s", "accepted", "errand $", "sessions", "session $", "total $"]
+    cells (label, r) =
+      [ label, tshow (rowErrands r), tshow (rowReconciles r), T.pack (showFFloat (Just 1) (rowReconcileSeconds r) ""), tshow (rowAccepted r) <> "/" <> tshow (rowDecided r) <> " (" <> tshow (rowUndecided r) <> " ?)"
       , money (rowErrandCost r), tshow (rowSessions r), money (rowSessionCost r), money (rowErrandCost r + rowSessionCost r) ]
     tshow = T.pack . show
     money x = T.pack (showFFloat (Just 2) x "")
-    widths = foldr (zipWith max . map T.length) (map (const 0) header) (header : map cells rows)
-    -- the branch and acceptance read left to right; numbers line up right
+    widths = foldr (zipWith max . map T.length) (map (const 0) header) (header : map cells labelled)
+    -- the label and acceptance read left to right; numbers line up right
     line cs = T.stripEnd (T.intercalate "  " (zipWith3 pad [0 :: Int ..] widths cs))
     pad i w c = if i `elem` [0, 4] then T.justifyLeft w ' ' c else T.justifyRight w ' ' c
 
