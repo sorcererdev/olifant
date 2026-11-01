@@ -2,6 +2,7 @@ module Olifant.Cli.Options
   ( Options (..)
   , Format (..)
   , Command (..)
+  , By (..)
   , GenOptions (..)
   , StepSpec (..)
   , SyncMode (..)
@@ -35,7 +36,11 @@ data Options = Options {optFormat :: Maybe Format, optCommand :: Command}
 data Command = ListCmd Bool | ShowCmd Text [(Text, Text)] | GenCmd GenOptions | AnchorsCmd Text | WhereCmd FilePath Text | SyncCmd SyncMode | SchemaCmd | NewCmd Text (Maybe Text) | ActionsCmd FilePath (Maybe (Int, Int)) Bool | DoctorCmd Bool | CheckCmd Bool (Maybe FilePath) Bool Bool Bool (Maybe Text) | FixCmd Text FilePath (Int, Int) Int [(Text, Text)] GenOptions | CompleteCmd FilePath (Int, Int) Bool | InitCmd Text Text (Maybe FilePath) Bool | InitMigrateCmd [FilePath] (Maybe Text) (Maybe Text) | LspCmd | AnticipateCmd FilePath Int (Maybe FilePath) (Maybe FilePath)
   | -- | `plans cost`: errands against Claude Code sessions, per branch.
     -- 'pcoTranscripts' overrides @~/.claude/projects/<slug>@.
-    PlansCostCmd {pcoBranch :: Maybe Text, pcoSince :: Maybe Day, pcoJson :: Bool, pcoTranscripts :: Maybe FilePath}
+    PlansCostCmd {pcoBranch :: Maybe Text, pcoSince :: Maybe Day, pcoJson :: Bool, pcoTranscripts :: Maybe FilePath, pcoBy :: By, pcoPlan :: Maybe FilePath}
+  deriving stock (Eq, Show)
+
+-- | How `plans cost` groups: per plan and the landing (PR) its work reached, or per recorded branch.
+data By = ByPlan | ByBranch
   deriving stock (Eq, Show)
 
 -- | `olifant sync` (spec §5.8): refresh regions, check them (write nothing), or create one's fences.
@@ -119,7 +124,7 @@ parseOptions args = case execParserPure defaultPrefs parserInfo args of
             <> cmd "init" initP "Start a project from a pack's starter in an empty folder: init --pack PACK NAME [--dir DIR] [--plan]; or, in an existing repo, init --migrate PATH [--migrate PATH]… [--pack PACK]: strangle the legacy code under PATH"
             <> cmd "lsp" (pure LspCmd) "Run the language server over stdin/stdout (editors start it; every Olifant project in the editor's folders)"
             <> cmd "complete" completeP "Snippets for a completion menu at a position (for editors): --at FILE:LINE:COL [--content -]"
-            <> cmd "plans" plansP "Plan errands: `plans cost [--branch B] [--since YYYY-MM-DD] [--json]` shows what errands cost against Claude Code sessions, per branch"
+            <> cmd "plans" plansP "Plan errands: `plans cost [--by plan|branch] [--plan PATH] [--branch B] [--since YYYY-MM-DD] [--json]` shows what errands cost against Claude Code sessions, per plan and the PR it landed in (or per branch)"
             <> cmd "gen" (GenCmd <$> genP) "Run generators: GEN [--set K=V]... [+ GEN [--set K=V]...]... (applies by default; --plan previews; --steps FILE|- reads the steps as JSON)"
         )
         -- hidden: the one Jev question at a line, for the prefix corpus
@@ -189,10 +194,15 @@ parseOptions args = case execParserPure defaultPrefs parserInfo args of
                     <*> optional (option (eitherReader dayP) (long "since" <> metavar "YYYY-MM-DD" <> help "Only errands and messages from this day on (UTC, the day included)"))
                     <*> switch (long "json" <> help "The rows and the raw errand records as JSON")
                     <*> optional (strOption (long "transcripts" <> metavar "DIR" <> help "Claude Code transcripts (default: ~/.claude/projects/<this project's slug>)"))
+                    <*> option (eitherReader byP) (long "by" <> metavar "plan|branch" <> value ByPlan <> showDefaultWith (const "plan") <> help "Group by plan and landing (PR), or by recorded branch")
+                    <*> optional (strOption (long "plan" <> metavar "PATH" <> help "Only this plan's errands and reconciles"))
                 )
-                (progDesc "What errands cost, against Claude Code sessions, per branch (list prices)")
+                (progDesc "What errands cost, against Claude Code sessions, per plan and the PR it landed in, or per branch (list prices)")
             )
         )
+    byP "plan" = Right ByPlan
+    byP "branch" = Right ByBranch
+    byP _ = Left "expected plan or branch"
     dayP s = maybe (Left "expected a date like 2026-10-25") Right (parseTimeM False defaultTimeLocale "%Y-%m-%d" s)
     completeP =
       (\(f, pos) content -> CompleteCmd f pos content)

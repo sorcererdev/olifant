@@ -4,6 +4,7 @@ import Data.Aeson (Value (..), decodeStrict)
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KM
 import Data.Foldable (toList)
+import Data.Maybe (fromMaybe)
 import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
@@ -261,7 +262,14 @@ runInBase :: Syntax IO -> (FilePath -> Text -> FilePath -> IO (Either Text (Text
 runInBase syntax base = runInBaseFiles syntax base (\_ _ -> pure (Left "no listing"))
 
 runInBaseFiles :: Syntax IO -> (FilePath -> Text -> FilePath -> IO (Either Text (Text, Maybe Text))) -> (FilePath -> Text -> IO (Either Text [FilePath])) -> FilePath -> Text -> [(FilePath, Text)] -> Bool -> [String] -> IO (ExitCode, Text, Text, Map FilePath Text)
-runInBaseFiles syntax base baseFiles dir stdinText files tty args = do
+runInBaseFiles syntax base baseFiles = runInBaseFilesGit (\_ _ -> pure (Left "no git in tests")) syntax base baseFiles
+
+-- | 'runWith' with git answering through the given function (`plans cost` reads the log).
+runWithGit :: (FilePath -> [String] -> IO (Either Text Text)) -> Text -> [(FilePath, Text)] -> Bool -> [String] -> IO (ExitCode, Text, Text, Map FilePath Text)
+runWithGit git = runInBaseFilesGit git noSyntax (\_ _ _ -> pure (Left "no base in tests")) (\_ _ -> pure (Left "no listing")) "/proj"
+
+runInBaseFilesGit :: (FilePath -> [String] -> IO (Either Text Text)) -> Syntax IO -> (FilePath -> Text -> FilePath -> IO (Either Text (Text, Maybe Text))) -> (FilePath -> Text -> IO (Either Text [FilePath])) -> FilePath -> Text -> [(FilePath, Text)] -> Bool -> [String] -> IO (ExitCode, Text, Text, Map FilePath Text)
+runInBaseFilesGit git syntax base baseFiles dir stdinText files tty args = do
   (root, snapshot) <- memoryWorkspace files
   out <- newIORef ""
   err <- newIORef ""
@@ -280,7 +288,7 @@ runInBaseFiles syntax base baseFiles dir stdinText files tty args = do
         , rtSyntax = syntax
         , rtChecker = const noChecker
         , rtGitChanged = \_ _ -> pure (Right ([], ["src/b.x"]))
-        , rtDoctor = DoctorPorts (\e -> pure (if take 4 e == "nope" then Nothing else Just ("/bin/" <> e))) (pure "/usr/bin") (\_ -> pure (Right ())) (\_ -> pure False) (\_ -> pure False), rtTracked = \_ -> pure Nothing, rtBaseText = base, rtBaseFiles = baseFiles, rtBaseStamp = \_ _ -> pure ""
+        , rtDoctor = DoctorPorts (\e -> pure (if take 4 e == "nope" then Nothing else Just ("/bin/" <> e))) (pure "/usr/bin") (\_ -> pure (Right ())) (\_ -> pure False) (\_ -> pure False), rtTracked = \_ -> pure Nothing, rtBaseText = base, rtBaseFiles = baseFiles, rtBaseStamp = \_ _ -> pure "", rtGit = git
         , rtGitInit = \_ _ -> pure (Right ()), rtVerifier = const noVerifier, rtTester = \_ _ -> noRunner
         }
       args
@@ -305,7 +313,7 @@ runInitWith committed files args = do
         , rtOut = \t -> modifyIORef' out (<> t), rtErr = \t -> modifyIORef' err (<> t)
         , rtSyntax = noSyntax, rtChecker = const noChecker
         , rtGitChanged = \_ _ -> pure (Right ([], []))
-        , rtDoctor = DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False) (\_ -> pure False), rtTracked = \_ -> pure Nothing, rtBaseText = \_ _ _ -> pure (Left "no base in tests"), rtBaseFiles = \_ _ -> pure (Left "no base"), rtBaseStamp = \_ _ -> pure ""
+        , rtDoctor = DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False) (\_ -> pure False), rtTracked = \_ -> pure Nothing, rtBaseText = \_ _ _ -> pure (Left "no base in tests"), rtBaseFiles = \_ _ -> pure (Left "no base"), rtBaseStamp = \_ _ -> pure "", rtGit = \_ _ -> pure (Left "no git in tests")
         , rtGitInit = \d m -> modifyIORef' gits (++ [(d, m)]) >> pure committed, rtVerifier = const noVerifier, rtTester = \_ _ -> noRunner
         }
       args
@@ -1244,7 +1252,20 @@ plansCostSpec = describe "plans cost" $ do
         , ("/transcripts/S4/subagents/a.jsonl", T.unlines [msg "S4" (Just "main") "2026-10-24T08:00:00Z" "m4" sonnet (1000, 0, 0, 0)])
         , ("/transcripts/S5.jsonl", T.unlines [msg "S5" Nothing "2026-10-23T08:00:00Z" "m5" sonnet (1000, 0, 0, 0)])
         ]
-      run files args = runWith "" (project ++ files) False (["plans", "cost"] ++ args)
+      run files args = runWith "" (project ++ files) False (["plans", "cost", "--by", "branch"] ++ args)
+      -- the plan view, with git answering from a table of plan path -> log text
+      epoch d h m = show (1792915200 + (d - 25) * 86400 + (h - 8) * 3600 + m * 60 :: Int)
+      logA = "A\t" <> T.pack (epoch 25 9 30) <> "\tAdd thing (#4)\n"
+      logB = "B\t" <> T.pack (epoch 25 11 0) <> "\tMerge pull request #5 from x/y\n"
+      logP = logB <> logA
+      gitFake logs _ args = pure (Right (fromMaybe "" (lookup (last args) logs)))
+      runP logs files args = runWithGit (gitFake logs) "" (project ++ files) False (["plans", "cost"] ++ args)
+      onQ = \case AnErrand r -> AnErrand r {erPlan = "plans/q.md"}; other -> other
+      e3 = errand "E3" (at 25 12) (Just "feat") Ok 0 (Just 0.10) (Just "S9")
+      wordsOf out n = T.words (T.lines out !! n)
+      planRows out = case decodeStrict (TE.encodeUtf8 out) >>= lookupKey "plans" of
+        Just (Array rs) -> toList rs
+        _ -> []
       rowsOf out = case decodeStrict (TE.encodeUtf8 out) >>= lookupKey "rows" of
         Just (Array rs) -> toList rs
         _ -> []
@@ -1290,6 +1311,55 @@ plansCostSpec = describe "plans cost" $ do
     lookupKey "undecided" (head (rowsOf out)) `shouldBe` Just (Number 1)
     (_, text, _, _) <- run (records base [] : transcripts) ["--since", "2026-10-25", "--transcripts", "/transcripts"]
     map (head . T.words) (drop 1 (T.lines text)) `shouldBe` ["feat"]
+  it "by plan: an errand goes to the first landing of its plan at or after it, the rest are not landed" $ do
+    (code, out, _, _) <- runP [("plans/p.md", logP)] (records (e3 : base) [] : transcripts) ["--transcripts", "/transcripts"]
+    code `shouldBe` ExitSuccess
+    T.words (T.lines out !! 0) `shouldBe` ["plan", "/", "landing", "errands", "reconciles", "reconcile", "s", "accepted", "errand", "$", "sessions", "session", "$", "total", "$"]
+    map (take 2 . T.words) (take 4 (drop 1 (T.lines out))) `shouldBe` [["plans/p.md", "3"], ["#4", "Add"], ["#5", "Merge"], ["(not", "landed)"]]
+    let nums n = [w | w <- wordsOf out n, T.any (== '.') w, T.all (`elem` ("0123456789." :: String)) w]
+        errandCosts = map (\n -> nums n !! 1) [1, 2, 3, 4]
+    errandCosts `shouldBe` ["0.17", "0.05", "0.02", "0.10"]
+    T.lines out !! 2 `shouldSatisfy` T.isInfixOf "1/2 (0 ?)"
+    T.lines out !! 3 `shouldSatisfy` T.isInfixOf "Merge pull request #5 from x/y"
+  it "sessions go to the next landing of any plan, later ones to the trailing row" $ do
+    let s8 = ("/transcripts/S8.jsonl", T.unlines [msg "S8" (Just "feat") "2026-10-25T13:00:00Z" "m8x" sonnet (1000, 0, 0, 0)])
+    (_, out, _, _) <- runP [("plans/p.md", logP)] (records base [] : s8 : transcripts) ["--transcripts", "/transcripts"]
+    let sessionsOf n = wordsOf out n !! (length (wordsOf out n) - 3)
+    sessionsOf 2 `shouldBe` "2"
+    sessionsOf 3 `shouldBe` "1"
+    T.lines out !! 4 `shouldSatisfy` ("(since the last landing)" `T.isPrefixOf`)
+    -- S8, and S3's synthetic line at 11:00:01 (a session counts in each row its messages reach)
+    sessionsOf 4 `shouldBe` "2"
+  it "a landing or plan with no record in the window is not printed" $ do
+    let logC = "C\t" <> T.pack (epoch 25 14 0) <> "\tLater (#6)\n"
+    -- no transcripts: S3's 11:00:01 line would be C's own
+    (_, out, _, _) <- runP [("plans/p.md", logC <> logP)] [records base []] ["--since", "2026-10-25", "--transcripts", "/nowhere"]
+    map (head . T.words) (drop 1 (T.lines out)) `shouldBe` ["plans/p.md", "#4", "#5"]
+  it "--plan keeps one plan and --json carries landings with commit, subject and time" $ do
+    let logQ = "Q1\t" <> T.pack (epoch 25 9 30) <> "\tQ change (#9)\n"
+    (code, out, _, _) <- runP [("plans/p.md", logP), ("plans/q.md", logQ)] (records (map onQ [e1] ++ [e2]) [] : transcripts) ["--plan", "plans/q.md", "--json", "--transcripts", "/transcripts"]
+    code `shouldBe` ExitSuccess
+    length (planRows out) `shouldBe` 1
+    case planRows out of
+      [p] -> case lookupKey "landings" p of
+        Just (Array ls) | (l : _) <- toList ls -> do
+          lookupKey "label" l `shouldBe` Just (String "#9")
+          lookupKey "commit" l `shouldBe` Just (String "Q1")
+          lookupKey "subject" l `shouldBe` Just (String "Q change (#9)")
+          lookupKey "at" l `shouldBe` Just (String "2026-10-25T09:30:00Z")
+          lookupKey "errands" l `shouldBe` Just (Number 1)
+          lookupKey "errand_cost" l `shouldBe` Just (Number 0.05)
+        other -> expectationFailure ("no landings: " <> show other)
+      _ -> expectationFailure "expected one plan"
+  it "no git history is a note and everything is not landed" $ do
+    (code, out, err, _) <- runWithGit (\_ _ -> pure (Left "fatal: not a git repository")) "" (project ++ [records (e3 : base) [], ("/transcripts/x.jsonl", "")]) False ["plans", "cost", "--transcripts", "/transcripts"]
+    code `shouldBe` ExitSuccess
+    err `shouldSatisfy` ("no git history" `T.isInfixOf`)
+    map (take 2 . T.words) (take 2 (drop 1 (T.lines out))) `shouldBe` [["plans/p.md", "3"], ["(not", "landed)"]]
+    wordsOf out 2 !! 2 `shouldBe` "3"
+  it "the branch view is unchanged" $ do
+    (_, out, _, _) <- run (records base [] : transcripts) ["--transcripts", "/transcripts", "--json"]
+    rowsOf out `shouldSatisfy` (not . null)
   it "unknown models and bad lines are reported, not fatal" $ do
     let odd' = ("/transcripts/S7.jsonl", T.unlines [msg "S7" (Just "main") "2026-10-24T09:00:00Z" "m7" "claude-unknown-9" (10, 10, 0, 0), msg "S7" (Just "main") "2026-10-24T09:01:00Z" "m8" "claude-unknown-9" (10, 10, 0, 0)])
     (code, out, err, _) <- run (records base ["{not json", ""] : odd' : transcripts) ["--transcripts", "/transcripts"]

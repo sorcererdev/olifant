@@ -251,9 +251,37 @@ green. Delete a line you do not want and it is not written again. The store is
 
 ## What errands cost
 
-`olifant plans cost [--branch B] [--since YYYY-MM-DD] [--json]`, run in the project, sets the
-errand records beside Claude Code's own transcripts of the project
-(`~/.claude/projects/<slug>/`, subagents' too), one row per branch, newest activity first:
+`olifant plans cost [--by plan|branch] [--plan PATH] [--branch B] [--since YYYY-MM-DD] [--json]`,
+run in the project, sets the errand records beside Claude Code's own transcripts of the project
+(`~/.claude/projects/<slug>/`, subagents' too). By default it is one line per plan and, under it,
+one per landing, the PR the work reached. A sample from a real project, shortened:
+
+```
+plan / landing                                             errands  reconciles  reconcile s  accepted     errand $  sessions  session $  total $
+plans/raw-votes.md                                              37          72         14.3  33/35 (2 ?)      4.95         0       0.00     4.95
+  #126 Migration to add columns for 2018 results                11           3          0.0  9/11 (0 ?)       0.92         0       0.00     0.92
+  #127 1 - Fix a migration conflict                              1           3          0.0  1/1 (0 ?)        0.09         0       0.00     0.09
+  #133 Add toggle for 18-24 columns                              4           8          0.0  4/4 (0 ?)        1.07         0       0.00     1.07
+  (not landed)                                                   0           9         14.3  0/0 (0 ?)        0.00         0       0.00     0.00
+```
+
+A landing is a commit on the first-parent line from `HEAD` that touches the plan file; a record
+(an errand or a reconcile) belongs to the first landing of its plan at or after it, and a session
+to the first landing of any plan at or after its message. So squash merges, merge commits and plain
+commits all count, and nothing needs recording at merge time. A landing is labelled `#N` when its
+subject ends in `(#N)` (a GitHub squash) or starts `Merge pull request #N`, else by the short
+hash; the subject follows, cut to 50 characters. `(not landed)` is the work after the plan's last
+landing (on `main`, work still on a feature branch reads that way: the checkout you run it in is
+the truth). `(since the last landing)` is the sessions after the last landing of any plan, and
+with no landings at all every session is there. A plan shows only when records name it, and a
+landing only when something falls in it, so `--since` also hides old PRs. Plans come newest
+activity first, landings oldest first. The command never calls the network: `--json` carries each
+landing's full `commit`, `subject` and `at` (`plans`, each with `landings`, `open`, then `after`
+and `errands`), so a script can join to GitHub. Outside a git repository it says so on stderr and
+everything is `(not landed)`.
+
+`--by branch` groups by the branch recorded on each errand instead, newest activity first, which
+suits a repo where you work on feature branches:
 
 ```
 branch        errands  reconciles  reconcile s  accepted    errand $  sessions  session $  total $
@@ -261,9 +289,12 @@ plans-stage1       14          22         18.5  9/12 (3 ?)      0.91         4  
 main                3           5          0.0  2/3 (0 ?)       0.19         2       6.02     6.21
 ```
 
+`--plan PATH` keeps one plan's records. `--branch` keeps records recorded on that branch in either
+view. The columns:
+
 - `errands` counts every errand, however it ended; `errand $` is the runner's own cost (0 for an
   errand that failed before it reported one).
-- `reconciles` counts the branch's `reconcile` records; `reconcile s` is the seconds they spent
+- `reconciles` counts the bucket's `reconcile` records; `reconcile s` is the seconds they spent
   in model calls, Jev's rung and the words call included (`--json`: `reconciles`, `reconcile_seconds`).
 - `accepted` is ghost blocks accepted / blocks decided (an `ask` written straight in counts as accepted), and in parentheses the blocks of answered
   errands no one has decided yet.
@@ -271,8 +302,11 @@ main                3           5          0.0  2/3 (0 ?)       0.19         2  
   session is that errand's and is never counted twice, whatever the errand's status. Each message
   goes to its own branch (a session may span several); one with no branch goes to the `?` row.
   `session $` prices each message's tokens (deduped: streaming writes a message more than once).
-- `--since` keeps errands and messages from that day (UTC) on, the day included; `--branch` keeps
-  one row (`?` for work with no branch). `--json` prints the rows and the raw errand records.
+  A `sessions 0` means no interactive Claude Code ran in the project in that window: every session
+  there was an errand's.
+- `--since` keeps errands and messages from that day (UTC) on, the day included; `--by branch
+  --branch B` keeps one row (`?` for work with no branch). `--json` prints the rows (or `plans`)
+  and the raw errand records.
 - Both figures are list prices. The table is in code for the current models; override a row or add
   a model in `.olifant/config.toml`, in USD per million tokens, all five keys:
 

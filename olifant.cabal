@@ -84,6 +84,7 @@ library
     Olifant.GitInit
     Olifant.Glob
     Olifant.Holes
+    Olifant.Landings
     Olifant.Language
     Olifant.Language.Adapter
     Olifant.Language.AstGrep
@@ -257,6 +258,8 @@ test-suite spec
     Olifant.GlobSpec
     Olifant.Holes
     Olifant.HolesSpec
+    Olifant.Landings
+    Olifant.LandingsSpec
     Olifant.Language
     Olifant.Language.Adapter
     Olifant.Language.AstGrep

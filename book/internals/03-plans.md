@@ -44,7 +44,8 @@ a new-step ghost worded from the unit's header.
 | `Server/Journal.hs` | the plan's dated lines under a step (`record`, `journalLine`, `pendingFacts`) |
 | `Server/Telemetry.hs` | `.olifant/state/errands.jsonl`: errand, outcome and reconcile records (`appendRecord` `:154`) |
 | `Server/Excerpt.hs` | code excerpts kept under a step, and the hover over an anchor |
-| `Transcripts.hs`, `Cli.hs:549` | `olifant plans cost`: the records beside Claude Code's own transcripts |
+| `Transcripts.hs`, `Cli.hs` `runPlansCost` | `olifant plans cost`: the records beside Claude Code's own transcripts |
+| `Landings.hs` | a plan's landings from `git log --first-parent` (`landingsOf`, `parseLandings`), and `landingFor`, the first landing at or after a time |
 
 Two things to know before reading. There are two modules called Plans: `Olifant.Plans` is the
 parser and has no IO; `Olifant.Server.Plans` is everything that needs a project. And the loop's
@@ -323,8 +324,14 @@ The plans requests, all in `Lsp.hs` (the line numbers are the handlers):
 
 All the slow ones go through `inBackground` and `planProgress` like the other slow requests
 ([tour](01-tour.md#lsp-the-adapter)). `olifant plans cost` is not in the server: `runPlansCost`
-(`Cli.hs:549`) reads `errands.jsonl` with `Telemetry.readRecords` and Claude Code's transcripts
-with `Transcripts.readTranscripts`, and prices both from `[plans.prices]`.
+(`Cli.hs:579`) reads `errands.jsonl` with `Telemetry.readRecords` and Claude Code's transcripts
+with `Transcripts.readTranscripts`, and prices both from `[plans.prices]`. `--by branch` is
+`costRows`; the default view reads each plan's landings through `rtGit` with `Landings.landingsOf`
+(`git log --first-parent -- PLAN`, so the runtime's git seam, faked in specs) and buckets records
+with `landingRows` (`Cli.hs:712`): errands and reconciles by `landingFor` over their own plan's
+landings, messages over every plan's. Both views build a line with `rowOf` and print with
+`rowTable`; `landingTable` is the plan, landing and `(not landed)` layout. A failing `git log`
+is a stderr note and no landings, never a failure.
 
 ## The seams
 
