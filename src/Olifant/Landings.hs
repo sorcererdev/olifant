@@ -8,10 +8,12 @@ module Olifant.Landings
   , labelOf
   , shortSubject
   , landingFor
+  , landingsOf
   ) where
 
 import Data.List (sortOn)
 import Data.Maybe (mapMaybe)
+import Data.Traversable (for)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Read (decimal)
@@ -73,3 +75,10 @@ landingFor :: [Landing] -> UTCTime -> Maybe Landing
 landingFor landings t = case filter ((>= t) . ldAt) landings of
   l : _ -> Just l
   [] -> Nothing
+
+-- | Each plan's landings through a git function (directory, arguments, stdout):
+-- the first failure is the whole result (no repository, no history).
+landingsOf :: (FilePath -> [String] -> IO (Either Text Text)) -> FilePath -> [FilePath] -> IO (Either Text [(FilePath, [Landing])])
+landingsOf git root plans = sequenceA <$> for plans one
+  where
+    one plan = fmap (\out -> (plan, parseLandings plan out)) <$> git root (landingsArgs plan)

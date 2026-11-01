@@ -35,3 +35,9 @@ spec = describe "Olifant.Landings" $ do
     shortSubject 50 "Add toggle (#133)" `shouldBe` "Add toggle"
     let long = T.replicate 60 "x" :: Text
     shortSubject 50 long `shouldBe` T.replicate 49 "x" <> "…"
+  it "landingsOf runs the log per plan and the first failure is the result" $ do
+    let fake _ args = pure (Right (if last args == "a.md" then "h1\t1793460000\tone (#1)\n" else ""))
+    Right got <- landingsOf fake "/r" ["a.md", "b.md"]
+    map (map ldLabel . snd) got `shouldBe` [["#1"], []]
+    bad <- landingsOf (\_ _ -> pure (Left "fatal: not a git repository")) "/r" ["a.md"]
+    bad `shouldBe` Left "fatal: not a git repository"

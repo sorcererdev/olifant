@@ -282,7 +282,7 @@ spec = do
               , rtReadStdin = pure "", rtNow = pure (UTCTime (fromGregorian 2026 10 4) 0), rtStdoutIsTty = False
               , rtOut = \_ -> pure (), rtErr = \_ -> pure ()
               , rtSyntax = astGrepSyntax (tmp </> "olifant-test-cache"), rtChecker = processCheckerWith
-              , rtGitChanged = \_ _ -> pure (Right ([], [])), rtDoctor = DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False) (\_ -> pure False), rtTracked = \_ -> pure Nothing, rtBaseText = \_ _ _ -> pure (Left "no base in tests"), rtBaseFiles = \_ _ -> pure (Left "no base"), rtBaseStamp = \_ _ -> pure ""
+              , rtGitChanged = \_ _ -> pure (Right ([], [])), rtDoctor = DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False) (\_ -> pure False), rtTracked = \_ -> pure Nothing, rtBaseText = \_ _ _ -> pure (Left "no base in tests"), rtBaseFiles = \_ _ -> pure (Left "no base"), rtBaseStamp = \_ _ -> pure "", rtGit = \_ _ -> pure (Left "no git in tests")
               , rtGitInit = \_ _ -> pure (Right ()), rtVerifier = const noVerifier, rtTester = \_ _ -> noRunner }
         runCli rt ["init", "--pack", packs, "demo"] `shouldReturn` ExitSuccess
         env <- getEnvironment
@@ -366,7 +366,7 @@ spec = do
               , rtReadStdin = pure "", rtNow = pure (UTCTime (fromGregorian 2026 10 6) 0), rtStdoutIsTty = False
               , rtOut = \t -> modifyIORef' out (<> t), rtErr = \_ -> pure ()
               , rtSyntax = astGrepSyntax (tmp </> "olifant-test-cache"), rtChecker = const noChecker
-              , rtGitChanged = \_ _ -> pure (Right ([], [])), rtDoctor = DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False) (\_ -> pure False), rtTracked = \_ -> pure Nothing, rtBaseText = \_ _ _ -> pure (Left "no base in tests"), rtBaseFiles = \_ _ -> pure (Left "no base"), rtBaseStamp = \_ _ -> pure ""
+              , rtGitChanged = \_ _ -> pure (Right ([], [])), rtDoctor = DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False) (\_ -> pure False), rtTracked = \_ -> pure Nothing, rtBaseText = \_ _ _ -> pure (Left "no base in tests"), rtBaseFiles = \_ _ -> pure (Left "no base"), rtBaseStamp = \_ _ -> pure "", rtGit = \_ _ -> pure (Left "no git in tests")
               , rtGitInit = \_ _ -> pure (Right ()), rtVerifier = const noVerifier, rtTester = \_ _ -> noRunner }
         _ <- runCli rt ["check", "--file", close, "--json"]
         checked <- readIORef out

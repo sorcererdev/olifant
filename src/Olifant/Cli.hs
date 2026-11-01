@@ -92,6 +92,8 @@ data Runtime = Runtime
     rtBaseFiles :: FilePath -> Text -> IO (Either Text [FilePath])
   , -- | what the base depends on (see 'pBaseStamp')
     rtBaseStamp :: FilePath -> Text -> IO Text
+  , -- | git in a directory, its stdout (`plans cost` reads the log)
+    rtGit :: FilePath -> [String] -> IO (Either Text Text)
   }
 
 runCli :: Runtime -> [String] -> IO ExitCode
