@@ -98,6 +98,12 @@ module Olifant.Server
   , Resolved (..)
   , resolveAnchor
   , planDiagnostics
+  , AnchorPrints
+  , PlanToken (..)
+  , planTokenTypes
+  , planTokenModifiers
+  , planTokens
+  , planFolds
   , anchorItems
   , newStepSnippet
   , newStepText
@@ -111,7 +117,7 @@ module Olifant.Server
   ) where
 
 import Olifant.Server.Order (orderSurvivors)
-import Olifant.Server.Plans (ErrandAnswer (..), FileItem (..), Resolved (..), anchorItems, isPlanPath, newStepSnippet, newStepText, planDiagnostics, planFiles, resolveAnchor, runErrand)
+import Olifant.Server.Plans (AnchorPrints, ErrandAnswer (..), FileItem (..), PlanToken (..), Resolved (..), anchorItems, isPlanPath, newStepSnippet, newStepText, planDiagnostics, planFiles, planFolds, planTokenModifiers, planTokenTypes, planTokens, resolveAnchor, runErrand)
 import Olifant.Server.Errand (Block (..), Ghost (..), Verb (..))
 import Olifant.Server.Actions (actionEdits, actionPlan, actionPlanWith, actionsFor, describeProgress, menuActionsFor)
 import Olifant.Server.Holes (Hole (..), fillHoleEdits, fillHolePlan, holeAt, holesFor)

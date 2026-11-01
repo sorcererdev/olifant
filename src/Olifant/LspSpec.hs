@@ -50,7 +50,7 @@ import Language.LSP.Test
 import Olifant.App (Ports (..))
 import Olifant.Language (CheckReport (..), Checker (..), Runner (..), Syntax (..), querying, noChecker, noRunner, noSyntax, processCheckerWith, processRunner, processVerifierCancellable)
 import Olifant.Generation (HoleStatus (..), Plan (..), PlannedHole (..))
-import Olifant.Server (PickStep (..), Preview (..), ServerConfig (..), ServerState (..), actionPlanWith, describeProgress, fixPlan, newServerState, previewFor, stepsPlanWith)
+import Olifant.Server (planTokenModifiers, planTokenTypes, PickStep (..), Preview (..), ServerConfig (..), ServerState (..), actionPlanWith, describeProgress, fixPlan, newServerState, previewFor, stepsPlanWith)
 import Olifant.Preview (Field (..), Source (..))
 import Olifant.Process (gitBaseFiles, gitBaseText, gitStateStamp)
 import Data.IORef (atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
@@ -105,6 +105,7 @@ spec = describe "Olifant.Lsp (olifant lsp over stdio)" $ do
   plansStage1Spec
   doReviewSpec
   plansLoopSpec
+  planReadingSpec
   it "is the `olifant lsp` command: the built binary initialises and opens a document" $ do
     (built, out, _) <- readCreateProcessWithExitCode (proc "cabal" ["list-bin", "-v0", "olifant"]) ""
     if built /= ExitSuccess then pendingWith "cabal list-bin olifant failed" else
@@ -115,13 +116,16 @@ spec = describe "Olifant.Lsp (olifant lsp over stdio)" $ do
             TResponseMessage _ _ (Right result) -> fmap (\(ServerInfo n _) -> n) (result ^. L.serverInfo)
             _ -> Nothing
         name `shouldBe` Just "olifant"
-  it "advertises only what it answers: no semantic tokens (Neovim asked, and logged an error each time)" $
+  it "advertises semantic tokens with the plan legend" $
     withPython [] $ \ports dir -> do
       (caps, _) <- inProcessWith ports dir $
         initializeResponse <&> \case
           TResponseMessage _ _ (Right result) -> Just (result ^. L.capabilities)
           _ -> Nothing
-      fmap (^. L.semanticTokensProvider) caps `shouldBe` Just Nothing
+      fmap (\c -> case c ^. L.semanticTokensProvider of
+                    Just (InL o) -> Just (o ^. L.legend . L.tokenTypes, o ^. L.legend . L.tokenModifiers)
+                    _ -> Nothing) caps
+        `shouldBe` Just (Just (planTokenTypes, planTokenModifiers))
       fmap (isJust . (^. L.definitionProvider)) caps `shouldBe` Just True
       fmap (\c -> (^. L.triggerCharacters) =<< (c ^. L.completionProvider)) caps `shouldBe` Just (Just ["@", ":"])
 
@@ -2061,6 +2065,45 @@ plansSpec = describe "plans: anchors in the server" $ do
 
 -- | Plan errands (plans, stage 1, Task 7): ask, validate and do run the
 -- runner (the shim here, never claude) and answer ghost blocks.
+-- | How a plan reads (the engine's half): semantic tokens, the folds of
+-- done work, and the refresh when a unit changes under a verified claim.
+planReadingSpec :: Spec
+planReadingSpec = describe "how a plan reads" $ do
+  let table = "src/bistro/booking/models/table.py"
+      tableText = T.unlines ["def label(id: str) -> str:", "    return id"]
+      tokensOf doc = request SMethod_TextDocumentSemanticTokensFull (SemanticTokensParams Nothing Nothing doc) <&> \(TResponseMessage _ _ r) -> case r of
+        Right (InL (SemanticTokens _ ds)) -> Right (map fromIntegral ds :: [Int])
+        other -> Left (show other)
+  it "semanticTokens/full on a plan answers its tokens" $
+    withPython [("plans/t.md", "- [ ] hello\n- ? why\n"), (table, tableText)] $ \ports dir -> do
+      (ds, _) <- inProcessWith ports dir $ openDoc "plans/t.md" "markdown" >>= tokensOf
+      fmap (take 10) ds `shouldBe` Right [0, 0, 6, 0, 0, 0, 6, 5, 1, 0]
+      fmap length ds `shouldBe` Right 20
+  it "semanticTokens/full on a python file answers no tokens, no error" $
+    withPython [("src/x.py", "x = 1\n")] $ \ports dir -> do
+      (ds, _) <- inProcessWith ports dir $ openDoc "src/x.py" "python" >>= tokensOf
+      ds `shouldBe` Right []
+  it "foldingRange answers a ticked step and an answered question" $
+    withPython [("plans/t.md", "- [x] s\n  - 25 Oct 21:31 · did\n- ? q\n  - the answer\n- [ ] open\n")] $ \ports dir -> do
+      (ranges, _) <- inProcessWith ports dir $ do
+        p <- openDoc "plans/t.md" "markdown"
+        request SMethod_TextDocumentFoldingRange (FoldingRangeParams Nothing Nothing p) <&> \(TResponseMessage _ _ r) -> r
+      fmap (\case InL rs -> [(r ^. L.startLine, r ^. L.endLine, r ^. L.kind) | r <- rs]; InR _ -> []) ranges
+        `shouldBe` Right [(0, 1, Just FoldingRangeKind_Region), (2, 3, Just FoldingRangeKind_Region)]
+  it "a changed unit sends semanticTokens/refresh and the next tokens carry stale" $
+    withPython [("plans/t.md", "- c @" <> T.pack table <> ":label \10003 0000000\n"), (table, tableText)] $ \ports dir -> do
+      ((before, after), _) <- inProcessWith ports dir $ do
+        p <- openDoc "plans/t.md" "markdown"
+        before <- tokensOf p
+        _ <- pullDiagnostics p
+        _ <- message SMethod_WorkspaceSemanticTokensRefresh
+        after <- tokensOf p
+        pure (before, after)
+      let mods = either (const []) everyFifth
+          everyFifth ds = case splitAt 5 ds of ([], _) -> []; (t, rest) -> (t !! 4) : everyFifth rest
+      mods before `shouldBe` [0, 0, 0, 0, 0, 0]
+      mods after `shouldBe` [0, 0, 0, 0, 2, 2]
+
 plansLoopSpec :: Spec
 plansLoopSpec = describe "plans, stage 2" $ do
   let table = "src/bistro/booking/models/table.py"
@@ -2180,12 +2223,12 @@ plansLoopSpec = describe "plans, stage 2" $ do
           sourceActions p 0 >>= mapM resolveCodeAction
         map startsAndTexts resolved
           `shouldBe` [[(Position 0 (fromIntegral (T.length (stepLine "[x]"))), T.concat ["\n" <> l | l <- ["  ```python " <> anchorOf <> " · done", "  def label(id: str) -> str:", "      return \"t-\" + id", "  ```"]])]]
-    it "(x7) foldingRange: one range per excerpt, opening row to closing row; none for the user's own fence" $
+    it "(x7) foldingRange: one range per excerpt, opening row to closing row; none for the user's own fence (the ticked step folds too)" $
       withEditedPlan (T.unlines ([stepLine "[ ]"] ++ fenceOf ["a", "b"] ++ [stepLine "[x]", "  ```python " <> anchorOf <> " · done", "  c", "  ```", "  ```sh", "  ls", "  ```"])) "" $ \ports dir -> do
         (ranges, _) <- inProcessWith ports dir $ do
           p <- openDoc "plans/t.md" "markdown"
           request SMethod_TextDocumentFoldingRange (FoldingRangeParams Nothing Nothing p) <&> \(TResponseMessage _ _ r) -> r
-        fmap (\case InL rs -> [(r ^. L.startLine, r ^. L.endLine) | r <- rs]; InR _ -> []) ranges `shouldBe` Right [(1, 4), (6, 8)]
+        fmap (\case InL rs -> [(r ^. L.startLine, r ^. L.endLine) | r <- rs]; InR _ -> []) ranges `shouldBe` Right [(1, 4), (6, 8), (5, 11)]
     it "(x8) a lens on each excerpt's opening line: live · from its file · read-only, or frozen at tick; its command folds it" $
       withEditedPlan (T.unlines ([stepLine "[ ]"] ++ fenceOf ["a"] ++ [stepLine "[x]", "  ```python " <> anchorOf <> " · done", "  c", "  ```"])) "" $ \ports dir -> do
         (lenses, _) <- inProcessWith ports dir $ do

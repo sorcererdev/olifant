@@ -47,7 +47,9 @@ it. A name the file does not have says so: `Nope is not in src/Olifant/PlansSpec
 
 ## What the server does
 
-- Diagnostics: a missing anchor and a stale verdict, on the anchor.
+- Diagnostics: a missing anchor (`? not found`), and `changed since this was verified` on a claim
+  of your own whose unit has changed. Evidence an `ask` left under a question, and steps, raise no
+  `changed since`: the evidence's `✓` is dimmed instead and the step answers with the loop below.
 - `@` completes files, then units. `gd` on an anchor goes to the unit (`textDocument/definition`).
 - Three errands, each one `claude -p` run from the project root, never more than one `do` at a time:
   - **ask** (on a `- ?` line): answers with claims that carry anchors the index resolves.

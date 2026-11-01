@@ -86,8 +86,14 @@ unit's `Named` (its lines, `namedDef`), its text and its **fingerprint**.
 The fingerprint (`Server/Unit.hs:219`) is seven hex digits of an FNV hash of the unit's text
 with formatting taken out, so a formatter's reflow leaves it alone and a real edit changes it.
 That one number is what every verdict means: `✓ a1b2c3d` is "this was true when the unit hashed
-to a1b2c3d". `planDiagnostics` (`Server/Plans.hs:123`) shows a `✓` stale when the unit now hashes
-differently, and `? not found` when it does not resolve. Which languages' units resolve is a
+to a1b2c3d". `planDiagnostics` (`Server/Plans.hs`) raises `? not found` (a hint) wherever an anchor
+does not resolve, and `changed since this was verified` (information, no hex) only on a `Claim`
+line the user wrote: one with no `Question` and no ticked `Step` among its ancestors
+(`ancestorsIn`). Evidence under a question is history, and a step's changed unit is the
+reconcile's business (`○` on its children), so neither raises it; inside a ticked step only
+`not found` is raised. It also returns the `AnchorPrints` it read (`(path, unit)` to the unit's
+fingerprint now, `Nothing` when not found): `diagnosticsOf` stores them per plan in
+`envPlanPrints`, and `planTokens` marks a `✓` `stale` from them, with no I/O of its own. Which languages' units resolve is a
 language-file question ([chapter 5](05-languages.md)): the `[unit]` table of the file's
 language.
 
@@ -310,7 +316,10 @@ The plans requests, all in `Lsp.hs` (the line numbers are the handlers):
 | `olifant/plans/reconcile` (`:732`) | the reconcile above |
 | `olifant/plans/stub`, `test` | a step's test written / run |
 | `olifant/plans/outcome` (`:791`) | **notification**: a block was accepted or rejected (an `ask`'s at once, unless the editor reviews answers) |
-| `textDocument/definition`, `hover`, `completion`, `codeLens`, `foldingRange` | `gd` on an anchor, the unit hover, `@` completion, review and delegation lenses, excerpt folds |
+| `textDocument/definition`, `hover`, `completion`, `codeLens`, `foldingRange`, `semanticTokens/full` | `gd` on an anchor, the unit hover, `@` completion, review and delegation lenses, folds (excerpts from `excerptSpans`, ticked steps and answered questions from `planFolds`, all kind `region`), the plan's tokens (`planTokens`, encoded by `encodePlanTokens`; the legend is `planTokenTypes`/`planTokenModifiers`, advertised by `advertise`; any other file answers `[]`) |
+
+`workspace/semanticTokens/refresh` goes to the client when a pulled diagnostics pass changes a plan's
+`envPlanPrints`, so a `✓` turns stale without a second edit.
 
 All the slow ones go through `inBackground` and `planProgress` like the other slow requests
 ([tour](01-tour.md#lsp-the-adapter)). `olifant plans cost` is not in the server: `runPlansCost`
@@ -331,6 +340,11 @@ with `Transcripts.readTranscripts`, and prices both from `[plans.prices]`.
   in-memory filesystem), `pSyntax` (units), `pTester` (tests), `pNow` (ids and journal times).
   The runner and git are not ports: both are real subprocesses (`runBytes`), which is why the
   plans specs are the ones that touch a real git repository.
+
+A plan's rendering classes come from the parser, never from an editor re-parsing the text:
+`planTokens` (`Server/Plans.hs`) classifies each span from `parsePlan`'s lines (a line's parent is
+the nearest earlier step or question with a smaller indent: `parentIn`), and an editor only maps
+the classes to colours, glyphs and conceal.
 
 ## Testing it
 
