@@ -141,6 +141,18 @@ spec = describe "Olifant.Server.Plans (anchors in the server)" $ do
           ends = [(ptRow t, ptCol t, ptCol t + ptLen t) | t <- ts]
       and [(r, c) < (r', c') && (r < r' || e <= c') | ((r, c, e), (r', c', _)) <- zip ends (drop 1 ends)] `shouldBe` True
 
+  describe "planFolds" $ do
+    let folds = planFolds . parsePlan . T.unlines
+    it "a ticked step with children folds to its last descendant" $
+      folds ["- [x] a", "  - 25 Oct 21:31 · did", "  - also @src/a.py:Foo", "- [ ] b"] `shouldBe` [(0, 2)]
+    it "a ticked step without children, and an open step, do not fold" $
+      folds ["- [x] a", "- [ ] b", "  - 25 Oct 21:31 · did"] `shouldBe` []
+    it "an answered question folds; one with evidence only does not" $ do
+      folds ["- ? q", "  - ev @src/a.py:Foo ✓ 0123456", "  - the answer", "- ? r", "  - ev @src/a.py:Foo ✓ 0123456"] `shouldBe` [(0, 2)]
+      folds ["- ? q"] `shouldBe` []
+    it "a question under a ticked step folds inside it" $
+      folds ["- [x] a", "  - ? q", "    - the answer", "  - 25 Oct 21:31 · did"] `shouldBe` [(0, 3), (1, 2)]
+
 -- | /r1 with the python pack, `src/a.py` (class Foo with def bar) and a
 -- plan; a syntax whose units are Foo (lines 0-2) and Foo.bar (1-2).
 planServer :: IO (ServerState, Project)

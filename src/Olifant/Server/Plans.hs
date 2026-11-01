@@ -12,6 +12,7 @@ module Olifant.Server.Plans
   , planTokenTypes
   , planTokenModifiers
   , planTokens
+  , planFolds
   , anchorItems
   , newStepSnippet
   , newStepText
@@ -232,6 +233,21 @@ planTokens prints ls = concatMap tokensOf ls
             | (c, n, ty, ms) <- spans
             , let col k = utf16Length (T.take k txt)
             ]
+
+-- | The ranges a plan folds besides its excerpts: a ticked step with
+-- children, and a question with an unanchored claim directly under it,
+-- each from its row to its last descendant (start, end; inclusive).
+planFolds :: [Line] -> [(Int, Int)]
+planFolds ls =
+  [ (lnRow l, lnRow (last kids))
+  | l <- ls
+  , let kids = childrenOf ls (lnRow l)
+  , not (null kids)
+  , case lnKind l of
+      Step True -> True
+      Question -> any (\c -> lnKind c == Claim && lnAnchor c == Nothing) [c | c <- kids, lnIndent c == lnIndent l + 2]
+      _ -> False
+  ]
 
 utf16Length :: Text -> Int
 utf16Length = T.foldl' (\n c -> n + if fromEnum c > 0xFFFF then 2 else 1) 0
