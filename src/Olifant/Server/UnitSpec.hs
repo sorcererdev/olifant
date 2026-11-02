@@ -69,6 +69,10 @@ spec = do
       `shouldReturn` Right [Named "Foo" (1, 3) 1, Named "Foo.bar" (2, 3) 2, Named "f" (6, 7) 6]
     unitsOf noQuery rust Nothing "struct A;\n\nimpl A {\n    fn new() -> A {\n        A\n    }\n}\n"
       `shouldReturn` Right [Named "A" (1, 1) 1, Named "A" (3, 7) 3, Named "A.new" (4, 6) 4]
+  it "Python @overload stubs and the implementation stay separate units: only [unit] join joins (m2b M1)" $ do
+    let noQuery = querying (\_ _ _ -> error "the [unit] kinds query ran")
+    Right ns <- unitsOf noQuery python Nothing "@overload\ndef f(x: int) -> int: ...\n@overload\ndef f(x: str) -> str: ...\ndef f(x):\n    return x\n"
+    length ns `shouldBe` 3
   it "a Rust trait impl's methods are qualified by its type, as on main (review I3)" $ do
     let noQuery = querying (\_ _ _ -> error "the [unit] kinds query ran")
     Right ns <- unitsOf noQuery rust Nothing "trait T { fn f(&self); }\nstruct A;\nstruct B;\nimpl T for A {\n    fn f(&self) {}\n}\nimpl T for B {\n    fn f(&self) {}\n}\n"

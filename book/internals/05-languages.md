@@ -308,7 +308,9 @@ anchor phrases from community queries (design 4b §A).
   class bodies: `tags.scm` tags a `signature`, `function` and `bind` as `@definition.function`,
   `data_type` and `newtype` as `.type`, `class` as `.class`, and `instance` as
   `@definition.instance` (named by its class for a phrase, `@unit.name` adding its type for its
-  unit: `C Int`);
+  unit: `C Int`); an operator is tagged too: a signature or equation named by a `prefix_id`
+  (`(<+>) ::`), and an infix equation (`a <+> b = …`) named by its `operator` (the rule reads
+  `(<+>)` and `<+>` as one name, so they join);
   `textobjects.scm` makes a data type's constructors and a class's or instance's declarations
   `@class.inner`; `imports.scm` captures each `import` in the `imports` block (the block itself
   runs on to the next declaration under the grammar's layout). They carry no upstream
@@ -393,7 +395,9 @@ anchor phrases from community queries (design 4b §A).
   body (a Python block), the body is the container and its named children are the items
   (`wholeBody`). Adjacent function definitions of one name with only white space between
   are one (`adjacent`: a Haskell signature and its equations, captured each on its own, are
-  one function from the signature to the last equation); class-like ones are not joined. A
+  one function from the signature to the last equation); class-like ones are not joined, and
+  nothing is joined unless the language says `[unit] join = true` (Python's `@overload` stubs and
+  their implementation stay separate). A
   definition with no inner range and no `body` field (that Haskell function) is its own
   container and its one item, so `end of` goes after it. With no inner
   capture (an empty body), the container is the definition's `body` field, empty, which

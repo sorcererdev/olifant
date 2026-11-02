@@ -149,7 +149,7 @@ treeSitterAnchors lang _ ws source = pure $ case langGrammar lang of
     , maybe True (kindKnown g) (phraseKind ws) ->
         case capturesOf g (querySet lang) source of
           Left why -> Just (Left (SyntaxFailed why))
-          Right (root, caps) -> first SyntaxFailed <$> anchorFromCaptures root caps ws
+          Right (root, caps) -> first SyntaxFailed <$> anchorFromCaptures (langUnitJoin lang) root caps ws
   _ -> Nothing
   where
     kindKnown g k = any (\t -> t == k || (k <> "_") `T.isPrefixOf` t) (grammarNodeTypes g)
@@ -168,7 +168,7 @@ definitionKinds lang source = case langGrammar lang of
   BuiltInGrammar g
     | g `elem` linkedGrammars
     , Right (root, caps) <- capturesOf g (querySet lang) source ->
-        Just [(dsName d, dsCapture d, linesOf (dsNode d), linesOf (dsUnit d)) | d <- definitionsWith root caps]
+        Just [(dsName d, dsCapture d, linesOf (dsNode d), linesOf (dsUnit d)) | d <- definitionsWith (langUnitJoin lang) root caps]
   _ -> Nothing
   where
     -- a node that ends at a line's start ends on the line before
@@ -182,7 +182,7 @@ definitionsOf :: Language -> Text -> Maybe [DefSpan]
 definitionsOf lang source = case langGrammar lang of
   BuiltInGrammar g
     | g `elem` linkedGrammars
-    , Right (root, caps) <- capturesOf g (querySet lang) source -> Just (definitionsWith root caps)
+    , Right (root, caps) <- capturesOf g (querySet lang) source -> Just (definitionsWith (langUnitJoin lang) root caps)
   _ -> Nothing
 
 -- | The definition a text starts with: the outermost whose unit starts on

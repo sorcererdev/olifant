@@ -125,7 +125,7 @@ captureSpec = describe "tree-sitter captures" $ do
   describe "Haskell (olifant's own queries)" $ do
     let hs src = either (error . T.unpack) id (capturesOf "haskell" (queriesFor "haskell") src)
         containers src ws = case hs src of
-          (root, caps) -> fmap (fmap (map (\(c, items) -> ((fst (matchStart c), fst (matchEnd c)), length items)))) (anchorFromCaptures root caps ws)
+          (root, caps) -> fmap (fmap (map (\(c, items) -> ((fst (matchStart c), fst (matchEnd c)), length items)))) (anchorFromCaptures True root caps ws)
     it "a Haskell function's definition spans its signature and equations" $
       containers "f :: Int -> Int\nf 0 = 1\nf n = n\n\ng = 2\n" ["function", "f"] `shouldBe` Just (Right [((0, 2), 1)])
     it "a function without a signature is its equations" $

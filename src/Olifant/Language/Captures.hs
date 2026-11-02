@@ -158,8 +158,8 @@ definedNames kind caps = map snd (nubOn fst [(pBytes (capNode (defCap d)), defNa
 -- | The generic rule. 'Nothing': not a generic phrase. Else every container
 -- the phrase names, in the file's order, each with its items ('Right []':
 -- no such definition). @root@ is the file's root node.
-anchorFromCaptures :: PNode -> [Cap] -> [Text] -> Maybe (Either Text [(Match, [Match])])
-anchorFromCaptures root caps = \case
+anchorFromCaptures :: Bool -> PNode -> [Cap] -> [Text] -> Maybe (Either Text [(Match, [Match])])
+anchorFromCaptures joinAdj root caps = \case
   -- after the last top-level import (imports.scm, olifant's own)
   ["imports"] ->
     -- top-level import statements only (a `use` inside `mod tests` is not
@@ -180,7 +180,7 @@ anchorFromCaptures root caps = \case
     | otherwise -> Just (Right (mapMaybe body [d | d <- defsOf phraseCaps name, kindOf kind (capNode (defCap d))]))
   _ -> Nothing
   where
-    defs = adjacent source (definitions caps)
+    defs = adjacent joinAdj source (definitions caps)
     defNodes = nub (map (capNode . defCap) defs)
     -- before 'adjacent' joined them, and the joined ones alone
     rawDefNodes = nub (map (capNode . defCap) (definitions caps))
@@ -252,8 +252,8 @@ anchorFromCaptures root caps = \case
 -- white space between, are one (a Haskell signature and its equations): one
 -- node from the first's start to the last's end. Class-like ones are not
 -- joined (a Haskell class and its instance after it stay two).
-adjacent :: BS.ByteString -> [Def] -> [Def]
-adjacent source = IM.elems . fst . foldl step (IM.empty, M.empty) . zip [0 :: Int ..] . sortOn (pBytes . capNode . defCap)
+adjacent :: Bool -> BS.ByteString -> [Def] -> [Def]
+adjacent joinAdj source = IM.elems . fst . foldl step (IM.empty, M.empty) . zip [0 :: Int ..] . sortOn (pBytes . capNode . defCap)
   where
     -- the merged definitions by first index, and the latest index of each
     -- (capture, name): one lookup per definition
@@ -263,7 +263,8 @@ adjacent source = IM.elems . fst . foldl step (IM.empty, M.empty) . zip [0 :: In
             Just (j, prev) | joins d prev -> (IM.insert j (grow prev d) out, latest)
             _ -> (IM.insert i d out, M.insert key i latest)
     joins d p =
-      capName (defCap d) `elem` functionCaps
+      joinAdj
+        && capName (defCap d) `elem` functionCaps
         && let (_, pe) = pBytes (capNode (defCap p))
                (ds, _) = pBytes (capNode (defCap d))
             in pe <= ds && BS.all (`BS.elem` " \t\r\n") (BS.take (ds - pe) (BS.drop pe source))
@@ -281,8 +282,8 @@ adjacent source = IM.elems . fst . foldl step (IM.empty, M.empty) . zip [0 :: In
 -- `class.outer` capture that holds it, ends where it ends and holds no
 -- other definition (a Python decorated definition, its decorators
 -- included), else its own.
-definitionSpans :: PNode -> [Cap] -> [(Text, PNode, PNode)]
-definitionSpans root caps = [(dsName d, dsNode d, dsUnit d) | d <- definitionsWith root caps]
+definitionSpans :: Bool -> PNode -> [Cap] -> [(Text, PNode, PNode)]
+definitionSpans joinAdj root caps = [(dsName d, dsNode d, dsUnit d) | d <- definitionsWith joinAdj root caps]
 
 -- | A definition as 'definitionsWith' gives it: its @name, its capture
 -- (`definition.function`, …), its own node, its unit's node, and its
@@ -290,10 +291,10 @@ definitionSpans root caps = [(dsName d, dsNode d, dsUnit d) | d <- definitionsWi
 data DefSpan = DefSpan {dsName :: Text, dsCapture :: Text, dsNode :: PNode, dsUnit :: PNode, dsBody :: Maybe PNode}
 
 -- | Every function and class-like definition, in order ('definitionSpans').
-definitionsWith :: PNode -> [Cap] -> [DefSpan]
-definitionsWith root caps =
+definitionsWith :: Bool -> PNode -> [Cap] -> [DefSpan]
+definitionsWith joinAdj root caps =
   [ DefSpan (defUnitName d) (capName (defCap d)) n (unitOf n) (listToMaybe [b | (f, b, _) <- capFields (defCap d), f == "body"])
-  | d <- nubOn (pBytes . capNode . defCap) (adjacent source (unitDefinitions caps))
+  | d <- nubOn (pBytes . capNode . defCap) (adjacent joinAdj source (unitDefinitions caps))
   , let n = capNode (defCap d)
   ]
   where
