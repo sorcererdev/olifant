@@ -345,7 +345,7 @@ the merge-base) lets the report count the base over the base's own files. Each i
 parameterised by the monad `m` it runs in:
 
 ```haskell
--- src/Olifant/Workspace.hs
+-- src/Olifant/Workspace.hs, Workspace
 data Workspace m = Workspace
   { readText :: FilePath -> m (Maybe Text)
   , writeText :: FilePath -> Text -> m ()
@@ -362,7 +362,7 @@ case that stops generating a file doesn't leave its old snapshot behind (chapter
 generators, and below).
 
 ```haskell
--- src/Olifant/Language/Syntax.hs
+-- src/Olifant/Language/Syntax.hs, Syntax
 data Syntax m = Syntax
   { querySyntax :: Language -> Value -> Text -> m (Either SyntaxFailure [Match]),
     rewriteSyntax :: Language -> Value -> Text -> Text -> m (Either SyntaxFailure [Rewrite]),
@@ -370,23 +370,23 @@ data Syntax m = Syntax
     anchorSyntax :: Language -> Maybe FilePath -> [Text] -> Text -> m (Maybe (Either SyntaxFailure [(Match, [Match])]))
   }
 
--- src/Olifant/Language/Check.hs
+-- src/Olifant/Language/Check.hs, Checker
 newtype Checker m = Checker {runCheck :: Language -> Map FilePath Text -> m (Either CheckFailure CheckReport)}
 
--- src/Olifant/Query.hs
+-- src/Olifant/Query.hs, Queries
 data Queries m = Queries
   { queryCommand :: [Text] -> m (Either QueryFailure ByteString)
   , queryAst :: AstQuery -> [FilePath] -> (FilePath -> m (Maybe Text)) -> m (Either QueryFailure [Record])
   , queryUncovered :: Text -> m (Either QueryFailure [Record])  -- the cases the match at the cursor lacks
   }
 
--- src/Olifant/Query.hs
+-- src/Olifant/Query.hs, QueryFailure
 data QueryFailure = QueryFailure {failureWhy :: Text, failureToolMissing :: Bool}
 
--- src/Olifant/Fill.hs
+-- src/Olifant/Fill.hs, Filler
 newtype Filler m = Filler {runFill :: FillRequest -> m (Either Text (Map Text Text))}
 
--- src/Olifant/Doctor.hs
+-- src/Olifant/Doctor.hs, DoctorPorts
 data DoctorPorts m = DoctorPorts
   { dpFind :: String -> m (Maybe FilePath)   -- an executable on this process's PATH
   , dpPath :: m Text                         -- this process's PATH, to show
@@ -438,7 +438,7 @@ clock, stdout, stderr, whether stdout is a terminal, the Syntax and Checker adap
 git port only `check --changed-since` uses:
 
 ```haskell
--- src/Olifant/Cli.hs
+-- src/Olifant/Cli.hs, Runtime
   , -- | lines changed since a git ref (file, 1-based inclusive ranges) and
     -- untracked files, for `check --changed-since`
     rtGitChanged :: FilePath -> Text -> IO (Either Text ([(FilePath, [(Int, Int)])], [FilePath]))
@@ -449,7 +449,7 @@ uses it and the CLI runs in `IO`; a test replaces the function.
 `app/Main.hs` is the only place that builds a real one:
 
 ```haskell
--- app/Main.hs (excerpt)
+-- app/Main.hs, main (excerpt)
   result <-
     try . runCli
       Runtime
@@ -530,7 +530,7 @@ until something narrows them with `within`.
 ### 2. `runCli` finds the project, then parses and opens the catalog (`src/Olifant/Cli.hs`)
 
 ```haskell
--- src/Olifant/Cli.hs
+-- src/Olifant/Cli.hs, runCli
 runCli :: Runtime -> [String] -> IO ExitCode
 runCli rt args = case parseOptions args of
   Left (text, ExitSuccess) -> rtOut rt text >> pure ExitSuccess
@@ -565,7 +565,7 @@ Options Nothing (GenCmd (GenOptions [StepSpec "elm/page" [("page","settings"),("
 That is: no format flag, one step, no `--steps` file, not `--plan`, no `--now`, no
 `--model`, not `--no-fill`.
 
-The **output format** is decided once (`Cli.hs`): the flag if given, otherwise human
+The **output format** is decided once (`runCli`, `Cli.hs`): the flag if given, otherwise human
 output for a terminal and JSON when piped.
 
 **`projectRoot`** (`Cli.hs`) walks up from `rtProjectDir rt` — the directory Olifant was
@@ -624,7 +624,7 @@ not the project root — a `--steps` file is as much "where you ran it" as the t
 reads for you). Then it loads each step:
 
 ```haskell
--- src/Olifant/Cli.hs
+-- src/Olifant/Cli.hs, runCommand
         loaded <- traverse (\(i, s) -> fmap (first (label i s,)) (either (pure . Left) (loadGenerator (rtRoot rt) (rtSyntax rt) cat) (findEntry cat (specGenerator s)))) (zip [1 :: Int ..] ss)
         case sequence loaded of
 ```
@@ -640,7 +640,7 @@ Read from the inside out:
    file's syntax tree at load time, not just render text. It's still one line:
 
    ```haskell
-   -- src/Olifant/Catalog.hs
+   -- src/Olifant/Catalog.hs, loadGenerator
    loadGenerator :: Monad m => Workspace m -> Syntax m -> Catalog -> CatalogEntry -> m (Either CatalogError Generator)
    loadGenerator root syntax cat entry = (>>= sourced) . sequenceA <$> traverse resolve (entryDefinition entry)
    ```
@@ -686,7 +686,7 @@ describe.)
 
 #### How a `one_of` resolves
 
-An enum's choices go through three states, in the input's type (`Generator/Definition.hs`):
+An enum's choices go through three states, in the input's type (`Choices`, `Generator/Definition.hs`):
 
 ```haskell
 data Scalar = IdentS | TextS | BoolS | EnumS [Text] | EnumOf Text ChoiceValue Choices
@@ -829,7 +829,7 @@ generate :: Monad m => Workspace m -> Resolve m -> Tools m -> [Step] -> UTCTime 
 and stop the rest (chapter 2 has a section on it):
 
 ```haskell
--- src/Olifant/Generation/Compose.hs
+-- src/Olifant/Generation/Compose.hs, expand
 expand resolve bindQ choose now prior ancestors path gen0 sets = do
   when (genId gen0 `elem` ancestors) $ throwE (StepCycle path)
   checkCycles resolve (genId gen0 : ancestors) path gen0
@@ -893,7 +893,7 @@ PlanRequire ["elm/page","elm/msg[1]"] ["src/Page/Settings.elm"] …
 PlanEdit    ["elm/page","elm/msg[1]"] (1 insert, 1 complete)
 ```
 
-#### 4b. Look at the files the plan touches (`Generation.hs`)
+#### 4b. Look at the files the plan touches (`Generation.hs`, `generate`)
 
 `generate` collects every target path and required path and calls `inspectTarget`
 on each one. The result is a map, `originals :: Map FilePath (Maybe Text)`, where `Nothing`
@@ -904,10 +904,10 @@ fetched only if some edit has an `unless = { exists = … }` glob.
 From here on, "the files" means that map. Each phase takes the current contents and returns
 new contents. Nothing touches the disk until the very end.
 
-#### 4c. The phases (`Generation.hs`)
+#### 4c. The phases (`Generation.hs`, `phases`)
 
 ```haskell
--- src/Olifant/Generation.hs
+-- src/Olifant/Generation.hs, generate
           phases originals' = do
             (positional, pc, afterPositional, next) <- decideItems locate diskPaths items originals' blocked onDisk
             (compiled, cc, ws', afterComplete) <- completeEdits tools ws completes next afterPositional
@@ -934,7 +934,7 @@ split out so neither has to pattern-match a branch it can never reach:
   file's language:
 
   ```haskell
-  -- src/Olifant/Generation/Planner.hs
+  -- src/Olifant/Generation/Planner.hs, decideItems
     decideInsert path n p anchors snippet current
       | Just problem <- unwritable n p = pure (current, planned path n p Conflicted, Just problem)
       | otherwise = case M.findWithDefault Nothing p current of
@@ -1065,7 +1065,7 @@ descends into those folders (a git listing is filtered). Then `loop` runs, carry
 `support` record alongside the language:
 
 ```haskell
--- src/Olifant/Generation/Complete.hs
+-- src/Olifant/Generation/Complete.hs, completeEdits (loop)
     loop lang scope support step mine disk rnd seen n files current acc
       | rnd > maxRounds = pure (reverse acc, [CompleteFailed step ("the compiler still reports missing cases after " <> T.pack (show maxRounds) <> " rounds") False], [], current)
       | otherwise =
@@ -1206,7 +1206,7 @@ the edits come out in the same order on every run. From there each instance is a
 region: its own fences, its own drift, and a file without fences is skipped (or, under
 `ReportUnset`, reported) on its own.
 
-#### 4d. The re-run second pass (`Generation.hs`)
+#### 4d. The re-run second pass (`Generation.hs`, `generate`)
 
 Run the same command a second time. The page's `create` now finds `src/Page/Settings.elm`
 on disk, but with different content from its template, because `elm/msg` changed the file
@@ -1231,7 +1231,7 @@ That's 9 edits, not 11: in the second pass the compiler finds nothing missing in
 so the two `Main` branches never appear. A re-run costs two full passes, including the
 compiler.
 
-#### 4e. Holes: markers, then placeholders (`Generation.hs`)
+#### 4e. Holes: markers, then placeholders (`Generation.hs`, `generate`)
 
 A **typed hole**, `{= ? name: kind | instruction =}` (user book, chapter 12), is the one
 part of a plan Olifant doesn't write itself. It travels through all the phases above as a
@@ -1245,7 +1245,7 @@ template of its own and accepts only if it has nothing but literals and outputs.
 is a `Hole name kind body` segment (`Template/Syntax.hs`). `freeVariables` counts the
 instruction's variables as the template's, so an undefined one is the usual error.
 
-**Rendering** (`Template/Render.hs`) turns a `Hole` into one line of text:
+**Rendering** (`renderSegment`, `Template/Render.hs`) turns a `Hole` into one line of text:
 
 ```
 ⟦olifant-hole status|expr|the value this match returns for RefundInvoiceFailure::AlreadyRefunded (…), following the other arms⟧
@@ -1297,10 +1297,10 @@ hole as "anything":
 That is what makes a re-run over a filled hole (or its placeholder, or your edit of either) a
 no-op that calls no model.
 
-**Placing the holes** (`Generation.hs`):
+**Placing the holes** (`placeHoles`, called in `generate`):
 
 ```haskell
--- src/Olifant/Generation.hs
+-- src/Olifant/Generation.hs, generate
       let replaced = [editPath e | e <- edits, WillReplace {} <- [editAction e]]
           changed = M.fromList [(p, c) | (p, Just c) <- M.toList current, if p `elem` replaced then Just (Just c) /= M.lookup p originals else not (sameWithHoles (Just (Just c)) (M.lookup p originals))]
           (placed, holeConflicts, holes0) = case placeHoles (toolLanguages tools) changed of
@@ -1351,7 +1351,7 @@ the JSON `content` never show a marker.
 #### 4f. The fill phase (`Generation/FillPhase.hs`)
 
 ```haskell
--- src/Olifant/Generation.hs
+-- src/Olifant/Generation.hs, generate
       (writes, holes, fillWarnings) <-
         if null (conflicts ++ holeConflicts)
           then do
@@ -1436,7 +1436,7 @@ harness).
 Then `generate` makes the shown edits match the writes:
 
 ```haskell
--- src/Olifant/Generation.hs
+-- src/Olifant/Generation.hs, generate
       let filled = [(phSite h, f) | h <- holes, Just f <- [phFill h]]
           langOf = languageFor (toolLanguages tools)
           withFills imports p t = M.findWithDefault t p (applyFills imports (M.singleton p t) [(s {holeFile = p}, f) | (s, f) <- filled])
@@ -1475,7 +1475,7 @@ missing. A case whose plan still has an unfilled hole fails. "placeholder output
 compiles" (`GeneratorTestingSpec.hs`) plans the same cases with no filler and compiles
 the placeholders.
 
-#### 4g. The parse pre-check (`Generation.hs`)
+#### 4g. The parse pre-check (`Generation.hs`, `generate`)
 
 Before the plan is built, `generate` asks whether the files it is about to change parsed in
 the first place (spec §4.6). A `;` typed where a Rust struct field wants `,` makes tree-sitter
@@ -1484,7 +1484,7 @@ the plan fail in a way that looks like the plan's fault. The user is often mid-e
 is a warning, never a conflict:
 
 ```haskell
--- src/Olifant/Generation.hs
+-- src/Olifant/Generation.hs, generate
       before <- traverse (\p -> (p,) <$> previous p) (M.keys writes)
       -- Parse pre-check (spec §4.6): a touched file that does not parse is
       -- warned about first; placement and checks around it may go wrong.
@@ -1532,10 +1532,10 @@ A missing-tool `CompleteFailed` gets a different suffix, at render time: `descri
 only a missing tool) is set, so the hint is in the CLI's human and JSON output and in pack
 test failures alike.
 
-#### 4h. Writes (`Generation.hs`)
+#### 4h. Writes (`Generation.hs`, `generate`)
 
 ```haskell
--- src/Olifant/Generation.hs
+-- src/Olifant/Generation.hs, generate
           plan = Plan (GeneratorId (T.intercalate " + " ids)) (zip ids (map stepSets steps)) now shownFilled (map pointBackConflict (conflicts ++ holeConflicts)) (map snd unparsed ++ map pointBack (warnings ++ fillWarnings) ++ unsetWarnings) writes holes (M.fromList before) (M.filter hasMarkers changed) Nothing
       when (mode == Apply && not (hasConflicts plan)) $
         forM_ (M.toList writes) (uncurry (writeText ws))
@@ -1662,7 +1662,7 @@ position:
 steps: `candidates`, which says how each generator relates to the file, and `offer`, which turns a generator and a node into an `Action`.
 
 ```haskell
--- src/Olifant/Actions.hs
+-- src/Olifant/Actions.hs, Candidate
 data Candidate = Whole | Nodes [Match] | After [Match] | Near Text
 ```
 
@@ -1875,7 +1875,7 @@ is a unit of its own, `Doctor.hs`, which imports `Language`, `Model`, `Capabilit
 `[plans]` config: it is handed a small `DoctorInput`, not the catalog, and the `DoctorPorts` shown in the ports section.
 
 ```haskell
--- src/Olifant/Doctor.hs
+-- src/Olifant/Doctor.hs, DoctorInput
 data DoctorInput = DoctorInput
   { diProject :: Maybe FilePath
   , diPacks :: [Text]
@@ -1961,10 +1961,10 @@ conventions hold (1 finding, none blocking)
 catalog or the CLI. Its types:
 
 ```haskell
--- src/Olifant/Rules.hs
+-- src/Olifant/Rules.hs, RuleCheck
 data RuleCheck = RuleMatch Rule | RuleMissing Template
 
--- src/Olifant/Rules.hs (fields abbreviated)
+-- src/Olifant/Rules.hs, Finding (fields abbreviated)
 data Finding = Finding
   { fRule :: Text, fFile :: FilePath
   , fRange :: Maybe ((Int, Int), (Int, Int))   -- 1-based lines, UTF-8 byte columns; Nothing for a whole file
@@ -1972,7 +1972,7 @@ data Finding = Finding
   , fFixes :: [FixOffer], fText :: Text  -- a FixOffer: generator, label, inputs (foSets), replacement
   , fFingerprint :: Text }
 
--- src/Olifant/Rules.hs
+-- src/Olifant/Rules.hs, Exception
 data Exception = Exception {exRule :: Text, exWhere :: Text, exReason :: Maybe Text, exStale :: Bool}
 ```
 
@@ -2023,7 +2023,7 @@ from stdin for one path, and the disk for the rest), and the files to check. For
 
 Findings are sorted by line within a file (a whole-file finding, `Nothing`, first).
 
-**Fingerprints**. A baseline must recognise a finding after lines move, so a
+**Fingerprints** (`fingerprint`, `Rules.hs`). A baseline must recognise a finding after lines move, so a
 finding's identity is not its line. `fingerprint` is 64-bit FNV-1a over the rule id and
 what was found (the matched node's text, or the missing path), each with runs of whitespace
 collapsed to one space, joined by `\0`. Moving code, re-indenting it or adding lines above
@@ -2066,22 +2066,24 @@ the rule's id.
 `--plan` stops after step 5's plan, writing nothing. `GeneratorTesting` skips the fixture
 for a starter's case (`genStarter`): a starter makes a project from nothing.
 
-### `olifant check` (`Cli.hs`)
+### `olifant check` (`runCommand`, `Cli.hs`)
 
 `checkP` (`Cli/Options.hs`) parses `CheckCmd report file fromStdin baseline
-changedSince`. `runCommand` reads `.olifant/baseline.toml` with `readBaseline` into
+acceptNew changedSince`. `runCommand` reads `.olifant/baseline.toml` with `readBaseline` into
 `(rule, file, fingerprint)` triples (a baseline that doesn't parse counts as empty), and a
 finding is `baselined` when its triple is there. Then three branches:
 
-- **`--file FILE`**: the path is made project-relative as for `actions`, its text
+- **`--file FILE`** (the first branch of the `CheckCmd` arm in `runCommand`): the path is made project-relative as for `actions`, its text
   read from stdin with `--content -`, and `checkFiles` runs on that one file, with the
   reader returning the stdin text for it and the disk for every other path. No regions, and
   always `ExitSuccess`: an editor shows findings, it doesn't fail.
-- **`--baseline`**: `checkFiles` over every file some rule's `files` matches, and
+- **`--baseline`** (the second branch): `checkFiles` over every file some rule's `files` matches, and
   the findings (after allows) written as `[[baseline]]` tables to `.olifant/baseline.toml`,
   replacing the whole file. That is how debt goes down: an entry whose finding is gone is
-  simply not written again.
-- **Otherwise**: `refreshRegions ReportUnset` with an empty plan, the same call as
+  simply not written again. Each entry has a `count`: once a baseline exists, re-baselining
+  keeps at most each key's old count (`M.intersectionWith min`), so debt only goes down, unless
+  `--accept-new` (`acceptNew`) records the new findings too.
+- **Otherwise** (the third branch): `refreshRegions ReportUnset` with an empty plan, the same call as
   `sync --check`, so drift, broken fences and regions not set up come back as edits and
   conflicts. With `--changed-since REF`, regions are skipped and `rtGitChanged` gives the
   changed line ranges and untracked files; `touched` keeps a finding in an untracked file,
