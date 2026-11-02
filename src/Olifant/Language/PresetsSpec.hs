@@ -14,7 +14,7 @@ spec = describe "Olifant.Language.Presets" $ do
   it "every shipped toolchain parses" $ do
     fmap (const ()) (presetsFrom "shipped" shippedToolchains) `shouldBe` Right ()
     presetNames shippedPresets "check" `shouldBe` ["cabal-repl", "cargo", "pyright"]
-    presetNames shippedPresets "test" `shouldBe` ["cargo-test", "hspec", "pytest"]
+    presetNames shippedPresets "test" `shouldBe` ["cargo-nextest", "cargo-test", "hspec", "pytest"]
   it "the message keys ship with their toolchains" $ do
     let Presets ps = shippedPresets
         has s n k = maybe False (M.member k) (M.lookup (s, n) ps)

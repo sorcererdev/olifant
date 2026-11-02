@@ -22,7 +22,7 @@ import Olifant.Language.AstGrep (astGrepSyntax)
 import Olifant.Server (Unit (..), unitAt)
 import System.Directory (createDirectoryIfMissing, removeFile, doesDirectoryExist, findExecutable, getCurrentDirectory, getPermissions, getTemporaryDirectory, listDirectory, setOwnerExecutable, setPermissions)
 import System.Environment (lookupEnv)
-import System.FilePath (takeExtension, (</>))
+import System.FilePath (takeDirectory, takeExtension, takeFileName, (</>))
 import Olifant.Template (Value (..))
 import Control.Concurrent.Async (mapConcurrently)
 import Control.Monad (filterM, forM, forM_, when)
@@ -76,7 +76,7 @@ spec = do
     it "(a2) the pytest preset picks the runner the project uses: uv, a venv's, or PATH's" $ do
       let Right lang = py ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[test]", "preset = \"pytest\""]
           Just t = langTest lang
-          pick present = runIdentity (chooseTestCommand (\f -> Identity (f `elem` present)) t)
+          pick present = runIdentity (chooseTestCommand (probeOf (map (\f -> (f, "")) present)) t)
           Right (uv, uvWhy) = pick ["uv.lock", ".venv/bin/pytest"]
           Right (venv, venvWhy) = pick [".venv/bin/pytest"]
           Right (plain, _) = pick ["venv/bin/pytest"]
@@ -106,12 +106,37 @@ spec = do
       let x = parseLanguage "x" "/x" . T.unlines . (["files = [\"**/*.x\"]", "comment = \"#\"", "grammar = \"x\"", "[test]", "format = \"tap\"", "tests_for = \"t\""] ++)
           Right bare = x ["command = [\"run\"]"]
           Just bt = langTest bare
-      runIdentity (chooseTestCommand (const (Identity True)) bt) `shouldBe` Right (bt, Nothing)
+      runIdentity (chooseTestCommand (Probe (const (Identity (Just ""))) (const (Identity []))) bt) `shouldBe` Right (bt, Nothing)
       x ["command = [{ when = [\"a\"] }]"] `shouldSatisfy` either ("command" `T.isInfixOf`) (const False)
       let Right picky = x ["command = [{ when = [\"a\", \"b\"], command = [\"one\"] }]"]
           Just pt = langTest picky
-      fmap (testCommand . fst) (runIdentity (chooseTestCommand (\f -> Identity (f == "b")) pt)) `shouldBe` Right ["one"]
-      runIdentity (chooseTestCommand (const (Identity False)) pt) `shouldBe` Left "no [test] command fits here: no a or b"
+      fmap (testCommand . fst) (runIdentity (chooseTestCommand (probeOf [("b", "")]) pt)) `shouldBe` Right ["one"]
+      runIdentity (chooseTestCommand (probeOf []) pt) `shouldBe` Left "no [test] command fits here: no a or b"
+    it "has looks inside the when files; a * entry is a glob over the folder" $ do
+      let x = parseLanguage "x" "/x" . T.unlines . (["files = [\"**/*.x\"]", "comment = \"#\"", "grammar = \"x\"", "[test]", "format = \"tap\"", "tests_for = \"t\""] ++)
+          Right lang = x ["command = [{ when = [\"*.cabal\", \"package.yaml\"], has = \"hspec-junit-formatter\", command = [\"j\"], format = \"junit-xml\" }, { command = [\"l\"] }]"]
+          Just t = langTest lang
+          pick files = fmap (\(td, why) -> (testCommand td, testFormat td, why)) (runIdentity (chooseTestCommand (probeOf files) t))
+      pick [("x.cabal", "build-depends: hspec-junit-formatter")] `shouldBe` Right (["j"], "junit-xml", Just "hspec-junit-formatter found in x.cabal")
+      pick [("x.cabal", "build-depends: hspec")] `shouldBe` Right (["l"], "tap", Just "no hspec-junit-formatter in *.cabal or package.yaml")
+      pick [("package.yaml", "dependencies: [hspec-junit-formatter]")] `shouldBe` Right (["j"], "junit-xml", Just "hspec-junit-formatter found in package.yaml")
+      pick [("sub/x.cabal", "hspec-junit-formatter")] `shouldBe` Right (["l"], "tap", Just "no hspec-junit-formatter in *.cabal or package.yaml")
+    it "a [check] candidate refuses format; a test candidate's format must be known" $ do
+      let hdr = ["files = [\"**/*.x\"]", "comment = \"#\"", "grammar = \"x\""]
+      parseLanguage "x" "/x" (T.unlines (hdr ++ ["[check]", "format = \"ghc-json\"", "command = [{ command = [\"c\"], format = \"lines\" }]"]))
+        `shouldSatisfy` either ("`format` in a [check] candidate is not supported" `T.isInfixOf`) (const False)
+      parseLanguage "x" "/x" (T.unlines ["files = [\"**/*.x\"]", "comment = \"#\"", "grammar = \"x\"", "[test]", "format = \"tap\"", "tests_for = \"t\"", "command = [{ command = [\"r\"], format = \"nope\" }]"])
+        `shouldSatisfy` either ("unknown test format `nope`" `T.isInfixOf`) (const False)
+    it "the hspec preset runs JUnit when *.cabal names hspec-junit-formatter" $ do
+      let hs = shippedLanguageNow "haskell"
+          Just t = langTest hs
+          pick files = runIdentity (chooseTestCommand (probeOf files) t)
+          Right (with, _) = pick [("p.cabal", "test-suite s\n  build-depends: hspec, hspec-junit-formatter\n")]
+          Right (without, _) = pick [("p.cabal", "build-depends: hspec")]
+      testFormat with `shouldBe` "junit-xml"
+      take 3 (testCommand with) `shouldBe` ["env", "JUNIT_ENABLED=1", "JUNIT_OUTPUT_FILE={= report =}"]
+      testFormat without `shouldBe` "lines"
+      testJunit t `shouldBe` Just (JunitFormat (Just "/") Nothing)
     it "(b) the table's own keys win over the preset's" $ do
       let Right lang = py ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[test]", "preset = \"pytest\"", "tests_for = \"tests/test_{= stem =}.py\"", "root = [\"setup.cfg\"]"]
       fmap testRoot (langTest lang) `shouldBe` Just ["setup.cfg"]
@@ -222,7 +247,7 @@ spec = do
       out <- TIO.readFile "src/Olifant/Language/testdata/pytest/all-passed.txt"
       parsePytest ExitSuccess out `shouldSatisfy` \r -> null (trFailed r) && length (trPassed r) == 4 && trBroken r == Nothing
     it "(c) testsForFile: the module's test file" $
-      testsForFile (TestDef [] [] "pytest" [] "{= dir =}/{= stem =}__test.py" Nothing Nothing [] [] Nothing Nothing False Nothing [] Nothing Nothing Nothing Nothing [] Nothing Nothing Nothing [] Nothing False) "src/bistro/booking/commands/close_table.py"
+      testsForFile (TestDef [] [] "pytest" [] "{= dir =}/{= stem =}__test.py" Nothing Nothing [] [] Nothing Nothing False Nothing [] Nothing Nothing Nothing Nothing [] Nothing Nothing Nothing [] Nothing False Nothing) "src/bistro/booking/commands/close_table.py"
         `shouldBe` "src/bistro/booking/commands/close_table__test.py"
     it "(d) a run that could not start is broken, not red" $ do
       out <- TIO.readFile "src/Olifant/Language/testdata/pytest/broken.txt"
@@ -382,6 +407,25 @@ spec = do
       trBroken failing `shouldSatisfy` maybe False ("boom" `T.isInfixOf`)
       Right ok <- junitRun "[\"sh\", \"-c\", 'exit 0', \"sh\", \"{= report =}\"]"
       trBroken ok `shouldSatisfy` maybe False ("wrote no report" `T.isInfixOf`)
+    it "[test] report is where the run's report is read, a stale one removed first" $ do
+      xml <- TIO.readFile "src/Olifant/Language/testdata/junit/basic.xml"
+      let withReport cmd = either (error . T.unpack) id (parseLanguage "haskell" "/h" (T.unlines
+            [ "files = [\"**/*.hs\"]", "comment = \"--\"", "grammar = \"haskell\""
+            , "[test]", "command = " <> cmd, "format = \"junit-xml\"", "report = \"out/r.xml\"", "tests_for = \"x\"" ]))
+          files = M.fromList [("src/plans.test.ts", ""), ("report.xml", xml), ("out/r.xml", xml)]
+      Right run <- runTests (processRunner neverCancel 60) (withReport "[\"sh\", \"-c\", 'mkdir -p out; cp report.xml out/r.xml; echo \"$1\" > where.txt']") ["src/plans.test.ts"] files
+      map fst (trFailed run) `shouldBe` ["src/plans.test.ts::reads a test"]
+      -- the stale out/r.xml of the project is not an answer when the command writes none
+      Right stale <- runTests (processRunner neverCancel 60) (withReport "[\"sh\", \"-c\", 'exit 0']") ["src/plans.test.ts"] files
+      trBroken stale `shouldSatisfy` maybe False ("wrote no report" `T.isInfixOf`)
+    it "cargo-nextest needs [profile.olifant.junit]; doctor's why says so" $ do
+      let lang = either (error . T.unpack) id (parseOverShipped "rust" "/r" (T.unlines ["[test]", "preset = \"cargo-nextest\""]))
+          Just t = langTest lang
+      fmap (const ()) (runIdentity (chooseTestCommand (probeOf []) t)) `shouldBe` Left "no [test] command fits here: no [profile.olifant.junit] in .config/nextest.toml"
+      let Right (td, _) = runIdentity (chooseTestCommand (probeOf [(".config/nextest.toml", "[profile.olifant.junit]\npath = \"junit.xml\"\n")]) t)
+      take 5 (testCommand td) `shouldBe` ["cargo", "nextest", "run", "--profile", "olifant"]
+      (testFormat td, testJunit td) `shouldBe` ("junit-xml", Just (JunitFormat Nothing (Just "::")))
+      fmap (T.isSuffixOf "/nextest/olifant/junit.xml") (testReport td) `shouldBe` Just True
     it "a stale report is gone before the run" $ do
       xml <- TIO.readFile "src/Olifant/Language/testdata/junit/basic.xml"
       -- the project holds a report at the path the run will name
@@ -1315,3 +1359,7 @@ readFixtureTree root = M.fromList <$> go root
         let p = d </> n
         isDir <- doesDirectoryExist p
         if isDir then go p else (\t -> [(makeRelative root p, t)]) <$> TIO.readFile p
+
+-- | A candidate probe over files (paths from the package folder): their text, and each folder's own files.
+probeOf :: [(FilePath, Text)] -> Probe Identity
+probeOf fs = Probe (\f -> Identity (lookup f fs)) (\d -> Identity [takeFileName f | (f, _) <- fs, takeDirectory f == d])

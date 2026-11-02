@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+  <testsuite name="Olifant.Plans/parsePlan" package="Olifant.Plans/parsePlan" id="0" tests="3" failures="1" errors="0" skipped="1" file="src/Olifant/PlansSpec.hs">
+    <testcase name="reads a step" classname="Olifant.Plans/parsePlan" time="0.0001" file="src/Olifant/PlansSpec.hs" line="9"/>
+    <testcase name="reads a test" classname="Olifant.Plans/parsePlan" time="0.0002" file="src/Olifant/PlansSpec.hs" line="6">
+      <failure message="Received value did not match expected">Expected: 2
+ but got: 1
+</failure>
+    </testcase>
+    <testcase name="later" classname="Olifant.Plans/parsePlan" time="0.0000" file="src/Olifant/PlansSpec.hs" line="12">
+      <skipped message=""/>
+    </testcase>
+  </testsuite>
+</testsuites>

@@ -119,6 +119,22 @@ spec = do
       basic <- TIO.readFile "src/Olifant/Language/testdata/junit/basic.xml"
       let Right brs = parseJunit noJunitFormat basic
       fmap (fmap fMessage . rpFailure) brs `shouldBe` [Nothing, Just "expected 2, got 1"]
+    it "hspec-junit-formatter's report: ids as hspec's lines gave them" $ do
+      out <- TIO.readFile "src/Olifant/Language/testdata/junit/hspec-junit.xml"
+      let Right rs = parseJunit (JunitFormat (Just "/") Nothing) out
+          run = fromReported files (ExitFailure 1) out rs
+      trPassed run `shouldBe` ["src/Olifant/PlansSpec.hs::parsePlan::reads a step"]
+      map fst (trFailed run) `shouldBe` ["src/Olifant/PlansSpec.hs::parsePlan::reads a test"]
+      let [(_, f)] = trFailed run
+      fLine f `shouldBe` Just 6
+      fMessage f `shouldBe` "Received value did not match expected\nExpected: 2\n but got: 1"
+    it "nextest's report: the binary is no group, the name is split" $ do
+      out <- TIO.readFile "src/Olifant/Language/testdata/junit/nextest.xml"
+      let Right rs = parseJunit (JunitFormat Nothing (Just "::")) out
+          run = fromReported [("src/rates.rs", Just "rates")] (ExitFailure 100) out rs
+      trPassed run `shouldBe` ["src/rates.rs::tests::adds"]
+      map fst (trFailed run) `shouldBe` ["src/rates.rs::tests::fails"]
+      fmap fLine (lookup "src/rates.rs::tests::fails" (trFailed run)) `shouldBe` Just Nothing
     it "a testcase with no classname and an error is the run's breakage" $ do
       out <- TIO.readFile "src/Olifant/Language/testdata/junit/pytest-collection-error.xml"
       parseJunit pytestJ out `shouldSatisfy` either (T.isInfixOf "No module named 'nope'") (const False)

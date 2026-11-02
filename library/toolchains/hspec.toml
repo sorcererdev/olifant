@@ -1,7 +1,13 @@
-# hspec through `cabal test --format=checks`, read by `lines`; one test by its
-# describe path (--match); a module's tests beside it as <Module>Spec.hs.
+# hspec through `cabal test`. When a *.cabal or package.yaml names
+# hspec-junit-formatter (hooked through Formatter.Env, see the book) the run
+# writes JUnit to {= report =} and `junit-xml` reads it; otherwise
+# `--format=checks` is read by `lines`. One test by its describe path
+# (--match); a module's tests beside it as <Module>Spec.hs.
 [test]
-command = ["cabal", "test", "-v0", "--builddir={= cache =}/dist-test-{= context =}", "--test-show-details=direct", "--test-option=--format=checks", "--test-option=--no-color", "{= tests =}"]
+command = [
+  { when = ["*.cabal", "package.yaml"], has = "hspec-junit-formatter", format = "junit-xml", command = ["env", "JUNIT_ENABLED=1", "JUNIT_OUTPUT_FILE={= report =}", "cabal", "test", "-v0", "--builddir={= cache =}/dist-test-{= context =}", "--test-show-details=direct", "--test-option=--no-color", "{= tests =}"] },
+  { command = ["cabal", "test", "-v0", "--builddir={= cache =}/dist-test-{= context =}", "--test-show-details=direct", "--test-option=--format=checks", "--test-option=--no-color", "{= tests =}"] },
+]
 context = ["*.cabal", "cabal.project", "cabal.project.freeze"]
 format = "lines"
 # a describe or an it: its name is the string's (group 3), escapes and all
@@ -24,6 +30,10 @@ nest = true
 failure = "^  ([^[:space:]].*):([0-9]+):[0-9]+: *$"
 end = "^  To rerun use|^Randomized with seed|^Finished in"
 drop = "^  [0-9]+\\) "
+
+# hspec-junit-formatter: classname is the describe path joined by `/`
+[test.junit]
+join = "/"
 
 [test.select]
 test = "--test-option=--match=/{= group =}/{= name =}/"

@@ -39,7 +39,7 @@ import Data.List (find, isPrefixOf, nub)
 import Data.Map.Strict qualified as M
 import Data.Maybe (catMaybes, fromMaybe, isJust, mapMaybe)
 import Data.Text.Encoding qualified as TE
-import Olifant.Language.Adapter (Language (..), TestDef (..), chooseTestCommand)
+import Olifant.Language.Adapter (Language (..), Probe (..), TestDef (..), chooseTestCommand)
 import Olifant.Plans (Kind (..), childrenOf, testState)
 import Olifant.Process (Cancel, runBytes)
 import Olifant.Server.Errand (Block (..), Ghost (..), Grounded (..), RunFailure (..), RunResult (..), Status (..), Verb (..), cutBody, doAnswered, doTestCommand, doTestTools, errandPrompt, projectUnitWords, groundingLimit, parseAnswer, runClaude, statusName)
@@ -51,7 +51,7 @@ import Olifant.Server.Review (Review (..), archiveErrand, changeSince, keptDiff,
 import Olifant.Server.Telemetry (ErrandRecord (..), Record (..), appendRecord, errandId)
 import Olifant.Server.State (appendStepLine, closeDoc, projectFor)
 import System.Exit (ExitCode (..))
-import System.FilePath (dropTrailingPathSeparator, makeRelative, splitDirectories, takeFileName)
+import System.FilePath (dropTrailingPathSeparator, makeRelative, splitDirectories, takeDirectory, takeFileName)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Language.LSP.Protocol.Types
@@ -416,7 +416,7 @@ runErrand after reviewed reopen token verb path row s0 =
               around = target : childrenOf ls row ++ [l | l <- ls, lnRow l >= secRow sec, lnRow l < secEnd sec]
               anchors = take groundingLimit (foldl (\acc a -> if any ((== key a) . key) acc then acc else acc ++ [a]) [] [a | l <- around, Just a <- [lnAnchor l]])
           grounded <- catMaybes <$> mapM (\a -> grounding a <$> resolveAnchor s p a) anchors
-          tests <- projectTests (fileExists (pFiles (ssPorts s))) p
+          tests <- projectTests (workspaceProbe (pFiles (ssPorts s)) (prRoot p)) p
           let tools = if verb == Do then testTools p tests else []
               asked = maybe "" (\ro -> "Further change asked: " <> roAsk ro <> "\n\n") reopen
               prompt = asked <> errandPrompt verb (projectUnitWords (catalogLanguages (prCatalog p))) (if verb == Do then listToMaybe' (mapMaybe doTestCommand tests) else Nothing) text ls target grounded
@@ -585,14 +585,21 @@ testTools :: Project -> [[Text]] -> [Text]
 testTools p tests = take 1 [ts | ts <- map (doTestTools (prRoot p)) tests, not (null ts)] >>= id
 
 -- | The project's test commands, the first language's first: each the
--- candidate the project's files choose ('chooseTestCommand', by EXISTS,
--- from the project root), @{= root =}@ the project's folder.
-projectTests :: Monad m => (FilePath -> m Bool) -> Project -> m [[Text]]
-projectTests exists p = concat <$> traverse chosen [td | l <- catalogLanguages (prCatalog p), Just td <- [langTest l]]
+-- candidate the project's files choose ('chooseTestCommand', by EXISTS and
+-- `has`, from the project root), @{= root =}@ the project's folder.
+projectTests :: Monad m => Probe m -> Project -> m [[Text]]
+projectTests probe p = concat <$> traverse chosen [td | l <- catalogLanguages (prCatalog p), Just td <- [langTest l]]
   where
-    chosen td = chooseTestCommand (\f -> exists (prRoot p </> f)) td <&> \case
+    chosen td = chooseTestCommand probe td <&> \case
       Right (c, _) -> [map (T.replace "{= root =}" (T.pack (dropTrailingPathSeparator (prRoot p)))) (testCommand c)]
       Left _ -> []
+
+-- | A candidate's `when` files through the workspace, from the project's root.
+workspaceProbe :: Monad m => Workspace m -> FilePath -> Probe m
+workspaceProbe ws root = Probe
+  { probeRead = \f -> readText ws (root </> f)
+  , probeList = \d -> (\fs -> [f | f <- fs, takeDirectory f == "."]) <$> listFiles ws (root </> d)
+  }
 
 tshow :: Show a => a -> Text
 tshow = T.pack . show

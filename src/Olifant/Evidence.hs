@@ -25,6 +25,7 @@ import Data.Ord (Down (..))
 import Data.Set qualified as S
 import Data.Text (Text)
 import Data.Text qualified as T
+import System.FilePath (takeDirectory, takeFileName)
 import Olifant.Anchor (Located (..), Miss (..), Phrase (..), RenderedAnchor (..), parsePhrase, positionWords, resolveLayers)
 import Olifant.Holes (Marker (..), placeholderFor)
 import Olifant.Language
@@ -134,13 +135,14 @@ testsProof ports lang testFiles = case (langTest lang, epRun ports) of
     [] -> pure (Unproven ("not run: no test file in the " <> count sampleSize <> " sampled"))
     f : _ -> do
       -- the program of the command candidate the project's files choose
-      chosen <- chooseTestCommand (fmap isJust . epRead ports) td
+      chosen <- chooseTestCommand (Probe (epRead ports) (\d -> (\fs -> [takeFileName f | f <- fs, takeDirectory f == (if null d then "." else d)]) <$> epFiles ports)) td
       let program = either (const Nothing) (checkProgram . testCommand . fst) chosen
+          format = either (const (testFormat td)) (testFormat . fst) chosen
       run lang [T.pack f] >>= \case
         Left why -> pure (Disproven why)
         Right r | Just why <- trBroken r -> pure (Disproven (T.pack f <> ": " <> why))
         Right r ->
-          pure (Proven ("ran " <> maybe "the test command" (T.replace "{= root =}/" "") program <> " on " <> T.pack f <> ", " <> count (length (trPassed r) + length (trFailed r)) <> " results parsed (" <> testFormat td <> ")"))
+          pure (Proven ("ran " <> maybe "the test command" (T.replace "{= root =}/" "") program <> " on " <> T.pack f <> ", " <> count (length (trPassed r) + length (trFailed r)) <> " results parsed (" <> format <> ")"))
 
 -- | Holes: each kind's placeholder, put in its `wrap`, parses.
 holesProof :: EvidencePorts -> Language -> IO Proof

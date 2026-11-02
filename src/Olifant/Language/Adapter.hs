@@ -47,6 +47,7 @@ module Olifant.Language.Adapter
   , Provider (..)
   , withProviderRoot
   , CommandCandidate (..)
+  , Probe (..)
   , chooseCommand
   , chooseTestCommand
   , chooseCheckCommand
@@ -59,9 +60,9 @@ import Control.Monad ((>=>))
 import Data.Aeson (Value, object, (.=))
 import Data.Bifunctor (first)
 import Data.Char (isUpper)
-import Data.List (find)
+import Data.List (find, sort)
 import Data.Map.Strict qualified as M
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, isJust, isNothing)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Glob (matchesGlob)
@@ -77,7 +78,7 @@ import Olifant.Template (Template, describeTemplateError, freeVariables, parseTe
 import Data.Set qualified as S
 import Olifant.Toml
 import Text.Regex.TDFA (AllTextSubmatches (..), Regex, makeRegexM, matchM, matchOnceText)
-import System.FilePath (dropExtension, takeFileName, (</>))
+import System.FilePath (dropExtension, dropTrailingPathSeparator, splitFileName, takeFileName, (</>))
 
 data Language = Language
   { langName :: Text
@@ -410,50 +411,76 @@ data TestDef = TestDef
   , testFellBack :: Bool
   -- ^ the preset's `console_format` stands in for its `format`: the project's
   -- own `command` names no @{= report =}@ and no `format` of its own
+  , testReport :: Maybe Text
+  -- ^ `report`: where the runner writes its report, a template over
+  -- @{= cache =}@, @{= context =}@ and @{= root =}@ (a relative path is under
+  -- the run's copy); @{= report =}@ is it, and it is read after the run
   }
   deriving stock (Eq, Show)
 
 -- | One candidate of a `[test]` or `[check]` `command` list: its command,
 -- used when one of its @when@ files exists under the package (always,
--- without @when@), with its own @context@ globs (the table's, without).
-data CommandCandidate = CommandCandidate {ccWhen :: [Text], ccCommand :: [Text], ccContext :: Maybe [Text]}
+-- without @when@; an entry with @*@ is a glob over its own folder's files),
+-- and, with @has@, one of them holds that text; with its own @context@
+-- globs (the table's, without) and, for a `[test]`, its own @format@.
+data CommandCandidate = CommandCandidate {ccWhen :: [Text], ccHas :: Maybe Text, ccCommand :: [Text], ccContext :: Maybe [Text], ccFormat :: Maybe Text}
   deriving stock (Eq, Show)
 
+-- | What a candidate's `when` sees, paths from the package folder: a file's
+-- text (Nothing: no file; a file that is not text reads as ""), and a
+-- folder's own files (for a `*` entry).
+data Probe m = Probe {probeRead :: FilePath -> m (Maybe Text), probeList :: FilePath -> m [FilePath]}
+
 -- | The first candidate whose `when` names a file that EXISTS (a path from
--- the package's root), and why it was chosen (`uv.lock found`; with no
+-- the package's root; with @has@, one holding that text), and why it was
+-- chosen (`uv.lock found`, `hspec-junit-formatter found in x.cabal`; with no
 -- `when`, the earlier candidates' files missing). Right Nothing for no
 -- candidates (a bare command, its own choice); Left when none fits, naming
 -- the table (`[test]`).
-chooseCommand :: Monad m => Text -> (FilePath -> m Bool) -> [CommandCandidate] -> m (Either Text (Maybe CommandCandidate, Maybe Text))
-chooseCommand table exists candidates = go [] candidates
+chooseCommand :: Monad m => Text -> Probe m -> [CommandCandidate] -> m (Either Text (Maybe CommandCandidate, Maybe Text))
+chooseCommand table probe candidates = go [] candidates
   where
     go _ [] | null candidates = pure (Right (Nothing, Nothing))
     go missed [] = pure (Left ("no " <> table <> " command fits here: no " <> orList (reverse missed)))
     go missed (c : rest) = case ccWhen c of
       [] -> pure (Right (Just c, if null missed then Nothing else Just ("no " <> orList (reverse missed))))
-      ws -> firstM ws >>= \case
-        Just w -> pure (Right (Just c, Just (w <> " found")))
-        Nothing -> go (reverse ws ++ missed) rest
-    firstM = \case
+      ws -> firstM (ccHas c) ws >>= \case
+        Just why -> pure (Right (Just c, Just why))
+        Nothing -> go (maybe (reverse ws) (\h -> [h <> " in " <> orList ws]) (ccHas c) ++ missed) rest
+    firstM has = \case
       [] -> pure Nothing
-      w : ws -> exists (T.unpack w) >>= \b -> if b then pure (Just w) else firstM ws
+      w : ws -> entry has w >>= maybe (firstM has ws) (pure . Just)
+    -- one `when` entry: the file it names (or the first its glob matches)
+    -- that is there and holds the text
+    entry has w = do
+      files <-
+        if "*" `T.isInfixOf` w
+          then let (dir, pat) = splitFileName (T.unpack w)
+                   folder = if dir == "./" then "." else dropTrailingPathSeparator dir
+                in map (\f -> if folder == "." then f else folder </> f) . sort . filter (matchesGlob (T.pack pat)) <$> probeList probe folder
+          else pure [T.unpack w]
+      let hit [] = pure Nothing
+          hit (f : fs) = probeRead probe f >>= \case
+            Just t | maybe True (`T.isInfixOf` t) has -> pure (Just (maybe (T.pack f <> " found") (\h -> h <> " found in " <> T.pack f) has))
+            _ -> hit fs
+      hit files
     orList = \case
       [] -> ""
       [a] -> a
       xs -> T.intercalate ", " (init xs) <> " or " <> last xs
 
 -- | The test definition a run uses: its chosen candidate's ('chooseCommand')
--- command and context, and why.
-chooseTestCommand :: Monad m => (FilePath -> m Bool) -> TestDef -> m (Either Text (TestDef, Maybe Text))
-chooseTestCommand exists td =
-  fmap (\(c, why) -> (maybe td (\cc -> td {testCommand = ccCommand cc, testContext = fromMaybe (testContext td) (ccContext cc)}) c, why))
-    <$> chooseCommand "[test]" exists (testCandidates td)
+-- command, context and format, and why.
+chooseTestCommand :: Monad m => Probe m -> TestDef -> m (Either Text (TestDef, Maybe Text))
+chooseTestCommand probe td =
+  fmap (\(c, why) -> (maybe td (\cc -> td {testCommand = ccCommand cc, testContext = fromMaybe (testContext td) (ccContext cc), testFormat = fromMaybe (testFormat td) (ccFormat cc)}) c, why))
+    <$> chooseCommand "[test]" probe (testCandidates td)
 
 -- | The check definition a run uses, as 'chooseTestCommand'.
-chooseCheckCommand :: Monad m => (FilePath -> m Bool) -> CheckDef -> m (Either Text (CheckDef, Maybe Text))
-chooseCheckCommand exists cd =
+chooseCheckCommand :: Monad m => Probe m -> CheckDef -> m (Either Text (CheckDef, Maybe Text))
+chooseCheckCommand probe cd =
   fmap (\(c, why) -> (maybe cd (\cc -> cd {checkCommand = ccCommand cc, checkContext = fromMaybe (checkContext cd) (ccContext cc)}) c, why))
-    <$> chooseCommand "[check]" exists (checkCandidates cd)
+    <$> chooseCommand "[check]" probe (checkCandidates cd)
 
 -- | `[test.stub]`: a new test. 'sdTest' (`test`), its text, a template
 -- over @{= name =}@, @{= unit =}@, @{= module =}@, @{= indent =}@ and
@@ -748,7 +775,7 @@ languageFrom presets name grammarDir top = do
         <*> optional "when_empty" (text >=> \w -> if w == "after header" then Right w else Left ("`when_empty`: expected \"after header\", got `" <> w <> "`")) t
         <*> optional "separator" text t
     testFrom hasModuleOf t0 = do
-      onlyKeys ["preset", "command", "context", "format", "root", "tests_for", "lines", "junit", "convert", "unit", "file_group", "select", "exclusive", "timeout", "files", "install", "above", "stub", "name", "undefined", "failure"] (foldr M.delete t0 testShapeKeys)
+      onlyKeys ["preset", "command", "context", "format", "root", "tests_for", "lines", "junit", "convert", "unit", "file_group", "select", "exclusive", "timeout", "files", "install", "above", "stub", "name", "undefined", "failure", "report"] (foldr M.delete t0 testShapeKeys)
       t <- applyPreset presets "test" t0
       convert <- fromMaybe [] <$> optional "convert" (list text) t
       format <- (if null convert then required "format" text t else fromMaybe "olifant-json" <$> optional "format" text t)
@@ -768,11 +795,13 @@ languageFrom presets name grammarDir top = do
         Just (Select a b _) | any ("{= group =}" `T.isInfixOf`) (a ++ b), Nothing <- fileGroup, not hasModuleOf -> Left "[test.select] uses {= group =}, which needs `file_group` (or [imports] module_of)"
         _ -> Right ()
       (command, candidates) <- required "command" (commandFrom "[test]") t
+      if any (\c -> ccFormat c == Just "lines") candidates && isNothing linesFormat then Left "a candidate's `format = \"lines\"` needs a [test.lines] table (pass, fail)" else Right ()
       -- a project's own command over a preset that reads a report file: with
       -- no @{= report =}@ in it (and no `format` of the project's own), the
       -- preset's `console_format` reads the run as it did before
       console <- optional "console_format" text t
-      let namesReport = any ("{= report =}" `T.isInfixOf`) (concat (command : convert : map ccCommand candidates))
+      report <- optional "report" (text >=> templateOver "[test] report" ["cache", "context", "root"]) t
+      let namesReport = isJust report || any ("{= report =}" `T.isInfixOf`) (concat (command : convert : map ccCommand candidates))
           fell = case console of
             Just _ | M.notMember "format" t0, format == "junit-xml", not namesReport -> True
             _ -> False
@@ -796,16 +825,22 @@ languageFrom presets name grammarDir top = do
         <*> pure candidates
         <*> pure Nothing
         <*> pure fell
+        <*> pure report
     -- a bare command, or candidates: the unconditional one's command until
     -- one is chosen ('chooseTestCommand')
     commandFrom tbl v = case list text v of
       Right argv -> Right (argv, [])
       Left _ -> do
-        cs <- first (\e -> "`" <> tbl <> " command`: expected a command or a list of { when, command, context }: " <> e) (list (table >=> candidateFrom) v)
+        cs <- first (\e -> "`" <> tbl <> " command`: expected a command or a list of { when, has, command, context, format }: " <> e) (list (table >=> candidateFrom tbl) v)
         Right (maybe [] ccCommand (find (null . ccWhen) cs), cs)
-    candidateFrom c = do
-      onlyKeys ["when", "command", "context"] c
-      CommandCandidate <$> (fromMaybe [] <$> optional "when" (list text) c) <*> required "command" (list text) c <*> optional "context" (list text) c
+    candidateFrom tbl c = do
+      onlyKeys ["when", "has", "command", "context", "format"] c
+      cand <- CommandCandidate <$> (fromMaybe [] <$> optional "when" (list text) c) <*> optional "has" text c <*> required "command" (list text) c <*> optional "context" (list text) c <*> optional "format" text c
+      case (tbl, ccFormat cand, ccHas cand, ccWhen cand) of
+        ("[test]", Just f, _, _) | f `notElem` knownTestFormats -> Left ("`format`: unknown test format `" <> f <> "`; expected one of " <> T.intercalate ", " knownTestFormats)
+        (_, Just _, _, _) | tbl /= "[test]" -> Left ("`format` in a " <> tbl <> " candidate is not supported")
+        (_, _, Just _, []) -> Left "`has` needs `when`: the files it looks inside"
+        _ -> Right cand
     templateOver key vars src = do
       tp <- first (\e -> "`" <> key <> "`: " <> describeTemplateError e) (parseTemplate src)
       if freeVariables tp `S.isSubsetOf` S.fromList vars then Right src else Left ("`" <> key <> "` may use only " <> T.intercalate ", " ["{= " <> v <> " =}" | v <- vars])

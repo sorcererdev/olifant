@@ -148,7 +148,7 @@ phase is generic in its monad.
 `[test]` is two things in one table. The **runner** keys (`command`, `context`, `format`, `root`,
 `tests_for`, `exclusive`, `timeout`, `install`, `[test.select]`, `[test.lines]`, `[test.junit]`, `file_group`,
 `convert`) make a `TestDef`. They are read by `Language/Check.hs`: `processRunner` (`:195`) runs
-a scratch copy of the project's files (`scratchRun`, which also returns a `ReportFile`: `{= report =}` is `<scratch>/.olifant-report`, removed before the run and read after it when the command or `convert` names it), `readTestReport` (`ReportFile` in hand: the report's bytes replace stdout and stderr as the text a format reads; a named report not written is broken) picks
+a scratch copy of the project's files (`scratchRun`, which also returns a `ReportFile`: `{= report =}` is `<scratch>/.olifant-report`, removed before the run and read after it when the command or `convert` names it; `TestDef.testReport`, `[test] report`, a template over `cache`, `context` and `root`, replaces that path, and `scratchRun` takes it as an argument: a relative one is under the copy, and it is removed before the run all the same, so nextest's cache-path report is never a stale answer), `readTestReport` (`ReportFile` in hand: the report's bytes replace stdout and stderr as the text a format reads; a named report not written is broken) picks
 the parser (`parsePytest`, or `TestFormats.parseLines | parseTap | parseJunit | parseTestJson`; `parseJunit` takes the `JunitFormat` (`Generic.hs`, `testJunit`): `join` splits the classname, `split` the name, and the classname's leading path segments are dropped; the failure's line is the last `FILE:N` of its text),
 `selected` (`:251`) turns a test id into arguments with `[test.select]`, and `runTestsIn`
 (`:556`) is the entry the server uses. A run knows its folder on disk, `TestDef.testDir`: the
@@ -161,12 +161,12 @@ listing (`Workspace.diskWorkspace` `listFilesSkipping`, the language's `ignore` 
 clones (`cbits/olifant_clone.c`, APFS `clonefile`) or copies each file the run's map lacks, so
 templates and binary fixtures come byte for byte while the map's (edited, mutated) texts win. A
 check or a `verify` passes no folder and sees only its map. A `command` that is a list of
-`{ when, command, context }` tables parses into `testCandidates` (`CommandCandidate`, the
+`{ when, has, command, context, format }` tables parses into `testCandidates` (`CommandCandidate`, the
 parser's `commandFrom`), with `testCommand` the unconditional one's until a choice;
-`Adapter.chooseCommand` takes an existence test and the candidates and returns the first fitting
-one and why (`uv.lock found`), and `chooseTestCommand` the `TestDef` with its command and context. It is called where the folder is known: `processRunner` (a `when`
+`Adapter.chooseCommand` takes a `Probe m` (`probeRead`: a file's text or Nothing; `probeList`: a folder's own files, for a `*` entry) and the candidates and returns the first fitting
+one and why (`uv.lock found`, `<has> found in <file>`), and `chooseTestCommand` the `TestDef` with its command, context and `ccFormat` as `testFormat`. The probes: `Check.diskProbe` (a folder on disk), `Check.runProbe` (the run's files first, then disk), `Doctor`'s `dpRead`/`dpList`, `Evidence`'s `epRead` plus `epFiles`, and `Plans.workspaceProbe`. It is called where the folder is known: `processRunner` (a `when`
 file among the run's files or under `testDir`), the doctor's runner row (`Doctor.doctor`'s
-`testRunner`, through the `dpExists` port, from the project root) and `Server/Plans.projectTests` (a `do`'s printed command, `{= root =}`
+`testRunner`, through the `dpRead`/`dpList` ports, from the project root) and `Server/Plans.projectTests` (a `do`'s printed command, `{= root =}`
 filled). `checkScope` copies every candidate's `context`. The pytest preset is data only: its
 four candidates live in `library/toolchains/pytest.toml`. `tests_for` is read by `Server/Tests.hs`
 (`testsForFile`, `placeOf`) and `Language.Test.testsForFile`.
@@ -241,7 +241,7 @@ words for a name or a member that is missing (`ConjureNext.undefinedIn`,
 A check knows its folder on disk as a test run does: `CheckDef.checkDir`, set by
 `withProviderRoot` and narrowed to the package by `runCheckIn`. `runIn` makes it absolute,
 picks the command with `Adapter.chooseCheckCommand` (the same `chooseCommand` over
-`checkCandidates`, a `when` file among the files or under `checkDir`, `existsFor`) and fills
+`checkCandidates`, a `when` file among the files or under `checkDir`, `runProbe`) and fills
 `{= root =}` with `{= cache =}` and `{= context =}` through `fillVars`, the helper `scratchRun`
 uses, before `runChosenCheck` runs it. The doctor's `check tool` and `test runner` rows are one
 `commandRow` over the chosen candidate (`Doctor.hs`).

@@ -17,7 +17,7 @@ import Data.Text qualified as T
 import Olifant.Capabilities (Capability (..), capabilities)
 import Olifant.Evidence (Evidence (..), Proof (..))
 import Olifant.Catalog (PlansConfig (..))
-import Olifant.Language (CheckDef (..), Language (..), TestDef (..), checkProgram, chooseCheckCommand, chooseTestCommand, grammarLabel, linkedGrammarOf, originOf, queriesOf)
+import Olifant.Language (CheckDef (..), Language (..), TestDef (..), checkProgram, Probe (..), chooseCheckCommand, chooseTestCommand, grammarLabel, linkedGrammarOf, originOf, queriesOf)
 import System.FilePath (dropExtension, (</>))
 import Olifant.Model (Backend (..), ModelConfig (..))
 
@@ -57,8 +57,11 @@ data DoctorPorts m = DoctorPorts
   -- ^ does the model answer (a short timeout)
   , dpEnvSet :: Text -> m Bool
   -- ^ is an environment variable set (never its value)
-  , dpExists :: FilePath -> m Bool
-  -- ^ is there a file at this path (a `[test] command` candidate's `when`)
+  , dpRead :: FilePath -> m (Maybe Text)
+  -- ^ a file's text at this path, Nothing when there is none (a `command`
+  -- candidate's `when` and `has`)
+  , dpList :: FilePath -> m [FilePath]
+  -- ^ the names of the files directly in this folder (a `when` entry with `*`)
   }
 
 doctor :: Monad m => DoctorPorts m -> DoctorInput -> m [Check]
@@ -132,11 +135,13 @@ doctor ports di = do
       (++)
         <$> maybe (pure []) (checkTool lang) (langCheck lang)
         <*> maybe (pure []) (testRunner lang) (langTest lang)
-    atProject f = maybe (pure False) (\r -> dpExists ports (r </> f)) (diProject di)
+    atProject = case diProject di of
+      Nothing -> Probe (const (pure Nothing)) (const (pure []))
+      Just r -> Probe (\f -> dpRead ports (r </> f)) (\f -> dpList ports (r </> f))
     checkTool lang c0 =
       chooseCheckCommand atProject c0 >>= commandRow "check tool" "[check]" lang (\c -> (checkCommand c, checkInstall c, ""))
     testRunner lang td0 =
-      chooseTestCommand atProject td0 >>= commandRow "test runner" "[test]" lang (\td -> (testCommand td, testInstall td, "; tests_for = " <> testsFor td <> (if testFellBack td then "; reading console output: name {= report =} for JUnit" else "")))
+      chooseTestCommand atProject td0 >>= commandRow "test runner" "[test]" lang (\td -> (testCommand td, testInstall td, (if testFormat td /= testFormat td0 then "; format " <> testFormat td else "") <> "; tests_for = " <> testsFor td <> (if testFellBack td then "; reading console output: name {= report =} for JUnit" else "")))
     -- one line for the command candidate the project's files choose, named
     -- by what it is for and as written (`{= root =}/` dropped), found at the
     -- project root, and why
