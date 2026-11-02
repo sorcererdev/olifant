@@ -53,7 +53,7 @@ import Data.Text.Encoding qualified as TE
 import Data.Text.Encoding.Error (lenientDecode)
 import Olifant.Language.Adapter (CheckDef (..), ImportsDef (..), Language (..), Select (..), CommandCandidate (..), TestDef (..), chooseCheckCommand, chooseTestCommand, matchesGlob, moduleOf, regexName, supportOf)
 import Olifant.Template (Value (VText), parseTemplate, render)
-import Olifant.Language.TestFormats (Reported (..), attribute, fromReported, parseJunit, parseLines, parseTap, parseTestJson)
+import Olifant.Language.TestFormats (Reported (..), attribute, noJunitFormat, fromReported, parseJunit, parseLines, parseTap, parseTestJson)
 import Data.Containers.ListUtils (nubOrd)
 import Olifant.Language.Test (Runner (..), TestId, TestRun (..), parsePytest)
 import Olifant.Process (Cancel, Outcome (..), neverCancel, runBytesCancellable)
@@ -248,7 +248,7 @@ readTestReport td requested code out err = case testFormat td of
   "pytest" -> parsePytest code said
   "lines" -> maybe (broken "[test] format \"lines\" has no [test.lines]") (\lf -> fromReported requested code said (parseLines lf said)) (testLines td)
   "tap" -> either broken (fromReported requested code said) (parseTap said)
-  "junit-xml" -> either broken (fromReported requested code said) (parseJunit said)
+  "junit-xml" -> either broken (fromReported requested code said) (parseJunit (fromMaybe noJunitFormat (testJunit td)) said)
   _ -> either broken refine (parseTestJson out)
   where
     said = TE.decodeUtf8With lenientDecode (out <> err)

@@ -15,6 +15,7 @@ module Olifant.Language.Adapter
   , StubDef (..)
   , Select (..)
   , LinesFormat (..)
+  , JunitFormat (..)
   , HoleKind (..)
   , ImportMerge (..)
   , ImportsDef (..)
@@ -70,7 +71,7 @@ import Olifant.Language.Presets (Presets (..), applyPreset, shippedPresets)
 import Olifant.Library (shippedLanguages)
 import Olifant.Language.Rule
 import Olifant.Language.Diagnostics (CompilerSupport)
-import Olifant.Language.Generic (ErrorFormat (..), LinesFormat (..))
+import Olifant.Language.Generic (ErrorFormat (..), JunitFormat (..), LinesFormat (..))
 import Olifant.Language.Support (formatSupport, knownFormats, knownTestFormats)
 import Olifant.Template (Template, describeTemplateError, freeVariables, parseTemplate)
 import Data.Set qualified as S
@@ -380,7 +381,7 @@ supportOf c = formatSupport (checkFormat c) (checkErrorFormat c)
 -- (fixtures the tests read); the context's files are copied too.
 data TestDef = TestDef
   { testCommand :: [Text], testContext :: [Text], testFormat :: Text, testRoot :: [Text], testsFor :: Text
-  , testLines :: Maybe LinesFormat, testConvert :: [Text], testUnitRules :: [UnitRule], testFileGroup :: Maybe Text
+  , testLines :: Maybe LinesFormat, testJunit :: Maybe JunitFormat, testConvert :: [Text], testUnitRules :: [UnitRule], testFileGroup :: Maybe Text
   , testSelect :: Maybe Select, testExclusive :: Bool, testTimeout :: Maybe Int
   , testFiles :: [Text]
   , testInstall :: Maybe Text
@@ -744,7 +745,7 @@ languageFrom presets name grammarDir top = do
         <*> optional "when_empty" (text >=> \w -> if w == "after header" then Right w else Left ("`when_empty`: expected \"after header\", got `" <> w <> "`")) t
         <*> optional "separator" text t
     testFrom hasModuleOf t0 = do
-      onlyKeys ["preset", "command", "context", "format", "root", "tests_for", "lines", "convert", "unit", "file_group", "select", "exclusive", "timeout", "files", "install", "above", "stub", "name", "undefined", "failure"] (foldr M.delete t0 testShapeKeys)
+      onlyKeys ["preset", "command", "context", "format", "root", "tests_for", "lines", "junit", "convert", "unit", "file_group", "select", "exclusive", "timeout", "files", "install", "above", "stub", "name", "undefined", "failure"] (foldr M.delete t0 testShapeKeys)
       t <- applyPreset presets "test" t0
       convert <- fromMaybe [] <$> optional "convert" (list text) t
       format <- (if null convert then required "format" text t else fromMaybe "olifant-json" <$> optional "format" text t)
@@ -756,6 +757,7 @@ languageFrom presets name grammarDir top = do
         ("lines", _) -> Right ()
         (_, Just _) -> Left "[test.lines] is read only with `format = \"lines\"`"
         _ -> Right ()
+      junitFormat <- optional "junit" (table >=> junitFrom) t
       fileGroup <- optional "file_group" (text >=> validRegex "[test] file_group") t
       (select, selectProvider) <- maybe (Nothing, Nothing) id <$> optional "select" (ruleOrProvider "test.select" (fmap Just . (table >=> selectFrom)) Nothing) t
       (unitRules, unitProvider) <- maybe ([], Nothing) id <$> optional "unit" (ruleOrProvider "test.unit" (list unitRuleFrom) []) t
@@ -765,7 +767,7 @@ languageFrom presets name grammarDir top = do
       (command, candidates) <- required "command" (commandFrom "[test]") t
       TestDef command <$> (fromMaybe [] <$> optional "context" (list text) t) <*> pure format
         <*> (fromMaybe [] <$> optional "root" (list text) t) <*> required "tests_for" text t
-        <*> pure linesFormat <*> pure convert
+        <*> pure linesFormat <*> pure junitFormat <*> pure convert
         <*> pure unitRules
         <*> pure fileGroup <*> pure select
         <*> (fromMaybe False <$> optional "exclusive" bool t)
@@ -847,6 +849,10 @@ languageFrom presets name grammarDir top = do
       LinesFormat <$> required "pass" (re "pass") t <*> required "fail" (re "fail") t <*> (fromMaybe False <$> optional "nest" bool t)
         <*> optional "failure" (re "failure") t <*> optional "end" (re "end") t <*> optional "drop" (re "drop") t
         <*> optional "split" (text >=> \x -> if T.null x then Left "`[test.lines] split`: expected a separator, not empty" else Right x) t
+    junitFrom t = do
+      onlyKeys ["join", "split"] t
+      let sep k = optional k (text >=> \x -> if T.null x then Left ("`[test.junit] " <> k <> "`: expected a separator, not empty") else Right x) t
+      JunitFormat <$> sep "join" <*> sep "split"
     selectFrom t = do
       onlyKeys ["test", "file", "join"] t
       let args = \case

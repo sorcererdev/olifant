@@ -5,6 +5,8 @@
 module Olifant.Language.Generic
   ( ErrorFormat (..)
   , LinesFormat (..)
+  , JunitFormat (..)
+  , noJunitFormat
   , sarifSupport
   , errorFormatSupport
   , olifantJsonSupport
@@ -38,6 +40,17 @@ data ErrorFormat = ErrorFormat {efPattern :: Text, efFile :: Int, efLine :: Int,
 -- adapter can hold it without an import cycle.)
 data LinesFormat = LinesFormat {lfPass :: Text, lfFail :: Text, lfNest :: Bool, lfFailure :: Maybe Text, lfEnd :: Maybe Text, lfDrop :: Maybe Text, lfSplit :: Maybe Text}
   deriving stock (Eq, Show)
+
+-- | `[test.junit]`: how a JUnit report's names become a test id. 'jfJoin'
+-- splits the @classname@ into groups (without it the classname is no part
+-- of the id); 'jfSplit' splits the @name@ (without it the name is one
+-- segment).
+data JunitFormat = JunitFormat {jfJoin :: Maybe Text, jfSplit :: Maybe Text}
+  deriving stock (Eq, Show)
+
+-- | Neither: the name alone is the id.
+noJunitFormat :: JunitFormat
+noJunitFormat = JunitFormat Nothing Nothing
 
 -- | A support whose only knowledge is its parser: patterns are written as
 -- reported, every constructor is visible, the declaration is the nearest

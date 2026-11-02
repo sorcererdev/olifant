@@ -5,6 +5,8 @@
 -- files the run asked for.
 module Olifant.Language.TestFormats
   ( LinesFormat (..)
+  , JunitFormat (..)
+  , noJunitFormat
   , Reported (..)
   , parseLines
   , parseTap
@@ -19,13 +21,14 @@ import Data.Aeson (Value, eitherDecodeStrict, withObject, (.!=), (.:), (.:?))
 import Data.Aeson.Types (parseEither)
 import Data.ByteString (ByteString)
 import Data.List (find, isPrefixOf, isSuffixOf)
-import Data.Maybe (fromMaybe, isJust, listToMaybe, mapMaybe)
+import Data.Char (isDigit)
+import Data.Maybe (catMaybes, fromMaybe, isJust, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
-import Olifant.Language.Generic (LinesFormat (..))
+import Olifant.Language.Generic (JunitFormat (..), LinesFormat (..), noJunitFormat)
 import Olifant.Language.Test (Failure (..), TestId, TestRun (..))
 import System.Exit (ExitCode (..))
-import System.FilePath (isAbsolute, normalise, splitDirectories)
+import System.FilePath (dropExtension, isAbsolute, normalise, splitDirectories)
 import Text.Read (readMaybe)
 import Text.Regex.TDFA (AllTextSubmatches (..), Regex, makeRegexM, matchM, matchTest)
 import Text.XML.Light (QName (..), elChildren, elName, findAttr, parseXMLDoc, strContent)
@@ -126,32 +129,55 @@ parseTap out = go (T.lines out)
       l : more | T.strip l == "---" -> let (body, after) = break ((== "...") . T.strip) more in (filter (not . T.null . T.strip) body, drop 1 after)
       _ -> ([], rest)
 
--- | JUnit XML: each @testcase@ is a test named by its @name@, in its @file@;
--- a @failure@ or @error@ child fails it (its @message@, its text, its
--- @line@); a @skipped@ child makes it neither.
-parseJunit :: Text -> Either Text [Reported]
-parseJunit out = case parseXMLDoc (T.unpack out) of
+-- | JUnit XML: each @testcase@ is a test; its id is its @file@ (else its
+-- @testsuite@'s), the @classname@'s groups by 'jfJoin' (less the leading
+-- ones that spell the file's path: @tests.test_x@ in @tests/test_x.py@), then
+-- its @name@ split by 'jfSplit'. A @failure@ or @error@ child fails it: the
+-- @message@ (followed by the text when it is one line the text lacks), the
+-- text, and the line (the last @FILE:N@ of the text for the test's file,
+-- else the failure's @line@, else the testcase's); a @skipped@ child makes
+-- it neither. A testcase with no classname and an @error@ is not a test but
+-- a collection failure: the whole report is Left with its message and text.
+parseJunit :: JunitFormat -> Text -> Either Text [Reported]
+parseJunit jf out = case parseXMLDoc (T.unpack out) of
   Nothing -> Left "junit-xml: the report is not XML"
   Just root
     | not (any (\e -> any (`named` e) ["testsuites", "testsuite", "testcase"]) (descendants root)) -> Left "junit-xml: the report has no testsuite"
-    | otherwise -> Right (mapMaybe testcase (descendants root))
+    | otherwise -> catMaybes <$> traverse (uncurry testcase) (cases Nothing root)
   where
     descendants e = e : concatMap descendants (elChildren e)
     named n e = qName (elName e) == n
     attr n e = T.pack <$> findAttr (QName n Nothing Nothing) e
-    testcase e
-      | not (named "testcase" e) = Nothing
-      | any (named "skipped") (elChildren e) = Nothing
-      | otherwise = do
+    -- each testcase with the file of the testsuite around it
+    cases suiteFile e
+      | named "testcase" e = [(suiteFile, e)]
+      | otherwise = concatMap (cases (if named "testsuite" e then attr "file" e <|> suiteFile else suiteFile)) (elChildren e)
+    testcase suiteFile e
+      | any (named "skipped") (elChildren e) = Right Nothing
+      | Just err <- find (named "error") (elChildren e), maybe True T.null (attr "classname" e) =
+          Left ("junit-xml: " <> T.intercalate "\n" (filter (not . T.null) [fromMaybe "" (attr "message" err)] ++ take 40 (filter (not . T.null . T.strip) (T.lines (T.pack (strContent err))))))
+      | otherwise = Right $ do
           name <- attr "name" e
           let failure = find (\c -> named "failure" c || named "error" c) (elChildren e)
-              line = (attr "line" e >>= readMaybe . T.unpack) <|> (failure >>= attr "line" >>= readMaybe . T.unpack)
-          Just
-            ( Reported
-                (T.unpack <$> attr "file" e)
-                [name]
-                ((\f -> Failure line (fromMaybe "failed" (attr "message" f)) (T.strip (T.pack (strContent f)))) <$> failure)
-            )
+              file = attr "file" e <|> suiteFile
+              groups = case jfJoin jf of
+                Nothing -> []
+                Just j -> dropPath file (filter (not . T.null) (T.splitOn j (fromMaybe "" (attr "classname" e))))
+              own = maybe [name] (\sep -> filter (not . T.null) (T.splitOn sep name)) (jfSplit jf)
+          Just (Reported (T.unpack <$> file) (groups ++ own) (failureOf file e <$> failure))
+    dropPath file segs = drop (length (takeWhile id (zipWith (==) segs (maybe [] pathParts file)))) segs
+    pathParts f = map T.pack (splitDirectories (dropExtension (T.unpack f)))
+    failureOf file e f =
+      let text = T.strip (T.pack (strContent f))
+          msg = attr "message" f
+          line = (file >>= lastFrame text) <|> (attr "line" f >>= readMaybe . T.unpack) <|> (attr "line" e >>= readMaybe . T.unpack)
+          message = case msg of
+            Nothing -> "failed"
+            Just m | T.any (== '\n') m || T.null text || m `T.isInfixOf` text -> m
+                   | otherwise -> m <> "\n" <> text
+       in Failure line message text
+    -- the last @FILE:N@ in a failure's text
+    lastFrame text file = listToMaybe (reverse [n | seg <- drop 1 (T.splitOn (file <> ":") text), Just n <- [readMaybe (T.unpack (T.takeWhile isDigit seg))]])
 
 -- | olifant-json: @{"passed": [id], "failed": [{"id", "line"?, "message",
 -- "output"?}], "broken": null | "why"}@, every key optional. Ids are the
