@@ -847,7 +847,13 @@ text lacks, the attribute and then the text). Its line is the last `FILE:N` in t
 test's file, else the failure's `line`, else the testcase's; a `skipped` child is neither. A
 testcase with no `classname` and an `error` is a collection failure, not a test: the run is
 broken, with its message and the first lines of its text. A runner that writes the XML to a
-file is read through `convert` (`cat report.xml`).
+file names it as `{= report =}`: the run is in a scratch copy, so `{= report =}` is an absolute
+path in it (`.olifant-report`), expanded in the command, the program and `convert`, and deleted
+before the run. When the `command` names it, that file's text is the report, for every format;
+without it, the runner's stdout then stderr is. A report the runner did not write is a broken
+run: by its console output when it exited non-zero, else "the tests wrote no report at …". A
+`junit-xml` run whose output is not XML says the `[test]` command names no `{= report =}`: name
+it, or set `format`.
 
 **`olifant-json`** — for `convert` (as in `[check]`: the command gets
 `{"v": 1, "exit": N, "stdout": "…", "stderr": "…"}` on stdin and prints this) or a runner that

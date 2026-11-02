@@ -11,6 +11,7 @@ module Olifant.Language.TestFormats
   , parseLines
   , parseTap
   , parseJunit
+  , junitNotXml
   , parseTestJson
   , attribute
   , fromReported
@@ -129,6 +130,10 @@ parseTap out = go (T.lines out)
       l : more | T.strip l == "---" -> let (body, after) = break ((== "...") . T.strip) more in (filter (not . T.null . T.strip) body, drop 1 after)
       _ -> ([], rest)
 
+-- | What 'parseJunit' says of text that is not XML.
+junitNotXml :: Text
+junitNotXml = "junit-xml: the report is not XML"
+
 -- | JUnit XML: each @testcase@ is a test; its id is its @file@ (else its
 -- @testsuite@'s), the @classname@'s groups by 'jfJoin' (less the leading
 -- ones that spell the file's path: @tests.test_x@ in @tests/test_x.py@), then
@@ -140,7 +145,7 @@ parseTap out = go (T.lines out)
 -- a collection failure: the whole report is Left with its message and text.
 parseJunit :: JunitFormat -> Text -> Either Text [Reported]
 parseJunit jf out = case parseXMLDoc (T.unpack out) of
-  Nothing -> Left "junit-xml: the report is not XML"
+  Nothing -> Left junitNotXml
   Just root
     | not (any (\e -> any (`named` e) ["testsuites", "testsuite", "testcase"]) (descendants root)) -> Left "junit-xml: the report has no testsuite"
     | otherwise -> catMaybes <$> traverse (uncurry testcase) (cases Nothing root)

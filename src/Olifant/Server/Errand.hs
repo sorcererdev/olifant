@@ -179,9 +179,10 @@ projectUnitWords langs = case nub (map langUnitWords langs) of
 noProse :: Text
 noProse = "No prose, no explanations, no code fences, no markdown headings, no blank lines."
 
--- | A test command's words past a leading `env` and its assignments.
+-- | A test command's words past a leading `env` and its assignments, without
+-- a word holding @{= report =}@ (the report is the runner's; a `do` never types it).
 testWords :: [Text] -> [Text]
-testWords = \case
+testWords cmd = filter (not . T.isInfixOf "{= report =}") $ case cmd of
   ("env" : rest) -> dropWhile (\w -> T.isInfixOf "=" w || "-" `T.isPrefixOf` w) rest
   ws -> ws
 

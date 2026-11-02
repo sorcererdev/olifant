@@ -170,6 +170,10 @@ spec = describe "Olifant.Server.Errand (the claude -p runner)" $ do
         `shouldBe` ["Bash(/w/night/.venv/bin/pytest -q*)", "Bash(.venv/bin/pytest -q*)"]
       doTestTools "/w/night" ["/usr/bin/pytest", "{= tests =}"] `shouldBe` ["Bash(/usr/bin/pytest*)"]
       doTestTools "/p" [] `shouldBe` []
+    it "a word holding {= report =} is no part of what a do types" $ do
+      let cmd = ["pytest", "-q", "{= tests =}", "-o", "junit_family=xunit1", "--junitxml={= report =}"]
+      doTestTools "/p" cmd `shouldBe` ["Bash(pytest -q*)"]
+      doTestCommand cmd `shouldBe` Just "pytest -q <test file, or file::test> -o junit_family=xunit1"
     it "a do's prompt says its tools up front: files only by Edit and Write, the one command, the engine runs the tests" $ do
       let d = errandPrompt Do pyWords (Just "pytest -q <test file, or file::test>") plan ls step []
           before x = T.length (fst (T.breakOn x d))

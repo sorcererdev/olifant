@@ -147,11 +147,11 @@ phase is generic in its monad.
 
 `[test]` is two things in one table. The **runner** keys (`command`, `context`, `format`, `root`,
 `tests_for`, `exclusive`, `timeout`, `install`, `[test.select]`, `[test.lines]`, `[test.junit]`, `file_group`,
-`convert`) make a `TestDef`. They are read by `Language/Check.hs`: `processRunner` (`:142`) runs
-a scratch copy of the project's files (`scratchRun`, `:107`), `readTestReport` (`:210`) picks
+`convert`) make a `TestDef`. They are read by `Language/Check.hs`: `processRunner` (`:195`) runs
+a scratch copy of the project's files (`scratchRun`, which also returns a `ReportFile`: `{= report =}` is `<scratch>/.olifant-report`, removed before the run and read after it when the command or `convert` names it), `readTestReport` (`ReportFile` in hand: the report's bytes replace stdout and stderr as the text a format reads; a named report not written is broken) picks
 the parser (`parsePytest`, or `TestFormats.parseLines | parseTap | parseJunit | parseTestJson`; `parseJunit` takes the `JunitFormat` (`Generic.hs`, `testJunit`): `join` splits the classname, `split` the name, and the classname's leading path segments are dropped; the failure's line is the last `FILE:N` of its text),
-`selected` (`:199`) turns a test id into arguments with `[test.select]`, and `runTestsIn`
-(`:476`) is the entry the server uses. A run knows its folder on disk, `TestDef.testDir`: the
+`selected` (`:251`) turns a test id into arguments with `[test.select]`, and `runTestsIn`
+(`:556`) is the entry the server uses. A run knows its folder on disk, `TestDef.testDir`: the
 catalog sets it to the project root as it roots the providers (`Adapter.withProviderRoot`), and
 `runTestsIn` narrows it to the package its `root` markers find; `processRunner` passes it to
 `scratchRun` as `{= root =}` (made absolute), expanded in the program too, so a command can

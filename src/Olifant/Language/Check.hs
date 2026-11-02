@@ -53,11 +53,12 @@ import Data.Text.Encoding qualified as TE
 import Data.Text.Encoding.Error (lenientDecode)
 import Olifant.Language.Adapter (CheckDef (..), ImportsDef (..), Language (..), Select (..), CommandCandidate (..), TestDef (..), chooseCheckCommand, chooseTestCommand, matchesGlob, moduleOf, regexName, supportOf)
 import Olifant.Template (Value (VText), parseTemplate, render)
-import Olifant.Language.TestFormats (Reported (..), attribute, noJunitFormat, fromReported, parseJunit, parseLines, parseTap, parseTestJson)
+import Olifant.Language.TestFormats (Reported (..), attribute, junitNotXml, noJunitFormat, fromReported, parseJunit, parseLines, parseTap, parseTestJson)
 import Data.Containers.ListUtils (nubOrd)
 import Olifant.Language.Test (Runner (..), TestId, TestRun (..), parsePytest)
 import Olifant.Process (Cancel, Outcome (..), neverCancel, runBytesCancellable)
 import System.Directory (XdgDirectory (..), canonicalizePath, copyFile, createDirectoryIfMissing, doesFileExist, findExecutable, getXdgDirectory, makeAbsolute)
+import System.Directory qualified as Dir
 import System.Exit (ExitCode (..))
 import System.FilePath (makeRelative, splitDirectories, takeDirectory, (</>))
 import System.IO.Temp (withSystemTempDirectory)
@@ -93,9 +94,9 @@ processVerifierCancellable token secs = Verifier $ \lang argv files ->
     Left ScratchNoProgram -> Left (CheckFailed "the verify command runs no program")
     Left (ScratchMissing program) -> Left (CheckToolMissing ("`" <> program <> "` is not installed (needed to verify)"))
     Left (ScratchFailed why) -> Left (CheckFailed why)
-    Right Cancelled -> Left (CheckFailed "cancelled")
-    Right TimedOut -> Right (False, "the tests timed out (" <> T.pack (show secs) <> " s)")
-    Right (Finished code out err) -> Right (code == ExitSuccess, TE.decodeUtf8With lenientDecode (out <> err))
+    Right (Cancelled, _) -> Left (CheckFailed "cancelled")
+    Right (TimedOut, _) -> Right (False, "the tests timed out (" <> T.pack (show secs) <> " s)")
+    Right (Finished code out err, _) -> Right (code == ExitSuccess, TE.decodeUtf8With lenientDecode (out <> err))
 
 -- | Why 'scratchRun' ran nothing.
 data ScratchFailure = ScratchEmpty | ScratchNoProgram | ScratchMissing Text | ScratchFailed Text
@@ -109,34 +110,49 @@ data ScratchFailure = ScratchEmpty | ScratchNoProgram | ScratchMissing Text | Sc
 -- stdout (and stderr is empty). With a folder on disk (a test run's
 -- @{= root =}@), the copy also holds the project's other files under it
 -- ('copyRest'): the files are the run's, the rest is the disk's.
-scratchRun :: Cancel -> Int -> Language -> String -> [Text] -> Text -> [(Text, Text)] -> Maybe Int -> [Text] -> (Text -> Maybe [String]) -> Maybe FilePath -> Map FilePath Text -> IO (Either ScratchFailure Outcome)
-scratchRun token secs lang prefix command0 ctx vars slot convert special rest files = do
+scratchRun :: Cancel -> Int -> Language -> String -> [Text] -> Text -> [(Text, Text)] -> Maybe Int -> [Text] -> (Text -> Maybe [String]) -> Maybe FilePath -> Map FilePath Text -> IO (Either ScratchFailure (Outcome, ReportFile))
+scratchRun token secs lang prefix command0 ctx vars0 slot convert0 special rest files = do
   cache <- slotCache lang slot
-  let command = [maybe (fillVars cache ctx vars a) (const a) (special (T.strip a)) | a <- command0]
-  case (command, checkProgram command) of
+  let named = any ("{= report =}" `T.isInfixOf`)
+      -- @{= report =}@: a file in the run's copy that the runner writes
+      varsFor tmp = ("report", T.pack (tmp </> ".olifant-report")) : vars0
+      commandFor tmp = [maybe (fillVars cache ctx (varsFor tmp) a) (const a) (special (T.strip a)) | a <- command0]
+  case (commandFor "", checkProgram (commandFor "")) of
     ([], _) -> pure (Left ScratchEmpty)
     (_, Nothing) -> pure (Left ScratchNoProgram)
-    (exe : args, Just program) ->
+    (exe0 : _, Just program) ->
       (findExecutable (T.unpack program) >>= \case
         Nothing -> pure Nothing
-        Just _ -> findExecutable (T.unpack exe)) >>= \case
+        Just _ -> findExecutable (T.unpack exe0)) >>= \case
         Nothing -> pure (Left (ScratchMissing program))
         Just path -> withSystemTempDirectory prefix $ \tmp0 -> do
           tmp <- canonicalizePath tmp0
+          let reportPath = tmp </> ".olifant-report"
+              command = commandFor tmp
+              convert = map (fillVars cache ctx (varsFor tmp)) convert0
           forM_ (M.toList files) $ \(p, t) -> do
             createDirectoryIfMissing True (takeDirectory (tmp </> p))
             BS.writeFile (tmp </> p) (TE.encodeUtf8 t)
           mapM_ (\dir -> copyRest (map T.unpack (langIgnore lang)) dir tmp files) rest
+          -- a report left by the copy is not this run's
+          _ <- try (Dir.removeFile reportPath) :: IO (Either IOException ())
           createDirectoryIfMissing True cache
           let expand a = fromMaybe [T.unpack a] (special (T.strip a))
-          runBytesCancellable token (Just secs) path (concatMap expand args) (Just tmp) "" >>= \case
+          runBytesCancellable token (Just secs) path (concatMap expand (drop 1 command)) (Just tmp) "" >>= \case
             Left why -> pure (Left (ScratchFailed why))
             Right (Finished code out err)
               | not (null convert) ->
                   convertReport convert tmp code out err <&> \case
                     Left why -> Left (ScratchFailed ("the convert command failed: " <> why))
-                    Right report -> Right (Finished code report "")
-            Right outcome -> pure (Right outcome)
+                    Right report -> Right (Finished code report "", NoReport)
+              | named command0 -> do
+                  got <- try (BS.readFile reportPath) :: IO (Either IOException ByteString)
+                  pure (Right (Finished code out err, either (const (ReportMissing reportPath)) ReportRead got))
+            Right outcome -> pure (Right (outcome, NoReport))
+
+-- | The report file a run named: none; named and not written (its path);
+-- its bytes.
+data ReportFile = NoReport | ReportMissing FilePath | ReportRead ByteString
 
 -- | A slot's cache folder (the language's without a slot): @{= cache =}@.
 slotCache :: Language -> Maybe Int -> IO FilePath
@@ -203,9 +219,9 @@ processRunner token secs = Runner $ \lang ids files -> case langTest lang of
               Left ScratchNoProgram -> Left "the test command runs no program"
               Left (ScratchMissing program) -> Left ("`" <> program <> "` is not installed (needed to run the tests)")
               Left (ScratchFailed why) -> Left why
-              Right Cancelled -> Left "cancelled"
-              Right TimedOut -> Right (TestRun [] [] (Just ("the tests timed out (" <> T.pack (show limit) <> " s)")))
-              Right (Finished code out err) -> Right (readTestReport td requested code out err)
+              Right (Cancelled, _) -> Left "cancelled"
+              Right (TimedOut, _) -> Right (TestRun [] [] (Just ("the tests timed out (" <> T.pack (show limit) <> " s)")))
+              Right (Finished code out err, report) -> Right (readTestReport td requested code out err report)
     -- a selection provider answers the arguments instead of [test.select]
     case testSelectProvider td of
       Nothing -> run byRule
@@ -243,15 +259,26 @@ selected lang td files sel i = map fill (if T.null rest then selFile sel else se
 -- | A run's report read by the `[test] format`, from stdout then stderr
 -- (olifant-json, and a converted report, from stdout); a report a parser
 -- cannot read is a broken run with its reason.
-readTestReport :: TestDef -> [(FilePath, Maybe Text)] -> ExitCode -> ByteString -> ByteString -> TestRun
-readTestReport td requested code out err = case testFormat td of
-  "pytest" -> parsePytest code said
-  "lines" -> maybe (broken "[test] format \"lines\" has no [test.lines]") (\lf -> fromReported requested code said (parseLines lf said)) (testLines td)
-  "tap" -> either broken (fromReported requested code said) (parseTap said)
-  "junit-xml" -> either broken (fromReported requested code said) (parseJunit (fromMaybe noJunitFormat (testJunit td)) said)
+readTestReport :: TestDef -> [(FilePath, Maybe Text)] -> ExitCode -> ByteString -> ByteString -> ReportFile -> TestRun
+readTestReport td requested code out err file = case (file, testFormat td) of
+  -- a report the command named but the runner did not write: broken by the
+  -- console output on a failing exit, else by saying so
+  (ReportMissing path, _)
+    | code == ExitSuccess -> broken ("the tests wrote no report at " <> T.pack path)
+    | otherwise -> fromReported requested code console []
+  (_, "pytest") -> parsePytest code said
+  (_, "lines") -> maybe (broken "[test] format \"lines\" has no [test.lines]") (\lf -> fromReported requested code said (parseLines lf said)) (testLines td)
+  (_, "tap") -> either broken (fromReported requested code said) (parseTap said)
+  (NoReport, "junit-xml") -> either (\why -> broken (if why == junitNotXml then "the report is not XML (the [test] command names no {= report =}: name it, or set `format`)" else why)) (fromReported requested code said) (parseJunit jf said)
+  (_, "junit-xml") -> either broken (fromReported requested code console) (parseJunit jf said)
   _ -> either broken refine (parseTestJson out)
   where
-    said = TE.decodeUtf8With lenientDecode (out <> err)
+    jf = fromMaybe noJunitFormat (testJunit td)
+    console = TE.decodeUtf8With lenientDecode (out <> err)
+    -- what is read: the report file when the command named one, else the console
+    said = case file of
+      ReportRead bytes -> TE.decodeUtf8With lenientDecode bytes
+      _ -> console
     broken why = TestRun [] [] (Just why)
     -- an id without a file is a test's name: attributed like a report's
     own i
