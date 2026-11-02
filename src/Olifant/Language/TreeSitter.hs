@@ -12,6 +12,8 @@
 module Olifant.Language.TreeSitter
   ( capturesOf
   , cacheSize
+  , cacheHolds
+  , compiledSize
   , definitionLines
   , definitionKinds
   , definedName
@@ -29,7 +31,7 @@ module Olifant.Language.TreeSitter
   , treeSitterAnchors
   ) where
 
-import Control.Concurrent.MVar (MVar, modifyMVar, newMVar)
+import Control.Concurrent.MVar (MVar, modifyMVar, readMVar, newMVar)
 import Control.Exception (bracket)
 import Control.Monad (forM, when)
 import Data.Bifunctor (first)
@@ -50,6 +52,7 @@ import Foreign.C.String (CString, newCStringLen, peekCString, peekCStringLen)
 import Foreign.C.Types (CInt (..), CSize (..))
 import Foreign.Marshal.Alloc (allocaBytes)
 import Foreign.Marshal.Array (allocaArray, peekArray, withArray)
+import Foreign.ForeignPtr (ForeignPtr, newForeignPtr, withForeignPtr)
 import Foreign.Marshal.Utils (copyBytes, with)
 import Foreign.Ptr (FunPtr, Ptr, castPtr, nullPtr, plusPtr)
 import Foreign.Storable (peek, peekElemOff)
@@ -88,6 +91,7 @@ foreign import ccall safe "ots_query" c_query :: Ptr TSLanguage -> CString -> Wo
 foreign import ccall unsafe "ots_capture_name" c_captureName :: Ptr TSQuery -> Word32 -> Ptr Word32 -> IO CString
 foreign import ccall unsafe "ts_query_pattern_count" c_patternCount :: Ptr TSQuery -> IO Word32
 foreign import ccall unsafe "ts_query_delete" c_queryDelete :: Ptr TSQuery -> IO ()
+foreign import ccall unsafe "&ts_query_delete" c_queryDeleteFin :: FunPtr (Ptr TSQuery -> IO ())
 foreign import ccall unsafe "ots_capture_count" c_captureCount :: Ptr TSQuery -> IO Word32
 foreign import ccall unsafe "ots_prune" c_prune :: Ptr TSQuery -> Ptr Word8 -> Ptr Word8 -> IO ()
 foreign import ccall unsafe "ots_facts" c_facts :: Ptr TSNode -> Ptr Word32 -> IO ()
@@ -279,7 +283,7 @@ readCaptures = ["name", "function.inner", "class.inner", "function.outer", "clas
 -- | A query set compiled as one query (one walk of the tree for all of
 -- them), its kept capture names, each file's first pattern index, and each
 -- pattern's predicates.
-type Compiled = (Ptr TSQuery, M.Map Word32 Text, [(Int, FilePath)], M.Map Word32 [Pred])
+type Compiled = (ForeignPtr TSQuery, M.Map Word32 Text, [(Int, FilePath)], M.Map Word32 [Pred])
 
 -- | A predicate (Decision 7), evaluated in Haskell after the cursor returns
 -- a match: the Bool is False for the @not-@ form. Every node a capture
@@ -356,14 +360,17 @@ predicateCaptures = \case
   PMatch _ c _ -> [c]
   PAnyOf _ c _ -> [c]
 
--- | Each (grammar, query set), compiled once per process.
-compiled :: MVar (M.Map (Text, [(FilePath, Text)]) (Either Text Compiled))
-compiled = unsafePerformIO (newMVar M.empty)
+-- | The last 'compiledBound' (grammar, query set) pairs, compiled once each,
+-- newest used first: the long-lived LSP sees a new set at every save of a
+-- project `.scm`. A query is freed by the garbage collector once evicted
+-- and no run holds it ('withForeignPtr').
+compiled :: MVar [((Text, [(FilePath, Text)]), Either Text Compiled)]
+compiled = unsafePerformIO (newMVar [])
 {-# NOINLINE compiled #-}
 
 compileQueries :: Ptr TSLanguage -> Text -> [(FilePath, Text)] -> IO (Either Text Compiled)
-compileQueries lang g qs = modifyMVar compiled $ \cache -> case M.lookup (g, qs) cache of
-  Just r -> pure (cache, r)
+compileQueries lang g qs = modifyMVar compiled $ \cache -> case lookup (g, qs) cache of
+  Just r -> pure (((g, qs), r) : filter ((/= (g, qs)) . fst) cache, r)
   Nothing -> do
     -- each file alone first, so an error names its file and byte
     counts <- fmap sequence . forM qs $ \(f, src) ->
@@ -392,8 +399,9 @@ compileQueries lang g qs = modifyMVar compiled $ \cache -> case M.lookup (g, qs)
                 flags k = [flag (k i (M.findWithDefault "" i names)) | i <- M.keys names]
             -- a bare @name keeps no pattern (tags.scm's references have one)
             withArray (flags (\i c -> keep c || i `elem` tested)) $ \kp -> withArray (flags (\_ c -> keep c && c /= "name")) (c_prune q kp)
-            pure (Right (q, M.filter keep names, zip (scanl (+) 0 ns) (map fst qs), preds))
-    pure (M.insert (g, qs) r cache, r)
+            fq <- newForeignPtr c_queryDeleteFin q
+            pure (Right (fq, M.filter keep names, zip (scanl (+) 0 ns) (map fst qs), preds))
+    pure (take compiledBound (((g, qs), r) : cache), r)
   where
     compileOne src =
       BU.unsafeUseAsCStringLen (TE.encodeUtf8 src) $ \(p, n) ->
@@ -434,6 +442,17 @@ cacheBound = 16
 -- | How many answers the cache holds (at most 'cacheBound').
 cacheSize :: IO Int
 cacheSize = length <$> readIORef answers
+
+compiledBound :: Int
+compiledBound = 16
+
+-- | How many compiled query sets are held (at most 'compiledBound').
+compiledSize :: IO Int
+compiledSize = length <$> readMVar compiled
+
+-- | Whether a text's answer is in the cache now (specs).
+cacheHolds :: Text -> IO Bool
+cacheHolds t = any (\((_, _, t'), _) -> t' == t) <$> readIORef answers
 
 -- | Every capture of a query set over a text, with the node facts the anchor
 -- rule reads, and the root node. Left: the grammar is not linked, or a query
@@ -477,7 +496,7 @@ capturesIO g qs content = case lookup g grammarTable of
                 rootNode <- pnode ctx facts root
                 Right . (rootNode,) . reverse <$> readIORef out
   where
-    runQuery ctx facts root out matchNo (q, names, starts, preds) =
+    runQuery ctx facts root out matchNo (fq, names, starts, preds) = withForeignPtr fq $ \q ->
       -- a pattern's file, and its index in that file
       let fileOf ix = case [(T.pack f, ix - s0) | (s0, f) <- reverse starts, s0 <= ix] of
             r : _ -> r

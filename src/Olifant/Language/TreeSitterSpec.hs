@@ -21,7 +21,7 @@ import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
 import Olifant.Language.Captures (Cap (..), PNode (..), anchorFromCaptures)
 import Olifant.Language.Syntax (Match (..))
-import Olifant.Language.TreeSitter (cacheSize, capturesOf, linkedGrammars, queriesFor)
+import Olifant.Language.TreeSitter (cacheHolds, cacheSize, compiledSize, capturesOf, linkedGrammars, queriesFor)
 import Test.Hspec
 
 rust :: Text -> [Cap]
@@ -47,10 +47,23 @@ structLine n src = [fst (pStart (capNode c)) | c <- rust src, capName c == "name
 
 cacheSpec :: Spec
 cacheSpec = describe "tree-sitter: the parse cache" $ do
-  it "holds at most 16 texts" $ do
-    forM_ [1 .. 40 :: Int] $ \i -> evaluate (length (rust ("struct S" <> T.pack (show i) <> " { a: u8 }\n")))
+  it "holds at most the 16 newest texts: the oldest go out first" $ do
+    let text i = "struct S" <> T.pack (show i) <> " { a: u8 }\n"
+    forM_ [1 .. 40 :: Int] $ \i -> evaluate (length (rust (text i)))
     n <- cacheSize
     n `shouldSatisfy` (<= 16)
+    old <- mapM (cacheHolds . text) [1 .. 24]
+    newest <- cacheHolds (text 40)
+    (or old, newest) `shouldBe` (False, True)
+    -- an evicted text is asked again: reparsed, right, and cached
+    evaluate (length (rust (text 1)))
+    structLine "S1" (text 1) `shouldBe` [0]
+    cacheHolds (text 1) `shouldReturn` True
+  it "holds at most 16 compiled query sets: each saved project .scm is a new one (m2b M2)" $ do
+    forM_ [1 .. 40 :: Int] $ \i ->
+      evaluate (length (either (const []) snd (capturesOf "rust" [("x.scm", "; " <> T.pack (show i) <> "\n(struct_item name: (type_identifier) @name) @definition.class")] "struct A;\n")))
+    n <- compiledSize
+    n `shouldBe` 16
   it "an edited text is reparsed" $ do
     let original = "struct Moved { a: u8 }\n"
         edited = "\n" <> original

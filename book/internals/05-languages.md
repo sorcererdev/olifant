@@ -369,7 +369,11 @@ anchor phrases from community queries (design 4b §A).
   skips the parse and the marshalling. A changed text is another key, so a stale tree never
   answers; the oldest computed entry goes when a 17th text arrives (`cacheSize`, for the spec). Two
   threads that miss at once both compute the same pure answer; the list is updated with
-  `atomicModifyIORef'`, and no lock is held while parsing.
+  `atomicModifyIORef'`, and no lock is held while parsing. The compiled query sets are bounded the
+  same way (`compiled`, `compiledBound`, 16, least recently used out): every save of a project
+  `.scm` is a new set in the long-lived LSP. A query is a `ForeignPtr` with `ts_query_delete` as
+  its finalizer, so an evicted set is freed by the garbage collector once no run holds it
+  (`runQuery` runs under `withForeignPtr`).
 - **What it costs.** Measured with `OLIFANT_TS_BENCH=<dir>` (the opt-in example in
   `TreeSitterSpec`, `<dir>` holding lock_api's `rwlock.rs` as `big.rs` and main's
   `rust.toml` with its declared targets as `rust-main.toml`), medians of 20 in the test build:
