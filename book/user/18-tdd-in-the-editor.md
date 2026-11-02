@@ -80,7 +80,7 @@ function with `<leader>ms`.
 ## Stubbing a test
 
 `:Durandal stub` (`<leader>ms`) with the cursor in a function, a method or a class (a decorator
-line counts as its def; the innermost unit of the language's `[unit] kinds` is the one) adds a new
+line counts as its def; the innermost unit is the one: a definition its grammar's queries capture, or one of its `[unit] kinds`) adds a new
 test to its test file, as the language's `[test.stub]` writes it
 ([chapter 9](09-packs-and-language-adapters.md#test-formats)). Its name is `[test] name`
 over the unit's name in words: pytest's `test_<name>` in snake case (`CloseTable` is
@@ -105,7 +105,7 @@ a comment in its body.
 ## Conjuring
 
 `:Durandal conjure` (`<leader>mc`) conjures the innermost function, method or class at the cursor with
-the model: the unit is found by the language adapter's `[unit] kinds`, and a decorator line counts
+the model: the unit is a definition its grammar's queries capture (or one of the adapter's `[unit] kinds`), and a decorator line counts
 as the def it decorates. In a module, its test file runs first. The model gets the unit's body as a
 hole, the failing tests with their messages and sources ("make these pass"), the passing ones
 ("keep these passing"), the test file, the project modules it imports, and the body on screen when

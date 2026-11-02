@@ -129,7 +129,7 @@ in), a Haskell signature and its equations already one (`adjacent`). Units read
 `Unit.unitLookup` reports a name several units share instead of taking the first; a plan
 anchor reads `unitLookupIn` over `unitsWithKinds`, where a type and its inherent impl
 (`definition.impl`) sharing a name are the type, and says why when it does not resolve
-(`Resolved.rsWhy`). Rust, Python and Haskell
+(`Resolved.rsWhy`). Rust, Python, Haskell and Elm
 ship no `kinds` any more; they keep `name`, which `defLine`, `ownerHeader` and the other line
 readers (`App.definesIn`, `ConjureScan`, `Recognize`, `functionText`, `FillPhase`'s top-level
 names) still use. `hasUnits` (in `Olifant.Language`) is `hasUnitRule` or a loadable grammar (`hasLoadableGrammar`).
@@ -323,8 +323,8 @@ anchor phrases from community queries (design 4b §A).
     and `TreeSitter.queryError` (the catalog's check of a project's queries) uses it, so a
     project query error on a fresh machine shows at the first use instead.
   - `TreeSitter.loadableGrammar` is the static test the readers use: a grammar with a source
-    and a non-empty query set (Elm has a source but no queries yet, so it stays on its
-    `[unit] kinds` and declared targets). `capturesOf` calls `loadGrammar` in its IO.
+    and a non-empty query set (Elm's source is the elm pack's folder and its queries are
+    shipped, so it loads once the pack is in the project). `capturesOf` calls `loadGrammar` in its IO.
   - `Main` sets the settings (`setGrammarSettings`, the cache `~/.cache/olifant`) at start.
     `SpecHook.grammarSetup` points the suite at `<tmp>/olifant-test-cache` and the vendored
     copies in `library/grammars/<g>/` (also exported as `OLIFANT_GRAMMAR_SOURCES` for the
@@ -356,7 +356,15 @@ anchor phrases from community queries (design 4b §A).
   runs on to the next declaration under the grammar's layout). They carry no upstream
   licence. The place to upstream them is tree-sitter-haskell's `queries/tags.scm` (and
   nvim-treesitter-textobjects for the inner ranges), after which they would be vendored like
-  Rust's. Haskell's `parser.c` is 19.8 MB; it compiles clean at `-O2` in under a second. `SOURCES` pins each vendored file to a commit and lists any line
+  Rust's. For Elm: tree-sitter-elm's `tags.scm` (less its module pattern: a module's header is
+  no unit, and `module Route` beside `type Route` would make `@src/Route.elm:Route` name two),
+  nvim-treesitter-textobjects' `textobjects.scm` as it is, and two olifant writes:
+  `imports.scm` (`import_clause`) and `types.scm`, because upstream tags no type alias: an
+  alias is `@definition.type`, except a record alias, whose definition is its `record_type`
+  (so `record Model` reaches it by kind word) with the alias as its `@class.outer` (its unit);
+  a type's `union_variant`s and a record alias's own `field_type`s are `@class.inner`. The
+  grammar's sources stay in the elm pack (`packs/elm/languages/grammar/elm/SOURCES` pins the
+  same tree-sitter-elm commit, v5.9.4). Haskell's `parser.c` is 19.8 MB; it compiles clean at `-O2` in under a second. `SOURCES` pins each vendored file to a commit and lists any line
   olifant removed under "changes".
 - **The project's queries.** `Catalog.openAt` reads `.olifant/queries/<grammar>/*.scm` for
   each language whose grammar has a source (`projectQueries`) into `langQueries` (file, text,
@@ -467,7 +475,9 @@ anchor phrases from community queries (design 4b §A).
   a declared target (`itemsOfTarget`'s declared branch), else the generic rule, whose answer
   is final ("no `struct Nope` in this file"), else the anchors provider, else
   `itemsOfTarget`'s "unknown target", whose "did you mean" and target list add
-  `genericPhrases` when `hasLoadableGrammar`. `itemsOfTarget` (an `items of` query, a fragment, the
+  `genericPhrases` when `hasLoadableGrammar`; for a two-word phrase "did you mean" also weighs
+  `KIND NAME` with each of `Language.kindWords` (`function`, `class`, each node type's first
+  word), so `end of typo Msg` is offered `end of type Msg`. `itemsOfTarget` (an `items of` query, a fragment, the
   catalog's target check) and `locateContainers` (every container; a name two definitions
   share gives both) ask the same field. `Anchor/Items.hs`'s up-front "unknown target in any
   language adapter" check lets a generic phrase through when any language's grammar is loadable.
@@ -575,8 +585,9 @@ key to add); `Bad` for the other failures, each with its fix where there is one.
 `Doctor.queriesRow` adds `LANGUAGE: queries`: for a loadable grammar (`loadableGrammar`), `Ok`
 with its label (`grammarLabel`) and its query files (`tree-sitter-rust @77a3747; impls,
 imports, tags, textobjects (shipped)`), a `Warn` with "(not read: the grammar is not loaded)"
-when the grammar row failed; for a grammar with a source but no queries, `Warn` "no queries
-for the elm grammar (anchors from [targets.*] only)"; otherwise `Warn` "no grammar (anchors
+when the grammar row failed; for a grammar with a source but no queries (a pack's language
+olifant ships none for), `Warn` "no queries for the GRAMMAR grammar (anchors from [targets.*]
+only)"; otherwise `Warn` "no grammar (anchors
 from [targets.*] only)", with no fix. The `anchors` capability's `how` adds "generic phrases
 (queries)" for a loadable grammar,
 which is never `absent` even with no `[targets.*]`.
