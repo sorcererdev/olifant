@@ -62,7 +62,7 @@ import Data.Bifunctor (first)
 import Data.Char (isUpper)
 import Data.List (find, sort)
 import Data.Map.Strict qualified as M
-import Data.Maybe (fromMaybe, isNothing)
+import Data.Maybe (fromMaybe, isJust, isNothing)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Glob (matchesGlob)
@@ -411,6 +411,10 @@ data TestDef = TestDef
   , testFellBack :: Bool
   -- ^ the preset's `console_format` stands in for its `format`: the project's
   -- own `command` names no @{= report =}@ and no `format` of its own
+  , testReport :: Maybe Text
+  -- ^ `report`: where the runner writes its report, a template over
+  -- @{= cache =}@, @{= context =}@ and @{= root =}@ (a relative path is under
+  -- the run's copy); @{= report =}@ is it, and it is read after the run
   }
   deriving stock (Eq, Show)
 
@@ -771,7 +775,7 @@ languageFrom presets name grammarDir top = do
         <*> optional "when_empty" (text >=> \w -> if w == "after header" then Right w else Left ("`when_empty`: expected \"after header\", got `" <> w <> "`")) t
         <*> optional "separator" text t
     testFrom hasModuleOf t0 = do
-      onlyKeys ["preset", "command", "context", "format", "root", "tests_for", "lines", "junit", "convert", "unit", "file_group", "select", "exclusive", "timeout", "files", "install", "above", "stub", "name", "undefined", "failure"] (foldr M.delete t0 testShapeKeys)
+      onlyKeys ["preset", "command", "context", "format", "root", "tests_for", "lines", "junit", "convert", "unit", "file_group", "select", "exclusive", "timeout", "files", "install", "above", "stub", "name", "undefined", "failure", "report"] (foldr M.delete t0 testShapeKeys)
       t <- applyPreset presets "test" t0
       convert <- fromMaybe [] <$> optional "convert" (list text) t
       format <- (if null convert then required "format" text t else fromMaybe "olifant-json" <$> optional "format" text t)
@@ -796,7 +800,8 @@ languageFrom presets name grammarDir top = do
       -- no @{= report =}@ in it (and no `format` of the project's own), the
       -- preset's `console_format` reads the run as it did before
       console <- optional "console_format" text t
-      let namesReport = any ("{= report =}" `T.isInfixOf`) (concat (command : convert : map ccCommand candidates))
+      report <- optional "report" (text >=> templateOver "[test] report" ["cache", "context", "root"]) t
+      let namesReport = isJust report || any ("{= report =}" `T.isInfixOf`) (concat (command : convert : map ccCommand candidates))
           fell = case console of
             Just _ | M.notMember "format" t0, format == "junit-xml", not namesReport -> True
             _ -> False
@@ -820,6 +825,7 @@ languageFrom presets name grammarDir top = do
         <*> pure candidates
         <*> pure Nothing
         <*> pure fell
+        <*> pure report
     -- a bare command, or candidates: the unconditional one's command until
     -- one is chosen ('chooseTestCommand')
     commandFrom tbl v = case list text v of

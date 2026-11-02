@@ -1,0 +1,51 @@
+# `cargo nextest run` in the file's crate, read as JUnit. Opt in with
+# `preset = "cargo-nextest"` (rust.toml keeps `cargo-test`). nextest writes
+# JUnit only when a profile asks for it, to <target-dir>/nextest/<profile>/,
+# so the project adds to .config/nextest.toml:
+#
+#   [profile.olifant.junit]
+#   path = "junit.xml"
+#
+# and `report` names where that lands. Presets do not inherit: root,
+# exclusive, timeout, tests_for, name, [test.select] and [test.stub] are
+# copied from cargo-test.toml.
+[test]
+command = [
+  { when = [".config/nextest.toml"], has = "[profile.olifant.junit]", command = ["cargo", "nextest", "run", "--profile", "olifant", "--no-fail-fast", "--target-dir", "{= cache =}/nextest-target-{= context =}", "--", "{= tests =}"] },
+]
+report = "{= cache =}/nextest-target-{= context =}/nextest/olifant/junit.xml"
+context = ["**/Cargo.toml", "Cargo.lock", ".config/nextest.toml"]
+format = "junit-xml"
+root = ["Cargo.toml"]
+exclusive = true
+timeout = 900
+tests_for = "{= dir =}/{= stem =}.rs"
+install = "cargo install cargo-nextest, then add to .config/nextest.toml: [profile.olifant.junit] and path = \"junit.xml\" (cargo lives in ~/.cargo/bin, or /opt/homebrew/opt/rustup/bin with Homebrew's rustup)"
+name = "{= words|snake =}"
+
+# nextest's classname is the binary id and its name the test path: split by `::`
+[test.junit]
+split = "::"
+
+[test.select]
+test = ["--exact", "{= if group =}{= group =}::{= end =}{= name =}"]
+file = "{= if group =}{= group =}::{= end =}"
+join = "::"
+
+[test.stub]
+test = """
+{= indent =}#[test]
+{= indent =}fn {= name =}() {
+{= note =}{= indent =}{= indent =}todo!("write this test");
+{= indent =}}
+"""
+at = "end of mod tests"
+open = """
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+{= test =}}
+"""
+elsewhere = '^[[:space:]]*(pub[^[:space:]]*[[:space:]]+)?mod[[:space:]]+(tests)[[:space:]]*;'
+gap = 1

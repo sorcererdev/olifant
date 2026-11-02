@@ -62,7 +62,7 @@ import Olifant.Process (Cancel, Outcome (..), neverCancel, runBytesCancellable)
 import System.Directory (XdgDirectory (..), canonicalizePath, copyFile, createDirectoryIfMissing, doesFileExist, findExecutable, getXdgDirectory, listDirectory, makeAbsolute)
 import System.Directory qualified as Dir
 import System.Exit (ExitCode (..))
-import System.FilePath (makeRelative, splitDirectories, takeDirectory, (</>))
+import System.FilePath (isAbsolute, makeRelative, splitDirectories, takeDirectory, (</>))
 import System.IO.Temp (withSystemTempDirectory)
 import Olifant.Language.Diagnostics (CheckReport (..), CompilerSupport (..), MissingPatterns (..))
 
@@ -91,7 +91,7 @@ processVerifierWith = processVerifierCancellable neverCancel
 -- | 'processVerifierWith', killed when the token is tripped ("cancelled").
 processVerifierCancellable :: Cancel -> Int -> Verifier IO
 processVerifierCancellable token secs = Verifier $ \lang argv files ->
-  scratchRun token secs lang "olifant-verify" argv (maybe "none" (`contextKey` files) (langCheck lang)) [] Nothing [] (const Nothing) Nothing files <&> \case
+  scratchRun token secs lang "olifant-verify" argv (maybe "none" (`contextKey` files) (langCheck lang)) [] Nothing Nothing [] (const Nothing) Nothing files <&> \case
     Left ScratchEmpty -> Left (CheckFailed "empty verify command")
     Left ScratchNoProgram -> Left (CheckFailed "the verify command runs no program")
     Left (ScratchMissing program) -> Left (CheckToolMissing ("`" <> program <> "` is not installed (needed to verify)"))
@@ -112,12 +112,16 @@ data ScratchFailure = ScratchEmpty | ScratchNoProgram | ScratchMissing Text | Sc
 -- stdout (and stderr is empty). With a folder on disk (a test run's
 -- @{= root =}@), the copy also holds the project's other files under it
 -- ('copyRest'): the files are the run's, the rest is the disk's.
-scratchRun :: Cancel -> Int -> Language -> String -> [Text] -> Text -> [(Text, Text)] -> Maybe Int -> [Text] -> (Text -> Maybe [String]) -> Maybe FilePath -> Map FilePath Text -> IO (Either ScratchFailure (Outcome, ReportFile))
-scratchRun token secs lang prefix command0 ctx vars0 slot convert0 special rest files = do
+scratchRun :: Cancel -> Int -> Language -> String -> [Text] -> Text -> [(Text, Text)] -> Maybe Text -> Maybe Int -> [Text] -> (Text -> Maybe [String]) -> Maybe FilePath -> Map FilePath Text -> IO (Either ScratchFailure (Outcome, ReportFile))
+scratchRun token secs lang prefix command0 ctx vars0 reportAt slot convert0 special rest files = do
   cache <- slotCache lang slot
-  let named = any ("{= report =}" `T.isInfixOf`)
-      -- @{= report =}@: a file in the run's copy that the runner writes
-      varsFor tmp = ("report", T.pack (tmp </> ".olifant-report")) : vars0
+  let named cs = isJust reportAt || any ("{= report =}" `T.isInfixOf`) cs
+      -- @{= report =}@: `[test] report` (a relative path is under the run's
+      -- copy), else a file in the run's copy that the runner writes
+      reportOf tmp = case reportAt of
+        Just tpl -> let p = T.unpack (fillVars cache ctx vars0 tpl) in if isAbsolute p then p else tmp </> p
+        Nothing -> tmp </> ".olifant-report"
+      varsFor tmp = ("report", T.pack (reportOf tmp)) : vars0
       commandFor tmp = [maybe (fillVars cache ctx (varsFor tmp) a) (const a) (special (T.strip a)) | a <- command0]
   case (commandFor "", checkProgram (commandFor "")) of
     ([], _) -> pure (Left ScratchEmpty)
@@ -129,7 +133,7 @@ scratchRun token secs lang prefix command0 ctx vars0 slot convert0 special rest 
         Nothing -> pure (Left (ScratchMissing program))
         Just path -> withSystemTempDirectory prefix $ \tmp0 -> do
           tmp <- canonicalizePath tmp0
-          let reportPath = tmp </> ".olifant-report"
+          let reportPath = reportOf tmp
               command = commandFor tmp
               convert = map (fillVars cache ctx (varsFor tmp)) convert0
           forM_ (M.toList files) $ \(p, t) -> do
@@ -237,7 +241,7 @@ processRunner token secs = Runner $ \lang ids files -> case langTest lang of
         byRule = maybe (map T.unpack ids) (\sel -> map T.unpack (nub (concatMap (selected lang td files sel) ids))) (testSelect td)
         run args =
           around $ \slot ->
-            scratchRun token limit lang "olifant-test" (testCommand td) ctx [("root", T.pack r) | Just r <- [root]] slot (testConvert td) (\a -> if a == "{= tests =}" then Just args else Nothing) root files <&> \case
+            scratchRun token limit lang "olifant-test" (testCommand td) ctx [("root", T.pack r) | Just r <- [root]] (testReport td) slot (testConvert td) (\a -> if a == "{= tests =}" then Just args else Nothing) root files <&> \case
               Left ScratchEmpty -> Left "empty test command"
               Left ScratchNoProgram -> Left "the test command runs no program"
               Left (ScratchMissing program) -> Left ("`" <> program <> "` is not installed (needed to run the tests)")

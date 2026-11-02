@@ -247,7 +247,7 @@ spec = do
       out <- TIO.readFile "src/Olifant/Language/testdata/pytest/all-passed.txt"
       parsePytest ExitSuccess out `shouldSatisfy` \r -> null (trFailed r) && length (trPassed r) == 4 && trBroken r == Nothing
     it "(c) testsForFile: the module's test file" $
-      testsForFile (TestDef [] [] "pytest" [] "{= dir =}/{= stem =}__test.py" Nothing Nothing [] [] Nothing Nothing False Nothing [] Nothing Nothing Nothing Nothing [] Nothing Nothing Nothing [] Nothing False) "src/bistro/booking/commands/close_table.py"
+      testsForFile (TestDef [] [] "pytest" [] "{= dir =}/{= stem =}__test.py" Nothing Nothing [] [] Nothing Nothing False Nothing [] Nothing Nothing Nothing Nothing [] Nothing Nothing Nothing [] Nothing False Nothing) "src/bistro/booking/commands/close_table.py"
         `shouldBe` "src/bistro/booking/commands/close_table__test.py"
     it "(d) a run that could not start is broken, not red" $ do
       out <- TIO.readFile "src/Olifant/Language/testdata/pytest/broken.txt"
@@ -407,6 +407,25 @@ spec = do
       trBroken failing `shouldSatisfy` maybe False ("boom" `T.isInfixOf`)
       Right ok <- junitRun "[\"sh\", \"-c\", 'exit 0', \"sh\", \"{= report =}\"]"
       trBroken ok `shouldSatisfy` maybe False ("wrote no report" `T.isInfixOf`)
+    it "[test] report is where the run's report is read, a stale one removed first" $ do
+      xml <- TIO.readFile "src/Olifant/Language/testdata/junit/basic.xml"
+      let withReport cmd = either (error . T.unpack) id (parseLanguage "haskell" "/h" (T.unlines
+            [ "files = [\"**/*.hs\"]", "comment = \"--\"", "grammar = \"haskell\""
+            , "[test]", "command = " <> cmd, "format = \"junit-xml\"", "report = \"out/r.xml\"", "tests_for = \"x\"" ]))
+          files = M.fromList [("src/plans.test.ts", ""), ("report.xml", xml), ("out/r.xml", xml)]
+      Right run <- runTests (processRunner neverCancel 60) (withReport "[\"sh\", \"-c\", 'mkdir -p out; cp report.xml out/r.xml; echo \"$1\" > where.txt']") ["src/plans.test.ts"] files
+      map fst (trFailed run) `shouldBe` ["src/plans.test.ts::reads a test"]
+      -- the stale out/r.xml of the project is not an answer when the command writes none
+      Right stale <- runTests (processRunner neverCancel 60) (withReport "[\"sh\", \"-c\", 'exit 0']") ["src/plans.test.ts"] files
+      trBroken stale `shouldSatisfy` maybe False ("wrote no report" `T.isInfixOf`)
+    it "cargo-nextest needs [profile.olifant.junit]; doctor's why says so" $ do
+      let lang = either (error . T.unpack) id (parseOverShipped "rust" "/r" (T.unlines ["[test]", "preset = \"cargo-nextest\""]))
+          Just t = langTest lang
+      fmap (const ()) (runIdentity (chooseTestCommand (probeOf []) t)) `shouldBe` Left "no [test] command fits here: no [profile.olifant.junit] in .config/nextest.toml"
+      let Right (td, _) = runIdentity (chooseTestCommand (probeOf [(".config/nextest.toml", "[profile.olifant.junit]\npath = \"junit.xml\"\n")]) t)
+      take 5 (testCommand td) `shouldBe` ["cargo", "nextest", "run", "--profile", "olifant"]
+      (testFormat td, testJunit td) `shouldBe` ("junit-xml", Just (JunitFormat Nothing (Just "::")))
+      fmap (T.isSuffixOf "/nextest/olifant/junit.xml") (testReport td) `shouldBe` Just True
     it "a stale report is gone before the run" $ do
       xml <- TIO.readFile "src/Olifant/Language/testdata/junit/basic.xml"
       -- the project holds a report at the path the run will name
