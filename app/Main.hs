@@ -13,7 +13,7 @@ import Data.Maybe (fromMaybe, isJust)
 import System.Directory (doesFileExist, findExecutable)
 import System.Environment (lookupEnv)
 import System.Process (readProcessWithExitCode)
-import Olifant.Language (processCheckerWith, processRunner, processVerifierCancellable)
+import Olifant.Language (Probe (..), diskProbe, processCheckerWith, processRunner, processVerifierCancellable)
 import Olifant.Language.AstGrep (astGrepSyntax)
 import Olifant.Workspace (diskWorkspace)
 import System.Directory (XdgDirectory (XdgCache, XdgConfig), getCurrentDirectory, getHomeDirectory, getXdgDirectory)
@@ -66,7 +66,8 @@ main = do
               (T.pack . fromMaybe "" <$> lookupEnv "PATH")
               probeBackend
               (fmap isJust . lookupEnv . T.unpack)
-              doesFileExist
+              (probeRead (diskProbe "/"))
+              (probeList (diskProbe "/"))
         }
       $ args
   case result of

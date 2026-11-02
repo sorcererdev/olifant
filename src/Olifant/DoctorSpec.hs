@@ -35,7 +35,8 @@ ports exes probe envs =
     , dpPath = Identity "/usr/bin:/bin"
     , dpProbe = \_ -> Identity probe
     , dpEnvSet = \v -> Identity (v `elem` envs)
-    , dpExists = \f -> Identity (f `elem` ["/proj/uv.lock"])
+    , dpRead = \f -> Identity (if f `elem` ["/proj/uv.lock"] then Just "" else Nothing)
+    , dpList = \_ -> Identity []
     }
 
 statusOf :: Text -> [Check] -> Maybe Status
@@ -91,7 +92,7 @@ spec = describe "olifant doctor (spec §4.7)" $ do
     checkDetail bad `shouldSatisfy` (\d -> "uv" `T.isInfixOf` d && "/usr/bin:/bin" `T.isInfixOf` d)
   it "(f2) the test runner row names the command candidate chosen, and why" $ do
     let Right python = parseLanguage "python" "/p" (T.unlines ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[test]", "preset = \"pytest\"", "tests_for = \"{= dir =}/{= stem =}__test.py\""])
-        withFiles fs = (ports ["ast-grep", "pytest", "/proj/.venv/bin/pytest"] (Right ()) []) {dpExists = \f -> Identity (f `elem` fs)}
+        withFiles fs = (ports ["ast-grep", "pytest", "/proj/.venv/bin/pytest"] (Right ()) []) {dpRead = \f -> Identity (if f `elem` fs then Just "" else Nothing)}
         rows fs = [(checkName c, checkStatus c, checkDetail c) | c <- runIdentity (doctor (withFiles fs) (DoctorInput (Just "/proj") [] [python] [] [] local Nothing defaultPlans [] False)), "test runner" `T.isPrefixOf` checkName c]
     case rows ["/proj/.venv/bin/pytest"] of
       [(name, st, detail)] -> do
@@ -105,7 +106,7 @@ spec = describe "olifant doctor (spec §4.7)" $ do
       other -> expectationFailure (show other)
   it "(f3) the check tool row names the [check] command candidate chosen, {= root =}/ dropped" $ do
     let Right python = parseLanguage "python" "/p" (T.unlines ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[check]", "format = \"sarif\"", "command = [{ when = [\".venv/bin/ruff\"], command = [\"{= root =}/.venv/bin/ruff\", \"check\"] }, { command = [\"ruff\", \"check\"] }]"])
-        withFiles fs = (ports ["ast-grep", "ruff", "/proj/.venv/bin/ruff"] (Right ()) []) {dpExists = \f -> Identity (f `elem` fs)}
+        withFiles fs = (ports ["ast-grep", "ruff", "/proj/.venv/bin/ruff"] (Right ()) []) {dpRead = \f -> Identity (if f `elem` fs then Just "" else Nothing)}
         rows fs = [(checkName c, checkStatus c, checkDetail c) | c <- runIdentity (doctor (withFiles fs) (DoctorInput (Just "/proj") [] [python] [] [] local Nothing defaultPlans [] False)), "check tool" `T.isPrefixOf` checkName c]
     case rows ["/proj/.venv/bin/ruff"] of
       [(name, st, detail)] -> do

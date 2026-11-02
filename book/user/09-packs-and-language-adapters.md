@@ -658,7 +658,7 @@ context = ["pyproject.toml"]
 A candidate fits when one of its `when` files exists, a path from the package root (the folder
 `root`'s markers find, else the project's), among the files a run copies or on disk; one without
 `when` always fits. Its `context` replaces the table's for that run (so only the uv run is keyed
-by `uv.lock`). No candidate fitting is a run's error, `no [test] command fits here: no uv.lock or
+by `uv.lock`). Two more keys make a candidate look inside files. A `when` entry with a `*` is a glob over the files directly in that entry's own folder (`*.cabal`), and `has = "TEXT"` makes the candidate fit only when one of its `when` files contains that text; doctor then says `hspec-junit-formatter found in x.cabal`, and when no candidate fits the text, `no hspec-junit-formatter in *.cabal or package.yaml`. `format` (in a `[test]` candidate only; a `[check]` candidate refuses it) replaces the table's `format` for that candidate, and doctor's runner row adds `; format junit-xml` when the chosen candidate set it. No candidate fitting is a run's error, `no [test] command fits here: no uv.lock or
 …` (`no [check] command fits here: …` for a check). `olifant doctor`'s runner row (and its
 check tool row) names the chosen one and why, from the project root:
 

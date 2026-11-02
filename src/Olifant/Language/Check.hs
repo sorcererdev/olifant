@@ -22,12 +22,14 @@ module Olifant.Language.Check
   , runCheckIn
   , runVerifyIn
   , convertReport
+  , diskProbe
+  , runProbe
   ) where
 
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.MVar (MVar, modifyMVar, newMVar, putMVar, tryTakeMVar)
 import Control.Exception (bracket)
-import Control.Monad (forM_)
+import Control.Monad (filterM, forM_)
 import System.IO.Unsafe (unsafePerformIO)
 import Data.Bits (xor)
 import Data.Word (Word64)
@@ -51,13 +53,13 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Text.Encoding.Error (lenientDecode)
-import Olifant.Language.Adapter (CheckDef (..), ImportsDef (..), Language (..), Select (..), CommandCandidate (..), TestDef (..), chooseCheckCommand, chooseTestCommand, matchesGlob, moduleOf, regexName, supportOf)
+import Olifant.Language.Adapter (CheckDef (..), ImportsDef (..), Language (..), Select (..), CommandCandidate (..), Probe (..), TestDef (..), chooseCheckCommand, chooseTestCommand, matchesGlob, moduleOf, regexName, supportOf)
 import Olifant.Template (Value (VText), parseTemplate, render)
 import Olifant.Language.TestFormats (Reported (..), attribute, junitNotXml, noJunitFormat, fromReported, parseJunit, parseLines, parseTap, parseTestJson)
 import Data.Containers.ListUtils (nubOrd)
 import Olifant.Language.Test (Runner (..), TestId, TestRun (..), parsePytest)
 import Olifant.Process (Cancel, Outcome (..), neverCancel, runBytesCancellable)
-import System.Directory (XdgDirectory (..), canonicalizePath, copyFile, createDirectoryIfMissing, doesFileExist, findExecutable, getXdgDirectory, makeAbsolute)
+import System.Directory (XdgDirectory (..), canonicalizePath, copyFile, createDirectoryIfMissing, doesFileExist, findExecutable, getXdgDirectory, listDirectory, makeAbsolute)
 import System.Directory qualified as Dir
 import System.Exit (ExitCode (..))
 import System.FilePath (makeRelative, splitDirectories, takeDirectory, (</>))
@@ -163,10 +165,31 @@ slotCache lang slot = getXdgDirectory XdgCache ("olifant" </> "check" </> T.unpa
 fillVars :: FilePath -> Text -> [(Text, Text)] -> Text -> Text
 fillVars cache ctx vars a = foldr (\(k, v) -> T.replace ("{= " <> k <> " =}") v) a (("cache", T.pack cache) : ("context", ctx) : vars)
 
--- | Whether a candidate's `when` file is there: among the run's files, or
--- under its folder on disk.
-existsFor :: Maybe FilePath -> Map FilePath Text -> FilePath -> IO Bool
-existsFor root files f = if M.member f files then pure True else maybe (pure False) (\d -> doesFileExist (d </> f)) root
+-- | What a candidate's `when` sees on disk, under a folder: a file's text
+-- (a file that is not text reads as ""), a folder's own files.
+diskProbe :: FilePath -> Probe IO
+diskProbe d = Probe
+  { probeRead = \f -> do
+      there <- doesFileExist (d </> f)
+      if not there then pure Nothing else either (const (Just "")) Just . TE.decodeUtf8' <$> BS.readFile (d </> f)
+  , probeList = \f -> do
+      names <- either (const []) id <$> (try (listDirectory (d </> f)) :: IO (Either IOException [FilePath]))
+      filterM (\n -> doesFileExist (d </> f </> n)) names
+  }
+
+-- | A candidate's `when` files: the run's own files first, then those under
+-- its folder on disk.
+runProbe :: Maybe FilePath -> Map FilePath Text -> Probe IO
+runProbe root files = Probe
+  { probeRead = \f -> case M.lookup f files of
+      Just t -> pure (Just t)
+      Nothing -> maybe (pure Nothing) (\d -> probeRead (diskProbe d) f) root
+  , probeList = \f -> do
+      let prefix = if f == "." then "" else f <> "/"
+          mine = [drop (length prefix) p | p <- M.keys files, prefix `isPrefixOf` p, '/' `notElem` drop (length prefix) p]
+      disk <- maybe (pure []) (\d -> probeList (diskProbe d) f) root
+      pure (nub (mine ++ disk))
+  }
 
 -- | Into a scratch copy: the project's files under @dir@ on disk (what its
 -- workspace lists: git's tracked and untracked-but-not-ignored files, a walk
@@ -198,7 +221,7 @@ processRunner token secs = Runner $ \lang ids files -> case langTest lang of
   Just td0 -> do
     -- {= root =}: the package folder on disk (left as written when unknown)
     root <- traverse makeAbsolute (testDir td0)
-    chooseTestCommand (existsFor root files) td0 >>= \case
+    chooseTestCommand (runProbe root files) td0 >>= \case
       Left why -> pure (Left why)
       Right (td, _) -> runChosen lang ids files root td
   where
@@ -411,7 +434,7 @@ compileClean lang files = case langCheck lang of
 runIn :: Cancel -> Language -> CheckDef -> Map FilePath Text -> IO (Either CheckFailure (ExitCode, ByteString, ByteString, FilePath))
 runIn token lang check0 files = do
   root <- traverse makeAbsolute (checkDir check0)
-  chooseCheckCommand (existsFor root files) check0 >>= \case
+  chooseCheckCommand (runProbe root files) check0 >>= \case
     Left why -> pure (Left (CheckFailed why))
     Right (check, _) -> runChosenCheck token lang check [("root", T.pack r) | Just r <- [root]] files
 

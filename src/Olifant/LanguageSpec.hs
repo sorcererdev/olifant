@@ -22,7 +22,7 @@ import Olifant.Language.AstGrep (astGrepSyntax)
 import Olifant.Server (Unit (..), unitAt)
 import System.Directory (createDirectoryIfMissing, removeFile, doesDirectoryExist, findExecutable, getCurrentDirectory, getPermissions, getTemporaryDirectory, listDirectory, setOwnerExecutable, setPermissions)
 import System.Environment (lookupEnv)
-import System.FilePath (takeExtension, (</>))
+import System.FilePath (takeDirectory, takeExtension, takeFileName, (</>))
 import Olifant.Template (Value (..))
 import Control.Concurrent.Async (mapConcurrently)
 import Control.Monad (filterM, forM, forM_, when)
@@ -76,7 +76,7 @@ spec = do
     it "(a2) the pytest preset picks the runner the project uses: uv, a venv's, or PATH's" $ do
       let Right lang = py ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[test]", "preset = \"pytest\""]
           Just t = langTest lang
-          pick present = runIdentity (chooseTestCommand (\f -> Identity (f `elem` present)) t)
+          pick present = runIdentity (chooseTestCommand (probeOf (map (\f -> (f, "")) present)) t)
           Right (uv, uvWhy) = pick ["uv.lock", ".venv/bin/pytest"]
           Right (venv, venvWhy) = pick [".venv/bin/pytest"]
           Right (plain, _) = pick ["venv/bin/pytest"]
@@ -106,12 +106,27 @@ spec = do
       let x = parseLanguage "x" "/x" . T.unlines . (["files = [\"**/*.x\"]", "comment = \"#\"", "grammar = \"x\"", "[test]", "format = \"tap\"", "tests_for = \"t\""] ++)
           Right bare = x ["command = [\"run\"]"]
           Just bt = langTest bare
-      runIdentity (chooseTestCommand (const (Identity True)) bt) `shouldBe` Right (bt, Nothing)
+      runIdentity (chooseTestCommand (Probe (const (Identity (Just ""))) (const (Identity []))) bt) `shouldBe` Right (bt, Nothing)
       x ["command = [{ when = [\"a\"] }]"] `shouldSatisfy` either ("command" `T.isInfixOf`) (const False)
       let Right picky = x ["command = [{ when = [\"a\", \"b\"], command = [\"one\"] }]"]
           Just pt = langTest picky
-      fmap (testCommand . fst) (runIdentity (chooseTestCommand (\f -> Identity (f == "b")) pt)) `shouldBe` Right ["one"]
-      runIdentity (chooseTestCommand (const (Identity False)) pt) `shouldBe` Left "no [test] command fits here: no a or b"
+      fmap (testCommand . fst) (runIdentity (chooseTestCommand (probeOf [("b", "")]) pt)) `shouldBe` Right ["one"]
+      runIdentity (chooseTestCommand (probeOf []) pt) `shouldBe` Left "no [test] command fits here: no a or b"
+    it "has looks inside the when files; a * entry is a glob over the folder" $ do
+      let x = parseLanguage "x" "/x" . T.unlines . (["files = [\"**/*.x\"]", "comment = \"#\"", "grammar = \"x\"", "[test]", "format = \"tap\"", "tests_for = \"t\""] ++)
+          Right lang = x ["command = [{ when = [\"*.cabal\", \"package.yaml\"], has = \"hspec-junit-formatter\", command = [\"j\"], format = \"junit-xml\" }, { command = [\"l\"] }]"]
+          Just t = langTest lang
+          pick files = fmap (\(td, why) -> (testCommand td, testFormat td, why)) (runIdentity (chooseTestCommand (probeOf files) t))
+      pick [("x.cabal", "build-depends: hspec-junit-formatter")] `shouldBe` Right (["j"], "junit-xml", Just "hspec-junit-formatter found in x.cabal")
+      pick [("x.cabal", "build-depends: hspec")] `shouldBe` Right (["l"], "tap", Just "no hspec-junit-formatter in *.cabal or package.yaml")
+      pick [("package.yaml", "dependencies: [hspec-junit-formatter]")] `shouldBe` Right (["j"], "junit-xml", Just "hspec-junit-formatter found in package.yaml")
+      pick [("sub/x.cabal", "hspec-junit-formatter")] `shouldBe` Right (["l"], "tap", Just "no hspec-junit-formatter in *.cabal or package.yaml")
+    it "a [check] candidate refuses format; a test candidate's format must be known" $ do
+      let hdr = ["files = [\"**/*.x\"]", "comment = \"#\"", "grammar = \"x\""]
+      parseLanguage "x" "/x" (T.unlines (hdr ++ ["[check]", "format = \"ghc-json\"", "command = [{ command = [\"c\"], format = \"lines\" }]"]))
+        `shouldSatisfy` either ("`format` in a [check] candidate is not supported" `T.isInfixOf`) (const False)
+      parseLanguage "x" "/x" (T.unlines ["files = [\"**/*.x\"]", "comment = \"#\"", "grammar = \"x\"", "[test]", "format = \"tap\"", "tests_for = \"t\"", "command = [{ command = [\"r\"], format = \"nope\" }]"])
+        `shouldSatisfy` either ("unknown test format `nope`" `T.isInfixOf`) (const False)
     it "(b) the table's own keys win over the preset's" $ do
       let Right lang = py ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[test]", "preset = \"pytest\"", "tests_for = \"tests/test_{= stem =}.py\"", "root = [\"setup.cfg\"]"]
       fmap testRoot (langTest lang) `shouldBe` Just ["setup.cfg"]
@@ -1315,3 +1330,7 @@ readFixtureTree root = M.fromList <$> go root
         let p = d </> n
         isDir <- doesDirectoryExist p
         if isDir then go p else (\t -> [(makeRelative root p, t)]) <$> TIO.readFile p
+
+-- | A candidate probe over files (paths from the package folder): their text, and each folder's own files.
+probeOf :: [(FilePath, Text)] -> Probe Identity
+probeOf fs = Probe (\f -> Identity (lookup f fs)) (\d -> Identity [takeFileName f | (f, _) <- fs, takeDirectory f == d])
