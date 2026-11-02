@@ -11,6 +11,8 @@ import Olifant.Language.Adapter (Grammar (..), GrammarSource (..))
 import Olifant.Language.Grammar
 import System.Directory (copyFile, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getModificationTime, getTemporaryDirectory, listDirectory, removePathForcibly, setModificationTime)
 import System.FilePath ((</>))
+import System.Process (readProcess)
+import GHC.Clock (getMonotonicTime)
 import Test.Hspec
 
 -- | The vendored python sources (the specs' local source).
@@ -48,8 +50,75 @@ copyPython to = do
 later :: UTCTime -> UTCTime
 later = addUTCTime 120
 
+-- | A repository in a temp folder: the pack's Elm sources under @sub/src/@,
+-- committed, then a second commit touching README. Its first commit's SHA.
+fixtureRepo :: FilePath -> FilePath -> IO Text
+fixtureRepo repo sub = do
+  removePathForcibly repo
+  let elm = "packs/elm/languages/grammar/elm"
+      to = repo </> sub </> "src"
+  createDirectoryIfMissing True (to </> "tree_sitter")
+  forM_ ["parser.c", "scanner.c"] $ \f -> copyFile (elm </> f) (to </> f)
+  hs <- listDirectory (elm </> "tree_sitter")
+  forM_ hs $ \f -> copyFile (elm </> "tree_sitter" </> f) (to </> "tree_sitter" </> f)
+  let git args = readProcess "git" (["-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"] ++ args) ""
+  _ <- readProcess "git" ["init", "--quiet", repo] ""
+  _ <- git ["add", "-A"]
+  _ <- git ["commit", "--quiet", "-m", "grammar"]
+  first' <- T.strip . T.pack <$> git ["rev-parse", "HEAD"]
+  writeFile (repo </> "README") "later\n"
+  _ <- git ["add", "-A"]
+  _ <- git ["commit", "--quiet", "-m", "readme"]
+  pure first'
+
 spec :: Spec
-spec = describe "loadGrammar" $ do
+spec = do
+ describe "git sources" $ do
+  it "fetches a pinned revision by file:// and builds it" $ do
+    s <- fresh "git"
+    let repo = gsCache s </> "repo"
+    sha <- fixtureRepo repo "."
+    Right l <- loadGrammarWith s (Grammar "elm" (Just (SourceGit ("file://" <> T.pack repo) sha Nothing)))
+    ldAbi l `shouldBe` 15
+    let checkout = gsCache s </> "grammars" </> "src" </> ("elm-" <> take 7 (T.unpack sha))
+    doesFileExist (checkout </> "src" </> "parser.c") `shouldReturn` True
+    doesFileExist (checkout </> "README") `shouldReturn` False
+    leftovers <- listDirectory (gsCache s </> "grammars" </> "src")
+    filter (".tmp-" `isInfixOf`) leftovers `shouldBe` []
+  it "path picks the folder inside the checkout" $ do
+    s <- fresh "git-path"
+    let repo = gsCache s </> "repo"
+    sha <- fixtureRepo repo "tsx"
+    r <- loadGrammarWith s (Grammar "elm" (Just (SourceGit ("file://" <> T.pack repo) sha (Just "tsx"))))
+    fmap ldAbi r `shouldBe` Right 15
+  it "a local source folder wins over a fetch" $ do
+    s <- fresh "git-local"
+    let local = gsCache s </> "local"
+    copyPython (local </> "python")
+    r <- loadGrammarWith s {gsLocalSources = [local]} (Grammar "python" (Just (SourceGit "file:///nonexistent" "293fdc02038ee2bf0e2e206711b69c90ac0d413f" Nothing)))
+    fmap ldAbi r `shouldBe` Right 15
+    doesDirectoryExist (gsCache s </> "grammars" </> "src") `shouldReturn` False
+  it "a failed fetch is tried once per process" $ do
+    s <- fresh "git-fail"
+    let g = Grammar "python" (Just (SourceGit "file:///nonexistent" "0123456789012345678901234567890123456789" Nothing))
+    loadGrammarWith s g >>= \case
+      Left (FetchFailed t) -> T.unpack t `shouldSatisfy` ("fetching file:///nonexistent @0123456 failed: " `isPrefixOf`)
+      other -> expectationFailure (show (fmap ldLibrary other))
+    t0 <- getMonotonicTime
+    r <- loadGrammarWith s g
+    t1 <- getMonotonicTime
+    either (\case FetchFailed _ -> True; _ -> False) (const False) r `shouldBe` True
+    (t1 - t0) `shouldSatisfy` (< 0.05)
+    doesDirectoryExist (gsCache s </> "grammars" </> "src" </> "python-0123456") `shouldReturn` False
+  it "a revision the repository does not have is a FetchFailed, and nothing is left" $ do
+    s <- fresh "git-norev"
+    let repo = gsCache s </> "repo"
+    _ <- fixtureRepo repo "."
+    r <- loadGrammarWith s (Grammar "elm" (Just (SourceGit ("file://" <> T.pack repo) "0123456789012345678901234567890123456789" Nothing)))
+    either (\case FetchFailed _ -> True; _ -> False) (const False) r `shouldBe` True
+    leftovers <- listDirectory (gsCache s </> "grammars" </> "src")
+    leftovers `shouldBe` []
+ describe "loadGrammar" $ do
   it "builds a pack's sources once and loads them" $ do
     s <- fresh "once"
     Right l <- loadGrammarWith s python

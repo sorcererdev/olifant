@@ -31,12 +31,12 @@ module Olifant.Language.Grammar
   ) where
 
 import Control.Concurrent (myThreadId)
-import Control.Concurrent.MVar (MVar, modifyMVar, newMVar)
+import Control.Concurrent.MVar (MVar, modifyMVar, newMVar, withMVar)
 import Control.Exception (SomeException, try)
 import Control.Monad (forM)
 import Data.Bits (xor)
 import Data.ByteString qualified as BS
-import Data.IORef (IORef, newIORef, readIORef, writeIORef)
+import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Data.Map.Strict qualified as M
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
@@ -52,8 +52,8 @@ import Foreign.Storable (peek)
 import GHC.Clock (getMonotonicTime)
 import Numeric (showHex)
 import Olifant.Language.Adapter (Grammar (..), GrammarSource (..))
-import Olifant.Process (runBytes)
-import System.Directory (XdgDirectory (XdgCache), createDirectoryIfMissing, doesDirectoryExist, doesFileExist, findExecutable, getFileSize, getModificationTime, getXdgDirectory, makeAbsolute, renameFile)
+import Olifant.Process (runBytes, runBytesWithin)
+import System.Directory (XdgDirectory (XdgCache), createDirectoryIfMissing, doesDirectoryExist, doesFileExist, findExecutable, getFileSize, getModificationTime, getXdgDirectory, makeAbsolute, removePathForcibly, renameDirectory, renameFile)
 import System.Environment (lookupEnv)
 import System.Exit (ExitCode (..))
 import System.FilePath (takeDirectory, takeFileName, (</>))
@@ -192,9 +192,57 @@ located s g doFetch = case grSource g of
 checkoutDir :: GrammarSettings -> Grammar -> Text -> FilePath
 checkoutDir s g rev = gsCache s </> "grammars" </> "src" </> T.unpack (grName g <> "-" <> T.take 7 rev)
 
--- | Fetching is Task 3's: for now a git source must be found locally.
+-- | A git source fetched at its pinned revision into its checkout:
+-- @git init@, @git fetch --depth 1 URL REV@, @git checkout FETCH_HEAD@ in
+-- an aside folder renamed on success, so a half-fetched checkout is never
+-- used. Git's own transports only (no remote helpers), no redirects, no
+-- hooks, symlinks checked out as plain files (nothing points out of the
+-- checkout), and no prompt for credentials.
 fetch :: GrammarSettings -> Text -> Text -> FilePath -> IO (Either GrammarFailure ())
-fetch _ url rev _ = pure (Left (FetchFailed ("fetching " <> url <> " @" <> T.take 7 rev <> " failed: not yet supported")))
+fetch s url rev checkout =
+  gsFind s "git" >>= \case
+    Nothing -> pure (Left (failed "git is not on PATH"))
+    Just git -> do
+      createDirectoryIfMissing True (takeDirectory checkout)
+      mine <- aside checkout
+      removePathForcibly mine
+      let run args = do
+            ran <- runBytesWithin 600 "/usr/bin/env" (["GIT_TERMINAL_PROMPT=0", "GIT_SSH_COMMAND=ssh -o BatchMode=yes", "GIT_CONFIG_NOSYSTEM=1", git] ++ safe ++ args) Nothing ""
+            pure $ case ran of
+              Right (Just (ExitSuccess, out, _)) -> Right (T.strip (TE.decodeUtf8With lenientDecode out))
+              Right (Just (ExitFailure _, _, err)) -> Left (lastLine (TE.decodeUtf8With lenientDecode err))
+              Right Nothing -> Left "timed out after 600 s"
+              Left why -> Left why
+      r <- runSteps
+        [ run ["init", "--quiet", "--template=", mine]
+        , run ["-C", mine, "fetch", "--quiet", "--depth", "1", "--no-tags", T.unpack url, T.unpack rev]
+        , run ["-C", mine, "checkout", "--quiet", "FETCH_HEAD"]
+        , run ["-C", mine, "rev-parse", "HEAD"] >>= \case
+            Right head' | head' /= rev -> pure (Left ("fetched " <> head' <> ", not " <> rev))
+            other -> pure other
+        ]
+      case r of
+        Left why -> removePathForcibly mine >> pure (Left (failed why))
+        Right () -> do
+          -- another process may have finished first: keep theirs
+          there <- doesDirectoryExist checkout
+          if there then removePathForcibly mine else renameDirectory mine checkout
+          pure (Right ())
+  where
+    failed why = FetchFailed ("fetching " <> url <> " @" <> T.take 7 rev <> " failed: " <> why)
+    safe =
+      concatMap (\c -> ["-c", c])
+        [ "protocol.allow=never", "protocol.https.allow=always", "protocol.ssh.allow=always"
+        , "protocol.git.allow=always", "protocol.file.allow=always"
+        , "http.followRedirects=false", "core.symlinks=false", "core.hooksPath=/dev/null"
+        , "advice.detachedHead=false", "credential.helper="
+        ]
+    runSteps = \case
+      [] -> pure (Right ())
+      step : rest -> step >>= either (pure . Left) (const (runSteps rest))
+    lastLine t = case reverse (filter (not . T.null) (map T.strip (T.lines t))) of
+      l : _ -> l
+      [] -> "git failed"
 
 -- | The library's base name: the grammar's name and 8 hex of an fnv64 over
 -- the source's identity (a checkout's revision; a folder's path and its
@@ -216,10 +264,35 @@ grammarKey s g dir = do
   where
     fnv = BS.foldl' (\acc b -> (acc `xor` fromIntegral b) * 1099511628211) (14695981039346656037 :: Word64)
 
--- | Every load of this process, by library path; failures too.
-loaded :: MVar (M.Map FilePath (Either GrammarFailure Loaded))
-loaded = unsafePerformIO (newMVar M.empty)
+-- | Every load of this process, by library path; failures too. Read
+-- without a lock: a remembered answer never waits on another grammar's build.
+loaded :: IORef (M.Map FilePath (Either GrammarFailure Loaded))
+loaded = unsafePerformIO (newIORef M.empty)
 {-# NOINLINE loaded #-}
+
+-- | One lock per library path: the first caller fetches, builds and loads,
+-- the others for that library wait; other grammars do not.
+building :: MVar (M.Map FilePath (MVar ()))
+building = unsafePerformIO (newMVar M.empty)
+{-# NOINLINE building #-}
+
+-- | The library's answer, computed once per process.
+once :: FilePath -> IO (Either GrammarFailure Loaded, Maybe Double) -> IO (Either GrammarFailure Loaded, Maybe Double)
+once lib act =
+  M.lookup lib <$> readIORef loaded >>= \case
+    Just r -> pure (r, Nothing)
+    Nothing -> do
+      lock <- modifyMVar building $ \m -> case M.lookup lib m of
+        Just l -> pure (m, l)
+        Nothing -> newMVar () >>= \l -> pure (M.insert lib l m, l)
+      withMVar lock $ \() ->
+        M.lookup lib <$> readIORef loaded >>= \case
+          Just r -> pure (r, Nothing)
+          Nothing -> do
+            r <- try act
+            let result = either (\(e :: SomeException) -> (Left (LoadFailed (firstLine (T.pack (show e)))), Nothing)) id r
+            atomicModifyIORef' loaded (\m -> (M.insert lib (fst result) m, ()))
+            pure result
 
 -- | The grammar, loaded once per process under the set settings.
 loadGrammar :: Grammar -> IO (Either GrammarFailure Loaded)
@@ -244,12 +317,7 @@ loadTimed s g =
     Right (dir, _) -> do
       key <- grammarKey s g dir
       let lib = gsCache s </> "grammars" </> T.unpack key <> libraryExtension
-      modifyMVar loaded $ \m -> case M.lookup lib m of
-        Just r -> pure (m, (r, Nothing))
-        Nothing -> do
-          r <- try (buildAndLoad dir lib)
-          let result = either (\(e :: SomeException) -> (Left (LoadFailed (T.pack (show e))), Nothing)) id r
-          pure (M.insert lib (fst result) m, result)
+      once lib (buildAndLoad dir lib)
   where
     buildAndLoad dir lib = do
       built <- doesFileExist lib
