@@ -3,9 +3,9 @@
 This is how Olifant loads a generator, reading its templates and exemplars from disk:
 
 ```haskell
--- src/Olifant/Catalog.hs:220
+-- src/Olifant/Catalog.hs, loadGenerator
 loadGenerator :: Monad m => Workspace m -> Syntax m -> Catalog -> CatalogEntry -> m (Either CatalogError Generator)
-loadGenerator root syntax cat entry = sequenceA <$> traverse resolve (entryDefinition entry)
+loadGenerator root syntax cat entry = (>>= sourced) . sequenceA <$> traverse resolve (entryDefinition entry)
 ```
 
 By the end of this chapter that line should read as plain English: "for every template
@@ -37,7 +37,7 @@ common shared
 extensions that are now uncontroversial. The ones you'll see here:
 - `ImportQualifiedPost`: `import Data.Text qualified as T`
 - `TupleSections`: `(p,)`
-- `ScopedTypeVariables`: `Left (e :: SomeException)` in `app/Main.hs:42`
+- `ScopedTypeVariables`: `Left (e :: SomeException)` in `app/Main.hs`
 - `DeriveFunctor`, `DeriveFoldable`, `DeriveTraversable`: used by the trick below
 
 The three extras are:
@@ -47,8 +47,8 @@ The three extras are:
 - **`DerivingStrategies`**: you write `deriving stock (Eq, Show)` rather than `deriving (Eq,
   Show)`, which says explicitly that GHC generates the code.
 
-One module adds its own extension: `src/Olifant/Template/Parse.hs:1` has `{-# LANGUAGE
-MultiWayIf #-}` for an `if | cond -> … | cond -> …` at `:111`. The spec files add `{-#
+One module adds its own extension: `src/Olifant/Template/Parse.hs` has `{-# LANGUAGE
+MultiWayIf #-}` for an `if | cond -> … | cond -> …` (in `Template/Parse.hs`). The spec files add `{-#
 OPTIONS_GHC -Wno-incomplete-uni-patterns #-}` so that tests may write `let Right x = …`
 (see [Partiality](#partiality-and-error)).
 
@@ -61,7 +61,7 @@ A module is a file, and its name is its path: `src/Olifant/Generation/Plan.hs` i
 `Olifant.Generation.Plan`. The export list is the public API:
 
 ```haskell
--- src/Olifant/Catalog.hs:3
+-- src/Olifant/Catalog.hs, Catalog (export list)
 module Olifant.Catalog
   ( Catalog
   , catalogEntries
@@ -75,14 +75,14 @@ module Olifant.Catalog
 - `Catalog` without `(..)` exports only the type name. Outside code can hold a `Catalog`
   and use the accessor functions listed separately (`catalogEntries`), but can't build one
   or pattern-match on it. That's a `pub struct` with private fields.
-- `src/Olifant/Naming.hs:3` exports `Name` the same way, so the only way to make a `Name` is
+- `src/Olifant/Naming.hs` exports `Name` the same way, so the only way to make a `Name` is
   `parseName`. That's a smart constructor, like a Rust newtype with a private field and a
   `fn parse(…) -> Result<Self, _>`.
 
 A facade re-exports whole modules with `module X` in its export list:
 
 ```haskell
--- src/Olifant/Language.hs:3
+-- src/Olifant/Language.hs, Language (export list)
 module Olifant.Language
   ( module Olifant.Language.Adapter
   , module Olifant.Language.Rule
@@ -95,7 +95,7 @@ module Olifant.Language
 
 That's Rust's `pub use adapter::*;` in a `mod.rs`.
 
-Imports come in three styles, all visible in `src/Olifant/Generation.hs:22`:
+Imports come in three styles, all visible in `src/Olifant/Generation.hs`:
 
 ```haskell
 import Control.Monad (filterM, foldM, forM_, when) -- named items: use filterM directly
@@ -131,7 +131,7 @@ closure.
 - **`(<> ": ")`** is an operator *section*, a partially applied operator: `\x -> x <> ": "`.
   `<>` joins `Text`, lists, and anything else that can be appended.
 
-`app/Main.hs:25` uses all of these at once:
+`app/Main.hs` uses all of these at once:
 
 ```haskell
     try . runCli
@@ -151,7 +151,7 @@ A `newtype` is a single-field wrapper with no runtime cost, exactly like a Rust 
 `struct GeneratorId(String)`:
 
 ```haskell
--- src/Olifant/Generator/Definition.hs:29
+-- src/Olifant/Generator/Definition.hs, GeneratorId
 newtype GeneratorId = GeneratorId {generatorIdText :: Text}
   deriving stock (Eq, Ord, Show)
 ```
@@ -164,7 +164,7 @@ share a name. `generatorIdText` is the accessor, a function `GeneratorId -> Text
 A `data` type with named fields is a record:
 
 ```haskell
--- src/Olifant/Generation/Plan.hs:41
+-- src/Olifant/Generation/Plan.hs, PlannedEdit
 data PlannedEdit = PlannedEdit
   { editStep :: [Text]
   , editNumber :: Int
@@ -183,13 +183,13 @@ Three things differ from Rust structs:
    has a prefix: `editPath`, `planEdits`, `genId`, `entryDefinition`, `rtOut`. The prefix
    tells you the type. `rtOut rt` is the `rtOut` field of a `Runtime`.
 2. **Construction can be positional.** `Plan (GeneratorId "sync") [] now edits conflicts []
-   writes []` (`src/Olifant/Cli.hs:325`) fills `Plan`'s eight fields in declaration order.
-   Named construction (`Runtime { rtRoot = …, … }` in `app/Main.hs:26`) also works. To read
+   writes []` (`src/Olifant/Cli.hs`) fills `Plan`'s eight fields in declaration order.
+   Named construction (`Runtime { rtRoot = …, … }` in `app/Main.hs`) also works. To read
    a positional one, open the type definition next to it.
 3. **Record update** makes a copy with some fields changed:
 
    ```haskell
-   -- src/Olifant/Cli.hs:176
+   -- src/Olifant/App.hs, showGenerator
    (Right d, Right vs) -> let e = e0 {entryDefinition = d} in …
    ```
 
@@ -197,22 +197,22 @@ Three things differ from Rust structs:
    which you'll see in the middle of a line in the planner:
 
    ```haskell
-   -- src/Olifant/Generation/Planner.hs:80
+   -- src/Olifant/Generation/Planner.hs, decideItems (decideInsert)
    (planned path n p (Skipped AlreadyPresent)) {editAnchor = Just (locUsed loc)}
    ```
 
-   `planned` (`Plan.hs:54`) is a helper that builds a `PlannedEdit` with no anchor and no
+   `planned` (`Plan.hs`) is a helper that builds a `PlannedEdit` with no anchor and no
    site. The update sets the anchor. A query failure gets more context the same way, so
    its other field, whether only a tool is missing, rides along unchanged:
 
    ```haskell
-   -- src/Olifant/Generator/Choices.hs:46
+   -- src/Olifant/Generator/Choices.hs, withChoices
    Left f -> Left f {failureWhy = "`" <> name <> "`: query " <> q <> (if null context then "" else " (for " <> showContext context <> ")") <> " failed: " <> failureWhy f}
    ```
 
 `-Wincomplete-record-updates` (in the cabal flags) matters for sum types that have fields.
 `EditWith` has `editOnExists` only on its `Create` constructor
-(`src/Olifant/Generator/Definition.hs:67`), so `x {editOnExists = …}` would crash on an
+(`src/Olifant/Generator/Definition.hs`), so `x {editOnExists = …}` would crash on an
 `Insert`. The flag makes GHC warn about that.
 
 ### `type` synonyms
@@ -220,9 +220,9 @@ Three things differ from Rust structs:
 `type` is an alias, not a new type, like Rust's `type`:
 
 ```haskell
-type GeneratorDef = GeneratorWith SourceRef      -- src/Olifant/Generator/Definition.hs:50
-type Env = Map Text Value                        -- src/Olifant/Template/Value.hs:26
-type StepPath = [Text]                           -- src/Olifant/Generation/Compose.hs:32
+type GeneratorDef = GeneratorWith SourceRef      -- src/Olifant/Generator/Definition.hs
+type Env = Map Text Value                        -- src/Olifant/Template/Value.hs
+type StepPath = [Text]                           -- src/Olifant/Generation/Compose.hs
 ```
 
 `FilePath` is itself a synonym for `String`.
@@ -232,18 +232,18 @@ type StepPath = [Text]                           -- src/Olifant/Generation/Compo
 A `data` with `|` is a Rust `enum`:
 
 ```haskell
--- src/Olifant/Generation/Plan.hs:67
-data EditAction = WillCreate Text | WillOverwrite Text | WillInsert Int Text | WillRefresh Text Int Int Text | Skipped SkipReason | Conflicted
+-- src/Olifant/Generation/Plan.hs, EditAction
+data EditAction = WillCreate Text | WillOverwrite Text | WillInsert Int Text | WillRefresh Text Int Int Text | WillReplace Int Int Text | Skipped SkipReason | Conflicted
 ```
 
 A constructor can hold other sum types, which is how a value carries its state. An enum
 input's choices are one of three things, and the input's type says which (spec §4.1):
 
 ```haskell
--- src/Olifant/Generator/Definition.hs:112
+-- src/Olifant/Generator/Definition.hs, Scalar
 data Scalar = IdentS | TextS | BoolS | EnumS [Text] | EnumOf Text ChoiceValue Choices
 
--- src/Olifant/Generator/Definition.hs:117
+-- src/Olifant/Generator/Definition.hs, Choices
 data Choices = Unresolved | Resolved [Text] [(Text, Text)] | NeedsInputs [Text]
 ```
 
@@ -252,16 +252,17 @@ NeedsInputs(Vec<String>) }`. Loading makes `Unresolved`; `withChoices` replaces 
 `Resolved` (the choices, and the inputs the query used) or `NeedsInputs` (the inputs above
 it that have no value yet); parsing a `--set` matches on it to pick its error. Where only a
 yes/no travels with a value, a record with a `Bool` is enough: `data QueryFailure =
-QueryFailure {failureWhy :: Text, failureToolMissing :: Bool}` (`Query.hs:178`).
+QueryFailure {failureWhy :: Text, failureToolMissing :: Bool}` (`Query.hs`).
 
 `case … of` is `match`:
 
 ```haskell
--- src/Olifant/Cli/Output.hs:247
+-- src/Olifant/Output.hs, planHuman
     contentOf = \case
       WillCreate c -> Just c
       WillOverwrite c -> Just c
       WillInsert _ s -> Just s
+      WillReplace _ _ s -> Just s
       WillRefresh _ _ _ c -> Just c
       Skipped _ -> Nothing
       Conflicted -> Nothing
@@ -269,13 +270,13 @@ QueryFailure {failureWhy :: Text, failureToolMissing :: Bool}` (`Query.hs:178`).
 
 **`\case`** (LambdaCase) is shorthand for `\x -> case x of`. It's everywhere, most often
 after `>>=` (see [Monads](#monads-and-monad-m-)) and as a whole function body:
-`describeConflict = \case …` (`src/Olifant/Generation/Plan.hs:95`) is a function defined
+`describeConflict = \case …` (`src/Olifant/Generation/Plan.hs`) is a function defined
 entirely by its match arms.
 
 Functions can also match in their definition, one clause per case, tried top to bottom:
 
 ```haskell
--- src/Olifant/Generation/Compose.hs:125
+-- src/Olifant/Generation/Compose.hs, renderRequires
 renderRequires :: Env -> Maybe Requires -> Either TemplateError ([FilePath], Maybe Text)
 renderRequires _ Nothing = Right ([], Nothing)
 renderRequires env (Just r) =
@@ -286,17 +287,17 @@ Other pattern forms you'll see:
 | pattern | example | Rust |
 |---|---|---|
 | wildcard | `Skipped _` | `Skipped(_)` |
-| any fields | `GeneratorAmbiguous {} -> …` (`Cli.hs:274`) | `GeneratorAmbiguous { .. }` |
-| as-pattern | `acc@(current, edits, conflicts, n)` (`Planner.hs:40`), `` err@(GeneratorNotFound _ _) `` (`Catalog.hs:307`) | `acc @ (current, ..)` |
-| nested | `ScalarInput (EnumOf _ _ (NeedsInputs ns)) ->` (`Generator/Choices.hs:74`) | same |
-| record | `InputSpec {inputType = ScalarInput (EnumOf _ _ Unresolved)}` (`Generator/Choices.hs:54`) | `InputSpec { input_type: …, .. }` |
+| any fields | `GeneratorAmbiguous {} -> …` (`Cli.hs`) | `GeneratorAmbiguous { .. }` |
+| as-pattern | `acc@(current, edits, conflicts, n)` (`Planner.hs`), `` err@(GeneratorNotFound _ _) `` (`Catalog.hs`) | `acc @ (current, ..)` |
+| nested | `ScalarInput (EnumOf _ _ (NeedsInputs ns)) ->` (`Generator/Choices.hs`) | same |
+| record | `InputSpec {inputType = ScalarInput (EnumOf _ _ Unresolved)}` (`Generator/Choices.hs`) | `InputSpec { input_type: …, .. }` |
 
 ## Guards, `where`, `let`
 
 **Guards** are conditions on a clause or a match arm. `otherwise` is just `True`:
 
 ```haskell
--- src/Olifant/Generator/Inputs.hs:73
+-- src/Olifant/Generator/Inputs.hs, resolveInput
 resolveInput sets spec = case maybe (inputDefault spec) Just (M.lookup name sets) of
   Just raw -> case parseValue (inputType spec) raw of
     Right (VList []) | not (inputOptional spec) -> Left (InvalidInput name "needs at least one item (it is not optional)")
@@ -316,7 +317,7 @@ fails with its own message instead of silently becoming `[]`.
 **Pattern guards** bind while they test. They're like Rust's `if let … && let …` chains:
 
 ```haskell
--- src/Olifant/Generation/Planner.hs:47
+-- src/Olifant/Generation/Planner.hs, decideItems
       PlanEdit path edit
         | Just u <- renderedUnless edit, Just why <- matchUnless (fromMaybe "" (renderedPath edit)) u current ->
             pure (current, planned path n' (fromMaybe "" (renderedPath edit)) (Skipped why) : edits, conflicts, n')
@@ -337,15 +338,15 @@ lines up).
 **`where`** attaches helper definitions to a whole function, after its body. They can see
 the function's arguments and every guard can use them. `name = inputName spec` above is one.
 Big functions here keep their story at the top and their helpers in `where`, often with
-their own `where`s. `generate` (`Generation.hs:93`) and `resolveOne`
-(`Anchor/Resolve.hs:70`) are good examples. Read the body first, then look helpers up as
+their own `where`s. `generate` (`Generation.hs`) and `resolveOne`
+(`Anchor/Resolve.hs`) are good examples. Read the body first, then look helpers up as
 they appear.
 
-**`let`** comes in two forms. Inside `do` it's a statement (`let fmt = …`, `Cli.hs:55`).
+**`let`** comes in two forms. Inside `do` it's a statement (`let fmt = …`, `Cli.hs`).
 As an expression it's `let … in …`:
 
 ```haskell
--- src/Olifant/Cli/Output.hs:318
+-- src/Olifant/Output.hs, whereContext
 whereContext loc content =
   let ls = T.lines content
       i = locLine loc
@@ -366,21 +367,21 @@ The three helpers you'll see most:
 
 | Haskell | Rust | real use |
 |---|---|---|
-| `fromMaybe d m` | `m.unwrap_or(d)` | `fromMaybe (if rtStdoutIsTty rt then Human else Json) (optFormat opts)` (`Cli.hs:55`) |
-| `maybe d f m` | `m.map_or(d, f)` | `now <- maybe (rtNow rt) pure (genNow g)` (`Cli.hs:221`): use `--now` if given, otherwise ask the clock |
-| `either f g e` | `match e { Err(x) => f(x), Ok(y) => g(y) }` | `either (const e) (\d -> e {entryDefinition = d}) <$> …` (`Cli.hs:138`): on error keep the entry as it was, on success update it |
+| `fromMaybe d m` | `m.unwrap_or(d)` | `fromMaybe (if rtStdoutIsTty rt then Human else Json) (optFormat opts)` (`Cli.hs`) |
+| `maybe d f m` | `m.map_or(d, f)` | `now <- maybe (rtNow rt) pure (genNow g)` (`Cli.hs`): use `--now` if given, otherwise ask the clock |
+| `either f g e` | `match e { Err(x) => f(x), Ok(y) => g(y) }` | `either (const e) (\d -> e {entryDefinition = d}) <$> …` (`Cli.hs`): on error keep the entry as it was, on success update it |
 
 `first` from `Data.Bifunctor` changes the error side of an `Either`. It's `map_err`:
 
 ```haskell
--- src/Olifant/Generator/Load.hs:122
+-- src/Olifant/Generator/Load.hs, tmpl
 tmpl :: Text -> Either Text Template
 tmpl = first describeTemplateError . parseTemplate
 ```
 
 That parses a template, and if it fails, turns the `TemplateError` into readable `Text`.
-`bimap f g` maps both sides (`Inputs.hs:76`). (`first` also works on pairs, and
-`firstPass` in `src/Olifant/Generation.hs:114` is simply a local variable name that happens
+`bimap f g` maps both sides (`Inputs.hs`). (`first` also works on pairs, and
+`firstPass` in `src/Olifant/Generation.hs` is simply a local variable name that happens
 to contain the word. Context tells you which.)
 
 ### `Either` with `do`: the `?` operator
@@ -389,7 +390,7 @@ In a `do` block over `Either`, each `x <- action` either unwraps a `Right` or st
 whole block with that `Left`. That's Rust's `?`. `pure x` is `Ok(x)`:
 
 ```haskell
--- src/Olifant/Generator/Load.hs:30
+-- src/Olifant/Generator/Load.hs, parseGenerator
 parseGenerator :: GeneratorId -> Text -> Either Text GeneratorDef
 parseGenerator gid src = do
   top <- parseToml src
@@ -398,7 +399,7 @@ parseGenerator gid src = do
   language <- required "language" text top
   version <- maybe 1 fromInteger <$> optional "version" int top
   …
-  pure (Generator gid description language version inputs' derived requires edits uses examples queries)
+  pure (Generator gid description language version inputs' derived requires edits uses examples queries …)
 ```
 
 In Rust:
@@ -415,7 +416,7 @@ fn parse_generator(gid: GeneratorId, src: &str) -> Result<GeneratorDef, String> 
 
 A line with no `<-` (the `onlyKeys` one) runs for its effect, which here is failing or not.
 All of `Olifant.Toml`'s decoders (`required`, `optional`, `text`, `list`, `table`) return
-`Either Text a`, so every TOML loader reads like this. `buildEnv` (`Inputs.hs:35`) is the
+`Either Text a`, so every TOML loader reads like this. `buildEnv` (`Inputs.hs`) is the
 same shape. It ends with `unless (null problems) (Left (InputProblems problems))`, which is
 Rust's `if !problems.is_empty() { return Err(…) }`.
 
@@ -431,7 +432,7 @@ need them at the level below.
 `<&>` is the same with the arguments flipped:
 
 ```haskell
--- src/Olifant/Generation.hs:100
+-- src/Olifant/Generation.hs, generate
       inspected <- traverse (\p -> (p,) <$> inspectTarget p) (nub (targets ++ required))
 ```
 
@@ -439,7 +440,7 @@ need them at the level below.
 its result with `p` without running anything new.
 
 ```haskell
--- src/Olifant/Catalog.hs:134
+-- src/Olifant/Catalog.hs, openProjectCatalogWith (packsIn)
     packsIn base configPath =
       readText root configPath <&> \case
         Nothing -> Right []
@@ -454,7 +455,7 @@ way here to post-process an action's result when the function is long.
 `<$>` followed by `<*>` fills a constructor's arguments from several wrapped values:
 
 ```haskell
--- src/Olifant/Generation/Render.hs:45
+-- src/Olifant/Generation/Render.hs, renderEdits
   Create target src onExists u -> RenderedCreate <$> path target <*> render env src <*> pure onExists <*> traverse (traverse (render env)) u
 ```
 
@@ -477,7 +478,7 @@ results *inside* the effect. Over a list with `Either`, it's
 `.iter().map(f).collect::<Result<Vec<_>, _>>()`:
 
 ```haskell
--- src/Olifant/Generation/Render.hs:43
+-- src/Olifant/Generation/Render.hs, renderEdits
 renderEdits :: Text -> Env -> [EditWith Template] -> Either TemplateError [RenderedEdit]
 renderEdits language env = traverse $ \case
 ```
@@ -485,12 +486,12 @@ renderEdits language env = traverse $ \case
 Render every edit, and fail with the first error.
 
 Over a list with `IO` (or any monad `m`), it runs the actions in order and collects their
-results, like a `for` loop that pushes into a `Vec`. `Generation.hs:100` above is one.
+results, like a `for` loop that pushes into a `Vec`. `Generation.hs` above is one.
 
 Over a `Maybe`: `traverse (render env) m` with `m :: Maybe Template` gives `Either … (Maybe
 Text)`. That's `Option::map(…).transpose()`. The `unless` above is one layer deeper,
 `u :: Maybe (Unless Template)`, where `data Unless t = UnlessExists t | UnlessMatches t`
-(`Generator/Definition.hs:83`) derives `Traversable` too. So `traverse (traverse (render
+(`Generator/Definition.hs`) derives `Traversable` too. So `traverse (traverse (render
 env)) u`: the inner `traverse` renders the template inside whichever `Unless` it is, the
 outer one handles the `Maybe`, and the result is `Either … (Maybe (Unless Text))`.
 
@@ -500,7 +501,7 @@ outer one handles the `Maybe`, and the result is `Either … (Maybe (Unless Text
 `Either e [a]`. It's `collect::<Result<Vec<_>,_>>()` on values you already have:
 
 ```haskell
--- src/Olifant/Cli.hs:215
+-- src/Olifant/Cli.hs, runCommand
         loaded <- traverse (\(i, s) -> fmap (first (label i s,)) (either (pure . Left) (loadGenerator (rtRoot rt) (rtSyntax rt) cat) (findEntry cat (specGenerator s)))) (zip [1 :: Int ..] ss)
         case sequence loaded of
 ```
@@ -510,7 +511,7 @@ Generator]`; `loaded` is that list, and `sequence loaded` is the first error or 
 generator. An AST query stacks both in one line:
 
 ```haskell
--- src/Olifant/Anchor/Items.hs:26
+-- src/Olifant/Anchor/Items.hs, astQueries
   _ -> fmap concat . sequence <$> traverse one (sort [p | p <- paths, matchesGlob (astFiles q) p])
 ```
 
@@ -523,7 +524,7 @@ Over lists of lists, `sequence` is the cartesian product, which is how `show` bu
 group per combination of the enums a dependent input waits for:
 
 ```haskell
--- src/Olifant/Generator/Choices.hs:76
+-- src/Olifant/Generator/Choices.hs, choiceViews
           let combos = sequence [[(n, c) | c <- cs] | (n, cs) <- zip ns lists]
 ```
 
@@ -536,7 +537,7 @@ A generator exists in two states. Read from `generator.toml`, its edit sources a
 *parsed templates*. Olifant uses one type for both, parameterised by the source type:
 
 ```haskell
--- src/Olifant/Generator/Definition.hs:32
+-- src/Olifant/Generator/Definition.hs, GeneratorWith
 -- | A generator whose edit sources are @src@: file references when loaded
 -- from TOML ('GeneratorDef'), parsed templates once resolved ('Generator').
 data GeneratorWith src = Generator
@@ -554,14 +555,14 @@ type GeneratorDef = GeneratorWith SourceRef
 type Generator = GeneratorWith Template
 ```
 
-`EditWith src` (`:67`) likewise has `editSource :: src` and derives the same three classes.
+`EditWith src` likewise has `editSource :: src` and derives the same three classes.
 Deriving `Traversable` makes GHC write `traverse` for the type. It visits every field whose
 type mentions `src`, which here means each edit's source, and leaves every other field
 alone. So:
 
 - `fmap f :: GeneratorWith a -> GeneratorWith b` changes every source with a pure function.
   Tests use this to build generators from inline text:
-  `either (error . T.unpack) (fmap inlineOnly) (parseGenerator …)` (`GenerationSpec.hs:43`).
+  `either (error . T.unpack) (fmap inlineOnly) (parseGenerator …)` (`GenerationSpec.hs`).
 - `traverse resolve` does the same with an effectful, fallible function. With `resolve ::
   SourceRef -> m (Either CatalogError Template)`, `traverse resolve def` has type `m
   (GeneratorWith (Either CatalogError Template))`: one action that resolves every source,
@@ -581,11 +582,11 @@ compiler writes it, and it can't forget a field.
 
 Why bother? Because `Generator` can't hold an unresolved file reference: the types rule it
 out. And `olifant show` can describe a `GeneratorDef` without loading any templates.
-Regions use the same trick. `RegionDefWith src` (`src/Olifant/Region.hs:29`) goes from
+Regions use the same trick. `RegionDefWith src` (`src/Olifant/Region.hs`) goes from
 `FilePath` (as parsed) to `Template` in `Catalog.regionsIn`:
 
 ```haskell
--- src/Olifant/Catalog.hs:325
+-- src/Olifant/Catalog.hs, regionsIn
         resolved <- traverse (fmap sequenceA . traverse template) defs
         pure (first (path,) (sequence resolved))
 ```
@@ -602,7 +603,7 @@ with the file it came from.
 one. A `do` block in `IO` reads like ordinary imperative code:
 
 ```haskell
--- app/Main.hs:17
+-- app/Main.hs, main
 main = do
   args <- getArgs
   cwd <- getCurrentDirectory
@@ -618,7 +619,7 @@ of a block just produces a value that is ignored.
 to `f`. You'll see it written out when the next step is a match:
 
 ```haskell
--- src/Olifant/Cli.hs:59
+-- src/Olifant/Cli.hs, runCli
     openProjectCatalog (rtRoot rt') (CatalogPaths …) >>= \case
       Left err -> catalogFailure rt' fmt err
       Right cat -> runCommand rt' cwd fmt cat (optCommand opts)
@@ -626,14 +627,14 @@ to `f`. You'll see it written out when the next step is a match:
 
 In Rust: `match open_project_catalog(…).await { Err(e) => …, Ok(cat) => … }`. `a >> b` runs
 `a` and discards its result, then runs `b`, like `a; b`:
-`rtOut rt text >> pure ExitSuccess` (`Cli.hs:50`).
+`rtOut rt text >> pure ExitSuccess` (`Cli.hs`).
 
 ### `Monad m =>`: code generic over the effect
 
 The core functions don't say `IO`. They say "some monad `m`":
 
 ```haskell
--- src/Olifant/Generation.hs:93
+-- src/Olifant/Generation.hs, generate
 generate :: Monad m => Workspace m -> Resolve m -> Tools m -> [Step] -> UTCTime -> Mode -> m (Either GenerationError Plan)
 ```
 
@@ -654,14 +655,14 @@ whether `m` is `IO` or something else. In production every port is an `IO` adapt
   whose `do` is just ordinary evaluation:
 
   ```haskell
-  -- src/Olifant/AnchorSpec.hs:58
+  -- src/Olifant/AnchorSpec.hs, fakeSyntax
   fakeSyntax :: Syntax Identity
-  fakeSyntax = Syntax $ \_ rule _ -> Identity . Right $
+  fakeSyntax = querying $ \_ rule _ -> Identity . Right $
   ```
 
   ```haskell
-  -- src/Olifant/AnchorSpec.hs:83
-      let resolve anchors = runIdentity (resolveLayers fakeSyntax (Just caseTarget) anchors source)
+  -- src/Olifant/AnchorSpec.hs, resolveSpec
+      let resolve anchors = runIdentity (resolveLayers fakeSyntax (Just caseTarget) Nothing anchors source)
   ```
 
   `runIdentity` unwraps the result. The test has no `IO` at all, and the type guarantees
@@ -671,9 +672,11 @@ A no-op adapter only needs `pure`, so it asks for less than `Monad`. `Applicativ
 enough:
 
 ```haskell
--- src/Olifant/Language/Syntax.hs:17
+-- src/Olifant/Language/Syntax.hs, noSyntax
 noSyntax :: Applicative m => Syntax m
-noSyntax = Syntax (\_ _ _ -> pure (Left (SyntaxToolMissing "ast-grep is not installed (brew install ast-grep)")))
+noSyntax = Syntax (\_ _ _ -> missing) (\_ _ _ _ -> missing) noProviderRunner noAnchors
+  where
+    missing = pure (Left (SyntaxToolMissing "ast-grep is not installed (brew install ast-grep)"))
 ```
 
 ### Loops: `foldM`, `mapM_`, `forM_`, `when`, `unless`
@@ -682,16 +685,16 @@ There are no `for` loops. The monadic list functions play that role:
 
 | Haskell | Rust | example |
 |---|---|---|
-| `mapM_ f xs` / `forM_ xs f` | `for x in xs { f(x).await; }` | `forM_ (M.toList writes) (uncurry (writeText ws))` (`Generation.hs:151`) |
-| `when c a` / `unless c a` | `if c { a.await }` / `if !c { … }` | `when (mode == Apply && not (hasConflicts plan)) $ …` (`Generation.hs:150`) |
-| `filterM p xs` | filter with an async predicate | `filterM (fmap isFile . inspectPath ws) (parents p)` (`Generation.hs:187`) |
-| `zipWithM f xs ys` | `for (x, y) in zip { v.push(f(x, y).await) }` | `zipWithM field fields (map Just parts ++ repeat Nothing)` (`Inputs.hs:95`): a record's fields with the `--set` value's parts, missing trailing parts as `Nothing` |
+| `mapM_ f xs` / `forM_ xs f` | `for x in xs { f(x).await; }` | `forM_ (M.toList writes) (uncurry (writeText ws))` (`Generation.hs`) |
+| `when c a` / `unless c a` | `if c { a.await }` / `if !c { … }` | `when (mode == Apply && not (hasConflicts plan)) $ …` (`Generation.hs`) |
+| `filterM p xs` | filter with an async predicate | `filterM (fmap isFile . inspectPath ws) (parents p)` (`Generation.hs`) |
+| `zipWithM f xs ys` | `for (x, y) in zip { v.push(f(x, y).await) }` | `zipWithM field fields (map Just parts ++ repeat Nothing)` (`Inputs.hs`): a record's fields with the `--set` value's parts, missing trailing parts as `Nothing` |
 | `foldM f acc xs` | `for x in xs { acc = f(acc, x).await; }` | below |
 
 `foldM` is the workhorse. The planner is one:
 
 ```haskell
--- src/Olifant/Generation/Planner.hs:36
+-- src/Olifant/Generation/Planner.hs, decideItems
 decideItems :: Monad m => Locate m -> [FilePath] -> [PlanItem] -> Map FilePath (Maybe Text) -> Map FilePath Text -> Set FilePath -> m ([PlannedEdit], [Conflict], Map FilePath (Maybe Text), Int)
 decideItems locate diskPaths items original blocked onDisk = finish <$> foldM step (original, [], [], 0 :: Int) items
   where
@@ -702,8 +705,8 @@ decideItems locate diskPaths items original blocked onDisk = finish <$> foldM st
 The accumulator is a 4-tuple: file contents so far, edits and conflicts (built backwards by
 `:` and reversed at the end, because prepending to a linked list is cheap), and the edit
 counter. `foldM` over `Either` instead of `IO` is `try_fold`: `foldM step env ready`
-(`src/Olifant/Generator/Inputs.hs:165`) stops at the first `Left`. `withChoices`
-(`Generator/Choices.hs:26`) folds the same way over a generator's input names, top to
+(`src/Olifant/Generator/Inputs.hs`) stops at the first `Left`. `withChoices`
+(`Generator/Choices.hs`) folds the same way over a generator's input names, top to
 bottom, so each input's query sees the choices already resolved above it.
 
 `[1 :: Int ..]` is an infinite list 1, 2, 3, …. It's fine, because `zip` and `zipWithM`
@@ -718,7 +721,7 @@ code could nest `m (Either e a)` by hand everywhere, or it can use `ExceptT e m 
 action that can also fail with `e`". This is the only module that does.
 
 ```haskell
--- src/Olifant/Generation/Compose.hs:80
+-- src/Olifant/Generation/Compose.hs, expand
 expand :: Monad m => Resolve m -> BindQueries m -> Choose m -> UTCTime -> [(FilePath, Text)] -> [GeneratorId] -> StepPath -> Generator -> Map Text Text -> ExceptT CompositionError m [PlanItem]
 expand resolve bindQ choose now prior ancestors path gen0 sets = do
   when (genId gen0 `elem` ancestors) $ throwE (StepCycle path)
@@ -741,8 +744,8 @@ The vocabulary, with async Rust `-> Result<_, CompositionError>` as the analogy:
 | `lift act` (`act :: m a`) | run an action that can't fail | `act.await` |
 | `runExceptT x` | back to `m (Either e a)` | calling the function |
 
-`checkCycles` (`Compose.hs:113`) shows `lift`: `found <- lift (resolve …)` gets the
-`Either` as a plain value and inspects it instead of failing on it. `expandSteps` (`:67`)
+`checkCycles` (`Compose.hs`) shows `lift`: `found <- lift (resolve …)` gets the
+`Either` as a plain value and inspects it instead of failing on it. `expandSteps`
 calls `runExceptT` once at the top, and nothing outside `Compose` ever sees `ExceptT`.
 
 ## `Map` and `Set`
@@ -757,19 +760,19 @@ The calls you'll see:
 - `M.findWithDefault d k m` (`.get(k).unwrap_or(d)`)
 - `M.member`, `M.union` (left side wins)
 - `M.difference`, `M.intersectionWith`, both used for snapshot comparison in
-  `GeneratorTesting.hs:103-105`
+  `GeneratorTesting.hs`
 - `S.fromList`, `S.member`, `S.toList`
 
 The planner's central type is `Map FilePath (Maybe Text)`. A path maps to `Just` its
 contents, or to `Nothing` for "absent" (not yet created, or pretended absent for the re-run
 pass). So `M.lookup p m :: Maybe (Maybe Text)` has three cases: not tracked, tracked but
-absent, present. That's why `sameWithHoles` (`Generation.hs:68`), which decides whether a
+absent, present. That's why `sameWithHoles` (`Generation.hs`), which decides whether a
 file's planned text is new, matches on all three: `sameWithHoles (Just (Just new)) (Just
 (Just actual))` compares texts (a hole matching whatever fills it), and any other pair
 compares the `Maybe (Maybe Text)` values themselves.
 
 `nub` (from `Data.List`) removes duplicates from a list, keeping the first. It is O(n²), so
-large lists go through a `Set` instead. `Generation/Regions.hs:35` says so:
+large lists go through a `Set` instead. `Generation/Regions.hs` says so:
 
 ```haskell
       -- A set, not `nub`: projects can hold hundreds of thousands of files.
@@ -786,7 +789,7 @@ There are three string types in play:
 - **`Text`** is a packed UTF-8 string, like Rust's `String`. File contents, messages and
   template values are all `Text`.
 - **`ByteString`** is raw bytes, like `Vec<u8>`. It's used for process I/O (`runBytes`,
-  `src/Olifant/Process.hs:18`) and decoded with `TE.decodeUtf8'`.
+  `src/Olifant/Process.hs`) and decoded with `TE.decodeUtf8'`.
 
 `T.pack :: String -> Text` and `T.unpack :: Text -> String` convert between them. You'll
 see them wherever a path goes into a message (`T.pack path`) or rendered text becomes a
@@ -797,7 +800,7 @@ whether `Text`, `String`, `ByteString` or an aeson `Key`. Occasionally nothing f
 type, and you'll see an annotation. aeson's `.=` accepts any JSON-able value, so:
 
 ```haskell
--- src/Olifant/Cli/Output.hs:190
+-- src/Olifant/Output.hs, actionFields
       WillCreate c -> ["status" .= ("create" :: Text)] ++ content c
 ```
 
@@ -807,7 +810,7 @@ type, and you'll see an annotation. aeson's `.=` accepts any JSON-able value, so
 `map`/`filter` chains:
 
 ```haskell
--- src/Olifant/Generation.hs:98
+-- src/Olifant/Generation.hs, generate
       let targets = nub [p | PlanEdit _ e <- items, Just p <- [renderedPath e]]
 ```
 
@@ -822,7 +825,7 @@ pattern can filter it. Together that's `filter_map`. In Rust:
 items.iter().filter_map(|i| match i { PlanEdit(_, e) => rendered_path(e), _ => None })
 ```
 
-The same idiom picks out "edits that have a site that is a todo" in `Cli/Output.hs:232`:
+The same idiom picks out "edits that have a site that is a todo" in `Output.hs`:
 `[… | e <- planEdits plan, Just s <- [editSite e], siteTodo s]`.
 
 ## Tuples and `(p,)`
@@ -841,11 +844,11 @@ Olifant defines no type classes of its own. It *derives* the standard ones:
 - `Show`: `show` gives a debug string, like `Debug`, which the tests use for failure
   messages
 - `Enum`, `Bounded`: `[minBound .. maxBound]` lists every constructor, as in `allCases`,
-  `src/Olifant/Naming.hs:30`
+  `src/Olifant/Naming.hs`
 
 There are two hand-written instances, both for aeson's `FromJSON` (like implementing
-serde's `Deserialize` by hand): `StepSpec` (`src/Olifant/Cli/Options.hs:44`) and `Found`
-(`src/Olifant/Language/AstGrep.hs:24`).
+serde's `Deserialize` by hand): `StepSpec` (`src/Olifant/Cli/Options.hs`) and `Found`
+(`src/Olifant/Language/AstGrep.hs`).
 
 ## Partiality and `error`
 
@@ -853,18 +856,18 @@ serde's `Deserialize` by hand): `StepSpec` (`src/Olifant/Cli/Options.hs:44`) and
 anywhere under `src/Olifant/` outside the `*Spec.hs` files. Failures are values (`Either`,
 `Conflict`, `Miss`), and `app/Main.hs` catches anything that escapes as an internal error.
 
-That wasn't always true: `branchFor` (`Generation/Complete.hs:120`) used to pick its first
+That wasn't always true: `branchFor` (`Generation/Complete.hs`) used to pick its first
 candidate with a local `head'` that called `error` on an empty list, trusting a comment that
 said the list was never empty "by construction" — true, but not something the type checker
 could see. The caller now only ever builds a `NonEmpty` list of candidates in the first
-place (`Data.List.NonEmpty.nonEmpty` in a list comprehension's guard, `Complete.hs:73`), so
+place (`Data.List.NonEmpty.nonEmpty` in a list comprehension's guard, `Complete.hs`), so
 `branchFor` takes a `NonEmpty` and reaches for `NE.head`, a *total* function — the type
 itself says "this is never empty", and the `head'`/comment pair is gone. This is the general
 move for turning "trust me" into something GHC checks: find the type that makes the
 impossible case unrepresentable, and push it as far upstream (to where the list is *built*,
 not where it's *read*) as it will go.
 
-Tests are looser: `let Right entry = findEntry cat ref` (`CatalogSpec.hs:49`) is an
+Tests are looser: `let Right entry = findEntry cat ref` (`CatalogSpec.hs`) is an
 `unwrap()`, allowed by the spec files' `-Wno-incomplete-uni-patterns`.
 
 ## Tests: hspec, hspec-discover, Hedgehog
@@ -873,7 +876,7 @@ Every unit's tests live next to it: `src/Olifant/Naming.hs` is tested by
 `src/Olifant/NamingSpec.hs`. A spec module exports one value, `spec`:
 
 ```haskell
--- src/Olifant/NamingSpec.hs:16
+-- src/Olifant/NamingSpec.hs, spec
 spec :: Spec
 spec = do
   describe "parseName" $ do
@@ -895,7 +898,7 @@ spec = do
   property into an `it`:
 
   ```haskell
-  -- src/Olifant/NamingSpec.hs:35
+  -- src/Olifant/NamingSpec.hs, spec
       it "round-trips through every case" $ hedgehog $ do
         ws <- forAll (Gen.list (Range.linear 1 4) (Gen.text (Range.linear 2 8) Gen.lower))
         c <- forAll (Gen.element allCases)
@@ -904,7 +907,7 @@ spec = do
   ```
 
   `forAll gen` draws a random value (and shrinks it on failure), and `===` is the
-  assertion. `evalIO` runs an `IO` action inside a property. `GenerationSpec.hs:251` uses it
+  assertion. `evalIO` runs an `IO` action inside a property. `GenerationSpec.hs` uses it
   to run `generate` against a memory workspace.
 
 The test suite compiles `src/` directly (`hs-source-dirs: src` in the `test-suite` stanza).
@@ -943,7 +946,7 @@ what it can do.
 ### `generate`
 
 ```haskell
--- src/Olifant/Generation.hs:93
+-- src/Olifant/Generation.hs, generate
 generate :: Monad m => Workspace m -> Resolve m -> Tools m -> [Step] -> UTCTime -> Mode -> m (Either GenerationError Plan)
 ```
 
@@ -971,8 +974,8 @@ steps: &[Step], now: DateTime<Utc>, mode: Mode) -> Result<Plan, GenerationError>
 ### `resolveLayers`
 
 ```haskell
--- src/Olifant/Anchor/Resolve.hs:61
-resolveLayers :: Monad m => Syntax m -> Maybe Language -> [RenderedAnchor] -> Text -> m (Either [Miss] Located)
+-- src/Olifant/Anchor/Resolve.hs, resolveLayers
+resolveLayers :: Monad m => Syntax m -> Maybe Language -> Maybe FilePath -> [RenderedAnchor] -> Text -> m (Either [Miss] Located)
 ```
 
 "Given:
@@ -991,7 +994,7 @@ before giving up.
 ### `completeEdits`
 
 ```haskell
--- src/Olifant/Generation/Complete.hs:38
+-- src/Olifant/Generation/Complete.hs, completeEdits
 completeEdits :: Monad m => Tools m -> Workspace m -> [(StepPath, CompleteSpec)] -> Int -> Map FilePath (Maybe Text) -> m ([PlannedEdit], [Conflict], [Text], Map FilePath (Maybe Text))
 ```
 

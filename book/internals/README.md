@@ -13,3 +13,5 @@ How Olifant works, so you can change it. Chapters 1 to 5 are written; the rest a
 9. The check loop behind `complete` edits (planned)
 10. The CLI: options, output, exit codes (planned)
 11. How we work: TDD, colocated tests, blessing snapshots, git hooks, token experiments (planned)
+
+Run `scripts/book-refs.sh` to list any file-and-line-number reference that crept in; references name the file and the function or type.

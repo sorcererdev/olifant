@@ -26,7 +26,7 @@ olifant doctor
 …
 ```
 
-Each row is one `Capability` (`Capabilities.hs:24`) and its origin: the layer that last set the
+Each row is one `Capability` (`Capabilities.hs`) and its origin: the layer that last set the
 key (`toolchain pytest` when only the preset supplied it). In a project with Rust, a row the
 language lacks reads `! rust: mutation — absent` with `fix: add [[mutate]] to
 .olifant/languages/rust.toml` (that is a warning, never an error). Everything below explains where those words come from.
@@ -54,45 +54,44 @@ adding a file, as its header says).
 
 ### Merging
 
-`languageFromLayers` (`Language/Adapter.hs:431`) takes `[Layer]`, where `Layer` (`:407`) is
+`languageFromLayers` (`Language/Adapter.hs`) takes `[Layer]`, where `Layer` is
 `{layerOrigin, layerDir, layerTable}` and the origin is `"shipped"`, `"pack NAME"` or `"project"`.
-It folds the tables with `Olifant.Toml.mergeTables` (`Toml.hs:41`): where both sides hold a table
+It folds the tables with `Olifant.Toml.mergeTables` (`Toml.hs`): where both sides hold a table
 the two merge key by key; **anything else is replaced whole**, lists and arrays of tables
 (`[[mutate]]`, `[[imports.resolve]]`) among them. A pack that writes `[test]
 tests_for = "…"` keeps the shipped `[test] preset`; a pack that writes `[[mutate]]` replaces all
 of Python's operators.
 
 Then the one preset the merged `[check]` and `[test]` name fills what is still missing
-(`applyPreset`, `Presets.hs:47`, called from `testFrom` and `checkFrom` in `Adapter.hs`): a
+(`applyPreset`, `Presets.hs`, called from `testFrom` and `checkFrom` in `Adapter.hs`): a
 left-biased union of the table with the preset's, so a key you wrote wins. One rule keeps old
 full files whole: `dropPresets` (in `languageFromLayers`) removes the inherited `preset` when a
 later layer writes its own `command` or `convert` and names no preset.
 
-`Presets` themselves layer the same way. `Catalog.openAt` (`:396`) folds
-`overPresets shippedPresets` with each pack's `toolchains/*.toml` (`toolchainsIn`, `:458`), then
+`Presets` themselves layer the same way. `Catalog.openAt` folds
+`overPresets shippedPresets` with each pack's `toolchains/*.toml` (`toolchainsIn`), then
 the project's; `overPresets` merges key by key as `mergeTables` does.
 
 ### Origins
 
 While merging, `languageFromLayers` also builds `langOrigins :: Map Text Text`: each top-level
 key and each key one level down (`check`, `check.format`) with the layer that set it last, and for
-a `[check]`/`[test]` key that only the preset supplied, `toolchain NAME`. `originOf lang key`
-(`:461`) looks a dotted key up, falling back to its parent. Doctor prints it after each
+a `[check]`/`[test]` key that only the preset supplied, `toolchain NAME`. `originOf lang key` looks a dotted key up, falling back to its parent. Doctor prints it after each
 capability ("· from pack python-htmx"), and `langLayers` is the list of layers it names.
 
 ### Which languages a project has
 
-`Catalog.openAt` (`Catalog.hs:396`) collects the layers of every pack (`lpLanguages`) and the
-project (`layersIn`, `:443`), plus the names a generator asks for (`genLanguage`) and the
-config's `languages = [...]` list. `assembleLanguages` (`:423`) builds one `Language` per name,
-the shipped layer first if the name ships (`shippedLayer`, `Adapter.hs:411`).
+`Catalog.openAt` (`Catalog.hs`) collects the layers of every pack (`lpLanguages`) and the
+project (`layersIn`), plus the names a generator asks for (`genLanguage`) and the
+config's `languages = [...]` list. `assembleLanguages` builds one `Language` per name,
+the shipped layer first if the name ships (`shippedLayer`, `Adapter.hs`).
 A name that nothing provides is skipped. A language that does not parse is set aside in
 `catalogBrokenLanguages` with the path of the **first layer in its stack that makes the merge
 fail** (so a bad key in the pack is blamed on the pack, not on the project file after it); one
 only a generator names (elm without the elm pack's grammar) is left out quietly. A file that is
 not valid TOML sets its whole language aside under its own path.
 
-`languageFor` (`Adapter.hs:792`) picks the language of a file: the first of the project's
+`languageFor` (`Adapter.hs`) picks the language of a file: the first of the project's
 languages, in the order they were first named, whose `files` globs match. `olifant-dev` (this repository's own pack) carries no language
 file; it gets Haskell from the shipped one.
 
@@ -110,8 +109,8 @@ The seven tables you will touch most, with the code that reads each field:
 ### `[unit]` and `unit_words`: what a definition is
 
 `langUnitKinds` (`kinds`), `langUnitNames` (`name`), `langUnitJoin` (`join`).
-`Server/Unit.hs:unitAt` (`:53`) finds the innermost ast-grep node of those kinds around a line;
-`unitsOf` (`:154`) lists every unit in a file, naming each by the first of `name`'s POSIX
+`Server/Unit.hs:unitAt` finds the innermost ast-grep node of those kinds around a line;
+`unitsOf` lists every unit in a file, naming each by the first of `name`'s POSIX
 expressions that matches (its last group), `join` folding a Haskell signature and its equations
 into one. This is what conjure, mutate, stub, plan anchors and the plan fingerprint stand on.
 
@@ -147,11 +146,10 @@ phase is generic in its monad.
 
 `[test]` is two things in one table. The **runner** keys (`command`, `context`, `format`, `root`,
 `tests_for`, `exclusive`, `timeout`, `install`, `[test.select]`, `[test.lines]`, `[test.junit]`, `file_group`,
-`convert`) make a `TestDef`. They are read by `Language/Check.hs`: `processRunner` (`:195`) runs
+`convert`) make a `TestDef`. They are read by `Language/Check.hs`: `processRunner` runs
 a scratch copy of the project's files (`scratchRun`, which also returns a `ReportFile`: `{= report =}` is `<scratch>/.olifant-report`, removed before the run and read after it when the command or `convert` names it; `TestDef.testReport`, `[test] report`, a template over `cache`, `context` and `root`, replaces that path, and `scratchRun` takes it as an argument: a relative one is under the copy, and it is removed before the run all the same, so nextest's cache-path report is never a stale answer), `readTestReport` (`ReportFile` in hand: the report's bytes replace stdout and stderr as the text a format reads; a named report not written is broken) picks
 the parser (`parsePytest`, or `TestFormats.parseLines | parseTap | parseJunit | parseTestJson`; `parseJunit` takes the `JunitFormat` (`Generic.hs`, `testJunit`): `join` splits the classname, `split` the name, and the classname's leading path segments are dropped; the failure's line is the last `FILE:N` of its text),
-`selected` (`:251`) turns a test id into arguments with `[test.select]`, and `runTestsIn`
-(`:556`) is the entry the server uses. A run knows its folder on disk, `TestDef.testDir`: the
+`selected` turns a test id into arguments with `[test.select]`, and `runTestsIn` is the entry the server uses. A run knows its folder on disk, `TestDef.testDir`: the
 catalog sets it to the project root as it roots the providers (`Adapter.withProviderRoot`), and
 `runTestsIn` narrows it to the package its `root` markers find; `processRunner` passes it to
 `scratchRun` as `{= root =}` (made absolute), expanded in the program too, so a command can
@@ -228,16 +226,16 @@ under its imports rule (none: the rule alone).
 
 ### `[check]`: the compiler's report
 
-`langCheck` (`CheckDef`) is run by `processChecker` (`Check.hs:218`) and read through
-`runCheckIn` (`:437`); its `format` selects a `CompilerSupport` (`Language/Support.hs`:
+`langCheck` (`CheckDef`) is run by `processChecker` (`Check.hs`) and read through
+`runCheckIn`; its `format` selects a `CompilerSupport` (`Language/Support.hs`:
 `elmSupport`, `ghcSupport`, `pyrightSupport`, `rustcSupport`, `sarifSupport`,
 `olifantJsonSupport`, or the user's `errorformat`). A **support** is the code that reads one
 tool's report, in `Language/{Elm,Ghc,Pyright,Rustc,Generic}.hs`, and `supportsMissing` is the
 list of formats that can also say which `case` lacks which constructor, which is what
 `complete` and `uncovered` need. `convert` runs a command that turns any tool's output into
-olifant-json (`convertReport`, `Check.hs:254`). `undefined` and `missing_member` are the check's
+olifant-json (`convertReport`, `Check.hs`). `undefined` and `missing_member` are the check's
 words for a name or a member that is missing (`ConjureNext.undefinedIn`,
-`ConjureScan.missingMemberIn`). `checkProgram` (`:290`) names the program doctor looks for.
+`ConjureScan.missingMemberIn`). `checkProgram` names the program doctor looks for.
 A check knows its folder on disk as a test run does: `CheckDef.checkDir`, set by
 `withProviderRoot` and narrowed to the package by `runCheckIn`. `runIn` makes it absolute,
 picks the command with `Adapter.chooseCheckCommand` (the same `chooseCommand` over
@@ -249,8 +247,8 @@ uses, before `runChosenCheck` runs it. The doctor's `check tool` and `test runne
 ### `[[mutate]]`: ways to break the code
 
 `langMutate` is a list of `MutateDef {mutName, mutRule, mutFix}`; `Mutate.operatorsOf`
-(`Mutate.hs:27`) turns each into an `Operator` (an ast-grep rule plus a fix or `transform =
-"increment"`), `mutantsOf` (`:36`) finds the mutants in a unit's lines, and `Server/Mutate.hs`
+(`Mutate.hs`) turns each into an `Operator` (an ast-grep rule plus a fix or `transform =
+"increment"`), `mutantsOf` finds the mutants in a unit's lines, and `Server/Mutate.hs`
 runs, caps (`capMutants 20`) and orders them. Only `python.toml` has any (17 operators).
 
 ### `[types]`, `[conjure]`
@@ -515,7 +513,7 @@ one type, so everything downstream is the same code.
 
 ## Doctor: capabilities and evidence
 
-`Olifant.Capabilities.capabilities :: Language -> [Capability]` (`Capabilities.hs:24`) is a list
+`Olifant.Capabilities.capabilities :: Language -> [Capability]` (`Capabilities.hs`) is a list
 of fifteen rows, one function of the `Language` each: `units`, `diagnostics`, `missing cases`,
 `tests`, `test units`, `anchors`, `holes`, `test selection`, `mutation`, `stub`, `conjure
 shapes`, `messages`, `test messages`, `stub bodies`, `signature facts`. A `Capability` is its
@@ -563,7 +561,7 @@ the rows, so it changes too.
   run at most eight at a time (`pooled`). Its test files are its sources' `tests_for` files that exist, plus any
   sampled file that holds test units itself (a Rust module with its own tests).
 - **units:** `unitsOf` on each sampled file (concurrently): "212 found in 38 files (e.g.
-  src/a.py:14 add)"; with none, the first non-blank line, or the slot's failure.
+  src/a.py add)"; with none, the first non-blank line, or the slot's failure.
 - **test units:** `testUnitsReport` on each test file (each with its path). A sampled source
   that holds test units itself is found by asking every sampled file when the language has rules,
   but with a test-units provider the asking stops at the first failure; with none in an existing test file, the
