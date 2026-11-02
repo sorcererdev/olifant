@@ -485,6 +485,10 @@ one type, so everything downstream is the same code.
   (`textRequest (Just path)`, when the caller knows it) and its text, so the long-lived server
   asks again after an edit, and the same text at two paths is asked twice. Only `Answered` runs
   are kept: a timeout, a missing program or a cancel is asked again once the breaker lets it.
+  The run is on a forked thread and the caller only waits on an `MVar`: a progress cancel that
+  lands on the waiter finds no `onException` to rethrow it inside the thunk, so the thunk is
+  frozen and resumes, instead of staying updated to the cancel's exception in any long-lived
+  state that holds it (pinned by ProviderSpec "a cancel landing inside providerPure").
   The memo starts over past 512 answers. It is sound because a
   provider is pure by contract (the same request gives the same answer), which chapter 9's
   protocol section states. It exists for test units, which are read in pure code at many call

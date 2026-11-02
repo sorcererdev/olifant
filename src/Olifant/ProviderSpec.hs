@@ -1,5 +1,8 @@
 module Olifant.ProviderSpec (spec) where
 
+import Control.Concurrent (forkIO, killThread, threadDelay)
+import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
+import Control.Exception (SomeException, evaluate, try)
 import Data.Aeson (Value (..), object, (.=))
 import Data.Aeson.KeyMap qualified as KM
 import Data.Either (isLeft)
@@ -110,6 +113,19 @@ spec = describe "Olifant.Provider" $ do
       -- an edit is a new request: asked again
       fmap isLeft (pure $! providerPure p (object ["file" .= ("a.py" :: T.Text), "text" .= ("y" :: T.Text)])) `shouldReturn` False
       length . lines <$> readFile logFile `shouldReturn` 2
+
+  it "a cancel landing inside providerPure leaves the thunk good: forced again, it answers (4b m1 residual)" $ do
+    p <- script "slow-units.sh"
+    let req = object ["file" .= ("cancelled.py" :: T.Text), "text" .= ("x" :: T.Text)]
+        answer = providerPure p req
+    started <- newEmptyMVar
+    t <- forkIO (putMVar started () >> evaluate answer >>= \_ -> pure ())
+    takeMVar started
+    threadDelay 300000
+    killThread t
+    -- the same thunk, on another thread: not the cancel's exception
+    r <- try (evaluate answer)
+    (r :: Either SomeException (Either T.Text Value)) `shouldSatisfy` either (const False) (not . isLeft)
 
   it "a relative argv[0] runs from the root, whatever the cwd" $
     withSystemTempDirectory "olifant-provider" $ \dir -> do
