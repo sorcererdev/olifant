@@ -2,6 +2,7 @@
 module Olifant.Language.Adapter
   ( Language (..)
   , Grammar (..)
+  , GrammarSource (..)
   , TargetDef (..)
   , CheckDef (..)
   , ErrorFormat (..)
@@ -59,7 +60,7 @@ module Olifant.Language.Adapter
 import Control.Monad ((>=>))
 import Data.Aeson (Value, object, (.=))
 import Data.Bifunctor (first)
-import Data.Char (isUpper)
+import Data.Char (isAsciiLower, isAsciiUpper, isDigit, isHexDigit, isUpper)
 import Data.List (find, sort)
 import Data.Map.Strict qualified as M
 import Data.Maybe (fromMaybe, isJust, isNothing)
@@ -321,8 +322,17 @@ moduleOf mo path = T.intercalate (moSeparator mo) (dropTrailing (filter (not . T
         Just (before, _, after) -> Just (T.pack before <> T.pack after)
         Nothing -> Nothing
 
-data Grammar = BuiltInGrammar Text | GrammarSource FilePath
-  deriving stock (Eq, Show)
+-- | Where a grammar's C sources come from: a folder a pack or the project
+-- carries (resolved against its @languages/@), or a git repository at a
+-- pinned commit (url, full SHA, the folder inside it holding @src/@).
+data GrammarSource = SourceDir FilePath | SourceGit Text Text (Maybe FilePath)
+  deriving stock (Eq, Ord, Show)
+
+-- | A language's grammar: its name (the queries folder, the
+-- @tree_sitter_<name>@ symbol, ast-grep's language) and its source. A bare
+-- name has none: ast-grep's built-in language only, no in-process grammar.
+data Grammar = Grammar {grName :: Text, grSource :: Maybe GrammarSource}
+  deriving stock (Eq, Ord, Show)
 
 -- | 'targetSpaced' (key `spaced`, default true): copy a blank line between
 -- the items next to the new one. False where a blank line means something
@@ -668,14 +678,46 @@ languageFrom presets name grammarDir top = do
       | otherwise = Right n
     validRegex key re = maybe (Left ("`" <> key <> "` is not a valid expression: " <> re)) (\(_ :: Regex) -> Right re) (makeRegexM (T.unpack re))
     grammarFrom = \case
-      TText builtIn -> Right (BuiltInGrammar builtIn)
+      TText bare -> (`Grammar` Nothing) <$> grammarName bare
       TTable t -> do
-        onlyKeys ["source"] t
-        src <- required "source" text t
-        case grammarDir of
-          Just dir -> Right (GrammarSource (dir </> "languages" </> T.unpack src))
-          Nothing -> Left "`grammar = { source }` cannot be shipped: a pack or the project carries the grammar"
-      other -> Left ("expected a built-in grammar name or { source = \"dir\" }, got " <> describeTree other)
+        onlyKeys ["name", "git", "rev", "source", "path"] t
+        gname <- grammarName =<< (fromMaybe name <$> optional "name" text t)
+        gitUrl <- optional "git" text t
+        src <- optional "source" text t
+        path <- optional "path" text t
+        source <- case (gitUrl, src) of
+          (Just url, Nothing) -> do
+            u <- gitUrlOk url
+            rev <- required "rev" text t >>= fullSha
+            p <- traverse relativeInside path
+            Right (SourceGit u rev p)
+          (Nothing, Just dirName) -> do
+            case (M.member "rev" t, path) of
+              (True, _) -> Left "`rev` goes with `git`"
+              (_, Just _) -> Left "`path` goes with `git` (a folder inside the checkout)"
+              _ -> Right ()
+            case grammarDir of
+              Just dir -> Right (SourceDir (dir </> "languages" </> T.unpack dirName))
+              Nothing -> Left "`grammar = { source }` cannot be shipped: a pack or the project carries the grammar"
+          _ -> Left "one of `git` (with `rev`) or `source`"
+        Right (Grammar gname (Just source))
+      other -> Left ("expected a grammar name, { git = URL, rev = SHA } or { source = \"dir\" }, got " <> describeTree other)
+    -- the name is a C symbol's suffix and a cache file's: letters, digits, _
+    grammarName g
+      | not (T.null g) && T.all (\c -> isAsciiLower c || isAsciiUpper c || isDigit c || c == '_') g = Right g
+      | otherwise = Left ("a grammar name is letters, digits and _ (tree_sitter_<name>), got `" <> g <> "`")
+    -- the cache is keyed by it: a branch or a tag moves
+    fullSha r
+      | T.length r == 40 && T.all isHexDigit r = Right (T.toLower r)
+      | otherwise = Left ("`rev` is a full commit SHA (40 hex characters), not a branch or tag: the cache is keyed by it, and a branch moves (got `" <> r <> "`)")
+    -- git's own transports only: no `ext::` or other remote helpers
+    gitUrlOk u
+      | any (`T.isPrefixOf` u) ["https://", "ssh://", "git://", "file://"] = Right u
+      | "@" `T.isInfixOf` T.takeWhile (/= ':') u, ":" `T.isInfixOf` u, not ("::" `T.isInfixOf` u) = Right u
+      | otherwise = Left ("`git` is an https://, ssh://, git:// or file:// URL (or user@host:path), got `" <> u <> "`")
+    relativeInside p
+      | T.null p || "/" `T.isPrefixOf` p || ".." `elem` T.splitOn "/" p = Left ("`path` is a folder inside the checkout (relative, no ..), got `" <> p <> "`")
+      | otherwise = Right (T.unpack p)
     mutateFrom t = do
       onlyKeys ["name", "pattern", "rule", "fix", "transform"] t
       n <- required "name" text t

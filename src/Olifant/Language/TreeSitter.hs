@@ -147,7 +147,7 @@ nodeTypesTable = M.fromList [(g, unsafePerformIO (nodeTypes fp)) | (g, fp) <- gr
 -- provider or "unknown target" answers instead.
 treeSitterAnchors :: Applicative m => Language -> Maybe FilePath -> [Text] -> Text -> m (Maybe (Either SyntaxFailure [(Match, [Match])]))
 treeSitterAnchors lang _ ws source = pure $ case langGrammar lang of
-  BuiltInGrammar g
+  Grammar g _
     | g `elem` linkedGrammars
     , genericPhrase ws
     , maybe True (kindKnown g) (phraseKind ws) ->
@@ -169,7 +169,7 @@ definitionLines lang source = map (\(n, _, own, unit) -> (n, own, unit)) <$> def
 -- | 'definitionLines' with each definition's capture (`definition.impl`, …).
 definitionKinds :: Language -> Text -> Maybe [(Text, Text, (Int, Int), (Int, Int))]
 definitionKinds lang source = case langGrammar lang of
-  BuiltInGrammar g
+  Grammar g _
     | g `elem` linkedGrammars
     , Right (root, caps) <- capturesOf g (querySet lang) source ->
         Just [(dsName d, dsCapture d, linesOf (dsNode d), linesOf (dsUnit d)) | d <- definitionsWith (langUnitJoin lang) root caps]
@@ -184,7 +184,7 @@ definitionKinds lang source = case langGrammar lang of
 -- grammar is not linked or its queries fail.
 definitionsOf :: Language -> Text -> Maybe [DefSpan]
 definitionsOf lang source = case langGrammar lang of
-  BuiltInGrammar g
+  Grammar g _
     | g `elem` linkedGrammars
     , Right (root, caps) <- capturesOf g (querySet lang) source -> Just (definitionsWith (langUnitJoin lang) root caps)
   _ -> Nothing
@@ -261,9 +261,7 @@ queriesOf :: Language -> [(FilePath, Text, Text)]
 queriesOf lang = sortOn (\(f, _, _) -> f) (own ++ [(f, s, "shipped") | (f, s) <- shipped, f `notElem` [f' | (f', _, _) <- own]])
   where
     own = langQueries lang
-    shipped = case langGrammar lang of
-      BuiltInGrammar g -> queriesFor g
-      _ -> []
+    shipped = queriesFor (grName (langGrammar lang))
 
 -- | 'queriesOf' as 'capturesOf' takes it: (file name, source).
 querySet :: Language -> [(FilePath, Text)]

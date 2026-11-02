@@ -72,8 +72,7 @@ scan cache lang rule fixed source =
 -- | A directory whose sgconfig.yml registers the language (custom grammars only).
 prepare :: FilePath -> Language -> IO (Either SyntaxFailure FilePath)
 prepare cache lang = case langGrammar lang of
-  BuiltInGrammar _ -> createDirectoryIfMissing True cache >> pure (Right cache)
-  GrammarSource src0 -> do
+  Grammar _ (Just (SourceDir src0)) -> do
     src <- makeAbsolute src0
     -- Keyed on parser.c's size and modification time: a stat per query
     -- rather than hashing a grammar that can be megabytes (every AST query
@@ -101,6 +100,8 @@ prepare cache lang = case langGrammar lang of
               "ruleDirs: []\ncustomLanguages:\n  " <> T.unpack (langName lang) <> ":\n    libraryPath: " <> lib <> "\n    extensions: [" <> T.unpack (langName lang) <> "]\n"
             renameFile mine config
         pure (Right dir)
+  -- ast-grep's built-in language (a git source is loaded in process only, for now)
+  _ -> createDirectoryIfMissing True cache >> pure (Right cache)
   where
     compile src lib =
       findExecutable "cc" >>= \case

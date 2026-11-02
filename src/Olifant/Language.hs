@@ -80,7 +80,7 @@ genericFor l ws = case linkedGrammarOf l of
 -- | The language's grammar, when it is linked in.
 linkedGrammarOf :: Language -> Maybe Text
 linkedGrammarOf l = case langGrammar l of
-  BuiltInGrammar g | g `elem` linkedGrammars -> Just g
+  Grammar g _ | g `elem` linkedGrammars -> Just g
   _ -> Nothing
 
 -- | The shipped language of that name alone, for specs (fails on a file

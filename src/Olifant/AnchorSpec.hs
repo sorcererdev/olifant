@@ -111,7 +111,7 @@ tsSyntax = (querying (\_ _ _ -> Identity (Right []))) {anchorSyntax = treeSitter
 -- | Elm through a pack's vendored grammar (not linked in), with a declared
 -- `type NAME`.
 elmSource :: Language
-elmSource = caseTarget {langGrammar = GrammarSource "/p/languages/grammar/elm", langTargets = langTargets caseTarget ++ langTargets typeLang}
+elmSource = caseTarget {langGrammar = Grammar "elm" (Just (SourceDir "/p/languages/grammar/elm")), langTargets = langTargets caseTarget ++ langTargets typeLang}
   where
     Right typeLang =
       parseLanguage "elm" "/p" $

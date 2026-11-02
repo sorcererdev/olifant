@@ -42,6 +42,14 @@ import Data.Functor.Identity (Identity (..))
 cb :: Text
 cb = "src/bistro/booking/commands/cancel_booking__test.py"
 
+-- | A full commit SHA, for git grammar examples.
+sha :: Text
+sha = "293fdc02038ee2bf0e2e206711b69c90ac0d413f"
+
+-- | A vendored grammar's folder (its sources and SOURCES).
+vendoredGrammar :: Text -> FilePath
+vendoredGrammar g = "cbits" </> ("tree-sitter-" <> T.unpack g)
+
 elmToml :: Text
 elmToml =
   T.unlines
@@ -592,11 +600,46 @@ spec = do
     it "reads an adapter, resolving the grammar source against the pack" $ do
       let Right lang = parseLanguage "elm" "/packs/elm" elmToml
       langName lang `shouldBe` "elm"
-      langGrammar lang `shouldBe` GrammarSource "/packs/elm/languages/grammar/elm"
+      langGrammar lang `shouldBe` Grammar "elm" (Just (SourceDir "/packs/elm/languages/grammar/elm"))
       fmap checkFormat (langCheck lang) `shouldBe` Just "elm-json"
       map targetPhrase (langTargets lang) `shouldBe` ["case in FUNCTION"]
     it "accepts a built-in grammar name" $
-      fmap langGrammar (parseLanguage "rust" "/p" "files = [\"**/*.rs\"]\ncomment = \"//\"\ngrammar = \"rust\"\n") `shouldBe` Right (BuiltInGrammar "rust")
+      fmap langGrammar (parseLanguage "rust" "/p" "files = [\"**/*.rs\"]\ncomment = \"//\"\ngrammar = \"rust\"\n") `shouldBe` Right (Grammar "rust" Nothing)
+    it "reads a git grammar with its rev and an optional path" $
+      fmap langGrammar (parseLanguage "typescript" "/p" ("files = [\"**/*.tsx\"]\ncomment = \"//\"\ngrammar = { git = \"https://github.com/tree-sitter/tree-sitter-typescript\", rev = \"" <> sha <> "\", path = \"tsx\", name = \"tsx\" }\n"))
+        `shouldBe` Right (Grammar "tsx" (Just (SourceGit "https://github.com/tree-sitter/tree-sitter-typescript" sha (Just "tsx"))))
+    it "a git grammar's name defaults to the language's" $
+      fmap (grName . langGrammar) (parseLanguage "go" "/p" ("files = [\"**/*.go\"]\ncomment = \"//\"\ngrammar = { git = \"https://github.com/tree-sitter/tree-sitter-go\", rev = \"" <> sha <> "\" }\n"))
+        `shouldBe` Right "go"
+    it "a git grammar without a full SHA rev is an error (a branch name is refused)" $
+      parseLanguage "go" "/p" "files = [\"**/*.go\"]\ncomment = \"//\"\ngrammar = { git = \"https://github.com/tree-sitter/tree-sitter-go\", rev = \"main\" }\n"
+        `shouldSatisfy` either (\e -> "`rev`" `T.isInfixOf` e && "not a branch or tag" `T.isInfixOf` e && "main" `T.isInfixOf` e) (const False)
+    it "a short SHA is refused too" $
+      parseLanguage "go" "/p" "files = [\"**/*.go\"]\ncomment = \"//\"\ngrammar = { git = \"https://github.com/tree-sitter/tree-sitter-go\", rev = \"293fdc0\" }\n"
+        `shouldSatisfy` either ("full commit SHA" `T.isInfixOf`) (const False)
+    it "git and source together are an error" $
+      parseLanguage "go" "/p" ("files = [\"**/*.go\"]\ncomment = \"//\"\ngrammar = { git = \"https://x/y\", rev = \"" <> sha <> "\", source = \"g\" }\n")
+        `shouldSatisfy` either ("one of `git`" `T.isInfixOf`) (const False)
+    it "path without git is an error" $
+      parseLanguage "go" "/p" "files = [\"**/*.go\"]\ncomment = \"//\"\ngrammar = { source = \"g\", path = \"tsx\" }\n"
+        `shouldSatisfy` either ("`path`" `T.isInfixOf`) (const False)
+    it "a path or a name that climbs out of its folder is an error" $ do
+      parseLanguage "go" "/p" ("files = [\"**/*.go\"]\ncomment = \"//\"\ngrammar = { git = \"https://x/y\", rev = \"" <> sha <> "\", path = \"../../etc\" }\n")
+        `shouldSatisfy` either ("`path`" `T.isInfixOf`) (const False)
+      parseLanguage "go" "/p" ("files = [\"**/*.go\"]\ncomment = \"//\"\ngrammar = { git = \"https://x/y\", rev = \"" <> sha <> "\", name = \"../go\" }\n")
+        `shouldSatisfy` either ("grammar name" `T.isInfixOf`) (const False)
+    it "a git URL olifant does not fetch from is an error" $
+      parseLanguage "go" "/p" ("files = [\"**/*.go\"]\ncomment = \"//\"\ngrammar = { git = \"ext::sh -c touch% /tmp/x\", rev = \"" <> sha <> "\" }\n")
+        `shouldSatisfy` either ("`git`" `T.isInfixOf`) (const False)
+    it "the shipped python, rust and haskell name their git revision" $
+      forM_ ["python", "rust", "haskell"] $ \g -> do
+        sources <- TIO.readFile (vendoredGrammar g </> "SOURCES")
+        let pinned = T.takeWhile (/= ')') (snd (T.breakOnEnd "(git " sources))
+        case grSource (langGrammar (shippedLanguageNow g)) of
+          Just (SourceGit url rev Nothing) -> do
+            url `shouldBe` "https://github.com/tree-sitter/tree-sitter-" <> g
+            rev `shouldBe` pinned
+          other -> expectationFailure (show other)
     it "rejects unknown keys" $
       parseLanguage "x" "/p" "files = []\ncomment = \"#\"\ngrammar = \"x\"\ncolour = 1\n" `shouldSatisfy` either ("colour" `T.isInfixOf`) (const False)
     it "refuses the retired `qualify` key, saying what replaced it" $
@@ -1156,7 +1199,7 @@ spec = do
       fmap testsFor (langTest l) `shouldBe` Just "X"
     it "the grammar follows the layer that set it (Review Focus 3)" $ do
       let Right l = languageFromLayers shippedPresets "elm" [layer "pack elm" (Just "packs/elm") ["files = [\"**/*.elm\"]", "comment = \"--\"", "grammar = { source = \"grammar/elm\" }"], layer "project" (Just ".olifant") ["indent = \"    \""]]
-      langGrammar l `shouldBe` GrammarSource "packs/elm/languages/grammar/elm"
+      langGrammar l `shouldBe` Grammar "elm" (Just (SourceDir "packs/elm/languages/grammar/elm"))
     it "a shipped grammar source is an error" $
       languageFromLayers shippedPresets "x" [layer "shipped" Nothing ["files = [\"*.x\"]", "comment = \"#\"", "grammar = { source = \"g\" }"]]
         `shouldSatisfy` either ("cannot be shipped" `T.isInfixOf`) (const False)

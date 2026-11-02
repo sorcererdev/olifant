@@ -1,11 +1,13 @@
-# Rust: ast-grep's built-in grammar.
+# Rust: tree-sitter-rust (ast-grep's built-in language too).
 files = ["**/*.rs"]
 # What a unit is, as prompts say it (an anchor @path:Unit).
 unit_words = "a top-level function, struct, enum or trait name (Name), or a method (Type.method)"
 # Reserved words: recognition keeps them as they are (names become their case shape)
 keywords = ["as", "async", "await", "break", "const", "continue", "crate", "dyn", "else", "enum", "extern", "false", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub", "ref", "return", "self", "Self", "static", "struct", "super", "trait", "true", "type", "unsafe", "use", "where", "while", "Arc", "String", "Result", "Option", "Vec", "Box"]
 comment = "//"
-grammar = "rust"
+# The grammar: tree-sitter-rust 0.24.2 (the revision ast-grep 0.45.3 pins), built once into
+# olifant's cache and loaded at run time.
+grammar = { git = "https://github.com/tree-sitter/tree-sitter-rust", rev = "e2bee853694a1d3e0f6ef308fe3674542fec95d7" }
 # Folders a project listing never enters: cargo's build output.
 ignore = ["target"]
 # Items in brackets are followed by a comma; rustfmt's width is 100.

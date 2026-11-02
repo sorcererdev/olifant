@@ -1,4 +1,4 @@
-# Python: ast-grep's built-in grammar; checks with pyright (strict, from the
+# Python: tree-sitter-python (ast-grep's built-in language too); checks with pyright (strict, from the
 # project's pyproject.toml) through uv, its venv in Olifant's cache: one per
 # project and lockfile ({= context =}). The project is an app, not a package
 # (`[tool.uv] package = false`): nothing is built; pyright finds src/.
@@ -12,7 +12,9 @@ keywords = ["False", "None", "True", "and", "as", "assert", "async", "await", "b
 # def below it).
 unit = { name = ['^[[:space:]]*(async[[:space:]]+)?(def|class)[[:space:]]+([^[:space:](:[]+)'] }
 comment = "#"
-grammar = "python"
+# The grammar: tree-sitter-python 0.25.0 (the revision ast-grep 0.45.3 pins), built once into
+# olifant's cache and loaded at run time.
+grammar = { git = "https://github.com/tree-sitter/tree-sitter-python", rev = "293fdc02038ee2bf0e2e206711b69c90ac0d413f" }
 # Folders a project listing never enters: the venv, caches, a front end's packages.
 ignore = [".venv", "__pycache__", ".pytest_cache", "node_modules"]
 indent = "    "

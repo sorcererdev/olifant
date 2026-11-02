@@ -419,7 +419,7 @@ openAt root loadP olifantDir packs = do
       rooted = maybe assembled (\d -> map (withProviderRoot (takeDirectory d)) assembled) olifantDir
   -- the project's query files over each linked grammar's shipped ones
   queried <- traverse (projectQueries root olifantDir) rooted
-  unused <- maybe (pure []) (unusedQueries root [g | l <- rooted, BuiltInGrammar g <- [langGrammar l]]) olifantDir
+  unused <- maybe (pure []) (unusedQueries root [grName (langGrammar l) | l <- rooted]) olifantDir
   let langs = map fst queried
       broken = lefts layers ++ lefts toolchains ++ either pure (const []) configured ++ concatMap snd queried ++ unused
       base = Catalog Nothing (sortOn entryId (rights loaded)) (sortOn (\(gid, _, _) -> gid) (lefts loaded)) (map fst packs) langs (broken ++ brokenLangs) [] [] defaultModelConfig [] [] (RulesConfig [] []) [m | Just (Right m) <- map lpModel fromPacks] [b | Just (Left b) <- map lpModel fromPacks] (map snd packs) Nothing (RecognizeConfig True Nothing) Nothing Nothing Nothing defaultPlans (listToMaybe [st | Just (Right st) <- map lpStrangler fromPacks])
@@ -438,7 +438,7 @@ catalogIgnores cat = S.toList (S.fromList [T.unpack i | l <- catalogLanguages ca
 -- that does not compile (the file named, and the byte).
 projectQueries :: Monad m => Workspace m -> Maybe FilePath -> Language -> m (Language, [(FilePath, Text)])
 projectQueries root olifantDir lang = case (olifantDir, langGrammar lang) of
-  (Just d, BuiltInGrammar g) | g `elem` linkedGrammars -> do
+  (Just d, Grammar g _) | g `elem` linkedGrammars -> do
     let dir = d </> "queries" </> T.unpack g
     files <- listFiles root dir
     let scms = sort [f | f <- files, takeExtension f == ".scm"]

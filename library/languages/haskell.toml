@@ -1,11 +1,13 @@
-# Haskell: ast-grep's built-in grammar; checks with GHC's JSON diagnostics
+# Haskell: tree-sitter-haskell (ast-grep's built-in language too); checks with GHC's JSON diagnostics
 # through `cabal repl` (spec §5.6): type-checks the library (-fno-code)
 # without linking, so a clean check exits 0.
 files = ["**/*.hs"]
 # What a unit is, as prompts say it (an anchor @path:Unit).
 unit_words = "a top-level function, type or class name (Name), or a name bound in its where (function.name)"
 comment = "--"
-grammar = "haskell"
+# The grammar: tree-sitter-haskell 0.23.1 (the revision ast-grep 0.45.3 pins), built once into
+# olifant's cache and loaded at run time.
+grammar = { git = "https://github.com/tree-sitter/tree-sitter-haskell", rev = "c30d812bc90827f1a54106a25bc9a6307f5cdcec" }
 # Folders a project listing never enters: cabal's build output.
 ignore = ["dist-newstyle"]
 indent = "  "
