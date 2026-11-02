@@ -184,6 +184,11 @@ captureSpec = describe "tree-sitter captures" $ do
       got <- mapM (uncurry at) [("Main.elm", "end of type Msg"), ("Main.elm", "start of type Msg"), ("Main.elm", "end of type Page"), ("Main.elm", "end of record Model"), ("Main.elm", "start of record Model"), ("Main.elm", "end of imports"), ("Route.elm", "end of type Route"), ("Route.elm", "end of imports")]
       let sharesLine = "the first item shares its line with other code; Olifant inserts whole lines (use a multi-line layout, or another anchor)"
       map (either (Left . map missReason) Right) got `shouldBe` [Right 41, Left [sharesLine], Right 25, Right 18, Left [sharesLine], Right 9, Right 9, Right 4]
+    it "a misspelt kind word is offered the grammar's kind word: end of typo Msg → end of type Msg" $ do
+      let text = "module A exposing (..)\n\ntype Msg\n    = A\n    | B\n"
+      r <- resolveLayers (astGrepSyntax "/nonexistent") (Just elm) Nothing [PhraseAnchor "end of typo Msg"] text
+      fmap (map missReason) (either Just (const Nothing) r)
+        `shouldSatisfy` maybe False (any ("did you mean `end of type Msg`?" `T.isInfixOf`))
   it "every shipped query compiles and uses only known predicates" $
     forM_ ["haskell", "python", "rust"] $ \g ->
       either (Just . ((g <> ": ") <>)) (const Nothing) (capturesOf (shipped g) (queriesFor g) "") `shouldBe` Nothing

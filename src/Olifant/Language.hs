@@ -27,12 +27,14 @@ module Olifant.Language
   , hasUnits
   , genericNames
   , genericFor
+  , kindWords
   , loadableGrammar
   , treeSitterAnchors
   , shippedLanguage
   , shippedLanguageNow
   ) where
 
+import Data.List (nub)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
@@ -70,6 +72,14 @@ genericFor :: Language -> [Text] -> Bool
 genericFor l ws = case loadableGrammar l of
   Just g -> genericPhrase ws && maybe True (\k -> any (\t -> t == k || (k <> "_") `T.isPrefixOf` t) (grammarNodeTypes g)) (phraseKind ws)
   Nothing -> False
+
+-- | The kind words a `KIND NAME` phrase can start with, for "did you mean":
+-- `function`, `class`, and each node type's first word (`type` for
+-- type_declaration). None when the grammar does not load.
+kindWords :: Language -> [Text]
+kindWords l = case loadableGrammar l of
+  Just g -> nub (["function", "class"] ++ [T.takeWhile (/= '_') t | t <- grammarNodeTypes g, not (T.null t)])
+  Nothing -> []
 
 -- | The shipped language of that name alone, for specs (fails on a file
 -- that does not parse).
