@@ -6,4 +6,8 @@ imports.scm      olifant (written here, not vendored): an import clause, whole
 types.scm        olifant (written here, not vendored): a type alias @definition.type (a record alias: its record, the alias @class.outer);
                  a type's variants and a record alias's fields @class.inner (upstream tags.scm has no type alias; the
                  textobjects file has no class bodies)
-# changes: none (the vendored files are byte-for-byte the pinned upstream files).
+# changes:
+#   tags.scm: removed the `(module_declaration …) @definition.module` pattern (and the blank lines
+#   before it): a module's header line is no unit, and `module Route` beside `type Route` would make
+#   the anchor @src/Route.elm:Route name two units.
+#   textobjects.scm: none (byte-for-byte the pinned upstream file).

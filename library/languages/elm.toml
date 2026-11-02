@@ -82,8 +82,9 @@ container = { kind = "file" }
 items = { kind = "import_clause" }
 example = "end of imports"
 
-# The unit: the innermost of these node kinds at the cursor is what `conjure`
-# conjures and `stub` stubs a test for.
+# The unit: the innermost definition at the cursor (from the grammar's
+# queries: a function, a type, a type alias) is what `conjure` conjures and
+# `stub` stubs a test for.
 [unit]
-kinds = ["value_declaration", "type_declaration", "type_alias_declaration"]
+# `name` finds a unit's definition line (units are named by the queries' @name).
 name = ["^type[[:space:]]+alias[[:space:]]+([[:alnum:]_]+)", "^type[[:space:]]+([[:alnum:]_]+)", "^[[:space:]]*([[:alpha:]_][[:alnum:]_']*)"]
