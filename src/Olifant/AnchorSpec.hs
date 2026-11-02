@@ -238,6 +238,12 @@ resolveSpec = do
     it "rejects an unknown target kind even when the glob matches no file" $
       runIdentity (astQueries fakeSyntax [caseTarget] (AstQuery "nowhere/*.elm" (ItemsOf "typo in update") []) (M.keys files) reader)
         `shouldSatisfy` either (\e -> "unknown target `typo in update`" `T.isPrefixOf` failureWhy e) (const False)
+    it "a linked grammar passes a generic target only when its kind word is a node type: a typo is one error, not one per file (m2a minor 7)" $ do
+      let rust = shippedLanguageNow "rust"
+          rs = M.fromList [("src/a.rs", "struct A;\n"), ("src/b.rs", "struct B;\n")]
+          ask t = runIdentity (astQueries (querying (\_ _ _ -> Identity (Right []))) {anchorSyntax = treeSitterAnchors} [rust] (AstQuery "src/*.rs" (ItemsOf t) []) (M.keys rs) (\p -> Identity (M.lookup p rs)))
+      ask "strcut A" `shouldSatisfy` either (\e -> "unknown target `strcut A`" `T.isPrefixOf` failureWhy e) (const False)
+      ask "struct A" `shouldSatisfy` either (const False) (const True)
     it "skips files without a language adapter when the glob has a wildcard, but not a named file" $ do
       let files' = M.insert "src/data.json" "{}" files
           reader' p = Identity (M.lookup p files')

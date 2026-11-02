@@ -20,7 +20,7 @@ import Olifant.Template (Value (..), describeTemplateError)
 astQueries :: Monad m => Syntax m -> [Language] -> AstQuery -> [FilePath] -> (FilePath -> m (Maybe Text)) -> m (Either QueryFailure [Record])
 astQueries syntax langs q paths readFile' = case (astSelect q, rawRule) of
   (ItemsOf target, _)
-    | not (genericPhrase (T.words target) && any grammarLinked langs)
+    | not (any (`genericFor` T.words target) langs)
     , not (any (\l -> any (\t -> isJust (matchShape t (T.words target))) (langTargets l)) langs) ->
         pure (Left (failed ("unknown target `" <> target <> "` in any language adapter (targets: " <> T.intercalate ", " (nub [targetPhrase t | l <- langs, t <- langTargets l]) <> ")")))
   (RawRule _, Just (Left err)) -> pure (Left (failed (describeQuery (AstQueryQ q) <> ": " <> describeTemplateError err)))
