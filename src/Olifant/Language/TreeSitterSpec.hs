@@ -21,7 +21,7 @@ import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
 import Olifant.Language.Captures (Cap (..), PNode (..), anchorFromCaptures)
 import Olifant.Language.Syntax (Match (..))
-import Olifant.Language.TreeSitter (cacheHolds, cacheSize, compiledSize, capturesOf, loadableGrammar, queriesFor)
+import Olifant.Language.TreeSitter (cacheHolds, cacheSize, compiledSize, capturesOf, definitionKinds, loadableGrammar, queriesFor)
 import Olifant.Language.Adapter (Grammar (..))
 import Olifant.Language (shippedLanguageNow)
 import Test.Hspec
@@ -163,6 +163,21 @@ captureSpec = describe "tree-sitter captures" $ do
       -- review I3: `class C` is the class, not its instances
       -- (its signature and default equation are one item: one `m`)
       containers src ["class", "C"] `shouldBe` Just (Right [((1, 2), 1)])
+  describe "Elm (the elm pack's grammar; tags and textobjects vendored, imports and types olifant's)" $ do
+    elm <- runIO (either (error . T.unpack) id . parseOverShipped "elm" "packs/elm" <$> TIO.readFile "packs/elm/languages/elm.toml")
+    let sample = T.unlines ["module A exposing (..)", "", "import Dict", "", "type alias Model =", "    { count : Int", "    , name : String", "    }", "", "type alias Id = String", "", "type Msg", "    = Increment", "    | Named { who : String }", "", "update : Msg -> Model -> Model", "update msg model =", "    let", "        helper x = x + 1", "    in", "    model"]
+    it "elm's queries compile against the pack's grammar" $
+      fmap (const ()) (loadableGrammar elm >>= \g -> either (const Nothing) Just (capturesOf g (queriesFor "elm") "")) `shouldBe` Just ()
+    it "elm definitions: functions, types, aliases, a record (its unit the whole alias), the module" $
+      fmap (map (\(n, k, own, unit) -> (n, k, own, unit))) (definitionKinds elm sample)
+        `shouldBe` Just
+          [ ("A", "definition.module", (1, 1), (1, 1))
+          , ("Model", "definition.type", (6, 8), (5, 8))
+          , ("Id", "definition.type", (10, 10), (10, 10))
+          , ("Msg", "definition.type", (12, 14), (12, 14))
+          , ("update", "definition.function", (17, 21), (17, 21))
+          , ("helper", "definition.function", (19, 19), (19, 19))
+          ]
   it "every shipped query compiles and uses only known predicates" $
     forM_ ["haskell", "python", "rust"] $ \g ->
       either (Just . ((g <> ": ") <>)) (const Nothing) (capturesOf (shipped g) (queriesFor g) "") `shouldBe` Nothing

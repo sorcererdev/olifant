@@ -169,13 +169,16 @@ spec = describe "olifant doctor (spec §4.7)" $ do
     map (checkStatus . row) ["rust: tests", "rust: test units", "rust: test selection", "rust: stub"] `shouldBe` [Ok, Ok, Ok, Ok]
     checkDetail (row "rust: stub") `shouldBe` "[test] stub at end of mod tests · from toolchain cargo-test"
     checkDetail (row "rust: test units") `shouldBe` "[test] unit, above · from shipped"
-  it "a queries row: the linked grammar and its query files; a grammar not linked is a warning" $ do
+  it "a queries row: the loaded grammar and its query files (elm from its pack); a bare grammar name is a warning" $ do
     rust <- shippedLanguage "rust" []
     elm <- shippedLanguage "elm" [("pack elm", "packs/elm")]
     let cs = runIdentity (doctor (ports ["ast-grep", "cargo"] (Right ()) []) ((input local) {diLanguages = [rust, elm]}))
         row n = head [(checkStatus c, checkDetail c, checkFix c) | c <- cs, checkName c == n]
     row "rust: queries" `shouldBe` (Ok, "tree-sitter-rust @77a3747; impls, imports, tags, textobjects (shipped)", Nothing)
-    row "elm: queries" `shouldBe` (Warn, "no queries for the elm grammar (anchors from [targets.*] only)", Nothing)
+    row "elm: queries" `shouldBe` (Ok, "elm; imports, tags, textobjects, types (shipped)", Nothing)
+    let bare = elm {langGrammar = Grammar "elm" Nothing}
+        cs' = runIdentity (doctor (ports ["ast-grep", "cargo"] (Right ()) []) ((input local) {diLanguages = [bare]}))
+    [(checkStatus c, checkDetail c) | c <- cs', checkName c == "elm: queries"] `shouldBe` [(Warn, "no grammar (anchors from [targets.*] only)")]
   it "the grammar row: loaded, no source, no compiler, fetch failed, build failed, ABI, load failed" $ do
     rust <- shippedLanguage "rust" []
     let go = rust {langName = "go", langGrammar = Grammar "go" Nothing}

@@ -101,7 +101,7 @@ foreign import ccall unsafe "ts_query_string_value_for_id" c_stringValue :: Ptr 
 -- | The language's grammar when olifant reads it in process: it has a
 -- source to build ('grSource') and a query set to run (the shipped one for
 -- its name, or the project's). A bare name, or a grammar with no queries
--- yet (Elm's, until its queries are vendored), is read by ast-grep only.
+-- (a pack's language olifant ships none for), is read by ast-grep only.
 -- No IO: whether it loads is the readers' question ('capturesOf').
 loadableGrammar :: Language -> Maybe Grammar
 loadableGrammar lang = case langGrammar lang of

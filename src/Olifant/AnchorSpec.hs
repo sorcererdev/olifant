@@ -108,10 +108,10 @@ rustDeclared = rustGeneric {langTargets = langTargets structLang}
 tsSyntax :: Syntax Identity
 tsSyntax = (querying (\_ _ _ -> Identity (Right []))) {anchorSyntax = treeSitterAnchors}
 
--- | Elm through a pack's vendored grammar (not linked in), with a declared
--- `type NAME`.
+-- | Elm with a grammar name only (no source: ast-grep reads it, olifant
+-- does not load it), with a declared `type NAME`.
 elmSource :: Language
-elmSource = caseTarget {langGrammar = Grammar "elm" (Just (SourceDir "/p/languages/grammar/elm")), langTargets = langTargets caseTarget ++ langTargets typeLang}
+elmSource = caseTarget {langGrammar = Grammar "elm" Nothing, langTargets = langTargets caseTarget ++ langTargets typeLang}
   where
     Right typeLang =
       parseLanguage "elm" "/p" $
@@ -141,7 +141,7 @@ genericSpec = describe "the generic rule (4b m2)" $ do
   it "CRLF text places as LF does" $ do
     let file = T.unlines ["// café", "struct größe {", "    a: u8,", "}"]
     fmap locLine (at rustGeneric "end of struct größe" (T.replace "\n" "\r\n" file)) `shouldBe` Right 3
-  it "a grammar not linked in: declared targets as today; a generic phrase is an unknown target" $ do
+  it "a grammar not loaded in process (a bare name): declared targets as today; a generic phrase is an unknown target" $ do
     fmap locLine (runIdentity (resolveLayers fakeSyntax (Just elmSource) Nothing [PhraseAnchor "end of case in update"] source)) `shouldBe` Right 9
     let Left [m] = runIdentity (resolveLayers fakeSyntax {anchorSyntax = treeSitterAnchors} (Just elmSource) Nothing [PhraseAnchor "end of function f"] source)
     missReason m `shouldSatisfy` ("unknown target `function f`" `T.isInfixOf`)

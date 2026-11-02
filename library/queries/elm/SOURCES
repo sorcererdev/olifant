@@ -1,0 +1,9 @@
+# Tree-sitter queries for the Elm grammar, pinned.
+textobjects.scm  nvim-treesitter/nvim-treesitter-textobjects  5c7b0263797dfd1bd6202f2b219f3b53a80b2187  queries/elm/textobjects.scm  Apache-2.0 (LICENSE-nvim-treesitter)
+tags.scm         elm-tooling/tree-sitter-elm v5.9.4  34815684e37cf299477e86a7d1e10d3ecb5486f9  queries/tags.scm  MIT (LICENSE-tree-sitter-elm)
+# The grammar (packs/elm/languages/grammar/elm): tree-sitter-elm v5.9.4, the same commit (its SOURCES).
+imports.scm      olifant (written here, not vendored): an import clause, whole
+types.scm        olifant (written here, not vendored): a type alias @definition.type (a record alias: its record, the alias @class.outer);
+                 a type's variants and a record alias's fields @class.inner (upstream tags.scm has no type alias; the
+                 textobjects file has no class bodies)
+# changes: none (the vendored files are byte-for-byte the pinned upstream files).
