@@ -189,6 +189,9 @@ spec = describe "olifant doctor (spec §4.7)" $ do
     -- before the queries row
     length (takeWhile (/= "rust: grammar") names) + 1 `shouldBe` length (takeWhile (/= "rust: queries") names)
     row "go: grammar" `shouldBe` (Warn, "no source (grammar = \"go\" names it only): units, generic anchors and counts need one", Just "add grammar = { git = URL, rev = SHA } (or { source = \"dir\" }) to .olifant/languages/go.toml")
+    let failing = runIdentity (doctor (ports ["ast-grep", "cargo"] (Right ()) []) {dpGrammar = \_ -> Identity (Left (BuildFailed "x"))} ((input local) {diLanguages = [rust]}))
+    [(checkStatus c, checkDetail c) | c <- failing, checkName c == "rust: queries"]
+      `shouldBe` [(Warn, "tree-sitter-rust @77a3747; impls, imports, tags, textobjects (shipped) (not read: the grammar is not loaded)")]
     let one f = let c = grammarRow rust (Left f) in (checkStatus c, checkDetail c, checkFix c)
     fst3 (one (NeedsCompiler "cc is not on PATH")) `shouldBe` Bad
     snd3 (one (NeedsCompiler "cc is not on PATH")) `shouldBe` "needs a C compiler to build: cc is not on PATH"

@@ -241,9 +241,12 @@ fetch s url rev checkout =
     runSteps = \case
       [] -> pure (Right ())
       step : rest -> step >>= either (pure . Left) (const (runSteps rest))
-    lastLine t = case reverse (filter (not . T.null) (map T.strip (T.lines t))) of
-      l : _ -> l
-      [] -> "git failed"
+    -- git's first `fatal:` or `error:` line says why; its advice follows
+    lastLine t =
+      let ls = filter (not . T.null) (map T.strip (T.lines t))
+       in case [l | l <- ls, any (`T.isPrefixOf` l) ["fatal:", "error:"]] ++ reverse ls of
+            l : _ -> l
+            [] -> "git failed"
 
 -- | The library's base name: the grammar's name and 8 hex of an fnv64 over
 -- the source's identity (a checkout's revision; a folder's path and its

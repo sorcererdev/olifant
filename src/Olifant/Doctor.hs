@@ -99,7 +99,11 @@ doctor ports di = do
       , let name = langName lang <> ": " <> capName c
       ]
         ++ [grammarRow lang r | Just r <- [lookup (langName lang) grammars]]
-        ++ [queriesRow lang]
+        ++ [unloaded (lookup (langName lang) grammars) (queriesRow lang)]
+    -- a queries row whose grammar does not load reads nothing
+    unloaded = \case
+      Just (Left f) | f /= NoSource -> \c -> if checkStatus c == Ok then c {checkStatus = Warn, checkDetail = checkDetail c <> " (not read: the grammar is not loaded)"} else c
+      _ -> id
     -- the tree-sitter grammar and queries the generic anchor phrases read
     queriesRow lang = case loadableGrammar lang of
       Just g ->

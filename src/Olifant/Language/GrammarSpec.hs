@@ -120,7 +120,7 @@ spec = do
     s <- fresh "git-fail"
     let g = Grammar "python" (Just (SourceGit "file:///nonexistent" "0123456789012345678901234567890123456789" Nothing))
     loadGrammarWith s g >>= \case
-      Left (FetchFailed t) -> T.unpack t `shouldSatisfy` ("fetching file:///nonexistent @0123456 failed: " `isPrefixOf`)
+      Left (FetchFailed t) -> T.unpack t `shouldSatisfy` ("fetching file:///nonexistent @0123456 failed: fatal: " `isPrefixOf`)
       other -> expectationFailure (show (fmap ldLibrary other))
     t0 <- getMonotonicTime
     r <- loadGrammarWith s g
