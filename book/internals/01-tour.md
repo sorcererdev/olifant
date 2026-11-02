@@ -27,8 +27,9 @@ last three come out in that odd order. First, a map of the repository, the units
 into, and the ports that keep the core testable.
 
 Olifant is small: about 27,000 lines of library code in `src/`, 17,500 lines of tests next to
-it, and a 90-line `app/Main.hs`. Line references (`src/Olifant/Cli.hs`) are to the code as
-of this chapter; if one is off, the code has moved and the chapter needs fixing.
+it, and a 90-line `app/Main.hs`. References name the file and the function or type
+(`Cli.hs`, `runCommand`), never a line number, because names survive edits; `scripts/book-refs.sh`
+lists any line number that crept in.
 
 If the Haskell itself is in your way, read [chapter 2](02-haskell-for-this-codebase.md)
 alongside this one. This chapter names the idioms as they come up and chapter 2 explains
@@ -593,8 +594,9 @@ no generators. Once every pack checks out, `openAt` goes through each one:
   order straight from the parse tree, and sorts `genInputs` by it (`Load.hs`). That is
   the only reason `show` and a generator's prompts list inputs in declaration order rather
   than whatever order the `Map` happens to iterate in.
-- `languagesIn` (`Catalog.hs`) parses `languages/*.toml` into `Language` values with
-  `parseLanguage` (`src/Olifant/Language/Adapter.hs`).
+- `assembleLanguages` (`Catalog.hs`) builds the `Language` values from the layered
+  `languages/*.toml` tables (shipped, pack, project; chapter 5) with `languageFromLayers`
+  (`src/Olifant/Language/Adapter.hs`).
 - `regionsIn` (`Catalog.hs`) reads `regions.toml`.
 - `rulesIn` (`Catalog.hs`) reads `rules.toml` with `Rules.parseRules`, and `addRules` adds them; a rule replaces an earlier one with its id.
 
