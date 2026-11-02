@@ -18,7 +18,7 @@ import Test.Hspec
 python :: Language
 python = l
   where
-    Right l = parseLanguage "python" "/p" (T.unlines ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\""])
+    Right l = parseLanguage "python" "/p" (T.unlines ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-python\", rev = \"293fdc02038ee2bf0e2e206711b69c90ac0d413f\" }"])
 
 spec :: Spec
 spec = describe "Olifant.Cursor (snippets at the cursor, spec §5.3)" $ do

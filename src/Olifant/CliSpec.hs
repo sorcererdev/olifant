@@ -1,5 +1,6 @@
 module Olifant.CliSpec (spec) where
 
+import Olifant.Language.Grammar (GrammarFailure (NoSource))
 import Data.Aeson (Value (..), decodeStrict)
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KM
@@ -94,7 +95,7 @@ initMigrateSpec = describe "init --migrate (an existing repo)" $ do
   migrate <- runIO (TIO.readFile "packs/python-strangler/migrate.toml")
   let packs =
         [ ("/u/config.toml", "[packs]\npython-htmx = { path = \"/packs/py\" }\npython-strangler = { path = \"/packs/ps\" }\n")
-        , ("/packs/py/languages/python.toml", "files = [\"**/*.py\"]\ncomment = \"#\"\ngrammar = \"python\"\n")
+        , ("/packs/py/languages/python.toml", "files = [\"**/*.py\"]\ncomment = \"#\"\ngrammar = { git = \"https://github.com/tree-sitter/tree-sitter-python\", rev = \"293fdc02038ee2bf0e2e206711b69c90ac0d413f\" }\n")
         , ("/packs/py/generators/g/generator.toml", "description = \"d\"\nlanguage = \"python\"\n")
         , ("/packs/ps/generators/s/generator.toml", "description = \"d\"\nlanguage = \"python\"\n")
         , ("/packs/ps/migrate.toml", migrate)
@@ -110,7 +111,7 @@ initMigrateSpec = describe "init --migrate (an existing repo)" $ do
     M.member "/w/.olifant/baseline.toml" files `shouldBe` True
     M.findWithDefault "" "/w/.gitignore" files `shouldSatisfy` T.isInfixOf ".olifant/state/"
   it "finds python-strangler beside a --pack directory, with no user config" $ do
-    let beside = [(f, t) | (f, t) <- packs, f /= "/u/config.toml", not ("/packs/ps/" `isPrefixOf` f)] ++ [("/packs/python-htmx/languages/python.toml", "files = [\"**/*.py\"]\ncomment = \"#\"\ngrammar = \"python\"\n"), ("/packs/python-strangler/generators/s/generator.toml", "description = \"d\"\nlanguage = \"python\"\n"), ("/packs/python-strangler/migrate.toml", migrate)]
+    let beside = [(f, t) | (f, t) <- packs, f /= "/u/config.toml", not ("/packs/ps/" `isPrefixOf` f)] ++ [("/packs/python-htmx/languages/python.toml", "files = [\"**/*.py\"]\ncomment = \"#\"\ngrammar = { git = \"https://github.com/tree-sitter/tree-sitter-python\", rev = \"293fdc02038ee2bf0e2e206711b69c90ac0d413f\" }\n"), ("/packs/python-strangler/generators/s/generator.toml", "description = \"d\"\nlanguage = \"python\"\n"), ("/packs/python-strangler/migrate.toml", migrate)]
     (code, out, err, files, _) <- runInit beside ["init", "--migrate", "legacy", "--pack", "/packs/python-htmx", "--human"]
     (code, out <> err) `shouldBe` (ExitSuccess, out <> err)
     M.findWithDefault "" "/w/.olifant/config.toml" files `shouldSatisfy` T.isInfixOf "python-strangler = { path = \"/packs/python-strangler\" }"
@@ -138,7 +139,7 @@ newCodeCheckSpec = describe "check: rules on new code" $ do
         registryNow = "SWITCHES: dict[str, bool] = {\n    \"close-table\": True,\n}\n"
         files =
           [ ("/w/.olifant/config.toml", "[packs]\np = { path = \"/packs/p\" }\n\n[migrate]\nlegacy = [\"legacy/**\"]\nswitches = \"src/app/switches.py\"\n")
-          , ("/packs/p/languages/python.toml", "files = [\"**/*.py\"]\ncomment = \"#\"\ngrammar = \"python\"\n")
+          , ("/packs/p/languages/python.toml", "files = [\"**/*.py\"]\ncomment = \"#\"\ngrammar = { git = \"https://github.com/tree-sitter/tree-sitter-python\", rev = \"293fdc02038ee2bf0e2e206711b69c90ac0d413f\" }\n")
           , ("/packs/p/generators/g/generator.toml", "description = \"d\"\nlanguage = \"python\"\n")
           , ("/packs/p/migrate.toml", migrate)
           , ("/w/legacy/views.py", now)
@@ -159,7 +160,7 @@ newCodeCheckSpec = describe "check: rules on new code" $ do
         now = T.unlines ["def close_table(t):", "    # olifant:switch close-table → booking/commands/close_table", "    return t"]
         files =
           [ ("/w/.olifant/config.toml", "[packs]\np = { path = \"/packs/p\" }\n\n[migrate]\nlegacy = [\"legacy/**\"]\n")
-          , ("/packs/p/languages/python.toml", "files = [\"**/*.py\"]\ncomment = \"#\"\ngrammar = \"python\"\n")
+          , ("/packs/p/languages/python.toml", "files = [\"**/*.py\"]\ncomment = \"#\"\ngrammar = { git = \"https://github.com/tree-sitter/tree-sitter-python\", rev = \"293fdc02038ee2bf0e2e206711b69c90ac0d413f\" }\n")
           , ("/packs/p/generators/g/generator.toml", "description = \"d\"\nlanguage = \"python\"\n")
           , ("/packs/p/migrate.toml", migrate)
           , ("/w/legacy/views.py", now)
@@ -177,7 +178,7 @@ newCodeCheckSpec = describe "check: rules on new code" $ do
         gone = T.unlines ["def charge(c):", "    return c", "", "def refund(c):", "    return c"]
         files =
           [ ("/w/.olifant/config.toml", "[packs]\np = { path = \"/packs/p\" }\n\n[migrate]\nlegacy = [\"legacy/**\"]\n")
-          , ("/packs/p/languages/python.toml", "files = [\"**/*.py\"]\ncomment = \"#\"\ngrammar = \"python\"\n")
+          , ("/packs/p/languages/python.toml", "files = [\"**/*.py\"]\ncomment = \"#\"\ngrammar = { git = \"https://github.com/tree-sitter/tree-sitter-python\", rev = \"293fdc02038ee2bf0e2e206711b69c90ac0d413f\" }\n")
           , ("/packs/p/generators/g/generator.toml", "description = \"d\"\nlanguage = \"python\"\n")
           , ("/w/legacy/views.py", views)
           ]
@@ -198,7 +199,7 @@ newCodeCheckSpec = describe "check: rules on new code" $ do
     let py = T.unlines ["class Repo:", "    def save(self):", "        return 1", "", "    def load(self):", "        return 2", "", "def close(t):", "    def inner(x):", "        return x", "    return inner(t)"]
     n <- legacyCount tmp "python" "**/*.py" "legacy/views.py" py
     n `shouldBe` Just 3
-  it "says why the count is 0 for a language with no linked grammar and no `count` key" $ do
+  it "says why the count is 0 for a language whose grammar is not loaded and no `count` key" $ do
     tmp <- getTemporaryDirectory
     let files =
           [ ("/w/.olifant/config.toml", "[packs]\np = { path = \"/packs/p\" }\n\n[migrate]\nlegacy = [\"legacy/**\"]\n")
@@ -212,13 +213,26 @@ newCodeCheckSpec = describe "check: rules on new code" $ do
         line = lookupKey "migration" v >>= lookupKey "line"
     (lookupKey "migration" v >>= lookupKey "legacy_now") `shouldBe` Just (Aeson.Number 0)
     line `shouldSatisfy` maybe False (\(Aeson.String t) -> "set `count`" `T.isInfixOf` t)
+  it "the hint names doctor's grammar row when a language's grammar does not load" $ do
+    tmp <- getTemporaryDirectory
+    let files =
+          [ ("/w/.olifant/config.toml", "[packs]\np = { path = \"/packs/p\" }\n\n[migrate]\nlegacy = [\"legacy/**\"]\n")
+          , ("/packs/p/languages/x.toml", "files = [\"**/*.x\"]\ncomment = \"#\"\ngrammar = \"x\"\n")
+          , ("/packs/p/generators/g/generator.toml", "description = \"d\"\nlanguage = \"x\"\n")
+          , ("/w/legacy/a.x", "f = 1\n")
+          ]
+        baseOf _ _ _ = pure (Right ("c0ffee", Nothing))
+    (_, out, _, _) <- runInBase (astGrepSyntax (tmp </> "olifant-test-cache")) baseOf "/w" "" files False ["check"]
+    let Just v = Aeson.decodeStrict (TE.encodeUtf8 out) :: Maybe Aeson.Value
+    (lookupKey "migration" v >>= lookupKey "line")
+      `shouldSatisfy` maybe False (\case Aeson.String t -> "x's grammar is not loaded (see `olifant doctor`'s grammar row), so set `count` under [migrate]" `T.isInfixOf` t; _ -> False)
   it "checks the files a {legacy} rule names (its [migrate] legacy globs)" $ do
     tmp <- getTemporaryDirectory
     let base = T.unlines ["def close_table(t):", "    return t"]
         files =
           [ ("/w/.olifant/config.toml", "[packs]\np = { path = \"/packs/p\" }\n\n[migrate]\nlegacy = [\"legacy/**\"]\n")
           , ("/w/.olifant/rules.toml", "[rules.no-new-defs]\nfiles = \"{legacy}\"\nonly = \"new\"\nmatch = { kind = \"function_definition\" }\nmessage = \"New work goes in the new architecture\"\n")
-          , ("/packs/p/languages/python.toml", "files = [\"**/*.py\"]\ncomment = \"#\"\ngrammar = \"python\"\n")
+          , ("/packs/p/languages/python.toml", "files = [\"**/*.py\"]\ncomment = \"#\"\ngrammar = { git = \"https://github.com/tree-sitter/tree-sitter-python\", rev = \"293fdc02038ee2bf0e2e206711b69c90ac0d413f\" }\n")
           , ("/packs/p/generators/g/generator.toml", "description = \"d\"\nlanguage = \"python\"\n")
           , ("/w/legacy/views.py", base <> "\ndef waitlist(r):\n    return r\n")
           ]
@@ -232,7 +246,7 @@ newCodeCheckSpec = describe "check: rules on new code" $ do
         files =
           [ ("/w/.olifant/config.toml", "[packs]\np = { path = \"/packs/p\" }\n")
           , ("/w/.olifant/rules.toml", "[rules.no-new-defs]\nfiles = \"legacy/*.py\"\nonly = \"new\"\nmatch = { kind = \"function_definition\" }\nmessage = \"New work goes in the new architecture\"\n")
-          , ("/packs/p/languages/python.toml", "files = [\"**/*.py\"]\ncomment = \"#\"\ngrammar = \"python\"\n")
+          , ("/packs/p/languages/python.toml", "files = [\"**/*.py\"]\ncomment = \"#\"\ngrammar = { git = \"https://github.com/tree-sitter/tree-sitter-python\", rev = \"293fdc02038ee2bf0e2e206711b69c90ac0d413f\" }\n")
           , ("/packs/p/generators/g/generator.toml", "description = \"d\"\nlanguage = \"python\"\n")
           , ("/w/legacy/views.py", now)
           ]
@@ -246,7 +260,7 @@ legacyCount :: FilePath -> Text -> Text -> FilePath -> Text -> IO (Maybe Int)
 legacyCount tmp lang glob file text = do
   let files =
         [ ("/w/.olifant/config.toml", "[packs]\np = { path = \"/packs/p\" }\n\n[migrate]\nlegacy = [\"legacy/**\"]\n")
-        , ("/packs/p/languages/" <> T.unpack lang <> ".toml", "files = [\"" <> glob <> "\"]\ncomment = \"" <> (if lang == "python" then "#" else "--") <> "\"\ngrammar = \"" <> lang <> "\"\n")
+        , ("/packs/p/languages/" <> T.unpack lang <> ".toml", "files = [\"" <> glob <> "\"]\ncomment = \"" <> (if lang == "python" then "#" else "--") <> "\"\n")
         , ("/packs/p/generators/g/generator.toml", "description = \"d\"\nlanguage = \"" <> lang <> "\"\n")
         , ("/w/" <> file, text)
         ]
@@ -288,7 +302,7 @@ runInBaseFilesGit git syntax base baseFiles dir stdinText files tty args = do
         , rtSyntax = syntax
         , rtChecker = const noChecker
         , rtGitChanged = \_ _ -> pure (Right ([], ["src/b.x"]))
-        , rtDoctor = DoctorPorts (\e -> pure (if take 4 e == "nope" then Nothing else Just ("/bin/" <> e))) (pure "/usr/bin") (\_ -> pure (Right ())) (\_ -> pure False) (\_ -> pure Nothing) (\_ -> pure []), rtTracked = \_ -> pure Nothing, rtBaseText = base, rtBaseFiles = baseFiles, rtBaseStamp = \_ _ -> pure "", rtGit = git
+        , rtDoctor = DoctorPorts (\e -> pure (if take 4 e == "nope" then Nothing else Just ("/bin/" <> e))) (pure "/usr/bin") (\_ -> pure (Right ())) (\_ -> pure False) (\_ -> pure Nothing) (\_ -> pure []) (\_ -> pure (Left NoSource)), rtTracked = \_ -> pure Nothing, rtBaseText = base, rtBaseFiles = baseFiles, rtBaseStamp = \_ _ -> pure "", rtGit = git
         , rtGitInit = \_ _ -> pure (Right ()), rtVerifier = const noVerifier, rtTester = \_ _ -> noRunner
         }
       args
@@ -313,7 +327,7 @@ runInitWith committed files args = do
         , rtOut = \t -> modifyIORef' out (<> t), rtErr = \t -> modifyIORef' err (<> t)
         , rtSyntax = noSyntax, rtChecker = const noChecker
         , rtGitChanged = \_ _ -> pure (Right ([], []))
-        , rtDoctor = DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False) (\_ -> pure Nothing) (\_ -> pure []), rtTracked = \_ -> pure Nothing, rtBaseText = \_ _ _ -> pure (Left "no base in tests"), rtBaseFiles = \_ _ -> pure (Left "no base"), rtBaseStamp = \_ _ -> pure "", rtGit = \_ _ -> pure (Left "no git in tests")
+        , rtDoctor = DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False) (\_ -> pure Nothing) (\_ -> pure []) (\_ -> pure (Left NoSource)), rtTracked = \_ -> pure Nothing, rtBaseText = \_ _ _ -> pure (Left "no base in tests"), rtBaseFiles = \_ _ -> pure (Left "no base"), rtBaseStamp = \_ _ -> pure "", rtGit = \_ _ -> pure (Left "no git in tests")
         , rtGitInit = \d m -> modifyIORef' gits (++ [(d, m)]) >> pure committed, rtVerifier = const noVerifier, rtTester = \_ _ -> noRunner
         }
       args
@@ -652,7 +666,7 @@ runCliSpec = describe "runCli" $ do
       `shouldBe` [("x.rs", [(2, 4), (12, 12)]), ("sub/y.rs", [(1, 2)])]
   describe "olifant fix (spec §5.9, beat 4 feedback)" $ do
     let rustPack =
-          [ ("/packs/p/languages/rust.toml", T.unlines ["files = [\"**/*.rs\"]", "comment = \"//\"", "grammar = \"rust\"", "[holes.stmt]", "placeholder = 'todo!(\"olifant: {= hole =}\");'", "wrap = \"fn __o() { {= fill =} }\""])
+          [ ("/packs/p/languages/rust.toml", T.unlines ["files = [\"**/*.rs\"]", "comment = \"//\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-rust\", rev = \"77a3747266f4d621d0757825e6b11edcbf991ca5\" }", "[holes.stmt]", "placeholder = 'todo!(\"olifant: {= hole =}\");'", "wrap = \"fn __o() { {= fill =} }\""])
           , ("/packs/p/generators/port/generator.toml", "description = \"p\"\nlanguage = \"rust\"\n[inputs.service]\ntype = \"ident\"\n[[edits]]\ncreate = \"{= service =}/port.rs\"\ntext = \"// port\\n\"\n")
           , ("/packs/p/rules.toml", T.unlines
               [ "[rules.no-db]", "files = \"{service}/src/*.rs\"", "message = \"no db\""

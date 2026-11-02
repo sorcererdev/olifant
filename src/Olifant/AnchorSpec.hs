@@ -98,7 +98,7 @@ rustDeclared = rustGeneric {langTargets = langTargets structLang}
     Right structLang =
       parseLanguage "rust" "/p" $
         T.unlines
-          [ "files = [\"**/*.rs\"]", "comment = \"//\"", "grammar = \"rust\""
+          [ "files = [\"**/*.rs\"]", "comment = \"//\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-rust\", rev = \"77a3747266f4d621d0757825e6b11edcbf991ca5\" }"
           , "[targets.struct]", "phrase = \"struct NAME\""
           , "container = { kind = \"field_declaration_list\" }", "items = { kind = \"field_declaration\" }"
           , "example = \"end of struct S\""
@@ -111,7 +111,7 @@ tsSyntax = (querying (\_ _ _ -> Identity (Right []))) {anchorSyntax = treeSitter
 -- | Elm through a pack's vendored grammar (not linked in), with a declared
 -- `type NAME`.
 elmSource :: Language
-elmSource = caseTarget {langGrammar = GrammarSource "/p/languages/grammar/elm", langTargets = langTargets caseTarget ++ langTargets typeLang}
+elmSource = caseTarget {langGrammar = Grammar "elm" (Just (SourceDir "/p/languages/grammar/elm")), langTargets = langTargets caseTarget ++ langTargets typeLang}
   where
     Right typeLang =
       parseLanguage "elm" "/p" $

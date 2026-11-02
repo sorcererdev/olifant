@@ -1,2 +1,3 @@
 parser.c, scanner.c, tree_sitter/*.h: tree-sitter-python 0.25.0 from crates.io (git 293fdc02038ee2bf0e2e206711b69c90ac0d413f),
 the version ast-grep 0.45.3's Cargo.lock pins; sha256 of the .crate 6bf85fd39652e740bf60f46f4cda9492c3a9ad75880575bf14960f775cb74a1c. MIT.
+Not compiled in: the specs' local source and an offline source for OLIFANT_GRAMMAR_SOURCES; the shipped language file pins the same commit.

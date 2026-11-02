@@ -90,3 +90,10 @@ void ots_facts(const TSNode *n, uint32_t *out) {
   out[6] = ts_node_symbol(*n);
   out[7] = (ts_node_is_named(*n) ? 1 : 0) | (ts_node_is_extra(*n) ? 2 : 0);
 }
+
+/* The grammar ABI versions this runtime reads: a dlopened grammar outside
+ * them is refused before any parse. */
+void ots_abi_range(uint32_t *lo, uint32_t *hi) {
+  *lo = TREE_SITTER_MIN_COMPATIBLE_LANGUAGE_VERSION;
+  *hi = TREE_SITTER_LANGUAGE_VERSION;
+}

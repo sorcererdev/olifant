@@ -118,7 +118,7 @@ Both paths meet in `unitAnswers :: Syntax IO -> Language -> Maybe FilePath -> Te
 (Either Text [UnitAnswer])`, the units slot. By rule it gives each `[unit] kinds` match as a
 `UnitAnswer` (its 1-based span, its name by `[unit] name`); with `langUnitProvider` it gives the
 program's answer (`Provider.providedUnits`, memoised by request). With neither (no `[unit]
-kinds`, no provider) and a linked grammar, it gives every function and class-like definition the
+kinds`, no provider) and a loadable grammar (`TreeSitter.loadableGrammar`), it gives every function and class-like definition the
 grammar's queries capture (`TreeSitter.definitionLines`, over `Captures.definitionSpans`): named
 by its `@name`, its span the definition's, widened to the largest `function.outer`/`class.outer`
 capture that ends with it and holds no other definition (a Python decorated def, decorators
@@ -132,7 +132,7 @@ anchor reads `unitLookupIn` over `unitsWithKinds`, where a type and its inherent
 (`Resolved.rsWhy`). Rust, Python and Haskell
 ship no `kinds` any more; they keep `name`, which `defLine`, `ownerHeader` and the other line
 readers (`App.definesIn`, `ConjureScan`, `Recognize`, `functionText`, `FillPhase`'s top-level
-names) still use. `hasUnits` (in `Olifant.Language`) is `hasUnitRule` or a linked grammar.
+names) still use. `hasUnits` (in `Olifant.Language`) is `hasUnitRule` or a loadable grammar (`hasLoadableGrammar`).
 `unitsOf` sorts either by
 start (longer first) and folds it the same way: `defLine` (the first line `name` names, else the
 first), `dedupe`, `joined`, `qualify`. `unitAt` keeps its rule path; with a provider, or with the
@@ -182,12 +182,12 @@ Every reader of test units goes through one door, `TestUnits.testUnitsOf :: Lang
 -> [TestUnit]` (with `testUnitsReport`, which keeps a provider's failure for doctor; `testAtIn`
 and `testLineIn` are built on it). By rule it is `testUnitsIn` over `[test] unit` and `above`;
 with `testUnitProvider` it is the program's answer, each unit's path the names of the answers
-that strictly hold it, outermost first. With a linked grammar, `testUnitsReport` calls
+that strictly hold it, outermost first. With a loadable grammar, `testUnitsReport` calls
 `testUnitsWith` with a span function (from `TreeSitter.definitionLines`): a unit whose rule's
 line starts a definition ends where that definition ends, so a test with a string's outdented
 line, a Rust test's closing brace and a multi-line signature keep their whole span (m3's known
 limits). A unit on a line that starts no definition (hspec's `it`) keeps the outdent rule, as
-does every unit of an unlinked grammar. It also passes the grammar's class definitions (capture
+does every unit of a language whose grammar does not load. It also passes the grammar's class definitions (capture
 `definition.class`, from `TreeSitter.definitionKinds`): a class holding a unit is a group of it,
 whatever its name, unless a rule matched its line; a class holding none is no unit. So a pytest
 method's id is `ElectionTests::test_x` for a Django `TestCase` subclass, as for `class TestX`,
@@ -267,7 +267,7 @@ of its own. The `conjure shapes` row lists `port.add` and `advice` when present,
 
 | key | read by |
 |---|---|
-| `files`, `comment`, `grammar` | `languageFor`; region fences (`Region.hs`); `AstGrep.hs` (a built-in name, or a vendored grammar compiled once with `cc`) |
+| `files`, `comment`, `grammar` | `languageFor`; region fences (`Region.hs`). `grammar` (`Adapter.grammarFrom`, a `Grammar` of `grName` and `grSource`) is a bare name (ast-grep's language only), `{ git = URL, rev = SHA }` (`SourceGit`; `rev` a full commit SHA, `path` a folder inside the checkout) or `{ source = "dir" }` (`SourceDir`, beside a pack's or the project's `languages/`), either table with an optional `name`; the name is letters, digits and `_`. The loader (`Grammar.hs`) builds a sourced one; `AstGrep.hs` uses ast-grep's own language for a name in `astGrepBuiltIn` (ast-grep 0.45.3's list) and registers the loader's library for any other |
 | `[targets.*]` | `Anchor/Items.hs`, `Anchor/Resolve.hs`: the `at` phrases (`targetPhrase`) |
 | `placeholder`, `branch`, `arm_separator`, `lone_arm_spaced` | `Generation/Complete.hs` (`applyBranches`): the todo arm a `complete` edit writes and how it joins the others |
 | `[holes.KIND]` | `Holes.hs`, `Generation/FillPhase.hs`: a hole's placeholder and the code a fill must parse in |
@@ -283,21 +283,57 @@ Besides the ast-grep shell-out (`Language/AstGrep.hs`, which keeps `[[mutate]]` 
 declared `[targets.*]`), olifant parses in process with tree-sitter, to read the generic
 anchor phrases from community queries (design 4b §A).
 
-- **The C.** The tree-sitter runtime 0.27.0 (its one-file amalgamation, `cbits/tree-sitter/src/lib.c`)
-  and each linked grammar (`cbits/tree-sitter-rust/parser.c`, `scanner.c`; the same in
-  `cbits/tree-sitter-python/` and `cbits/tree-sitter-haskell/`) are `c-sources` in
-  `olifant.cabal`, in both the `library` and the `spec` stanzas. Nothing is installed: no
-  Homebrew library, no dylib, no doctor row for it. Both are pinned to the versions ast-grep
-  0.45.3's `Cargo.lock` locks (runtime 0.27.0, tree-sitter-rust 0.24.2, tree-sitter-python
-  0.25.0, tree-sitter-haskell 0.23.1), so the two parsers
-  read the same trees. Each directory has a `SOURCES` (version, git commit, crate sha256) and
-  the upstream `LICENSE`.
-- **The shim.** GHC's FFI cannot pass a `TSNode` (a 32-byte struct) by value, so
-  `cbits/olifant_ts.c` wraps the calls olifant needs and holds nodes by pointer
-  (`ots_parse`, `ots_facts`, `ots_field`, `ots_next` and `ots_captures`, `ots_prune`, …). The grammar is passed
-  in: `TreeSitter.hs`'s `grammarTable` maps a language file's `grammar` to the compiled-in
-  `tree_sitter_<grammar>` function. That table is data keyed by grammar, never by a language's
-  name; `linkedGrammars` lists it.
+- **The runtime and the shim.** The tree-sitter runtime 0.27.0 (its one-file amalgamation,
+  `cbits/tree-sitter/src/lib.c`, pinned to the version ast-grep 0.45.3's `Cargo.lock` locks, so
+  the two parsers read the same trees) is a `c-source` in `olifant.cabal`, in both the `library`
+  and the `spec` stanzas, static: no Homebrew library, no doctor row for it. GHC's FFI cannot
+  pass a `TSNode` (a 32-byte struct) by value, so `cbits/olifant_ts.c` wraps the calls olifant
+  needs and holds nodes by pointer (`ots_parse`, `ots_facts`, `ots_field`, `ots_next` and
+  `ots_captures`, `ots_prune`, …), and `ots_abi_range` gives the grammar ABI versions the runtime
+  reads (13–15). The grammar is passed in as a `TSLanguage *` from the loader.
+- **The grammars.** No grammar is compiled into olifant. `Olifant.Language.Grammar` (the
+  loader) builds each from C source once and loads it with `dlopen`:
+  - `grammarSources` finds the folder holding `parser.c`: a `SourceDir` as given; a `SourceGit`
+    under each `gsLocalSources` folder first (`<d>/<name>/parser.c`; the settings' default reads
+    `$OLIFANT_GRAMMAR_SOURCES`), else its checkout `<cache>/grammars/src/<name>-<rev7>/`
+    (`/<path>/src`), which `fetch` makes when absent: `git init`, `git fetch --depth 1 URL REV`,
+    `git checkout FETCH_HEAD` and a `rev-parse` check, in an aside folder renamed on success.
+    Git runs with its own transports only (`protocol.allow=never` but https, ssh, git and file),
+    `http.followRedirects=false`, no hooks, `core.symlinks=false` and no credential prompt.
+  - `grammarKey` is the library's name, `<name>-<8 hex>`: an fnv64 of the source's identity (a
+    checkout's `rev`; a folder's path and its `parser.c` and `scanner.c` sizes and times), the
+    runtime's ABI, the os and the arch. A changed key is a new file; the old one stays.
+  - `compileLibrary` runs `cc -shared -fPIC -O2 -I <src> parser.c [scanner.c]` into
+    `<cache>/grammars/<key>.dylib` (`.so` off macOS), written aside and renamed, so a parallel
+    spec, the server's threads or another olifant never load a half-written file. A failure is
+    not written to disk. A `scanner.cc` (C++) is refused.
+  - `loadGrammar` (and `loadGrammarWith` under given settings) opens the library
+    (`RTLD_NOW | RTLD_LOCAL`), calls `tree_sitter_<name>`, checks `ts_language_abi_version`
+    against `abiRange` before any parse (`AbiMismatch`), and reads the symbol names and named
+    node types once into `Loaded` (`ldSymbols`, `ldNodeTypes`). Answers, failures included, are
+    kept per process in `loaded` (an `IORef` read without a lock), keyed by library path, each
+    library built under its own lock (`building`, `once`): a request that needs an absent
+    grammar pays one failed fetch per process, and a remembered answer never waits on another
+    grammar's build. A library is never `dlclose`d.
+  - The failures (`GrammarFailure`: `NoSource`, `NeedsCompiler`, `FetchFailed`, `BuildFailed`,
+    `LoadFailed`, `AbiMismatch`) read as doctor's row says them (`failureDetail`) and, named,
+    as a reader's `Left` (`grammarFailureText`). `grammarLabel` names a grammar to a person
+    (`tree-sitter-python @293fdc0`, a folder's name, or the bare name).
+  - Reading config never fetches or builds: `loadIfBuilt` loads only a library already on disk,
+    and `TreeSitter.queryError` (the catalog's check of a project's queries) uses it, so a
+    project query error on a fresh machine shows at the first use instead.
+  - `TreeSitter.loadableGrammar` is the static test the readers use: a grammar with a source
+    and a non-empty query set (Elm has a source but no queries yet, so it stays on its
+    `[unit] kinds` and declared targets). `capturesOf` calls `loadGrammar` in its IO.
+  - `Main` sets the settings (`setGrammarSettings`, the cache `~/.cache/olifant`) at start.
+    `SpecHook.grammarSetup` points the suite at `<tmp>/olifant-test-cache` and the vendored
+    copies in `library/grammars/<g>/` (also exported as `OLIFANT_GRAMMAR_SOURCES` for the
+    olifant processes specs start), and builds the shipped three before the first example: no
+    spec touches the network. `GrammarSpec` covers the loader with its own caches and a
+    `file://` fixture repository.
+  - The shipped `python.toml`, `rust.toml` and `haskell.toml` pin `{ git, rev }` to the commits
+    their `library/grammars/<g>/SOURCES` record (tree-sitter-rust's is its v0.24.2 tag: the
+    crate's recorded commit is not served by GitHub; the sources are byte-identical).
 - **The queries.** `library/queries/<grammar>/*.scm`, embedded with `embedDir`
   (`shippedQueries`, `queriesFor`). For Rust: `tags.scm` (the grammar's own, MIT: the
   `@definition.*` and `@name` captures), `textobjects.scm` (nvim-treesitter-textobjects,
@@ -323,7 +359,7 @@ anchor phrases from community queries (design 4b §A).
   Rust's. Haskell's `parser.c` is 19.8 MB; it compiles clean at `-O2` in under a second. `SOURCES` pins each vendored file to a commit and lists any line
   olifant removed under "changes".
 - **The project's queries.** `Catalog.openAt` reads `.olifant/queries/<grammar>/*.scm` for
-  each language whose grammar is linked (`projectQueries`) into `langQueries` (file, text,
+  each language whose grammar has a source (`projectQueries`) into `langQueries` (file, text,
   origin "project"). `TreeSitter.queriesOf` is the set every reader uses: the shipped files,
   a project file replacing the one of its name, new names added, in name order; `querySet`
   drops the origins for `capturesOf`, whose cache key already holds the whole set. The
@@ -339,7 +375,7 @@ anchor phrases from community queries (design 4b §A).
   `#make-range!` (nvim's `@*.outer` ranges, which olifant does not read), `#set!`,
   `#lua-match?`, fails the file's compile with "unknown predicate", naming the file: a vendored
   file that uses one has those patterns removed and listed in its `SOURCES`, and the spec
-  "every shipped query compiles and uses only known predicates" holds every linked grammar to
+  "every shipped query compiles and uses only known predicates" holds every shipped grammar to
   it. A capture a predicate reads is kept in the pruned query even when the rule does not read
   it, and is not returned.
 - **The capture data.** `capturesOf grammar queries text` returns the root node and every
@@ -349,7 +385,7 @@ anchor phrases from community queries (design 4b §A).
   `PNode` has its type, start and end as 0-based (line, column) with columns in characters (as
   ast-grep's `Match` counts them; tree-sitter counts bytes, `pnode` converts), its byte range,
   text, and whether it is named or extra. Each query set is compiled once per process
-  (`compiled`, keyed by grammar and query set), as **one** query (the files joined), so the
+  (`compiled`, keyed by the grammar's library and the query set), as **one** query (the files joined), so the
   tree is walked once for all of them; each file is also compiled alone first, so a query
   that does not compile is a `Left` naming the file, the byte and the kind of error, and a
   capture's `capFile`/`capPattern` are recovered from each file's first pattern index. The
@@ -357,8 +393,8 @@ anchor phrases from community queries (design 4b §A).
   `definition.*`), and a pattern whose only kept capture is a bare `@name` (tags.scm's
   references) is disabled, so the others cost nothing at match time.
 - **What is marshalled.** A node's facts come in one C call (`ots_facts`: bytes, rows, byte
-  columns, symbol, flags); its type is the grammar's symbol name from a table read once
-  (`symbolTable`). Its text and character columns are lazy, since most nodes are only compared.
+  columns, symbol, flags); its type is the grammar's symbol name from the table read at load
+  (`ldSymbols`). Its text and character columns are lazy, since most nodes are only compared.
   A capture's parent is read only for `.inner` captures, and fields only where the rule reads
   them (a definition's `body` and `parameters`, a call's `arguments`), with the children of a
   parameter or argument list but not of a body (a body's items are its inner captures). One
@@ -425,23 +461,23 @@ anchor phrases from community queries (design 4b §A).
   `oneContainer` turns the list into "one, none, or matches N places".
 - **Where the rule is asked.** It is the `Syntax` port's `anchorSyntax` field (after
   `runSlotProvider`); `AstGrep.astGrepSyntax` sets it to `TreeSitter.treeSitterAnchors`, which
-  answers `Nothing` unless the language's `grammar` is linked, the phrase is generic, and its
+  answers `Nothing` unless the language's grammar is loadable (`loadableGrammar`), the phrase is generic, and its
   kind word names a node type of the grammar (`grammarNodeTypes`; so `end of the imports` is
   not the engine's). Fakes use `noAnchors`. In `Anchor/Resolve.hs`, `named` follows Decision 2:
   a declared target (`itemsOfTarget`'s declared branch), else the generic rule, whose answer
   is final ("no `struct Nope` in this file"), else the anchors provider, else
   `itemsOfTarget`'s "unknown target", whose "did you mean" and target list add
-  `genericPhrases` when `grammarLinked`. `itemsOfTarget` (an `items of` query, a fragment, the
+  `genericPhrases` when `hasLoadableGrammar`. `itemsOfTarget` (an `items of` query, a fragment, the
   catalog's target check) and `locateContainers` (every container; a name two definitions
   share gives both) ask the same field. `Anchor/Items.hs`'s up-front "unknown target in any
-  language adapter" check lets a generic phrase through when any language's grammar is linked.
+  language adapter" check lets a generic phrase through when any language's grammar is loadable.
 - **What else reads them.** The engine's language words went with m2 (the leftovers): a
   definition's name (`TreeSitter.definedName`: the `@name` of the definition a text starts
   with, decorators in; else its first word) for `finding_name`, `Rules`' "a name the base
   defined" (`Newness.newSince` takes the base's names from `definedNamesIn`) and callers notes;
   a signature (`signatureHead`: the text up to the definition's `body` field) for
   `finding_head`; `[migrate]`'s count without a `count` key (`App.countedIn` over
-  `functionMatches`: the top-level `functionCaps` definitions: those inside no other function's byte span, so a method counts and a nested def, `let` or `where` binding does not; `MigrationReport.mrCountHint` says so when an unlinked language counted 0 for want of a `count` key, shown in `reportLine` and `count_hint`); and the folders a listing skips (each
+  `functionMatches`: the top-level `functionCaps` definitions: those inside no other function's byte span, so a method counts and a nested def, `let` or `where` binding does not; `MigrationReport.mrCountHint` says so, naming doctor's grammar row, when a language whose grammar does not load counted 0 for want of a `count` key, shown in `reportLine` and `count_hint`); and the folders a listing skips (each
   language's `ignore`, `Catalog.catalogIgnores`, `Workspace.ignoring`). `Newness`'
   `definitionKeywords`, `App`'s colon-scanning `signatureHead` and `Workspace.pruned`'s
   language folders are gone. `TestName`'s string prefixes and `self` move in m4.
@@ -531,11 +567,18 @@ units`, `tests`, `anchors`, `holes`): `Proven` is `Ok` with the evidence text in
 --run`), which stays `Ok` with `how (not run: olifant doctor --run)`; `Disproven` is `Warn` with
 the fix "regenerate the key or supply a provider (see chapter 9, Providers)". The origin is kept
 on every row, and evidence never makes a row `Bad`, so doctor's exit code rule is unchanged.
-After a language's capability rows, `Doctor.queriesRow` adds `LANGUAGE: queries`: for a linked
-grammar (`linkedGrammarOf`), `Ok` with its crate and version (`grammarLabel`) and its query
-files (`tree-sitter-rust 0.24.2; impls, imports, tags, textobjects (shipped)`); otherwise
-`Warn` "no linked grammar (anchors from [targets.*] only)", with no fix (it is not a key to
-add). The `anchors` capability's `how` adds "generic phrases (queries)" for a linked grammar,
+After a language's capability rows, `Doctor.grammarRow` adds `LANGUAGE: grammar` from the
+`dpGrammar` port (`Grammar.probeGrammar` in `Main`, which loads the grammar as a first use
+does: doctor is the warm-up): `Ok` with its label, ABI and library, plus `built now in N s`
+when this process fetched and built it; `Warn` for a bare name (`NoSource`, the fix names the
+key to add); `Bad` for the other failures, each with its fix where there is one. Then
+`Doctor.queriesRow` adds `LANGUAGE: queries`: for a loadable grammar (`loadableGrammar`), `Ok`
+with its label (`grammarLabel`) and its query files (`tree-sitter-rust @77a3747; impls,
+imports, tags, textobjects (shipped)`), a `Warn` with "(not read: the grammar is not loaded)"
+when the grammar row failed; for a grammar with a source but no queries, `Warn` "no queries
+for the elm grammar (anchors from [targets.*] only)"; otherwise `Warn` "no grammar (anchors
+from [targets.*] only)", with no fix. The `anchors` capability's `how` adds "generic phrases
+(queries)" for a loadable grammar,
 which is never `absent` even with no `[targets.*]`.
 The language server's `olifant.doctor` passes `False` for `run`, and answers through
 `inBackground` (evidence runs tools on the sample, so it must not hold up the message loop). It
@@ -567,7 +610,7 @@ the rows, so it changes too.
   but with a test-units provider the asking stops at the first failure; with none in an existing test file, the
   first unit the units slot finds there ("0 found; path:9 is `…`"); with no test file, "not seen
   (no test file in the 40 sampled)".
-- **anchors:** for a linked grammar, the generic phrases first: `end of function N` and `end of
+- **anchors:** for a loadable grammar, the generic phrases first: `end of function N` and `end of
   class N`, N from the definitions the captures name in each sampled file (`genericNames`;
   names only one definition has first, since a struct and its impl share one), and `end of
   imports` on each sampled file until one resolves. Then each `[targets.*]` with at most one
@@ -661,3 +704,8 @@ the capability rows are the checklist. No Haskell is needed unless its report fo
 - **The layer for a `grammar = { source }` is found by directory.** `layerDir` is set only for
   pack and project layers, which is why the elm pack keeps a `languages/elm.toml` containing
   only its grammar.
+- **An old grammar library is never pruned.** A changed key (a new `rev`, an edited
+  `parser.c`, a runtime upgrade) writes a new file in `<cache>/grammars/`; the old one stays.
+- **A bare name over a sourced grammar drops the source.** A layer that writes `grammar =
+  "python"` replaces the shipped `{ git, rev }` (layers merge by key), so that language has no
+  in-process grammar; doctor's grammar row warns.

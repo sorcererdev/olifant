@@ -742,7 +742,7 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
     let pyLang = l
           where
             Right l = parseLanguage "python" "/p" $ T.unlines
-              [ "files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\""
+              [ "files = [\"**/*.py\"]", "comment = \"#\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-python\", rev = \"293fdc02038ee2bf0e2e206711b69c90ac0d413f\" }"
               , "imports = \"^(from [A-Za-z0-9_.]+ import .+|import [A-Za-z0-9_.]+)$\""
               , "[check]", "command = [\"true\"]", "format = \"pyright-json\""
               , "[holes.expr]", "placeholder = 'todo(\"olifant: {= hole =}\")'", "wrap = \"h = {= fill =}\"" ]
@@ -954,7 +954,7 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
     let blockLang = l
           where
             Right l = parseLanguage "python" "/p" $ T.unlines
-              [ "files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\""
+              [ "files = [\"**/*.py\"]", "comment = \"#\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-python\", rev = \"293fdc02038ee2bf0e2e206711b69c90ac0d413f\" }"
               , "[check]", "command = [\"true\"]", "format = \"pyright-json\""
               , "[holes.block]", "placeholder = 'todo(\"olifant: {= hole =}\")'", "wrap = \"def h():\\n{= fill|indent =}\"" ]
         gen = generatorFrom . T.unlines $
@@ -972,7 +972,7 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
     let blockLang = l
           where
             Right l = parseLanguage "python" "/p" $ T.unlines
-              [ "files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\""
+              [ "files = [\"**/*.py\"]", "comment = \"#\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-python\", rev = \"293fdc02038ee2bf0e2e206711b69c90ac0d413f\" }"
               , "[holes.block]", "placeholder = 'todo(\"olifant: {= hole =}\")'", "wrap = \"def h():\\n{= fill|indent =}\"" ]
         gen = generatorFrom . T.unlines $
           [ "description = \"d\"", "language = \"python\""
@@ -986,7 +986,7 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
     let blockLang = l
           where
             Right l = parseLanguage "python" "/p" $ T.unlines
-              [ "files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\""
+              [ "files = [\"**/*.py\"]", "comment = \"#\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-python\", rev = \"293fdc02038ee2bf0e2e206711b69c90ac0d413f\" }"
               , "[check]", "command = [\"true\"]", "format = \"pyright-json\""
               , "[holes.block]", "placeholder = 'todo(\"olifant: {= hole =}\")'", "wrap = \"def h():\\n{= fill|indent =}\"" ]
         gen = generatorFrom . T.unlines $
@@ -1035,7 +1035,7 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
     let pyLang = l
           where
             Right l = parseOverShipped "python" "/p" $ T.unlines
-              [ "files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\""
+              [ "files = [\"**/*.py\"]", "comment = \"#\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-python\", rev = \"293fdc02038ee2bf0e2e206711b69c90ac0d413f\" }"
               , "imports = \"^(from [A-Za-z0-9_.]+ import .+|import [A-Za-z0-9_.]+( as [A-Za-z0-9_]+)?)$\""
               , "[holes.stmt]", "placeholder = 'raise NotImplementedError(\"olifant: {= hole =}\")'", "wrap = \"def h():\\n{= fill|indent =}\"" ]
         tomlString t = "\"" <> T.concatMap (\case '\n' -> "\\n"; '"' -> "\\\""; '\\' -> "\\\\"; c -> T.singleton c) t <> "\""
@@ -1149,7 +1149,7 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
     let pyLang = l
           where
             Right l = parseLanguage "python" "/p" $ T.unlines
-              [ "files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\""
+              [ "files = [\"**/*.py\"]", "comment = \"#\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-python\", rev = \"293fdc02038ee2bf0e2e206711b69c90ac0d413f\" }"
               , "imports = \"^(from [A-Za-z0-9_.]+ import .+|import [A-Za-z0-9_.]+( as [A-Za-z0-9_]+)?)$\""
               , "[import_merge]", "pattern = \"^from ([A-Za-z0-9_.]+) import ([A-Za-z0-9_, ]+)$\"", "write = \"from {= module =} import {= names =}\""
               , "[check]", "command = [\"true\"]", "format = \"pyright-json\""
@@ -1195,7 +1195,7 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
     let pyLang = l
           where
             Right l = parseLanguage "python" "/p" $ T.unlines
-              [ "files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\""
+              [ "files = [\"**/*.py\"]", "comment = \"#\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-python\", rev = \"293fdc02038ee2bf0e2e206711b69c90ac0d413f\" }"
               , "imports = \"^(from [A-Za-z0-9_.]+ import .+|import [A-Za-z0-9_.]+)$\""
               , "[check]", "command = [\"true\"]", "format = \"pyright-json\""
               , "[holes.expr]", "placeholder = 'todo(\"olifant: {= hole =}\")'", "wrap = \"h = {= fill =}\"" ]
@@ -1212,7 +1212,7 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
     let pyLang = l
           where
             Right l = parseLanguage "python" "/p" $ T.unlines
-              [ "files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\""
+              [ "files = [\"**/*.py\"]", "comment = \"#\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-python\", rev = \"293fdc02038ee2bf0e2e206711b69c90ac0d413f\" }"
               , "imports = \"^(from [A-Za-z0-9_.]+ import .+|import [A-Za-z0-9_.]+)$\""
               , "[holes.expr]", "placeholder = 'todo(\"olifant: {= hole =}\")'", "wrap = \"h = {= fill =}\"" ]
         gen = generatorFrom . T.unlines $
@@ -1238,7 +1238,7 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
     let pyLang = l
           where
             Right l = parseLanguage "python" "/p" $ T.unlines
-              [ "files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\""
+              [ "files = [\"**/*.py\"]", "comment = \"#\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-python\", rev = \"293fdc02038ee2bf0e2e206711b69c90ac0d413f\" }"
               , "imports = \"^(from [A-Za-z0-9_.]+ import .+|import [A-Za-z0-9_.]+)$\""
               , "[import_merge]", "pattern = \"^from ([A-Za-z0-9_.]+) import ([A-Za-z0-9_, ]+)$\"", "write = \"from {= module =} import {= names =}\""
               , "[check]", "command = [\"true\"]", "format = \"pyright-json\""
@@ -1278,7 +1278,7 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
     let pyLang = l
           where
             Right l = parseLanguage "python" "/p" $ T.unlines
-              [ "files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\""
+              [ "files = [\"**/*.py\"]", "comment = \"#\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-python\", rev = \"293fdc02038ee2bf0e2e206711b69c90ac0d413f\" }"
               , "imports = \"^(from [A-Za-z0-9_.]+ import .+|import [A-Za-z0-9_.]+)$\""
               , "[check]", "command = [\"true\"]", "format = \"pyright-json\""
               , "[holes.expr]", "placeholder = 'todo(\"olifant: {= hole =}\")'", "wrap = \"h = {= fill =}\"" ]

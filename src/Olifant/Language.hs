@@ -12,7 +12,6 @@ module Olifant.Language
   , genericPhrases
   , renamedPhrases
   , oneContainer
-  , linkedGrammars
   , capturesOf
   , grammarLabel
   , queriesFor
@@ -23,17 +22,17 @@ module Olifant.Language
   , functionMatches
   , hasNoFunctionQueries
   , querySet
-  , grammarLinked
+  , hasLoadableGrammar
+  , queryError
   , hasUnits
   , genericNames
   , genericFor
-  , linkedGrammarOf
+  , loadableGrammar
   , treeSitterAnchors
   , shippedLanguage
   , shippedLanguageNow
   ) where
 
-import Data.Maybe (isJust)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
@@ -49,39 +48,28 @@ import Olifant.Language.Rule
 import Olifant.Language.Syntax
 import Olifant.Language.Test
 import Olifant.Language.Captures (definedNames, genericPhrase, genericPhrases, oneContainer, phraseKind, renamedPhrases)
-import Olifant.Language.TreeSitter (capturesOf, definedName, definedNamesIn, functionMatches, hasNoFunctionQueries, grammarLabel, grammarNodeTypes, linkedGrammars, queriesFor, queriesOf, querySet, signatureHead, treeSitterAnchors)
-
--- | Is the language's grammar linked in, so the generic anchor phrases
--- work on it?
-grammarLinked :: Language -> Bool
-grammarLinked = isJust . linkedGrammarOf
+import Olifant.Language.TreeSitter (capturesOf, definedName, definedNamesIn, functionMatches, hasNoFunctionQueries, grammarLabel, grammarNodeTypes, hasLoadableGrammar, loadableGrammar, queriesFor, queriesOf, queryError, querySet, signatureHead, treeSitterAnchors)
 
 -- | Does the language have units: `[unit] kinds`, a units provider, or a
--- linked grammar (whose queries' definitions are its units)?
+-- loadable grammar (whose queries' definitions are its units)?
 hasUnits :: Language -> Bool
-hasUnits l = hasUnitRule l || grammarLinked l
+hasUnits l = hasUnitRule l || hasLoadableGrammar l
 
 -- | The names a generic phrase's word (`function`, `class`, a kind word)
 -- can take in a text: its definitions of that kind, in order. None when the
--- grammar is not linked.
+-- grammar does not load.
 genericNames :: Language -> Text -> Text -> [Text]
-genericNames l kind txt = case linkedGrammarOf l of
+genericNames l kind txt = case loadableGrammar l of
   Just g -> either (const []) (definedNames kind . snd) (capturesOf g (querySet l) txt)
   Nothing -> []
 
 -- | Does a language answer a phrase by the generic rule: its grammar is
--- linked, the phrase has a generic shape, and its kind word (`struct`) names
+-- loadable, the phrase has a generic shape, and its kind word (`struct`) names
 -- a node type of the grammar?
 genericFor :: Language -> [Text] -> Bool
-genericFor l ws = case linkedGrammarOf l of
+genericFor l ws = case loadableGrammar l of
   Just g -> genericPhrase ws && maybe True (\k -> any (\t -> t == k || (k <> "_") `T.isPrefixOf` t) (grammarNodeTypes g)) (phraseKind ws)
   Nothing -> False
-
--- | The language's grammar, when it is linked in.
-linkedGrammarOf :: Language -> Maybe Text
-linkedGrammarOf l = case langGrammar l of
-  BuiltInGrammar g | g `elem` linkedGrammars -> Just g
-  _ -> Nothing
 
 -- | The shipped language of that name alone, for specs (fails on a file
 -- that does not parse).

@@ -195,7 +195,7 @@ anchorsProof ports lang sources = case generic ++ map declared (langTargets lang
       ([], []) -> Unproven text
   where
     -- the engine's phrases, where the grammar is linked in
-    generic = [Try "function NAME" ["function", "NAME"] "end of" | grammarLinked lang] ++ [Try "class NAME" ["class", "NAME"] "end of" | grammarLinked lang] ++ [Try "imports" ["imports"] "end of" | grammarLinked lang]
+    generic = [Try "function NAME" ["function", "NAME"] "end of" | hasLoadableGrammar lang] ++ [Try "class NAME" ["class", "NAME"] "end of" | hasLoadableGrammar lang] ++ [Try "imports" ["imports"] "end of" | hasLoadableGrammar lang]
     declared t = Try (targetPhrase t) (targetShape t) (positionOf t)
     params t = [w | w <- tryShape t, isParam w]
     isParam w = T.all (\c -> c `elem` ['A' .. 'Z'] || c == '_') w && T.any (`elem` ['A' .. 'Z']) w

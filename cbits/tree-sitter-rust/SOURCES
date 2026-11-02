@@ -1,2 +1,0 @@
-parser.c, scanner.c, tree_sitter/*.h: tree-sitter-rust 0.24.2 from crates.io (git e2bee853694a1d3e0f6ef308fe3674542fec95d7),
-the version ast-grep 0.45.3's Cargo.lock pins; sha256 of the .crate 439e577dbe07423ec2582ac62c7531120dbfccfa6e5f92406f93dd271a120e45. MIT.

@@ -22,12 +22,12 @@ spec = do
     lookup "stub" [(capName c, capHow c) | c <- capabilities hs] `shouldBe` Just (Right "[test] stub at end of do in spec")
     lookup "mutation" [(capName c, capFix c) | c <- capabilities hs] `shouldBe` Just Nothing
     lookup "mutation" [(capName c, capHow c) | c <- capabilities hs] `shouldBe` Just (Left "[[mutate]]")
-    lookup "units" [(capName c, capHow c) | c <- capabilities hs] `shouldBe` Just (Right "queries (tree-sitter-haskell 0.23.1): each function and class definition")
+    lookup "units" [(capName c, capHow c) | c <- capabilities hs] `shouldBe` Just (Right "queries (tree-sitter-haskell @c30d812): each function and class definition")
     lookup "tests" [(capName c, capHow c) | c <- capabilities hs] `shouldBe` Just (Right "[test] format lines, tests_for {= dir =}/{= stem =}Spec.hs")
   it "python.toml: present, its test units pytest.toml's rules, its selection pytest.toml's ids as they are" $ do
     py <- packLanguage "python" "packs/python-htmx"
     map capHow (capabilities py)
-      `shouldBe` [ Right "queries (tree-sitter-python 0.25.0): each function and class definition"
+      `shouldBe` [ Right "queries (tree-sitter-python @293fdc0): each function and class definition"
                  , Right "[check] format pyright-json"
                  , Right "[check] format pyright-json"
                  , Right "[test] format junit-xml, tests_for {= dir =}/{= stem =}__test.py"

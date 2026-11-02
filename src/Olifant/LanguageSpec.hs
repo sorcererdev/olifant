@@ -42,6 +42,14 @@ import Data.Functor.Identity (Identity (..))
 cb :: Text
 cb = "src/bistro/booking/commands/cancel_booking__test.py"
 
+-- | A full commit SHA, for git grammar examples.
+sha :: Text
+sha = "293fdc02038ee2bf0e2e206711b69c90ac0d413f"
+
+-- | A vendored grammar's folder (its sources and SOURCES).
+vendoredGrammar :: Text -> FilePath
+vendoredGrammar g = "library/grammars" </> T.unpack g
+
 elmToml :: Text
 elmToml =
   T.unlines
@@ -66,7 +74,7 @@ spec = do
   describe "presets" $ do
     let py = parseLanguage "python" "/pack" . T.unlines
     it "(a) [test] preset = \"pytest\" fills command, context, format and root" $ do
-      let Right lang = py ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[test]", "preset = \"pytest\"", "tests_for = \"{= dir =}/{= stem =}__test.py\""]
+      let Right lang = py ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-python\", rev = \"293fdc02038ee2bf0e2e206711b69c90ac0d413f\" }", "[test]", "preset = \"pytest\"", "tests_for = \"{= dir =}/{= stem =}__test.py\""]
           Just t = langTest lang
       testFormat t `shouldBe` "junit-xml"
       testJunit t `shouldBe` Just (JunitFormat (Just ".") Nothing)
@@ -74,7 +82,7 @@ spec = do
       testsFor t `shouldBe` "{= dir =}/{= stem =}__test.py"
       take 3 (dropWhile (/= "{= tests =}") (testCommand t)) `shouldBe` ["{= tests =}", "-o", "junit_family=xunit1"]
     it "(a2) the pytest preset picks the runner the project uses: uv, a venv's, or PATH's" $ do
-      let Right lang = py ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[test]", "preset = \"pytest\""]
+      let Right lang = py ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-python\", rev = \"293fdc02038ee2bf0e2e206711b69c90ac0d413f\" }", "[test]", "preset = \"pytest\""]
           Just t = langTest lang
           pick present = runIdentity (chooseTestCommand (probeOf (map (\f -> (f, "")) present)) t)
           Right (uv, uvWhy) = pick ["uv.lock", ".venv/bin/pytest"]
@@ -138,20 +146,20 @@ spec = do
       testFormat without `shouldBe` "lines"
       testJunit t `shouldBe` Just (JunitFormat (Just "/") Nothing)
     it "(b) the table's own keys win over the preset's" $ do
-      let Right lang = py ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[test]", "preset = \"pytest\"", "tests_for = \"tests/test_{= stem =}.py\"", "root = [\"setup.cfg\"]"]
+      let Right lang = py ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-python\", rev = \"293fdc02038ee2bf0e2e206711b69c90ac0d413f\" }", "[test]", "preset = \"pytest\"", "tests_for = \"tests/test_{= stem =}.py\"", "root = [\"setup.cfg\"]"]
       fmap testRoot (langTest lang) `shouldBe` Just ["setup.cfg"]
     it "(c) an unknown preset names the ones that exist" $
-      py ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[test]", "preset = \"jest\"", "tests_for = \"x\""]
+      py ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-python\", rev = \"293fdc02038ee2bf0e2e206711b69c90ac0d413f\" }", "[test]", "preset = \"jest\"", "tests_for = \"x\""]
         `shouldSatisfy` either (\e -> "pytest" `T.isInfixOf` e && "jest" `T.isInfixOf` e) (const False)
     it "(d) [test] needs tests_for, which the pytest preset gives" $ do
-      py ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[test]", "command = [\"pytest\"]", "format = \"pytest\""] `shouldSatisfy` either ("tests_for" `T.isInfixOf`) (const False)
-      let Right lang = py ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[test]", "preset = \"pytest\""]
+      py ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-python\", rev = \"293fdc02038ee2bf0e2e206711b69c90ac0d413f\" }", "[test]", "command = [\"pytest\"]", "format = \"pytest\""] `shouldSatisfy` either ("tests_for" `T.isInfixOf`) (const False)
+      let Right lang = py ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-python\", rev = \"293fdc02038ee2bf0e2e206711b69c90ac0d413f\" }", "[test]", "preset = \"pytest\""]
       fmap testsFor (langTest lang) `shouldBe` Just "{= dir =}/test_{= stem =}.py"
     it "(e) [check] preset = \"pyright\" is the old table" $ do
-      let Right lang = py ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[check]", "preset = \"pyright\""]
+      let Right lang = py ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-python\", rev = \"293fdc02038ee2bf0e2e206711b69c90ac0d413f\" }", "[check]", "preset = \"pyright\""]
       fmap checkFormat (langCheck lang) `shouldBe` Just "pyright-json"
       fmap checkRoot (langCheck lang) `shouldBe` Just ["pyproject.toml"]
-    let hs = parseLanguage "haskell" "/pack" . T.unlines . (["files = [\"**/*.hs\"]", "comment = \"--\"", "grammar = \"haskell\""] ++)
+    let hs = parseLanguage "haskell" "/pack" . T.unlines . (["files = [\"**/*.hs\"]", "comment = \"--\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-haskell\", rev = \"c30d812bc90827f1a54106a25bc9a6307f5cdcec\" }"] ++)
     it "(f) [test] preset = \"hspec\" alone: lines, exclusive, 900 s, tests_for, select and unit" $ do
       let Right lang = hs ["[test]", "preset = \"hspec\""]
           Just t = langTest lang
@@ -178,7 +186,7 @@ spec = do
       hs ["[check]", "preset = \"stack\""] `shouldSatisfy` either ("cabal-repl" `T.isInfixOf`) (const False)
       hs ["[test]", "preset = \"tasty\"", "tests_for = \"x\""] `shouldSatisfy` either ("hspec" `T.isInfixOf`) (const False)
   describe "providers: a slot takes { provider = [...] } (4b m1)" $ do
-    let lang = parseLanguage "python" "/pack" . T.unlines . (["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\""] ++)
+    let lang = parseLanguage "python" "/pack" . T.unlines . (["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-python\", rev = \"293fdc02038ee2bf0e2e206711b69c90ac0d413f\" }"] ++)
         runner = ["[test]", "command = [\"t\"]", "format = \"lines\"", "tests_for = \"x\"", "[test.lines]", "pass = 'ok'", "fail = 'no'"]
     it "a slot takes `{ provider = [...] }`: units, test units, selection and anchors" $ do
       let Right l = lang (["anchors = { provider = [\"sh\", \"tools/anchor.sh\"] }", "[unit]", "kinds = { provider = [\"sh\", \"tools/units.sh\"] }", "[test]", "command = [\"t\"]", "format = \"lines\"", "tests_for = \"x\"", "unit = { provider = [\"sh\", \"tools/tests.sh\"] }", "select = { provider = [\"sh\", \"tools/select.sh\"] }", "[test.lines]", "pass = 'ok'", "fail = 'no'"])
@@ -201,7 +209,7 @@ spec = do
       lang ["anchors = { provider = [] }"] `shouldSatisfy` either ("anchors" `T.isInfixOf`) (const False)
       lang (runner ++ ["[test.select]", "provider = [\"x\"]", "test = \"a\"", "file = \"b\""]) `shouldSatisfy` either ("test.select" `T.isInfixOf`) (const False)
   describe "[conjure]: a pack's architecture" $ do
-    let lang = parseLanguage "python" "/pack" . T.unlines . (["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\""] ++)
+    let lang = parseLanguage "python" "/pack" . T.unlines . (["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-python\", rev = \"293fdc02038ee2bf0e2e206711b69c90ac0d413f\" }"] ++)
     it "parses its service, port, fake and constructor; absent, there is none" $ do
       let Right l = lang ["[conjure]", "service = \"src/{= app =}/{= service =}\"", "[conjure.port]", "files = [\"ports/*.py\"]", "start = '^class ([a-z]+)'", "method = '^def '", "[conjure.fake]", "bound = '^ +([a-z]+) = ([A-Za-z]+)\\('", "prefixes = [\"Fake\"]"]
       fmap cjService (langConjure l) `shouldBe` Just (Just "src/{= app =}/{= service =}")
@@ -220,7 +228,7 @@ spec = do
       (lang ["[conjure.port]", "start = '^class ([a-z]+)'", "method = '^def '"] >>= maybe (Left "none") Right . langConjure) `shouldSatisfy` either (const False) (\c -> cjAddMethod c == Nothing && null (cjAdvice c))
       either (const True) (const False) (lang ["[conjure.port]", "start = '^class ([a-z]+)'", "method = '^def '", "adapters = \"a\""]) `shouldBe` True
   describe "[types] and undefined names: checked as they load" $ do
-    let lang = parseLanguage "python" "/pack" . T.unlines . (["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\""] ++)
+    let lang = parseLanguage "python" "/pack" . T.unlines . (["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-python\", rev = \"293fdc02038ee2bf0e2e206711b69c90ac0d413f\" }"] ++)
         bad = either (const True) (const False)
     it "a [types] template's variables and a [types] expression are checked" $ do
       bad (lang ["[types]", "param = \"{= nme =}: {= type =}\""]) `shouldBe` True
@@ -323,7 +331,7 @@ spec = do
           fmap (map (fLine . snd) . trFailed) run `shouldBe` Right [Just 2]
   describe "[test] formats and selection" $ do
     let hsToml extra = T.unlines $
-          [ "files = [\"**/*.hs\"]", "comment = \"--\"", "grammar = \"haskell\""
+          [ "files = [\"**/*.hs\"]", "comment = \"--\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-haskell\", rev = \"c30d812bc90827f1a54106a25bc9a6307f5cdcec\" }"
           , "[test]"
           , "format = \"lines\""
           , "tests_for = \"{= dir =}/{= stem =}Spec.hs\""
@@ -354,12 +362,12 @@ spec = do
       testSelect td `shouldBe` Just (Select ["--test-option=--match=/{= group =}/{= name =}/"] ["--test-option=--match=/{= group =}/"] "/")
       fmap lfNest (testLines td) `shouldBe` Just True
     it "refuses lines without [test.lines], and {= group =} without file_group" $ do
-      let base = "files = [\"**/*.hs\"]\ncomment = \"--\"\ngrammar = \"haskell\"\n[test]\ncommand = [\"t\"]\ntests_for = \"x\"\n"
+      let base = "files = [\"**/*.hs\"]\ncomment = \"--\"\ngrammar = { git = \"https://github.com/tree-sitter/tree-sitter-haskell\", rev = \"c30d812bc90827f1a54106a25bc9a6307f5cdcec\" }\n[test]\ncommand = [\"t\"]\ntests_for = \"x\"\n"
       either (T.isInfixOf "[test.lines]") (const False) (parseLanguage "h" "/h" (base <> "format = \"lines\"\n")) `shouldBe` True
       either (T.isInfixOf "file_group") (const False) (parseLanguage "h" "/h" (base <> "format = \"tap\"\n[test.select]\ntest = \"{= group =}\"\nfile = \"x\"\n")) `shouldBe` True
       fmap (fmap testFormat . langTest) (parseLanguage "h" "/h" (base <> "format = \"junit-xml\"\n")) `shouldBe` Right (Just "junit-xml")
     it "refuses a message key that is no expression, naming it" $ do
-      let base = "files = [\"**/*.hs\"]\ncomment = \"--\"\ngrammar = \"haskell\"\n"
+      let base = "files = [\"**/*.hs\"]\ncomment = \"--\"\ngrammar = { git = \"https://github.com/tree-sitter/tree-sitter-haskell\", rev = \"c30d812bc90827f1a54106a25bc9a6307f5cdcec\" }\n"
       either (T.isInfixOf "[check] undefined") (const False) (parseLanguage "h" "/h" (base <> "[check]\ncommand = [\"c\"]\nformat = \"ghc-json\"\nundefined = ['(']\n")) `shouldBe` True
       either (T.isInfixOf "[check] missing_member") (const False) (parseLanguage "h" "/h" (base <> "[check]\ncommand = [\"c\"]\nformat = \"ghc-json\"\nmissing_member = { pattern = 'a(b)', member = 1, type = 3 }\n")) `shouldBe` True
       either (T.isInfixOf "[test.failure] got_expected") (const False) (parseLanguage "h" "/h" (base <> "[test]\ncommand = [\"t\"]\ntests_for = \"x\"\nformat = \"tap\"\n[test.failure]\ngot_expected = [{ pattern = '(', got = 1, expected = 2 }]\n")) `shouldBe` True
@@ -393,7 +401,7 @@ spec = do
       length (trPassed run) `shouldBe` 2
     -- a junit-xml runner under a fake command, over a scratch with a canned report
     let junitLang cmd = either (error . T.unpack) id (parseLanguage "haskell" "/h" (T.unlines
-          [ "files = [\"**/*.hs\"]", "comment = \"--\"", "grammar = \"haskell\""
+          [ "files = [\"**/*.hs\"]", "comment = \"--\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-haskell\", rev = \"c30d812bc90827f1a54106a25bc9a6307f5cdcec\" }"
           , "[test]", "command = " <> cmd, "format = \"junit-xml\"", "tests_for = \"x\"" ]))
         junitRun cmd = do
           xml <- TIO.readFile "src/Olifant/Language/testdata/junit/basic.xml"
@@ -410,7 +418,7 @@ spec = do
     it "[test] report is where the run's report is read, a stale one removed first" $ do
       xml <- TIO.readFile "src/Olifant/Language/testdata/junit/basic.xml"
       let withReport cmd = either (error . T.unpack) id (parseLanguage "haskell" "/h" (T.unlines
-            [ "files = [\"**/*.hs\"]", "comment = \"--\"", "grammar = \"haskell\""
+            [ "files = [\"**/*.hs\"]", "comment = \"--\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-haskell\", rev = \"c30d812bc90827f1a54106a25bc9a6307f5cdcec\" }"
             , "[test]", "command = " <> cmd, "format = \"junit-xml\"", "report = \"out/r.xml\"", "tests_for = \"x\"" ]))
           files = M.fromList [("src/plans.test.ts", ""), ("report.xml", xml), ("out/r.xml", xml)]
       Right run <- runTests (processRunner neverCancel 60) (withReport "[\"sh\", \"-c\", 'mkdir -p out; cp report.xml out/r.xml; echo \"$1\" > where.txt']") ["src/plans.test.ts"] files
@@ -592,11 +600,46 @@ spec = do
     it "reads an adapter, resolving the grammar source against the pack" $ do
       let Right lang = parseLanguage "elm" "/packs/elm" elmToml
       langName lang `shouldBe` "elm"
-      langGrammar lang `shouldBe` GrammarSource "/packs/elm/languages/grammar/elm"
+      langGrammar lang `shouldBe` Grammar "elm" (Just (SourceDir "/packs/elm/languages/grammar/elm"))
       fmap checkFormat (langCheck lang) `shouldBe` Just "elm-json"
       map targetPhrase (langTargets lang) `shouldBe` ["case in FUNCTION"]
     it "accepts a built-in grammar name" $
-      fmap langGrammar (parseLanguage "rust" "/p" "files = [\"**/*.rs\"]\ncomment = \"//\"\ngrammar = \"rust\"\n") `shouldBe` Right (BuiltInGrammar "rust")
+      fmap langGrammar (parseLanguage "rust" "/p" "files = [\"**/*.rs\"]\ncomment = \"//\"\ngrammar = \"rust\"\n") `shouldBe` Right (Grammar "rust" Nothing)
+    it "reads a git grammar with its rev and an optional path" $
+      fmap langGrammar (parseLanguage "typescript" "/p" ("files = [\"**/*.tsx\"]\ncomment = \"//\"\ngrammar = { git = \"https://github.com/tree-sitter/tree-sitter-typescript\", rev = \"" <> sha <> "\", path = \"tsx\", name = \"tsx\" }\n"))
+        `shouldBe` Right (Grammar "tsx" (Just (SourceGit "https://github.com/tree-sitter/tree-sitter-typescript" sha (Just "tsx"))))
+    it "a git grammar's name defaults to the language's" $
+      fmap (grName . langGrammar) (parseLanguage "go" "/p" ("files = [\"**/*.go\"]\ncomment = \"//\"\ngrammar = { git = \"https://github.com/tree-sitter/tree-sitter-go\", rev = \"" <> sha <> "\" }\n"))
+        `shouldBe` Right "go"
+    it "a git grammar without a full SHA rev is an error (a branch name is refused)" $
+      parseLanguage "go" "/p" "files = [\"**/*.go\"]\ncomment = \"//\"\ngrammar = { git = \"https://github.com/tree-sitter/tree-sitter-go\", rev = \"main\" }\n"
+        `shouldSatisfy` either (\e -> "`rev`" `T.isInfixOf` e && "not a branch or tag" `T.isInfixOf` e && "main" `T.isInfixOf` e) (const False)
+    it "a short SHA is refused too" $
+      parseLanguage "go" "/p" "files = [\"**/*.go\"]\ncomment = \"//\"\ngrammar = { git = \"https://github.com/tree-sitter/tree-sitter-go\", rev = \"293fdc0\" }\n"
+        `shouldSatisfy` either ("full commit SHA" `T.isInfixOf`) (const False)
+    it "git and source together are an error" $
+      parseLanguage "go" "/p" ("files = [\"**/*.go\"]\ncomment = \"//\"\ngrammar = { git = \"https://x/y\", rev = \"" <> sha <> "\", source = \"g\" }\n")
+        `shouldSatisfy` either ("one of `git`" `T.isInfixOf`) (const False)
+    it "path without git is an error" $
+      parseLanguage "go" "/p" "files = [\"**/*.go\"]\ncomment = \"//\"\ngrammar = { source = \"g\", path = \"tsx\" }\n"
+        `shouldSatisfy` either ("`path`" `T.isInfixOf`) (const False)
+    it "a path or a name that climbs out of its folder is an error" $ do
+      parseLanguage "go" "/p" ("files = [\"**/*.go\"]\ncomment = \"//\"\ngrammar = { git = \"https://x/y\", rev = \"" <> sha <> "\", path = \"../../etc\" }\n")
+        `shouldSatisfy` either ("`path`" `T.isInfixOf`) (const False)
+      parseLanguage "go" "/p" ("files = [\"**/*.go\"]\ncomment = \"//\"\ngrammar = { git = \"https://x/y\", rev = \"" <> sha <> "\", name = \"../go\" }\n")
+        `shouldSatisfy` either ("grammar name" `T.isInfixOf`) (const False)
+    it "a git URL olifant does not fetch from is an error" $
+      parseLanguage "go" "/p" ("files = [\"**/*.go\"]\ncomment = \"//\"\ngrammar = { git = \"ext::sh -c touch% /tmp/x\", rev = \"" <> sha <> "\" }\n")
+        `shouldSatisfy` either ("`git`" `T.isInfixOf`) (const False)
+    it "the shipped python, rust and haskell name their git revision" $
+      forM_ ["python", "rust", "haskell"] $ \g -> do
+        sources <- TIO.readFile (vendoredGrammar g </> "SOURCES")
+        let pinned = T.takeWhile (/= ')') (snd (T.breakOnEnd "(git " sources))
+        case grSource (langGrammar (shippedLanguageNow g)) of
+          Just (SourceGit url rev Nothing) -> do
+            url `shouldBe` "https://github.com/tree-sitter/tree-sitter-" <> g
+            rev `shouldBe` pinned
+          other -> expectationFailure (show other)
     it "rejects unknown keys" $
       parseLanguage "x" "/p" "files = []\ncomment = \"#\"\ngrammar = \"x\"\ncolour = 1\n" `shouldSatisfy` either ("colour" `T.isInfixOf`) (const False)
     it "refuses the retired `qualify` key, saying what replaced it" $
@@ -613,13 +656,13 @@ spec = do
         `shouldBe` Right (object ["kind" .= ("case_of_expr" :: Text), "inside" .= object ["kind" .= ("value_declaration" :: Text), "regex" .= ("^update\\b" :: Text), "stopBy" .= ("end" :: Text)]])
   describe "hole kinds (spec §6.3)" $ do
     it "reads [holes.KIND] with a placeholder and a wrap" $ do
-      let Right l = parseLanguage "r" "/p" (T.unlines ["files = [\"**/*.rs\"]", "comment = \"//\"", "grammar = \"rust\"", "[holes.expr]", "placeholder = 'todo!(\"olifant: {= hole =}\")'", "wrap = \"fn __olifant() { let _ = {= fill =}; }\""])
+      let Right l = parseLanguage "r" "/p" (T.unlines ["files = [\"**/*.rs\"]", "comment = \"//\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-rust\", rev = \"77a3747266f4d621d0757825e6b11edcbf991ca5\" }", "[holes.expr]", "placeholder = 'todo!(\"olifant: {= hole =}\")'", "wrap = \"fn __olifant() { let _ = {= fill =}; }\""])
       map fst (langHoles l) `shouldBe` ["expr"]
     it "refuses a placeholder that does not name its hole (review I2)" $
-      parseLanguage "r" "/p" (T.unlines ["files = [\"**/*.rs\"]", "comment = \"//\"", "grammar = \"rust\"", "[holes.type]", "placeholder = '()'", "wrap = \"type T = {= fill =};\""])
+      parseLanguage "r" "/p" (T.unlines ["files = [\"**/*.rs\"]", "comment = \"//\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-rust\", rev = \"77a3747266f4d621d0757825e6b11edcbf991ca5\" }", "[holes.type]", "placeholder = '()'", "wrap = \"type T = {= fill =};\""])
         `shouldSatisfy` either ("{= hole =}" `T.isInfixOf`) (const False)
     it "refuses a wrap without {= fill =}" $
-      parseLanguage "r" "/p" (T.unlines ["files = [\"**/*.rs\"]", "comment = \"//\"", "grammar = \"rust\"", "[holes.expr]", "placeholder = 'x({= hole =})'", "wrap = \"fn f() {}\""])
+      parseLanguage "r" "/p" (T.unlines ["files = [\"**/*.rs\"]", "comment = \"//\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-rust\", rev = \"77a3747266f4d621d0757825e6b11edcbf991ca5\" }", "[holes.expr]", "placeholder = 'x({= hole =})'", "wrap = \"fn f() {}\""])
         `shouldSatisfy` either ("{= fill =}" `T.isInfixOf`) (const False)
   describe "matchShape" $ do
     it "binds parameters and requires literal words" $ do
@@ -684,7 +727,7 @@ spec = do
       py <- either (error . T.unpack) id . parseOverShipped "python" "packs/python-htmx" <$> TIO.readFile "packs/python-htmx/languages/python.toml"
       -- 4b m2: none, its units come from the grammar's queries
       langUnitKinds py `shouldBe` []
-      fmap langUnitKinds (parseLanguage "python" "/p" "files = [\"**/*.py\"]\ncomment = \"#\"\ngrammar = \"python\"\n") `shouldBe` Right []
+      fmap langUnitKinds (parseLanguage "python" "/p" "files = [\"**/*.py\"]\ncomment = \"#\"\ngrammar = { git = \"https://github.com/tree-sitter/tree-sitter-python\", rev = \"293fdc02038ee2bf0e2e206711b69c90ac0d413f\" }\n") `shouldBe` Right []
     it "[check] convert: format absent or olifant-json; [check.errorformat] needs a pattern" $ do
       let base = "files = [\"**/*.x\"]\ncomment = \"#\"\ngrammar = \"x\"\n[check]\ncommand = [\"t\"]\n"
       fmap (fmap (\c -> (checkFormat c, checkConvert c)) . langCheck) (parseLanguage "x" "/x" (base <> "convert = [\"c\"]\n")) `shouldBe` Right (Just ("olifant-json", ["c"]))
@@ -813,7 +856,7 @@ spec = do
       rows `shouldSatisfy` all (\l -> "  e.g. " `T.isInfixOf` l)
       length (nub [T.length (fst (T.breakOn "e.g. " l)) | l <- rows]) `shouldBe` 1
       anchorsHuman lang `shouldSatisfy` T.isInfixOf "start of|end of file"
-      anchorsHuman lang `shouldSatisfy` T.isInfixOf "from queries (tree-sitter-rust 0.24.2):"
+      anchorsHuman lang `shouldSatisfy` T.isInfixOf "from queries (tree-sitter-rust @77a3747):"
       rows `shouldSatisfy` any ("end of struct BillingService" `T.isInfixOf`)
     it "anchors --json lists the generic phrases with origin queries, a declared target with origin targets" $ do
       src <- TIO.readFile "packs/rust-htmx/languages/rust.toml"
@@ -896,14 +939,14 @@ spec = do
       checkProgram ["cargo", "check"] `shouldBe` Just "cargo"
       checkProgram ["env", "A=1"] `shouldBe` Nothing
     it "(Review Focus 3) a missing program behind `env` is a missing tool, not a failed check" $ do
-      let Right lang = parseLanguage "python" "/p" (T.unlines ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[check]", "command = [\"env\", \"X=1\", \"olifant-no-such-tool\"]", "format = \"pyright-json\""])
+      let Right lang = parseLanguage "python" "/p" (T.unlines ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-python\", rev = \"293fdc02038ee2bf0e2e206711b69c90ac0d413f\" }", "[check]", "command = [\"env\", \"X=1\", \"olifant-no-such-tool\"]", "format = \"pyright-json\""])
       r <- runCheck processChecker lang (M.fromList [("a.py", "x = 1\n")])
       case r of
         Left (CheckToolMissing why) -> why `shouldSatisfy` T.isInfixOf "olifant-no-such-tool"
         other -> expectationFailure (show other)
   describe "package-scoped checks ([check] root)" $ do
     let lang root extra = either (error . T.unpack) id . parseLanguage "python" "/p" . T.unlines $
-          ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[check]", "command = [\"uv\"]", "context = [\"pyproject.toml\", \"uv.lock\"]", "format = \"pyright-json\""]
+          ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-python\", rev = \"293fdc02038ee2bf0e2e206711b69c90ac0d413f\" }", "[check]", "command = [\"uv\"]", "context = [\"pyproject.toml\", \"uv.lock\"]", "format = \"pyright-json\""]
             ++ ["root = [" <> T.intercalate ", " ["\"" <> r <> "\"" | r <- root] <> "]" | not (null root)] ++ extra
         monorepo = ["pyproject.toml", "tools/x.py", "apps/a/pyproject.toml", "apps/a/uv.lock", "apps/a/src/x.py", "apps/a/src/x__test.py", "apps/b/pyproject.toml", "apps/b/src/y.py"]
     it "checks the judged file's package: the nearest folder with a root marker, its files only" $
@@ -915,11 +958,11 @@ spec = do
     it "checks the project when judged files sit in different packages" $
       fst (checkScope (lang ["pyproject.toml"] []) monorepo ["apps/a/src/x.py", "apps/b/src/y.py"]) `shouldBe` ""
     it "takes the outermost marker when asked (a Cargo workspace)" $ do
-      let Right rust = parseLanguage "rust" "/p" (T.unlines ["files = [\"**/*.rs\"]", "comment = \"//\"", "grammar = \"rust\"", "[check]", "command = [\"cargo\"]", "context = [\"**/Cargo.toml\"]", "root = [\"Cargo.toml\"]", "root_pick = \"outermost\"", "format = \"rustc-json\""])
+      let Right rust = parseLanguage "rust" "/p" (T.unlines ["files = [\"**/*.rs\"]", "comment = \"//\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-rust\", rev = \"77a3747266f4d621d0757825e6b11edcbf991ca5\" }", "[check]", "command = [\"cargo\"]", "context = [\"**/Cargo.toml\"]", "root = [\"Cargo.toml\"]", "root_pick = \"outermost\"", "format = \"rustc-json\""])
       fst (checkScope rust ["Cargo.toml", "crates/a/Cargo.toml", "crates/a/src/lib.rs"] ["crates/a/src/lib.rs"]) `shouldBe` ""
       fst (checkScope rust ["svc/Cargo.toml", "svc/crates/a/Cargo.toml", "svc/crates/a/src/lib.rs"] ["svc/crates/a/src/lib.rs"]) `shouldBe` "svc"
     it "reads `exclusive`: a check whose tool keeps a build cache (cargo) gets a cache no other check uses meanwhile" $ do
-      let parsed extra = parseLanguage "x" "/p" (T.unlines (["files = [\"**/*.x\"]", "comment = \"//\"", "grammar = \"rust\"", "[check]", "command = [\"tool\"]", "format = \"rustc-json\""] ++ extra))
+      let parsed extra = parseLanguage "x" "/p" (T.unlines (["files = [\"**/*.x\"]", "comment = \"//\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-rust\", rev = \"77a3747266f4d621d0757825e6b11edcbf991ca5\" }", "[check]", "command = [\"tool\"]", "format = \"rustc-json\""] ++ extra))
       fmap (fmap checkExclusive . langCheck) (parsed ["exclusive = true"]) `shouldBe` Right (Just True)
       fmap (fmap checkExclusive . langCheck) (parsed []) `shouldBe` Right (Just False)
       rust <- TIO.readFile "packs/rust-htmx/languages/rust.toml"
@@ -928,7 +971,7 @@ spec = do
       withSystemTempDirectory "olifant-exclusive" $ \dir -> do
         let log' = dir </> "log"
             command = "[\"sh\", \"-c\", \"echo start {= cache =} >> " <> T.pack log' <> "; sleep 0.3; echo end {= cache =} >> " <> T.pack log' <> "\"]"
-            Right x = parseLanguage "x" "/p" (T.unlines ["files = [\"**/*.x\"]", "comment = \"//\"", "grammar = \"rust\"", "[check]", "command = " <> command, "format = \"rustc-json\"", "exclusive = true"])
+            Right x = parseLanguage "x" "/p" (T.unlines ["files = [\"**/*.x\"]", "comment = \"//\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-rust\", rev = \"77a3747266f4d621d0757825e6b11edcbf991ca5\" }", "[check]", "command = " <> command, "format = \"rustc-json\"", "exclusive = true"])
         _ <- mapConcurrently (const (runCheck processChecker x (M.fromList [("a.x", "x")]))) [1 .. 6 :: Int]
         events <- map words . lines <$> readFile log'
         -- in each cache, a run ends before the next starts
@@ -938,7 +981,7 @@ spec = do
         M.size byCache `shouldSatisfy` (> 1)
         length events `shouldBe` 12
     it "reads `concurrent = false` (a compiler that cannot run twice at once: Elm), true by default" $ do
-      let parsed extra = parseLanguage "x" "/p" (T.unlines (["files = [\"**/*.x\"]", "comment = \"//\"", "grammar = \"rust\"", "[check]", "command = [\"tool\"]", "format = \"rustc-json\""] ++ extra))
+      let parsed extra = parseLanguage "x" "/p" (T.unlines (["files = [\"**/*.x\"]", "comment = \"//\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-rust\", rev = \"77a3747266f4d621d0757825e6b11edcbf991ca5\" }", "[check]", "command = [\"tool\"]", "format = \"rustc-json\""] ++ extra))
       fmap (fmap checkConcurrent . langCheck) (parsed ["concurrent = false"]) `shouldBe` Right (Just False)
       fmap (fmap checkConcurrent . langCheck) (parsed []) `shouldBe` Right (Just True)
       elm <- TIO.readFile "packs/elm/languages/elm.toml"
@@ -947,7 +990,7 @@ spec = do
       withSystemTempDirectory "olifant-one-at-a-time" $ \dir -> do
         let log' = dir </> "log"
             command = "[\"sh\", \"-c\", \"echo start >> " <> T.pack log' <> "; sleep 0.3; echo end >> " <> T.pack log' <> "\"]"
-            Right x = parseLanguage "x" "/p" (T.unlines ["files = [\"**/*.x\"]", "comment = \"//\"", "grammar = \"rust\"", "[check]", "command = " <> command, "format = \"rustc-json\"", "concurrent = false"])
+            Right x = parseLanguage "x" "/p" (T.unlines ["files = [\"**/*.x\"]", "comment = \"//\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-rust\", rev = \"77a3747266f4d621d0757825e6b11edcbf991ca5\" }", "[check]", "command = " <> command, "format = \"rustc-json\"", "concurrent = false"])
         _ <- mapConcurrently (const (runCheck processChecker x (M.fromList [("a.x", "x")]))) [1, 2 :: Int]
         lines <$> readFile log' `shouldReturn` ["start", "end", "start", "end"]
     it "runs the checker inside the package and reports project paths" $ do
@@ -965,7 +1008,7 @@ spec = do
       _ <- runVerifyIn verifier (lang ["pyproject.toml"] []) "apps/a" ["uv", "run", "pytest", "apps/a/src/x__test.py"] (M.fromList [("apps/a/src/x__test.py", "")])
       readIORef seen `shouldReturn` (["uv", "run", "pytest", "src/x__test.py"], ["src/x__test.py"])
   describe "contextKey: one check environment per project and lockfile" $ do
-    let Right py = parseLanguage "python" "/p" (T.unlines ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[check]", "command = [\"uv\"]", "context = [\"pyproject.toml\", \"uv.lock\"]", "format = \"pyright-json\""])
+    let Right py = parseLanguage "python" "/p" (T.unlines ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-python\", rev = \"293fdc02038ee2bf0e2e206711b69c90ac0d413f\" }", "[check]", "command = [\"uv\"]", "context = [\"pyproject.toml\", \"uv.lock\"]", "format = \"pyright-json\""])
         Just check = langCheck py
         project lock src = M.fromList [("pyproject.toml", "[project]\nname = \"bistro\"\n"), ("uv.lock", lock), ("src/a.py", src)]
     it "is the same for the same project, whatever its sources say" $
@@ -975,12 +1018,12 @@ spec = do
   describe "compileClean with pyright (a site but no broken file)" $
     it "says which cases are missing, not an empty reason" $ do
       let report = "{\"generalDiagnostics\": [{\"file\": \"a.py\", \"severity\": \"error\", \"rule\": \"reportMatchNotExhaustive\", \"message\": \"Cases within match statement do not exhaustively handle all values\\n  Unhandled type: \\\"Gone\\\"\", \"range\": {\"start\": {\"line\": 3, \"character\": 4}, \"end\": {\"line\": 3, \"character\": 9}}}]}"
-          Right lang = parseLanguage "python" "/p" (T.unlines ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[check]", "command = [\"sh\", \"-c\", " <> T.pack (show ("printf '%s' '" <> T.unpack report <> "'; exit 1")) <> "]", "format = \"pyright-json\""])
+          Right lang = parseLanguage "python" "/p" (T.unlines ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-python\", rev = \"293fdc02038ee2bf0e2e206711b69c90ac0d413f\" }", "[check]", "command = [\"sh\", \"-c\", " <> T.pack (show ("printf '%s' '" <> T.unpack report <> "'; exit 1")) <> "]", "format = \"pyright-json\""])
       r <- compileClean lang (M.fromList [("a.py", "x = 1\n")])
       r `shouldSatisfy` either ("Gone()" `T.isInfixOf`) (const False)
   describe "a check whose report cannot be read (python review I4)" $
     it "says what the tool printed on stderr (uv offline, no lockfile)" $ do
-      let Right lang = parseLanguage "python" "/p" (T.unlines ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[check]", "command = [\"sh\", \"-c\", \"echo 'error: No `uv.lock` found; run uv lock' >&2; exit 2\"]", "format = \"pyright-json\""])
+      let Right lang = parseLanguage "python" "/p" (T.unlines ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-python\", rev = \"293fdc02038ee2bf0e2e206711b69c90ac0d413f\" }", "[check]", "command = [\"sh\", \"-c\", \"echo 'error: No `uv.lock` found; run uv lock' >&2; exit 2\"]", "format = \"pyright-json\""])
       r <- runCheck processChecker lang (M.fromList [("a.py", "x = 1\n")])
       case r of
         Left f -> describeCheckFailure f `shouldSatisfy` T.isInfixOf "No `uv.lock` found"
@@ -1000,7 +1043,7 @@ spec = do
           Just "1" -> expectationFailure "required tool missing: uv (brew install uv)"
           _ -> pendingWith "uv is not installed (brew install uv)"
         Just _ -> do
-          let Right py = parseLanguage "python" "/p" (T.unlines ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[check]", "command = [\"uvx\", \"--quiet\", \"pyright==1.1.414\", \"--outputjson\"]", "context = [\"pyproject.toml\"]", "format = \"pyright-json\""])
+          let Right py = parseLanguage "python" "/p" (T.unlines ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-python\", rev = \"293fdc02038ee2bf0e2e206711b69c90ac0d413f\" }", "[check]", "command = [\"uvx\", \"--quiet\", \"pyright==1.1.414\", \"--outputjson\"]", "context = [\"pyproject.toml\"]", "format = \"pyright-json\""])
           files <- traverse (\f -> (f,) <$> TIO.readFile ("src/Olifant/Language/testdata/pyright/two-matches/" <> f)) ["pyproject.toml", "src/failures.py"]
           r <- runCheck processChecker py (M.fromList files)
           fmap (map (\m -> (missingFile m, missingCase m)) . reportMissing) r `shouldBe` Right [("src/failures.py", (17, 19)), ("src/failures.py", (23, 30))]
@@ -1105,7 +1148,7 @@ spec = do
       fmap checkCommand (langCheck hs) `shouldSatisfy` maybe False (any ("-fmax-uncovered-patterns=" `T.isInfixOf`))
   describe "layers (shipped, packs, project; merged by key)" $ do
     let layer origin dir ls = either (error . T.unpack) (Layer origin dir) (parseToml (T.unlines ls))
-        base = ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\""]
+        base = ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-python\", rev = \"293fdc02038ee2bf0e2e206711b69c90ac0d413f\" }"]
         Right two = languageFromLayers shippedPresets "python" [layer "shipped" Nothing (base ++ ["indent = \"  \"", "keywords = [\"a\", \"b\"]", "[unit]", "kinds = [\"a\"]"]), layer "pack p" (Just "/p") ["[unit]", "join = true"]]
     it "a project command over the pytest preset that names no {= report =} keeps reading the console; naming it, or its own format, reads JUnit" $ do
       let layers own = languageFromLayers shippedPresets "python" [layer "shipped" Nothing (base ++ ["[test]", "preset = \"pytest\""]), layer "project" (Just "/q/.olifant") ("[test]" : "preset = \"pytest\"" : own)]
@@ -1156,7 +1199,7 @@ spec = do
       fmap testsFor (langTest l) `shouldBe` Just "X"
     it "the grammar follows the layer that set it (Review Focus 3)" $ do
       let Right l = languageFromLayers shippedPresets "elm" [layer "pack elm" (Just "packs/elm") ["files = [\"**/*.elm\"]", "comment = \"--\"", "grammar = { source = \"grammar/elm\" }"], layer "project" (Just ".olifant") ["indent = \"    \""]]
-      langGrammar l `shouldBe` GrammarSource "packs/elm/languages/grammar/elm"
+      langGrammar l `shouldBe` Grammar "elm" (Just (SourceDir "packs/elm/languages/grammar/elm"))
     it "a shipped grammar source is an error" $
       languageFromLayers shippedPresets "x" [layer "shipped" Nothing ["files = [\"*.x\"]", "comment = \"#\"", "grammar = { source = \"g\" }"]]
         `shouldSatisfy` either ("cannot be shipped" `T.isInfixOf`) (const False)
@@ -1164,7 +1207,7 @@ spec = do
       let Right l = parseLanguage "python" "packs/python-htmx" (T.unlines base)
       langLayers l `shouldBe` ["pack python-htmx"]
   describe "[[mutate]] (mutation operators)" $ do
-    let x extra = parseLanguage "x" "/x" (T.unlines (["files = [\"**/*.x\"]", "comment = \"#\"", "grammar = \"python\""] ++ extra))
+    let x extra = parseLanguage "x" "/x" (T.unlines (["files = [\"**/*.x\"]", "comment = \"#\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-python\", rev = \"293fdc02038ee2bf0e2e206711b69c90ac0d413f\" }"] ++ extra))
     it "reads a pattern with a fix, and a rule with the increment transform" $ do
       let Right l = x ["[[mutate]]", "name = \"boundary\"", "pattern = \"$A < $B\"", "fix = \"$A <= $B\"", "[[mutate]]", "name = \"number\"", "rule = { kind = \"integer\" }", "transform = \"increment\""]
       map mutName (langMutate l) `shouldBe` ["boundary", "number"]

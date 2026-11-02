@@ -178,7 +178,7 @@ resolveOne syntax lang file anchor content = case anchor of
             Left (why, tool) -> Left (Miss used why tool)
             Right Nothing
               | genericImports, Just "after header" <- genericWhenEmpty, pos `elem` [StartOf, EndOf] -> afterHeader
-              | Nothing <- target, genericPhrase ws, grammarLinked l -> Left (miss ("no `" <> T.unwords ws <> "` in this file"))
+              | Nothing <- target, genericPhrase ws, hasLoadableGrammar l -> Left (miss ("no `" <> T.unwords ws <> "` in this file"))
               | otherwise -> Left (miss "not found")
             Right (Just (_, []))
               | Just "after header" <- targetWhenEmpty =<< target, pos `elem` [StartOf, EndOf] -> afterHeader
@@ -187,7 +187,7 @@ resolveOne syntax lang file anchor content = case anchor of
         -- language says a blank line between imports groups them (`[imports]
         -- spaced = false`); a file with none takes its first after its
         -- header (comments, docstring)
-        genericImports = isNothing target && ws == ["imports"] && grammarLinked l
+        genericImports = isNothing target && ws == ["imports"] && hasLoadableGrammar l
         genericSpaced = not genericImports || maybe True imSpaced (langImportsDef l)
         genericWhenEmpty = imWhenEmpty =<< langImportsDef l
         afterHeader =
@@ -262,8 +262,8 @@ itemsOfTarget syntax l prefix ws content = case [(t, bs) | t <- langTargets l, J
     anchorSyntax syntax l Nothing ws content <&> \case
       Just r -> genericOne r
       Nothing ->
-        let generic = if grammarLinked l then genericPhrases else []
-            renamed = if grammarLinked l then lookup ws renamedPhrases else Nothing
+        let generic = if hasLoadableGrammar l then genericPhrases else []
+            renamed = if hasLoadableGrammar l then lookup ws renamedPhrases else Nothing
             suggestion = maybe "" (\s -> "; did you mean `" <> s <> "`?") (maybe (closest (prefix <> " " <> T.unwords ws) (map targetExample (langTargets l) ++ map snd generic)) Just renamed)
          in Left ("unknown target `" <> T.unwords ws <> "` for " <> langName l <> suggestion <> " (targets: " <> T.intercalate ", " (map targetPhrase (langTargets l) ++ map fst generic) <> ")", False)
   ((t, binds) : _) -> do

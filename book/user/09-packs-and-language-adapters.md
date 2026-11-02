@@ -135,7 +135,7 @@ targets:
   literal in FUNCTION       e.g. end of literal in new
   literal NAME in FUNCTION  e.g. end of literal RefundInvoice in new
 
-from queries (tree-sitter-rust 0.24.2):
+from queries (tree-sitter-rust @77a3747):
   function NAME             e.g. end of function main
   class NAME                e.g. end of class BillingService
   KIND NAME                 e.g. end of struct BillingService
@@ -261,7 +261,8 @@ From `library/languages/rust.toml` and `library/languages/elm.toml`:
 ```toml
 files       = ["**/*.rs"]                         # which files this adapter covers
 comment     = "//"                                # line comment, for region fences
-grammar     = "rust"                              # a grammar ast-grep has built in…
+grammar     = { git = "https://github.com/tree-sitter/tree-sitter-rust", rev = "77a3747266f4d621d0757825e6b11edcbf991ca5" }
+                                                  # the grammar's source at a pinned commit…
 # grammar   = { source = "grammar/elm" }          # …or C sources vendored in the pack
 placeholder = 'todo!("{= message|rust_string =}")'  # the body of a todo branch
 branch      = "{= pattern =} => {= body =},"      # how a case branch is written
@@ -287,7 +288,7 @@ example   = "end of struct BillingService"
 |---|---|
 | `files` | globs; a file uses the first adapter (in pack name order) whose globs match it |
 | `comment` | region fences in this language's files (chapter 5) |
-| `grammar` | a built-in ast-grep language name (`rust`, `typescript`, …), or `{ source = "dir" }` relative to `languages/` holding `parser.c` (and `scanner.c` if the grammar has one). A grammar olifant also links in process (today `rust`) comes with its tree-sitter runtime, grammar and query files compiled into the binary: nothing to install, and the generic anchor phrases work on it |
+| `grammar` | where the language's tree-sitter grammar comes from ([grammars](#grammars-built-once-loaded-at-run-time)). `{ git = URL, rev = SHA }`: a git repository at a pinned commit; `rev` is a full 40-character commit SHA, never a branch or a tag (a branch moves, and the build is cached by it), and `git` is an `https://`, `ssh://`, `git://` or `file://` URL. `{ source = "dir" }`: C sources beside the file, relative to `languages/`, holding `parser.c` (and `scanner.c` if the grammar has one); a pack or the project carries them, a shipped file cannot. Either table may add `name` (the grammar's name when it is not the language's: the queries folder, its `tree_sitter_<name>` symbol, ast-grep's language; letters, digits and `_`) and, with `git`, `path` (the folder inside the repository holding `src/`, as tree-sitter-typescript's `tsx`). A bare name (`"go"`) is ast-grep's built-in language only: `[[mutate]]` and `[targets.*]` work, units, generic anchors and the default migrate count do not. The shipped Python, Rust and Haskell files name their `git` and `rev` |
 | `placeholder`, `branch` | what `complete` writes when the compiler finds a case no edit covers: `branch` with `pattern` and `body`, where `body` is the `placeholder` with `message` = `olifant: <function> <pattern>`. Without both, such a case is a conflict instead of a todo |
 | `arm_separator`, `lone_arm_spaced` | how `complete` joins a new arm to the others: `arm_separator` (default none) is appended to the last arm first, unless it already ends with it or ends a block (Rust's `","`); `lone_arm_spaced = true` puts a blank line before the new arm when the match has only one (Elm's and Haskell's style; default false). With two or more arms, the existing spacing is copied |
 | `indent` | one level of indentation; default four spaces. Used when `end of`/`start of` opens an empty container ([chapter 3](03-anchors.md)), and when a snippet goes on an empty line after one that opens a block ([chapter 14](14-editors-and-actions.md#the-cursor-edit-cursor--true)). the shipped Haskell file sets two spaces |
@@ -296,7 +297,7 @@ example   = "end of struct BillingService"
 | `[[mutate]]` | mutation operators, for `mutate` ([chapter 18](18-tdd-in-the-editor.md)): each a `name`, a `pattern` or ast-grep `rule`, and a `fix` or `transform = "increment"`. Python ships seventeen |
 | `ignore` | folder names (not paths: a name with a `/`, or an empty one, is a load error) a project's listings never enter (dependencies, build output, caches): Rust's `["target"]`, Python's `[".venv", "__pycache__", ".pytest_cache", "node_modules"]`, Haskell's `["dist-newstyle"]`, Elm's `["elm-stuff", "node_modules"]`. The project's languages' lists are joined; olifant itself keeps out only `.git` and, in a walk outside git, dot-folders |
 | `unit_words` | what a unit is in this language, as the plan prompts say it: "<Unit> is <unit_words> defined in that file". Python's is "a top-level class or function name (Name) or a method (Class.method)"; a project whose languages disagree, or one without the key, gets "a top-level function or type name (Name), or a method (Type.method)" |
-| `[unit]` | `kinds`: the tree-sitter node kinds of a definition (a function, method or class) in this language, for `:Durandal conjure` ([chapter 18](18-tdd-in-the-editor.md#conjuring)): the innermost node of these kinds around the cursor is the unit conjured. Elm lists its own. A language whose grammar olifant links in (Rust, Python, Haskell) needs none: its units are every function and class-like definition the grammar's queries capture, named by its `@name` there (`[unit] name` then only finds a unit's definition line), a decorated definition with its decorators, a Haskell signature with its equations. A Rust trait impl is a unit named by its type (its methods are `Type.method`, as before), and a Haskell instance by its head (`C Int`, its methods `C Int.m`). A plan anchor naming a type and its inherent impl (both `A`) is the type, as before; any other name several units share is reported as ambiguous, never resolved to the first. Without `kinds`, a provider or a linked grammar, `conjure` says the language has no unit kinds. A test's span, where its line starts a definition, is that definition's too (a string's outdented line, a Rust test's closing brace and a multi-line signature are the test's). `name` (optional): a list of POSIX expressions over a unit's line; the first that matches names the unit by its **last group** (the whole match when it has none). A unit is named by the first line of its span that has a name (Python's decorated def by its `def` line). Without it, a unit is named by its line's first identifier. `join = true` (default false): units of one name, at one indentation, separated only by blank lines (or touching), are one unit — a Haskell signature and its equations. See [the Haskell example](#a-second-example-haskell). `kinds = { provider = [...] }` in place of the list: a program names the units instead ([providers](#providers-answering-a-slot-with-a-program)); its answers are qualified (`Outer.Inner`) by containment, and a unit's definition line is still the first of its lines that `name` names (else its first) |
+| `[unit]` | `kinds`: the tree-sitter node kinds of a definition (a function, method or class) in this language, for `:Durandal conjure` ([chapter 18](18-tdd-in-the-editor.md#conjuring)): the innermost node of these kinds around the cursor is the unit conjured. Elm lists its own. A language whose grammar loads (Rust, Python, Haskell) needs none: its units are every function and class-like definition the grammar's queries capture, named by its `@name` there (`[unit] name` then only finds a unit's definition line), a decorated definition with its decorators, a Haskell signature with its equations. A Rust trait impl is a unit named by its type (its methods are `Type.method`, as before), and a Haskell instance by its head (`C Int`, its methods `C Int.m`). A plan anchor naming a type and its inherent impl (both `A`) is the type, as before; any other name several units share is reported as ambiguous, never resolved to the first. Without `kinds`, a provider or a grammar that loads, `conjure` says the language has no unit kinds. A test's span, where its line starts a definition, is that definition's too (a string's outdented line, a Rust test's closing brace and a multi-line signature are the test's). `name` (optional): a list of POSIX expressions over a unit's line; the first that matches names the unit by its **last group** (the whole match when it has none). A unit is named by the first line of its span that has a name (Python's decorated def by its `def` line). Without it, a unit is named by its line's first identifier. `join = true` (default false): units of one name, at one indentation, separated only by blank lines (or touching), are one unit — a Haskell signature and its equations. See [the Haskell example](#a-second-example-haskell). `kinds = { provider = [...] }` in place of the list: a program names the units instead ([providers](#providers-answering-a-slot-with-a-program)); its answers are qualified (`Outer.Inner`) by containment, and a unit's definition line is still the first of its lines that `name` names (else its first) |
 | `[holes.KIND]` | the kinds of typed hole this language has: what an unfilled one is written as (`placeholder`) and where a fill must parse (`wrap`). See [hole kinds](#hole-kinds-holeskind), below |
 | `keywords` | the language's reserved words (optional). Recognition keeps them as they are when it reads code by shape; every other name becomes its case shape ([chapter 16](16-the-language-server.md#recognition-this-looks-like-a-command)). The words in the pack's templates count too |
 | `separator`, `line_length` | what follows each item in brackets (`","`), and the longest line (default 88). With a separator an item can join a one-line container: inline when it fits, else the container goes one item per line ([chapter 3](03-anchors.md#rules-worth-knowing)). Python: `,`/88; Rust: `,`/100; Elm has none (its commas lead), so a one-line Elm list still refuses |
@@ -320,14 +321,14 @@ anchors` on it or a `complete` edit whose `language` names it.
 
 ### A second example: Haskell
 
-`library/languages/haskell.toml` uses ast-grep's grammar built in for Haskell,
+`library/languages/haskell.toml` pins tree-sitter-haskell (ast-grep has it built in too),
 checks with GHC through `cabal repl` instead of `elm make`, and runs its tests with hspec
 through `cabal test`. Both are presets ([below](#presets-check-and-test)):
 
 ```toml
 files       = ["**/*.hs"]
 comment     = "--"
-grammar     = "haskell"
+grammar     = { git = "https://github.com/tree-sitter/tree-sitter-haskell", rev = "c30d812bc90827f1a54106a25bc9a6307f5cdcec" }
 placeholder = 'error "{= message =}"'
 branch      = "{= pattern =} -> {= body =}"
 
@@ -452,13 +453,13 @@ root_pick = "outermost"
 
 ### A fourth example: Python
 
-`library/languages/python.toml` is the Python adapter. It uses ast-grep's built-in
-grammar and checks with pyright, in strict mode, through `uv`:
+`library/languages/python.toml` is the Python adapter. It pins tree-sitter-python
+and checks with pyright, in strict mode, through `uv`:
 
 ```toml
 files = ["**/*.py"]
 comment = "#"
-grammar = "python"
+grammar = { git = "https://github.com/tree-sitter/tree-sitter-python", rev = "293fdc02038ee2bf0e2e206711b69c90ac0d413f" }
 indent = "    "
 placeholder = 'raise NotImplementedError("{= message|python_string =}")'
 branch = "case {= pattern =}:\n    {= body =}"
@@ -547,7 +548,7 @@ targets:
   match on NAME           e.g. end of match on failure
   union NAME              e.g. end of union CreateBookingFailure
 
-from queries (tree-sitter-python 0.25.0):
+from queries (tree-sitter-python @293fdc0):
   function NAME           e.g. end of function main
   class NAME              e.g. end of class BillingService
   KIND NAME               e.g. end of struct BillingService
@@ -907,7 +908,7 @@ compile); with exit 0, "no tests ran".
 |---|---|
 | `file_group` | an expression over a test file's text; its last group is the file's outermost group. hspec's: `'^module[[:space:]]+([[:alnum:]_.]+)Spec'` |
 | `[test.select]` | how an id becomes arguments of `{= tests =}`. `test` for a test's id, `file` for a file's: each a template, or a list of them (several arguments; one repeated by several ids is given once). `{= group =}` is the file's group (its `file_group`, else its module by `[imports] module_of`; empty for a Rust crate's root), `{= name =}` the test's names below its file joined by `join` (default `/`), `{= id =}` the whole id (`path::name`), for a runner that reads ids as they are: pytest's `test = "{= id =}"`, `file = "{= id =}"`. hspec's: `test = "--test-option=--match=/{= group =}/{= name =}/"`. cargo-test's: `test = ["--exact", "{= if group =}{= group =}::{= end =}{= name =}"]`, `file = "{= if group =}{= group =}::{= end =}"`, `join = "::"`. Without it, the ids themselves are the arguments. `select = { provider = [...] }` in place of the table: a program gets `{"v": 1, "tests": [ids]}` and answers the arguments (`["-k", "adds"]`); when it fails, the run fails with its reason ([providers](#providers-answering-a-slot-with-a-program)) |
-| `unit` | rules whose line starts a test or a group: how the editor finds the test at the cursor, and a plan step a test by name ([chapter 19](19-plans.md)). An entry is an expression (its last group the name) or a table `{ pattern, after, name }`: `after` is an expression a line above must match, looking past `above` lines (Rust's `{ pattern = '^[[:space:]]*fn[[:space:]]+([[:alnum:]_]+)', after = '#\[test\]' }`: a `fn` is a test only under `#[test]`, with `#[should_panic]` between allowed); `name` is the group holding the name when it is not the last (hspec's string with escapes: group 3; `\"` in it reads `"`). A unit runs from its line to the line before the next non-blank line at its indentation or less, so a nested unit's path is its parents' names, then its own. With a linked grammar, a class (its queries' `definition.class`) that holds a test is a group too, whatever it is called: pytest's `class TestX` / `def test_y` is `TestX::test_y`, and a Django `class ElectionTests(TestCase)` method `ElectionTests::test_y`; a class with no test in it is none. pytest's rule is `pytest.toml`'s (`def test…`, async too); hspec's find `describe`/`context`/`it`/`specify`/`prop`. A language with no `unit` has no test at a line: a cursor runs the whole file, and a plan step's test cannot be found. `unit = { provider = [...] }` in place of the rules: a program finds the tests ([providers](#providers-answering-a-slot-with-a-program)); a test's groups are the answers that hold it, so a `describe` answered over lines 1–9 and an `it` over 2–4 make `describe::it` |
+| `unit` | rules whose line starts a test or a group: how the editor finds the test at the cursor, and a plan step a test by name ([chapter 19](19-plans.md)). An entry is an expression (its last group the name) or a table `{ pattern, after, name }`: `after` is an expression a line above must match, looking past `above` lines (Rust's `{ pattern = '^[[:space:]]*fn[[:space:]]+([[:alnum:]_]+)', after = '#\[test\]' }`: a `fn` is a test only under `#[test]`, with `#[should_panic]` between allowed); `name` is the group holding the name when it is not the last (hspec's string with escapes: group 3; `\"` in it reads `"`). A unit runs from its line to the line before the next non-blank line at its indentation or less, so a nested unit's path is its parents' names, then its own. With a grammar that loads, a class (its queries' `definition.class`) that holds a test is a group too, whatever it is called: pytest's `class TestX` / `def test_y` is `TestX::test_y`, and a Django `class ElectionTests(TestCase)` method `ElectionTests::test_y`; a class with no test in it is none. pytest's rule is `pytest.toml`'s (`def test…`, async too); hspec's find `describe`/`context`/`it`/`specify`/`prop`. A language with no `unit` has no test at a line: a cursor runs the whole file, and a plan step's test cannot be found. `unit = { provider = [...] }` in place of the rules: a program finds the tests ([providers](#providers-answering-a-slot-with-a-program)); a test's groups are the answers that hold it, so a `describe` answered over lines 1–9 and an `it` over 2–4 make `describe::it` |
 | `assertion` | expressions over a line where a test's assertion starts: Python's `'^[[:space:]]*assert([[:space:]]|\(|$)'`, Rust's `assert!`/`assert_eq!`/`assert_ne!`, hspec's `` `shouldBe` `` and its kin or `expectationFailure`. A key of the language, not of the runner (presets do not fill it); a `[test]` table holding only it is no runner. It says where a new test must fail (red at its assertion, not before), and where a fill of a test's two holes (arrangement, assertion) is split |
 | `name` | a new test's name (a stub's, a plan step's test), a template over `{= words =}`: the step's words, or the unit's name split into words (`CloseTable` is `close table`). pytest's `test_{= words|snake =}`, hspec's `{= words|lower_words =}`, cargo-test's `{= words|snake =}`. Without it, the words joined by `_` |
 | `[test.stub]` | what a new test looks like (`:Durandal stub`, a plan step's test; [chapter 18](18-tdd-in-the-editor.md#stubbing-a-test)). `test`: its text, a template over `{= name =}`, `{= unit =}`, `{= module =}` (the unit's module, by `[imports] module_of`), `{= indent =}` (one level) and `{= note =}` (a survivor's line, its comment the language's, or empty). `file`: a new test file's head, over the same and `{= import =}` (the unit's import, by `[imports] write`); the test follows it directly. `gap` (default 1): blank lines before a test added to a file that has some. `at` (optional): a target phrase (`end of mod tests`) the test goes at instead of the file's end, and `open`: the text appended at the file's end when that target is not there, a template over the same and `{= test =}` (the test, inside it). `elsewhere` (optional): an expression for a line that says the tests live in another file, its last group that file's name (cargo-test's `mod tests;`): the stub refuses, "tests live in another file: tests.rs". pytest's writes `def test_x() -> None:` with `...` and `assert ...`, two blank lines before; hspec's an `it` at one indent, its body `expectationFailure "write this test"`, one blank line before, at `end of do in spec` (Haskell's `do in FUNCTION` target: before any helper after `spec`; a `spec` without a `do`, composed with `>>`, takes the file's end), and a new Spec module's head. A runner without it has no stub: "no `[test] stub` for …" |
@@ -920,10 +921,10 @@ outside `[A-Za-z0-9_.]` written as one `_`: `it "parses \"x\" twice"` under `des
 
 **Known limits of rules.** Test units are found by line rules, so a pattern inside a string
 or a comment counts as a test, and a `fn` whose name is on another line than `fn` is missed.
-Where the language's grammar is linked (Rust, Python, Haskell), a unit whose line starts a
+Where the language's grammar loads (Rust, Python, Haskell), a unit whose line starts a
 definition ends where the definition ends: at a Rust test's closing brace, past a string's
-outdented line or a signature's `) -> None:` at column 0. Elsewhere (hspec's `it`, an unlinked
-grammar) a unit ends at an outdent.
+outdented line or a signature's `) -> None:` at column 0. Elsewhere (hspec's `it`, a language
+with no grammar) a unit ends at an outdent.
 | `exclusive` | the runner keeps a build cache: each run gets a slot (`{= cache =}` is the slot's), as `[check] exclusive` |
 | `timeout` | seconds a run may take, over the editor's default |
 
@@ -939,7 +940,7 @@ is the same code, so conjure, mutate, stubs, plans and the editor behave the sam
 |---|---|---|
 | units | `[unit] kinds = { provider = [...] }` | `[unit] kinds` (ast-grep node kinds) |
 | test units | `[test] unit = { provider = [...] }` | the `[test] unit` rules |
-| anchor | `anchors = { provider = [...] }` (top level) | none: asked only for a phrase no `[targets.*]` shape matches and the generic phrases do not know (a linked grammar's `function NAME`, `struct NAME`, …: [chapter 3](03-anchors.md#the-generic-phrases)), before "unknown target" |
+| anchor | `anchors = { provider = [...] }` (top level) | none: asked only for a phrase no `[targets.*]` shape matches and the generic phrases do not know (a loaded grammar's `function NAME`, `struct NAME`, …: [chapter 3](03-anchors.md#the-generic-phrases)), before "unknown target" |
 | test selection | `[test] select = { provider = [...] }` | `[test.select]` |
 | diagnostics | `[check] convert` | the `[check] format` parser |
 | test results | `[test] convert` | the `[test] format` parser |
@@ -1126,9 +1127,31 @@ that names the ones it has:
 A fill is also compiled with the plan when the adapter has a `[check]`. A language with
 holes but no `[check]` validates fills by parsing alone.
 
-A vendored grammar is compiled once with `cc` into `~/.cache/olifant/grammars/`, keyed by a
-hash of `parser.c`, so an updated grammar is rebuilt automatically. The first Elm run on a
-machine therefore needs a C compiler (on macOS, `xcode-select --install`).
+### Grammars: built once, loaded at run time
+
+No grammar is compiled into olifant. The first time a language's grammar is needed (a
+parse for an anchor, a unit or a count; an ast-grep query on Elm; `olifant doctor`), olifant
+fetches its `{ git, rev }` (a shallow fetch of that one commit) into
+`~/.cache/olifant/grammars/src/`, or takes its `{ source }` folder, compiles `parser.c` and
+`scanner.c` with `cc` into `~/.cache/olifant/grammars/<name>-<key>.dylib`, and loads it. That
+costs under a second per grammar for Python, Rust and Elm, about two for Haskell (a large
+grammar), once per machine and revision; afterwards a load is under a millisecond. The key
+covers the revision (or the folder's `parser.c` and `scanner.c`), the tree-sitter version
+inside olifant and the machine, so a changed `rev`, an edited `parser.c` or an olifant
+upgrade rebuilds by itself; old libraries are left in the folder. So a fresh machine needs a C
+compiler once (on macOS, `xcode-select --install`) and either the network or a local copy of
+the sources: `OLIFANT_GRAMMAR_SOURCES` is a colon-separated list of folders, each holding
+`<name>/parser.c`, looked in before fetching (olifant's repository has the shipped three in
+`library/grammars/`). Run `olifant doctor` once to do it ahead of time: its `grammar` row says
+`built now in N s`, or what failed and how to fix it. Without a grammar a language keeps
+everything that needs none ([[mutate]], declared targets, its line rules).
+
+**Trust.** A language file, a project's or a pack's included, can name a grammar to fetch, and
+olifant then compiles that C code and loads it into its own process, the language server
+included when a file opens: a project's grammar source is trusted like its `[check]` command,
+which olifant also runs as you. Olifant fetches only a full commit SHA (never a branch or tag),
+with git's own transports, no redirects and no hooks, into its cache folder; it never fetches
+or compiles while it only lists or reads configuration.
 
 ### Targets
 
@@ -1169,8 +1192,8 @@ under the docstring).
 
 ### Overriding a language's queries
 
-The generic phrases, units and test spans of a language whose grammar olifant links in (Rust,
-Python, Haskell) are read through tree-sitter query files shipped inside olifant
+The generic phrases, units and test spans of a language with a grammar and its queries (the
+shipped Python, Rust and Haskell) are read through tree-sitter query files shipped inside olifant
 (`library/queries/<grammar>/`: `tags.scm`, `textobjects.scm`, `imports.scm`, and Rust's
 `impls.scm`). A project can put its own beside them, in `.olifant/queries/<grammar>/`:
 
@@ -1191,7 +1214,7 @@ used), one in a subfolder of the grammar's folder, and a folder for a grammar no
 reads. `olifant doctor`'s `queries` row names each file's origin:
 
 ```
-✓ rust: queries — tree-sitter-rust 0.24.2; imports (project), impls, tags, textobjects (shipped)
+✓ rust: queries — tree-sitter-rust @77a3747; imports (project), impls, tags, textobjects (shipped)
 ```
 
 ### Conjure's shapes: `[conjure]`

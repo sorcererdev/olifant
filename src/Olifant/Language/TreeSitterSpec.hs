@@ -21,11 +21,17 @@ import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
 import Olifant.Language.Captures (Cap (..), PNode (..), anchorFromCaptures)
 import Olifant.Language.Syntax (Match (..))
-import Olifant.Language.TreeSitter (cacheHolds, cacheSize, compiledSize, capturesOf, linkedGrammars, queriesFor)
+import Olifant.Language.TreeSitter (cacheHolds, cacheSize, compiledSize, capturesOf, loadableGrammar, queriesFor)
+import Olifant.Language.Adapter (Grammar (..))
+import Olifant.Language (shippedLanguageNow)
 import Test.Hspec
 
+-- | A shipped language's grammar (its git source, read from the vendored copy).
+shipped :: Text -> Grammar
+shipped g = maybe (error ("no loadable grammar: " <> T.unpack g)) id (loadableGrammar (shippedLanguageNow g))
+
 rust :: Text -> [Cap]
-rust src = either (error . T.unpack) snd (capturesOf "rust" (queriesFor "rust") src)
+rust src = either (error . T.unpack) snd (capturesOf (shipped "rust") (queriesFor "rust") src)
 
 -- | The definitions of a text: (capture, @name of the same match).
 defs :: [Cap] -> [(Text, Text)]
@@ -61,7 +67,7 @@ cacheSpec = describe "tree-sitter: the parse cache" $ do
     cacheHolds (text 1) `shouldReturn` True
   it "holds at most 16 compiled query sets: each saved project .scm is a new one (m2b M2)" $ do
     forM_ [1 .. 40 :: Int] $ \i ->
-      evaluate (length (either (const []) snd (capturesOf "rust" [("x.scm", "; " <> T.pack (show i) <> "\n(struct_item name: (type_identifier) @name) @definition.class")] "struct A;\n")))
+      evaluate (length (either (const []) snd (capturesOf (shipped "rust") [("x.scm", "; " <> T.pack (show i) <> "\n(struct_item name: (type_identifier) @name) @definition.class")] "struct A;\n")))
     n <- compiledSize
     n `shouldBe` 16
   it "an edited text is reparsed" $ do
@@ -120,13 +126,14 @@ benchSpec = describe "tree-sitter: timing" $
           (tOld, rOld) <- run old file p False
           pure (f <> " | " <> T.unpack p <> " | cold " <> show cold <> " | warm " <> show warm <> " | ast-grep " <> show tOld <> " | " <> show rNew <> " | " <> show rOld)
         mapM_ (putStrLn . ("BENCH " <>)) rows
-        capRuns <- forM [1 .. 20 :: Int] $ \i -> timeIt (pure (either (const 0) (length . snd) (capturesOf "rust" (queriesFor "rust") (big <> "// c " <> T.pack (show i) <> "\n"))))
+        capRuns <- forM [1 .. 20 :: Int] $ \i -> timeIt (pure (either (const 0) (length . snd) (capturesOf (shipped "rust") (queriesFor "rust") (big <> "// c " <> T.pack (show i) <> "\n"))))
         putStrLn ("BENCH capturesOf rwlock.rs alone, cold: " <> show (med (map fst capRuns)) <> " ms, " <> show (maybe 0 snd (listToMaybe capRuns)) <> " captures")
 
 captureSpec :: Spec
 captureSpec = describe "tree-sitter captures" $ do
-  it "links the haskell, python and rust grammars" $
-    linkedGrammars `shouldBe` ["haskell", "python", "rust"]
+  it "loads the haskell, python and rust grammars from the vendored copies" $
+    forM_ ["haskell", "python", "rust"] $ \g ->
+      either Just (const Nothing) (capturesOf (shipped g) (queriesFor g) "") `shouldBe` Nothing
   it "a project imports.scm replaces the shipped one" $ do
     rs <- either (error . T.unpack) id . parseOverShipped "rust" "packs/rust-htmx" <$> TIO.readFile "packs/rust-htmx/languages/rust.toml"
     let own = rs {langQueries = [("imports.scm", "(extern_crate_declaration) @import\n", "project")]}
@@ -136,7 +143,7 @@ captureSpec = describe "tree-sitter captures" $ do
     line rs `shouldReturn` Right 2
     line own `shouldReturn` Right 1
   describe "Haskell (olifant's own queries)" $ do
-    let hs src = either (error . T.unpack) id (capturesOf "haskell" (queriesFor "haskell") src)
+    let hs src = either (error . T.unpack) id (capturesOf (shipped "haskell") (queriesFor "haskell") src)
         containers src ws = case hs src of
           (root, caps) -> fmap (fmap (map (\(c, items) -> ((fst (matchStart c), fst (matchEnd c)), length items)))) (anchorFromCaptures True root caps ws)
     it "a Haskell function's definition spans its signature and equations" $
@@ -157,14 +164,14 @@ captureSpec = describe "tree-sitter captures" $ do
       -- (its signature and default equation are one item: one `m`)
       containers src ["class", "C"] `shouldBe` Just (Right [((1, 2), 1)])
   it "every shipped query compiles and uses only known predicates" $
-    forM_ linkedGrammars $ \g ->
-      either (Just . ((g <> ": ") <>)) (const Nothing) (capturesOf g (queriesFor g) "") `shouldBe` Nothing
+    forM_ ["haskell", "python", "rust"] $ \g ->
+      either (Just . ((g <> ": ") <>)) (const Nothing) (capturesOf (shipped g) (queriesFor g) "") `shouldBe` Nothing
   it "a Python file's classes and functions are captured" $
-    defs (either (error . T.unpack) snd (capturesOf "python" (queriesFor "python") "class A:\n    def m(self):\n        pass\n\ndef f():\n    pass\n"))
+    defs (either (error . T.unpack) snd (capturesOf (shipped "python") (queriesFor "python") "class A:\n    def m(self):\n        pass\n\ndef f():\n    pass\n"))
       `shouldBe` [("definition.class", "A"), ("definition.function", "m"), ("definition.function", "f")]
   describe "predicates (evaluated in Haskell)" $ do
     -- @import is a capture the rule reads (others are pruned)
-    let idents q = [pText (capNode c) | c <- either (error . T.unpack) snd (capturesOf "rust" [("p.scm", q)] "fn f() { a; b; a; abc; }\n"), capName c == "import"]
+    let idents q = [pText (capNode c) | c <- either (error . T.unpack) snd (capturesOf (shipped "rust") [("p.scm", q)] "fn f() { a; b; a; abc; }\n"), capName c == "import"]
     it "#eq? filters" $ idents "((identifier) @import (#eq? @import \"a\"))" `shouldBe` ["a", "a"]
     it "#not-eq? filters" $ idents "((identifier) @import (#not-eq? @import \"a\"))" `shouldBe` ["f", "b", "abc"]
     it "#match? filters (a search, POSIX extended)" $ idents "((identifier) @import (#match? @import \"^a\"))" `shouldBe` ["a", "a", "abc"]
@@ -175,7 +182,7 @@ captureSpec = describe "tree-sitter captures" $ do
       idents "((expression_statement (identifier) @other) @import (#eq? @other \"b\"))" `shouldBe` ["b;"]
     it "an unknown predicate is a Left naming the file and the predicate" $
       either (\e -> "p.scm" `T.isInfixOf` e && "lua-match?" `T.isInfixOf` e) (const False)
-        (capturesOf "rust" [("p.scm", "((identifier) @import (#lua-match? @import \"^a\"))")] "fn f() {}\n")
+        (capturesOf (shipped "rust") [("p.scm", "((identifier) @import (#lua-match? @import \"^a\"))")] "fn f() {}\n")
         `shouldBe` True
   it "a Rust file's definitions are captured" $ do
     src <- TIO.readFile "packs/rust-htmx/fixtures/app/billing/billing-service/src/service.rs"
@@ -197,9 +204,9 @@ captureSpec = describe "tree-sitter captures" $ do
     at (rust crlf) `shouldBe` at (rust lf)
   it "a broken file still captures" $
     [n | (_, n) <- defs (rust "struct A { a: u8 }\nfn f( {\n")] `shouldContain` ["A"]
-  it "an unlinked grammar is a Left naming it" $
-    either (T.isInfixOf "go") (const False) (capturesOf "go" [] "package main\n") `shouldBe` True
+  it "a grammar with no source is a Left naming it" $
+    either (\e -> "go" `T.isInfixOf` e && "no source" `T.isInfixOf` e) (const False) (capturesOf (Grammar "go" Nothing) [] "package main\n") `shouldBe` True
   it "a query that does not compile is a Left naming the file and byte" $ do
-    let r = capturesOf "rust" [("bad.scm", "(no_such_node) @x")] "fn f() {}\n"
+    let r = capturesOf (shipped "rust") [("bad.scm", "(no_such_node) @x")] "fn f() {}\n"
     r `shouldSatisfy` isLeft
     either (\e -> "bad.scm" `T.isInfixOf` e && "byte" `T.isInfixOf` e) (const False) r `shouldBe` True

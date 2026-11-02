@@ -8,7 +8,9 @@ import Data.Text.IO qualified as TIO
 import Olifant.Anchor (Miss (..), RenderedAnchor (..), Spacing (..), locLine, locIndent, locOpen, locSpacing, locateContainers, resolveLayers)
 import Olifant.Language
 import Olifant.Language.Captures (anchorFromCaptures)
-import Olifant.Language.TreeSitter (capturesOf, queriesFor)
+import Olifant.Language.TreeSitter (capturesOf, loadableGrammar, queriesFor)
+import Olifant.Language (shippedLanguageNow)
+import Olifant.Language.Adapter (Grammar)
 import Test.Hspec
 
 -- | Rust with no declared targets, so every phrase is the generic rule's,
@@ -22,8 +24,11 @@ syn = (querying (\_ _ _ -> Identity (Right []))) {anchorSyntax = treeSitterAncho
 site :: Text -> Text -> Either [Text] (Int, Text)
 site file p = either (Left . map missReason) (\l -> Right (locLine l, locIndent l)) (runIdentity (resolveLayers syn (Just rust) Nothing [PhraseAnchor p] file))
 
+rustGrammar :: Grammar
+rustGrammar = maybe (error "rust") id (loadableGrammar (shippedLanguageNow "rust"))
+
 containers :: Text -> [Text] -> Maybe (Either Text [(Match, [Match])])
-containers file ws = either (error . T.unpack) (\(root, caps) -> anchorFromCaptures False root caps ws) (capturesOf "rust" (queriesFor "rust") file)
+containers file ws = either (error . T.unpack) (\(root, caps) -> anchorFromCaptures False root caps ws) (capturesOf rustGrammar (queriesFor "rust") file)
 
 lineOf :: Text -> Text -> Int
 lineOf file needle = case [i | (i, l) <- zip [0 ..] (T.lines file), needle `T.isInfixOf` l] of

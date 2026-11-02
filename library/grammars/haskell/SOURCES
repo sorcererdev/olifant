@@ -1,3 +1,4 @@
 parser.c, scanner.c, unicode.h, tree_sitter/*.h: tree-sitter-haskell 0.23.1 from crates.io (git c30d812bc90827f1a54106a25bc9a6307f5cdcec),
 the version ast-grep 0.45.3's Cargo.lock pins; sha256 of the .crate 977c51e504548cba13fc27cb5a2edab2124cf6716a1934915d07ab99523b05a4. MIT.
 LICENSE: from the git commit above (the crate carries none).
+Not compiled in: the specs' local source and an offline source for OLIFANT_GRAMMAR_SOURCES; the shipped language file pins the same commit.
