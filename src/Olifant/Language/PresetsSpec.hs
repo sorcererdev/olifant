@@ -32,4 +32,4 @@ spec = describe "Olifant.Language.Presets" $ do
   it "applyPreset fills a table's missing keys, its own keys winning" $ do
     let Right t = applyPreset shippedPresets "test" (M.fromList [("preset", TText "pytest"), ("tests_for", TText "X")])
     M.lookup "tests_for" t `shouldBe` Just (TText "X")
-    M.lookup "format" t `shouldBe` Just (TText "pytest")
+    M.lookup "format" t `shouldBe` Just (TText "junit-xml")

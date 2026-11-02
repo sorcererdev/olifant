@@ -82,15 +82,54 @@ spec = do
   describe "junit-xml" $ do
     it "a testcase passes, fails with its message, text and line, or is skipped" $ do
       out <- TIO.readFile "src/Olifant/Language/testdata/junit/basic.xml"
-      let Right rs = parseJunit out
+      let Right rs = parseJunit noJunitFormat out
           run = fromReported [("src/plans.test.ts", Nothing)] (ExitFailure 1) out rs
       trPassed run `shouldBe` ["src/plans.test.ts::reads a step"]
       let [(i, f)] = trFailed run
       i `shouldBe` "src/plans.test.ts::reads a test"
       (fLine f, fMessage f) `shouldBe` (Just 14, "expected 2, got 1")
       fOutput f `shouldSatisfy` T.isInfixOf "at src/plans.test.ts:14:5"
+    let pytestJ = JunitFormat (Just ".") Nothing
+        pyFiles = [("tests/test_x.py", Nothing)]
+        pyReport = TIO.readFile "src/Olifant/Language/testdata/junit/pytest-xunit1.xml"
+        inline body = parseJunit (JunitFormat (Just "/") Nothing) ("<testsuites><testsuite>" <> body <> "</testsuite></testsuites>")
+    it "pytest's xunit1 report: ids are pytest's own, from file, classname and name" $ do
+      out <- pyReport
+      let Right rs = parseJunit pytestJ out
+          run = fromReported pyFiles (ExitFailure 1) out rs
+      trPassed run `shouldBe` ["tests/test_x.py::test_ok", "tests/test_x.py::TestGroup::test_param[1]"]
+      map fst (trFailed run) `shouldBe` ["tests/test_x.py::test_eq", "tests/test_x.py::TestGroup::test_inst", "tests/test_x.py::TestGroup::test_param[2.5]", "tests/test_x.py::test_boom"]
+    it "a failure's line is the last FILE:N in its text for the test's file, not pytest's 0-based def line" $ do
+      out <- pyReport
+      let Right rs = parseJunit pytestJ out
+          run = fromReported pyFiles (ExitFailure 1) out rs
+          lineOf i = lookup i [(k, fLine f) | (k, f) <- trFailed run]
+      -- (the fixture's assert lines; pytest's own `line` attributes are 7 and 16)
+      lineOf "tests/test_x.py::test_eq" `shouldBe` Just (Just 9)
+      lineOf "tests/test_x.py::TestGroup::test_inst" `shouldBe` Just (Just 18)
+      let Right [r] = inline "<testcase classname=\"a\" name=\"t\" file=\"a.hs\" line=\"4\"><failure message=\"m\">no frame here</failure></testcase>"
+      fmap fLine (rpFailure r) `shouldBe` Just (Just 4)
+    it "the message is the attribute; a one-line message its text lacks is followed by the text" $ do
+      out <- pyReport
+      let Right rs = parseJunit pytestJ out
+          run = fromReported pyFiles (ExitFailure 1) out rs
+      fmap fMessage (lookup "tests/test_x.py::test_eq" (trFailed run)) `shouldBe` Just "assert 1 == 2\n +  where 1 = f()"
+      let Right [r] = inline "<testcase classname=\"a\" name=\"t\" file=\"a.hs\"><failure message=\"Received value did not match expected\">Expected: 2\n but got: 1</failure></testcase>"
+      fmap fMessage (rpFailure r) `shouldBe` Just "Received value did not match expected\nExpected: 2\n but got: 1"
+      basic <- TIO.readFile "src/Olifant/Language/testdata/junit/basic.xml"
+      let Right brs = parseJunit noJunitFormat basic
+      fmap (fmap fMessage . rpFailure) brs `shouldBe` [Nothing, Just "expected 2, got 1"]
+    it "a testcase with no classname and an error is the run's breakage" $ do
+      out <- TIO.readFile "src/Olifant/Language/testdata/junit/pytest-collection-error.xml"
+      parseJunit pytestJ out `shouldSatisfy` either (T.isInfixOf "No module named 'nope'") (const False)
+    it "split splits the name; without join the classname is left out" $ do
+      let Right rs = parseJunit (JunitFormat Nothing (Just "::")) "<testsuite><testcase classname=\"money\" name=\"rates::tests::adds\"/></testsuite>"
+      map (attribute [("src/rates.rs", Just "rates")]) rs `shouldBe` ["src/rates.rs::tests::adds"]
+    it "a testsuite's file stands for its testcases'" $ do
+      let Right rs = parseJunit (JunitFormat (Just "/") Nothing) "<testsuites><testsuite file=\"src/Olifant/PlansSpec.hs\"><testcase classname=\"Olifant.Plans/parsePlan\" name=\"reads a step\"/></testsuite></testsuites>"
+      map (attribute [("src/Olifant/PlansSpec.hs", Just "Olifant.Plans")]) rs `shouldBe` ["src/Olifant/PlansSpec.hs::parsePlan::reads a step"]
     it "a report with no testsuite is no run" $
-      either (const True) (const False) (parseJunit "error: cannot open report.xml") `shouldBe` True
+      either (const True) (const False) (parseJunit noJunitFormat "error: cannot open report.xml") `shouldBe` True
   describe "olifant-json" $ do
     it "reads passed, failed and broken" $
       parseTestJson "{\"passed\":[\"a.hs::t\"],\"failed\":[{\"id\":\"a.hs::u\",\"line\":3,\"message\":\"m\",\"output\":\"o\"}],\"broken\":null}"

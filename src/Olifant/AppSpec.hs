@@ -36,7 +36,7 @@ spec = describe "Olifant.App" $ do
       units <- pure (head [checkDetail c | c <- plain, checkName c == "python: units"])
       units `shouldSatisfy` T.isInfixOf " found in "
       run <- doctorChecks ran project True
-      tests run `shouldSatisfy` (\d -> "ran uv on " `T.isPrefixOf` d && "1 results parsed (pytest)" `T.isInfixOf` d)
+      tests run `shouldSatisfy` (\d -> "ran uv on " `T.isPrefixOf` d && "1 results parsed (junit-xml)" `T.isInfixOf` d)
   it "finds a file's rule findings with their fixes' choices (the operation check and the server share)" $
     withPythonProject [(closeTable, closeTableText)] $ \ports project -> do
       (fs, _) <- findings ports project [closeTable]

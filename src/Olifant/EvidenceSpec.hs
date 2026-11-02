@@ -96,10 +96,10 @@ spec = describe "Olifant.Evidence" $ do
     -- the program named is the chosen command candidate's: uv with a uv.lock
     withPorts (pair ++ [("uv.lock", "")]) (Just threeResults) $ \ports -> do
       ev <- evidenceFor ports py
-      evTests ev `shouldBe` Proven "ran uv on src/a__test.py, 3 results parsed (pytest)"
+      evTests ev `shouldBe` Proven "ran uv on src/a__test.py, 3 results parsed (junit-xml)"
     withPorts pair (Just fake) $ \ports -> do
       ev <- evidenceFor ports py
-      evTests ev `shouldBe` Proven "ran pytest on src/a__test.py, 2 results parsed (pytest)"
+      evTests ev `shouldBe` Proven "ran pytest on src/a__test.py, 2 results parsed (junit-xml)"
     withPorts pair (Just (\_ _ -> pure (Right (TestRun [] [] (Just "no tests ran"))))) $ \ports -> do
       ev <- evidenceFor ports py
       evTests ev `shouldBe` Disproven "src/a__test.py: no tests ran"

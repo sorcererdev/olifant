@@ -458,7 +458,7 @@ preset    = "pytest"
 tests_for = "{= dir =}/{= stem =}__test.py"
 ```
 
-- **`preset = "pytest"`**: pytest as the project runs it, its output read for which test
+- **`preset = "pytest"`**: pytest as the project runs it, its JUnit report read for which test
   failed, where and why. With a `uv.lock`, through `uv`, in Olifant's own venv for the project;
   else the project's `.venv/bin/pytest` or `venv/bin/pytest` (a poetry or pip venv); else
   `pytest` from PATH. You never name the venv. `olifant doctor` says which it chose and why
@@ -484,8 +484,14 @@ them off for Olifant:
 # .olifant/languages/python.toml
 [test]
 preset  = "pytest"
-command = ["{= root =}/.venv/bin/pytest", "-q", "-rA", "--tb=short", "-p", "no:cacheprovider", "-p", "no:xdist", "-o", "addopts=", "{= tests =}"]
+command = ["{= root =}/.venv/bin/pytest", "-q", "--tb=short", "-p", "no:cacheprovider", "-p", "no:xdist", "-o", "addopts=", "{= tests =}", "-o", "junit_family=xunit1", "--junitxml={= report =}"]
 ```
+
+A `command` of your own keeps the preset's `format`, so name `{= report =}` as above (pytest
+writes the JUnit report there). A `command` that names none (an older recipe with `-rA` and no
+report) still works: Olifant then reads pytest's console output as before, and `olifant doctor`
+says "reading console output: name {= report =} for JUnit". Set `format = "pytest"` to say so
+yourself.
 
 `-o addopts=` drops all of them, the ones the tests need too (pytest-django's `--ds=…`,
 `--reuse-db`): put those back after it.

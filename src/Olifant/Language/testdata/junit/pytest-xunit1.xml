@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="4" skipped="1" tests="7" time="0.013" timestamp="2026-11-01T00:00:00" hostname="host"><testcase classname="tests.test_x" name="test_eq" file="tests/test_x.py" line="7" time="0.000"><failure message="assert 1 == 2&#10; +  where 1 = f()">tests/test_x.py:9: in test_eq
+    assert f() == 2
+E   assert 1 == 2
+E    +  where 1 = f()</failure></testcase><testcase classname="tests.test_x" name="test_ok" file="tests/test_x.py" line="11" time="0.000" /><testcase classname="tests.test_x.TestGroup" name="test_inst" file="tests/test_x.py" line="16" time="0.000"><failure message="AssertionError: assert False&#10; +  where False = isinstance('a', int)">tests/test_x.py:18: in test_inst
+    assert isinstance('a', int)
+E   AssertionError: assert False
+E    +  where False = isinstance('a', int)</failure></testcase><testcase classname="tests.test_x.TestGroup" name="test_param[1]" file="tests/test_x.py" line="19" time="0.000" /><testcase classname="tests.test_x.TestGroup" name="test_param[2.5]" file="tests/test_x.py" line="19" time="0.000"><failure message="assert 2.5 != 2.5">tests/test_x.py:22: in test_param
+    assert v != 2.5
+E   assert 2.5 != 2.5</failure></testcase><testcase classname="tests.test_x" name="test_boom" file="tests/test_x.py" line="24" time="0.000"><failure message="ValueError: boom">tests/test_x.py:26: in test_boom
+    raise ValueError("boom")
+E   ValueError: boom</failure></testcase><testcase classname="tests.test_x" name="test_skipped" file="tests/test_x.py" line="28" time="0.000"><skipped type="pytest.skip" message="no">tests/test_x.py:29: no</skipped></testcase></testsuite></testsuites>
