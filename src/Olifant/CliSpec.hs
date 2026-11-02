@@ -666,7 +666,7 @@ runCliSpec = describe "runCli" $ do
       `shouldBe` [("x.rs", [(2, 4), (12, 12)]), ("sub/y.rs", [(1, 2)])]
   describe "olifant fix (spec §5.9, beat 4 feedback)" $ do
     let rustPack =
-          [ ("/packs/p/languages/rust.toml", T.unlines ["files = [\"**/*.rs\"]", "comment = \"//\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-rust\", rev = \"e2bee853694a1d3e0f6ef308fe3674542fec95d7\" }", "[holes.stmt]", "placeholder = 'todo!(\"olifant: {= hole =}\");'", "wrap = \"fn __o() { {= fill =} }\""])
+          [ ("/packs/p/languages/rust.toml", T.unlines ["files = [\"**/*.rs\"]", "comment = \"//\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-rust\", rev = \"77a3747266f4d621d0757825e6b11edcbf991ca5\" }", "[holes.stmt]", "placeholder = 'todo!(\"olifant: {= hole =}\");'", "wrap = \"fn __o() { {= fill =} }\""])
           , ("/packs/p/generators/port/generator.toml", "description = \"p\"\nlanguage = \"rust\"\n[inputs.service]\ntype = \"ident\"\n[[edits]]\ncreate = \"{= service =}/port.rs\"\ntext = \"// port\\n\"\n")
           , ("/packs/p/rules.toml", T.unlines
               [ "[rules.no-db]", "files = \"{service}/src/*.rs\"", "message = \"no db\""

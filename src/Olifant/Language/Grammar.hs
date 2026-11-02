@@ -267,7 +267,7 @@ grammarKey s g dir = do
 
 -- | Every load of this process, by library path; failures too. Read
 -- without a lock: a remembered answer never waits on another grammar's build.
-loaded :: IORef (M.Map FilePath (Either GrammarFailure Loaded))
+loaded :: IORef (M.Map FilePath (Either GrammarFailure Loaded, Maybe Double))
 loaded = unsafePerformIO (newIORef M.empty)
 {-# NOINLINE loaded #-}
 
@@ -277,22 +277,23 @@ building :: MVar (M.Map FilePath (MVar ()))
 building = unsafePerformIO (newMVar M.empty)
 {-# NOINLINE building #-}
 
--- | The library's answer, computed once per process.
+-- | The library's answer, computed once per process, with the seconds its
+-- fetch and build took when this process built it.
 once :: FilePath -> IO (Either GrammarFailure Loaded, Maybe Double) -> IO (Either GrammarFailure Loaded, Maybe Double)
 once lib act =
   M.lookup lib <$> readIORef loaded >>= \case
-    Just r -> pure (r, Nothing)
+    Just r -> pure r
     Nothing -> do
       lock <- modifyMVar building $ \m -> case M.lookup lib m of
         Just l -> pure (m, l)
         Nothing -> newMVar () >>= \l -> pure (M.insert lib l m, l)
       withMVar lock $ \() ->
         M.lookup lib <$> readIORef loaded >>= \case
-          Just r -> pure (r, Nothing)
+          Just r -> pure r
           Nothing -> do
             r <- try act
             let result = either (\(e :: SomeException) -> (Left (LoadFailed (firstLine (T.pack (show e)))), Nothing)) id r
-            atomicModifyIORef' loaded (\m -> (M.insert lib (fst result) m, ()))
+            atomicModifyIORef' loaded (\m -> (M.insert lib result m, ()))
             pure result
 
 -- | The grammar, loaded once per process under the set settings.
@@ -314,7 +315,7 @@ loadIfBuilt g = do
     Right (dir, _) -> do
       lib <- libraryPath s g dir
       M.lookup lib <$> readIORef loaded >>= \case
-        Just r -> pure (Just r)
+        Just r -> pure (Just (fst r))
         Nothing -> doesFileExist lib >>= \built -> if built then Just . fst <$> loadTimed s g else pure Nothing
 
 libraryPath :: GrammarSettings -> Grammar -> FilePath -> IO FilePath
@@ -326,7 +327,8 @@ libraryPath s g dir = (\key -> gsCache s </> "grammars" </> T.unpack key <> libr
 loadGrammarWith :: GrammarSettings -> Grammar -> IO (Either GrammarFailure Loaded)
 loadGrammarWith s g = fst <$> loadTimed s g
 
--- | 'loadGrammarWith', and the seconds a build took when this call built.
+-- | 'loadGrammarWith', and the seconds the fetch and build took when this
+-- process built it.
 loadTimed :: GrammarSettings -> Grammar -> IO (Either GrammarFailure Loaded, Maybe Double)
 loadTimed s g =
   located s g False >>= \case
@@ -340,10 +342,9 @@ loadTimed s g =
       if built
         then (,Nothing) <$> open lib
         else
-          located s g True >>= \case
+          getMonotonicTime >>= \t0 -> located s g True >>= \case
             Left f -> pure (Left f, Nothing)
             Right _ -> do
-              t0 <- getMonotonicTime
               compileLibrary s dir lib >>= \case
                 Left f -> pure (Left f, Nothing)
                 Right () -> do
@@ -429,7 +430,8 @@ data GrammarInfo = GrammarInfo {giLabel :: Text, giAbi :: Word32, giLibrary :: F
   deriving stock (Eq, Show)
 
 -- | Doctor's port: the grammar loaded as any first use loads it (fetched,
--- built, loaded), with the build's seconds when this probe built it.
+-- built, loaded), with the fetch and build's seconds when this process
+-- built it (doctor's own reads may have been the first use).
 probeGrammar :: Grammar -> IO (Either GrammarFailure GrammarInfo)
 probeGrammar g = do
   s <- grammarSettings

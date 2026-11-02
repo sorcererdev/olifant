@@ -7,7 +7,7 @@ keywords = ["as", "async", "await", "break", "const", "continue", "crate", "dyn"
 comment = "//"
 # The grammar: tree-sitter-rust 0.24.2 (the revision ast-grep 0.45.3 pins), built once into
 # olifant's cache and loaded at run time.
-grammar = { git = "https://github.com/tree-sitter/tree-sitter-rust", rev = "e2bee853694a1d3e0f6ef308fe3674542fec95d7" }
+grammar = { git = "https://github.com/tree-sitter/tree-sitter-rust", rev = "77a3747266f4d621d0757825e6b11edcbf991ca5" }
 # Folders a project listing never enters: cargo's build output.
 ignore = ["target"]
 # Items in brackets are followed by a comma; rustfmt's width is 100.

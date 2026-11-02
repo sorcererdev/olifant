@@ -24,7 +24,7 @@ import Test.Hspec
 rust :: Language
 rust = l
   where
-    Right l = parseLanguage "rust" "/p" (T.unlines ["files = [\"**/*.rs\"]", "comment = \"//\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-rust\", rev = \"e2bee853694a1d3e0f6ef308fe3674542fec95d7\" }"])
+    Right l = parseLanguage "rust" "/p" (T.unlines ["files = [\"**/*.rs\"]", "comment = \"//\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-rust\", rev = \"77a3747266f4d621d0757825e6b11edcbf991ca5\" }"])
 
 generator :: Text -> Generator
 generator src = either (error . T.unpack) (fmap inline) (parseGenerator (GeneratorId "p/g") src)

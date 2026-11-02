@@ -656,13 +656,13 @@ spec = do
         `shouldBe` Right (object ["kind" .= ("case_of_expr" :: Text), "inside" .= object ["kind" .= ("value_declaration" :: Text), "regex" .= ("^update\\b" :: Text), "stopBy" .= ("end" :: Text)]])
   describe "hole kinds (spec §6.3)" $ do
     it "reads [holes.KIND] with a placeholder and a wrap" $ do
-      let Right l = parseLanguage "r" "/p" (T.unlines ["files = [\"**/*.rs\"]", "comment = \"//\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-rust\", rev = \"e2bee853694a1d3e0f6ef308fe3674542fec95d7\" }", "[holes.expr]", "placeholder = 'todo!(\"olifant: {= hole =}\")'", "wrap = \"fn __olifant() { let _ = {= fill =}; }\""])
+      let Right l = parseLanguage "r" "/p" (T.unlines ["files = [\"**/*.rs\"]", "comment = \"//\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-rust\", rev = \"77a3747266f4d621d0757825e6b11edcbf991ca5\" }", "[holes.expr]", "placeholder = 'todo!(\"olifant: {= hole =}\")'", "wrap = \"fn __olifant() { let _ = {= fill =}; }\""])
       map fst (langHoles l) `shouldBe` ["expr"]
     it "refuses a placeholder that does not name its hole (review I2)" $
-      parseLanguage "r" "/p" (T.unlines ["files = [\"**/*.rs\"]", "comment = \"//\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-rust\", rev = \"e2bee853694a1d3e0f6ef308fe3674542fec95d7\" }", "[holes.type]", "placeholder = '()'", "wrap = \"type T = {= fill =};\""])
+      parseLanguage "r" "/p" (T.unlines ["files = [\"**/*.rs\"]", "comment = \"//\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-rust\", rev = \"77a3747266f4d621d0757825e6b11edcbf991ca5\" }", "[holes.type]", "placeholder = '()'", "wrap = \"type T = {= fill =};\""])
         `shouldSatisfy` either ("{= hole =}" `T.isInfixOf`) (const False)
     it "refuses a wrap without {= fill =}" $
-      parseLanguage "r" "/p" (T.unlines ["files = [\"**/*.rs\"]", "comment = \"//\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-rust\", rev = \"e2bee853694a1d3e0f6ef308fe3674542fec95d7\" }", "[holes.expr]", "placeholder = 'x({= hole =})'", "wrap = \"fn f() {}\""])
+      parseLanguage "r" "/p" (T.unlines ["files = [\"**/*.rs\"]", "comment = \"//\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-rust\", rev = \"77a3747266f4d621d0757825e6b11edcbf991ca5\" }", "[holes.expr]", "placeholder = 'x({= hole =})'", "wrap = \"fn f() {}\""])
         `shouldSatisfy` either ("{= fill =}" `T.isInfixOf`) (const False)
   describe "matchShape" $ do
     it "binds parameters and requires literal words" $ do
@@ -856,7 +856,7 @@ spec = do
       rows `shouldSatisfy` all (\l -> "  e.g. " `T.isInfixOf` l)
       length (nub [T.length (fst (T.breakOn "e.g. " l)) | l <- rows]) `shouldBe` 1
       anchorsHuman lang `shouldSatisfy` T.isInfixOf "start of|end of file"
-      anchorsHuman lang `shouldSatisfy` T.isInfixOf "from queries (tree-sitter-rust @e2bee85):"
+      anchorsHuman lang `shouldSatisfy` T.isInfixOf "from queries (tree-sitter-rust @77a3747):"
       rows `shouldSatisfy` any ("end of struct BillingService" `T.isInfixOf`)
     it "anchors --json lists the generic phrases with origin queries, a declared target with origin targets" $ do
       src <- TIO.readFile "packs/rust-htmx/languages/rust.toml"
@@ -958,11 +958,11 @@ spec = do
     it "checks the project when judged files sit in different packages" $
       fst (checkScope (lang ["pyproject.toml"] []) monorepo ["apps/a/src/x.py", "apps/b/src/y.py"]) `shouldBe` ""
     it "takes the outermost marker when asked (a Cargo workspace)" $ do
-      let Right rust = parseLanguage "rust" "/p" (T.unlines ["files = [\"**/*.rs\"]", "comment = \"//\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-rust\", rev = \"e2bee853694a1d3e0f6ef308fe3674542fec95d7\" }", "[check]", "command = [\"cargo\"]", "context = [\"**/Cargo.toml\"]", "root = [\"Cargo.toml\"]", "root_pick = \"outermost\"", "format = \"rustc-json\""])
+      let Right rust = parseLanguage "rust" "/p" (T.unlines ["files = [\"**/*.rs\"]", "comment = \"//\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-rust\", rev = \"77a3747266f4d621d0757825e6b11edcbf991ca5\" }", "[check]", "command = [\"cargo\"]", "context = [\"**/Cargo.toml\"]", "root = [\"Cargo.toml\"]", "root_pick = \"outermost\"", "format = \"rustc-json\""])
       fst (checkScope rust ["Cargo.toml", "crates/a/Cargo.toml", "crates/a/src/lib.rs"] ["crates/a/src/lib.rs"]) `shouldBe` ""
       fst (checkScope rust ["svc/Cargo.toml", "svc/crates/a/Cargo.toml", "svc/crates/a/src/lib.rs"] ["svc/crates/a/src/lib.rs"]) `shouldBe` "svc"
     it "reads `exclusive`: a check whose tool keeps a build cache (cargo) gets a cache no other check uses meanwhile" $ do
-      let parsed extra = parseLanguage "x" "/p" (T.unlines (["files = [\"**/*.x\"]", "comment = \"//\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-rust\", rev = \"e2bee853694a1d3e0f6ef308fe3674542fec95d7\" }", "[check]", "command = [\"tool\"]", "format = \"rustc-json\""] ++ extra))
+      let parsed extra = parseLanguage "x" "/p" (T.unlines (["files = [\"**/*.x\"]", "comment = \"//\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-rust\", rev = \"77a3747266f4d621d0757825e6b11edcbf991ca5\" }", "[check]", "command = [\"tool\"]", "format = \"rustc-json\""] ++ extra))
       fmap (fmap checkExclusive . langCheck) (parsed ["exclusive = true"]) `shouldBe` Right (Just True)
       fmap (fmap checkExclusive . langCheck) (parsed []) `shouldBe` Right (Just False)
       rust <- TIO.readFile "packs/rust-htmx/languages/rust.toml"
@@ -971,7 +971,7 @@ spec = do
       withSystemTempDirectory "olifant-exclusive" $ \dir -> do
         let log' = dir </> "log"
             command = "[\"sh\", \"-c\", \"echo start {= cache =} >> " <> T.pack log' <> "; sleep 0.3; echo end {= cache =} >> " <> T.pack log' <> "\"]"
-            Right x = parseLanguage "x" "/p" (T.unlines ["files = [\"**/*.x\"]", "comment = \"//\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-rust\", rev = \"e2bee853694a1d3e0f6ef308fe3674542fec95d7\" }", "[check]", "command = " <> command, "format = \"rustc-json\"", "exclusive = true"])
+            Right x = parseLanguage "x" "/p" (T.unlines ["files = [\"**/*.x\"]", "comment = \"//\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-rust\", rev = \"77a3747266f4d621d0757825e6b11edcbf991ca5\" }", "[check]", "command = " <> command, "format = \"rustc-json\"", "exclusive = true"])
         _ <- mapConcurrently (const (runCheck processChecker x (M.fromList [("a.x", "x")]))) [1 .. 6 :: Int]
         events <- map words . lines <$> readFile log'
         -- in each cache, a run ends before the next starts
@@ -981,7 +981,7 @@ spec = do
         M.size byCache `shouldSatisfy` (> 1)
         length events `shouldBe` 12
     it "reads `concurrent = false` (a compiler that cannot run twice at once: Elm), true by default" $ do
-      let parsed extra = parseLanguage "x" "/p" (T.unlines (["files = [\"**/*.x\"]", "comment = \"//\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-rust\", rev = \"e2bee853694a1d3e0f6ef308fe3674542fec95d7\" }", "[check]", "command = [\"tool\"]", "format = \"rustc-json\""] ++ extra))
+      let parsed extra = parseLanguage "x" "/p" (T.unlines (["files = [\"**/*.x\"]", "comment = \"//\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-rust\", rev = \"77a3747266f4d621d0757825e6b11edcbf991ca5\" }", "[check]", "command = [\"tool\"]", "format = \"rustc-json\""] ++ extra))
       fmap (fmap checkConcurrent . langCheck) (parsed ["concurrent = false"]) `shouldBe` Right (Just False)
       fmap (fmap checkConcurrent . langCheck) (parsed []) `shouldBe` Right (Just True)
       elm <- TIO.readFile "packs/elm/languages/elm.toml"
@@ -990,7 +990,7 @@ spec = do
       withSystemTempDirectory "olifant-one-at-a-time" $ \dir -> do
         let log' = dir </> "log"
             command = "[\"sh\", \"-c\", \"echo start >> " <> T.pack log' <> "; sleep 0.3; echo end >> " <> T.pack log' <> "\"]"
-            Right x = parseLanguage "x" "/p" (T.unlines ["files = [\"**/*.x\"]", "comment = \"//\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-rust\", rev = \"e2bee853694a1d3e0f6ef308fe3674542fec95d7\" }", "[check]", "command = " <> command, "format = \"rustc-json\"", "concurrent = false"])
+            Right x = parseLanguage "x" "/p" (T.unlines ["files = [\"**/*.x\"]", "comment = \"//\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-rust\", rev = \"77a3747266f4d621d0757825e6b11edcbf991ca5\" }", "[check]", "command = " <> command, "format = \"rustc-json\"", "concurrent = false"])
         _ <- mapConcurrently (const (runCheck processChecker x (M.fromList [("a.x", "x")]))) [1, 2 :: Int]
         lines <$> readFile log' `shouldReturn` ["start", "end", "start", "end"]
     it "runs the checker inside the package and reports project paths" $ do

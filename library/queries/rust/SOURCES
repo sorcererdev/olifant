@@ -1,6 +1,6 @@
 # Tree-sitter queries for the Rust grammar, pinned.
 textobjects.scm  nvim-treesitter/nvim-treesitter-textobjects  5c7b0263797dfd1bd6202f2b219f3b53a80b2187  queries/rust/textobjects.scm  Apache-2.0 (LICENSE-nvim-treesitter)
-tags.scm         tree-sitter/tree-sitter-rust v0.24.2 (crate)  e2bee853694a1d3e0f6ef308fe3674542fec95d7  queries/tags.scm  MIT (LICENSE-tree-sitter-rust)
+tags.scm         tree-sitter/tree-sitter-rust v0.24.2 (crate)  77a3747266f4d621d0757825e6b11edcbf991ca5  queries/tags.scm  MIT (LICENSE-tree-sitter-rust)
 # The grammar (cbits/tree-sitter-rust): tree-sitter-rust 0.24.2, the crate ast-grep 0.45.3 locks
 # (crates.io sha256 439e577dbe07423ec2582ac62c7531120dbfccfa6e5f92406f93dd271a120e45).
 imports.scm      olifant (written here, not vendored): an import statement, whole
