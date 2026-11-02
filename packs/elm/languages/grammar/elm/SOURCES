@@ -1,0 +1,4 @@
+parser.c, scanner.c, tree_sitter/*.h, LICENSE.md: tree-sitter-elm v5.9.4 (elm-tooling/tree-sitter-elm, git
+34815684e37cf299477e86a7d1e10d3ecb5486f9), byte-for-byte; generated with ABI 15. MIT.
+The pack's elm.toml names this folder (grammar = { source = "grammar/elm" }); olifant builds it once into its
+cache and loads it. The shipped queries (library/queries/elm) pin the same commit.

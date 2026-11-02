@@ -8,7 +8,7 @@ import Data.List (sort)
 import Data.Maybe (listToMaybe)
 import Data.Time (diffUTCTime, getCurrentTime)
 import GHC.Conc (getNumCapabilities)
-import Olifant.Anchor (RenderedAnchor (..), locLine, resolveLayers)
+import Olifant.Anchor (Miss (..), RenderedAnchor (..), locLine, resolveLayers)
 import Olifant.Language (Language (..), parseLanguage)
 import Olifant.Language.Adapter (parseOverShipped)
 import Olifant.Language.AstGrep (astGrepSyntax)
@@ -21,7 +21,7 @@ import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
 import Olifant.Language.Captures (Cap (..), PNode (..), anchorFromCaptures)
 import Olifant.Language.Syntax (Match (..))
-import Olifant.Language.TreeSitter (cacheHolds, cacheSize, compiledSize, capturesOf, loadableGrammar, queriesFor)
+import Olifant.Language.TreeSitter (cacheHolds, cacheSize, compiledSize, capturesOf, definitionKinds, loadableGrammar, queriesFor)
 import Olifant.Language.Adapter (Grammar (..))
 import Olifant.Language (shippedLanguageNow)
 import Test.Hspec
@@ -163,6 +163,32 @@ captureSpec = describe "tree-sitter captures" $ do
       -- review I3: `class C` is the class, not its instances
       -- (its signature and default equation are one item: one `m`)
       containers src ["class", "C"] `shouldBe` Just (Right [((1, 2), 1)])
+  describe "Elm (the elm pack's grammar; tags and textobjects vendored, imports and types olifant's)" $ do
+    elm <- runIO (either (error . T.unpack) id . parseOverShipped "elm" "packs/elm" <$> TIO.readFile "packs/elm/languages/elm.toml")
+    let sample = T.unlines ["module A exposing (..)", "", "import Dict", "", "type alias Model =", "    { count : Int", "    , name : String", "    }", "", "type alias Id = String", "", "type Msg", "    = Increment", "    | Named { who : String }", "", "update : Msg -> Model -> Model", "update msg model =", "    let", "        helper x = x + 1", "    in", "    model"]
+    it "elm's queries compile against the pack's grammar" $
+      fmap (const ()) (loadableGrammar elm >>= \g -> either (const Nothing) Just (capturesOf g (queriesFor "elm") "")) `shouldBe` Just ()
+    it "elm definitions: functions, types, aliases, a record (its unit the whole alias); not the module" $
+      fmap (map (\(n, k, own, unit) -> (n, k, own, unit))) (definitionKinds elm sample)
+        `shouldBe` Just
+          [ ("Model", "definition.type", (6, 8), (5, 8))
+          , ("Id", "definition.type", (10, 10), (10, 10))
+          , ("Msg", "definition.type", (12, 14), (12, 14))
+          , ("update", "definition.function", (17, 21), (17, 21))
+          , ("helper", "definition.function", (19, 19), (19, 19))
+          ]
+    it "elm's type, record and imports phrases answer from the queries where its targets did" $ do
+      tmp <- getTemporaryDirectory
+      let syn = astGrepSyntax (tmp </> "olifant-test-cache")
+          at f phrase = TIO.readFile ("packs/elm/fixtures/app/src" </> f) >>= fmap (fmap locLine) . resolveLayers syn (Just elm) Nothing [PhraseAnchor phrase]
+      got <- mapM (uncurry at) [("Main.elm", "end of type Msg"), ("Main.elm", "start of type Msg"), ("Main.elm", "end of type Page"), ("Main.elm", "end of record Model"), ("Main.elm", "start of record Model"), ("Main.elm", "end of imports"), ("Route.elm", "end of type Route"), ("Route.elm", "end of imports")]
+      let sharesLine = "the first item shares its line with other code; Olifant inserts whole lines (use a multi-line layout, or another anchor)"
+      map (either (Left . map missReason) Right) got `shouldBe` [Right 41, Left [sharesLine], Right 25, Right 18, Left [sharesLine], Right 9, Right 9, Right 4]
+    it "a misspelt kind word is offered the grammar's kind word: end of typo Msg → end of type Msg" $ do
+      let text = "module A exposing (..)\n\ntype Msg\n    = A\n    | B\n"
+      r <- resolveLayers (astGrepSyntax "/nonexistent") (Just elm) Nothing [PhraseAnchor "end of typo Msg"] text
+      fmap (map missReason) (either Just (const Nothing) r)
+        `shouldSatisfy` maybe False (any ("did you mean `end of type Msg`?" `T.isInfixOf`))
   it "every shipped query compiles and uses only known predicates" $
     forM_ ["haskell", "python", "rust"] $ \g ->
       either (Just . ((g <> ": ") <>)) (const Nothing) (capturesOf (shipped g) (queriesFor g) "") `shouldBe` Nothing

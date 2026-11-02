@@ -167,7 +167,7 @@ migration: +1 extracted (close-table), 0 legacy functions added, legacy 121 → 
 - **legacy functions added**: new legacy functions *without* an allowance (a delegate doesn't
   count; it carries `olifant:allow`);
 - **legacy N → M functions**: function definitions in the legacy globs (`[migrate] count`'s node
-  kinds; without it, the language's top-level functions and methods, as its queries capture them: a method in a class counts, a function nested in another function or method (a Python inner `def`, a Haskell `let` or `where` binding) does not), at the base (over the base's own
+  kinds; without it, the language's top-level functions and methods, as its queries capture them: a method in a class counts, a function nested in another function or method (a Python inner `def`, a Haskell `let` or `where` binding, an Elm `let`) does not; Elm counts its top-level functions too, with the elm pack in the project), at the base (over the base's own
   files, so a file deleted since counts there) and now; a file renamed with `git mv` is not new;
 - **switches**: the registry's, on and off (a trailing `# comment` on a line is fine).
 

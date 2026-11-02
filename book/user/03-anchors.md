@@ -47,19 +47,30 @@ elm: at = "<start of|end of|before|after> <target>"
 
 targets:
   case in FUNCTION        e.g. end of case in update
-  imports                 e.g. end of imports
   list in FUNCTION        e.g. end of list in parser
-  record NAME             e.g. end of record Model
-  type NAME               e.g. end of type Msg
+
+from queries (elm):
+  function NAME           e.g. end of function main
+  class NAME              e.g. end of class BillingService
+  KIND NAME               e.g. end of struct BillingService
+  parameters in FUNCTION  e.g. end of parameters in new
+  call NAME               e.g. end of call BillingService::new
+  call NAME in FUNCTION   e.g. end of call BillingService::new in main
+  imports                 e.g. end of imports
 
 built in (any file):
   before|after marker TEXT
   before|after first line matching REGEX
   before|after last line matching REGEX
+  start of|end of file
 ```
 
-For a language with a `grammar` source and its queries (the shipped Python, Rust and Haskell), the listing has a second section,
-`from queries (tree-sitter-rust @77a3747):`, with the generic phrases below, and
+For a language with a `grammar` source and its queries (the shipped Python, Rust and Haskell,
+and Elm with the elm pack), the listing has a second section, `from queries (elm):` above
+(`from queries (tree-sitter-rust @77a3747):` for Rust), with the generic phrases below: Elm's
+`end of type Msg`, `end of record Model` and `end of imports` are generic phrases (`KIND NAME`
+with the kind words `type` and `record`), and its two `targets` are what no query capture
+names. And
 `olifant anchors rust --json` gives each target an `origin`: `targets` for a declared one,
 `queries` for a generic phrase.
 
@@ -75,12 +86,12 @@ Mistakes are caught with a suggestion:
 
 ```
 $ olifant where src/Main.elm "end of cases in update"
-error: `end of cases in update`: unknown target `cases in update` for elm; did you mean `end of case in update`? (targets: case in FUNCTION, imports, list in FUNCTION, record NAME, type NAME)
+error: `end of cases in update`: unknown target `cases in update` for elm; did you mean `end of case in update`? (targets: case in FUNCTION, list in FUNCTION, function NAME, class NAME, KIND NAME, parameters in FUNCTION, call NAME, call NAME in FUNCTION, imports)
 ```
 
 ### The generic phrases
 
-A language with a `grammar` source (the shipped Python, Rust and Haskell; Elm from its pack, once it has queries; `olifant doctor`'s `grammar` and `queries`
+A language with a `grammar` source (the shipped Python, Rust and Haskell; Elm from its pack; `olifant doctor`'s `grammar` and `queries`
 rows say which) knows these phrases with no `[targets.*]` table. They are read from tree-sitter's
 community queries for the grammar, shipped inside olifant:
 

@@ -199,6 +199,15 @@ newCodeCheckSpec = describe "check: rules on new code" $ do
     let py = T.unlines ["class Repo:", "    def save(self):", "        return 1", "", "    def load(self):", "        return 2", "", "def close(t):", "    def inner(x):", "        return x", "    return inner(t)"]
     n <- legacyCount tmp "python" "**/*.py" "legacy/views.py" py
     n `shouldBe` Just 3
+  it "counts an Elm project's top-level functions with no `count` key (the elm pack's fixture: 15)" $ do
+    tmp <- getTemporaryDirectory
+    n <- elmLegacyCount tmp ["Main.elm", "Route.elm", "Page/Home.elm", "Page/SamplePage.elm"] []
+    n `shouldBe` Just 15
+  it "does not count an Elm function bound in a `let`" $ do
+    tmp <- getTemporaryDirectory
+    let elm = T.unlines ["module Views exposing (close, open)", "", "close : Int -> Int", "close x =", "    let", "        helper y =", "            y + 1", "    in", "    helper x", "", "open : Int", "open =", "    1"]
+    n <- elmLegacyCount tmp [] [("Views.elm", elm)]
+    n `shouldBe` Just 2
   it "says why the count is 0 for a language whose grammar is not loaded and no `count` key" $ do
     tmp <- getTemporaryDirectory
     let files =
@@ -256,6 +265,27 @@ newCodeCheckSpec = describe "check: rules on new code" $ do
     out `shouldSatisfy` T.isInfixOf "\"start\":[7,1]"
 
 -- | The `legacy_now` of a one-file legacy project in a language (no `count` key).
+-- | 'legacyCount' for Elm through the elm pack itself (its grammar source is
+-- on disk): the fixture app's files named, and texts given, under @legacy/@.
+elmLegacyCount :: FilePath -> [FilePath] -> [(FilePath, Text)] -> IO (Maybe Int)
+elmLegacyCount tmp fixtureFiles texts = do
+  pack <- canonicalizePath "packs/elm"
+  elmToml <- TIO.readFile (pack </> "languages/elm.toml")
+  fixture <- forM fixtureFiles $ \f -> (f,) <$> TIO.readFile (pack </> "fixtures/app/src" </> f)
+  let files =
+        [ ("/w/.olifant/config.toml", "[packs]\nelm = { path = \"" <> T.pack pack <> "\" }\n\n[migrate]\nlegacy = [\"legacy/**\"]\n")
+        , (pack </> "languages/elm.toml", elmToml)
+        , (pack </> "generators/g/generator.toml", "description = \"d\"\nlanguage = \"elm\"\n")
+        ]
+          ++ [("/w/legacy" </> f, t) | (f, t) <- fixture ++ texts]
+      baseOf _ _ _ = pure (Right ("c0ffee", Nothing))
+  (_, out, _, _) <- runInBase (astGrepSyntax (tmp </> "olifant-test-cache")) baseOf "/w" "" files False ["check"]
+  pure $ do
+    v <- Aeson.decodeStrict (TE.encodeUtf8 out) :: Maybe Aeson.Value
+    lookupKey "migration" v >>= lookupKey "legacy_now" >>= \case
+      Aeson.Number x -> Just (round x)
+      _ -> Nothing
+
 legacyCount :: FilePath -> Text -> Text -> FilePath -> Text -> IO (Maybe Int)
 legacyCount tmp lang glob file text = do
   let files =

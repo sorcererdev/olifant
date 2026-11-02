@@ -454,7 +454,7 @@ anyone runs the generator, with a suggestion:
 
 ```
 $ olifant show badtarget
-error: badtarget: `end of typo Msg` in src/Page/{= page|pascal =}.elm: unknown target `typo Msg` for elm; did you mean `end of type Msg`? (targets: case in FUNCTION, imports, list in FUNCTION, record NAME, type NAME)
+error: badtarget: `end of typo Msg` in src/Page/{= page|pascal =}.elm: unknown target `typo Msg` for elm; did you mean `end of type Msg`? (targets: case in FUNCTION, list in FUNCTION, function NAME, class NAME, KIND NAME, parameters in FUNCTION, call NAME, call NAME in FUNCTION, imports)
 ```
 
 A phrase with a `{= … =}` in it — the target name itself varies, like `end of cases in

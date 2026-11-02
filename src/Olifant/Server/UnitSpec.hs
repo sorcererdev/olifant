@@ -5,6 +5,9 @@ module Olifant.Server.UnitSpec (spec) where
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
 import Olifant.Language (Language (..), Match (..), Provider (..), Syntax (..), parseLanguage, parseOverShipped, querying)
+import Olifant.Language.AstGrep (astGrepSyntax)
+import Olifant.Provider (UnitAnswer (..))
+import System.Directory (getTemporaryDirectory)
 import Olifant.Server.Unit
 import System.Directory (getCurrentDirectory)
 import System.FilePath ((</>))
@@ -31,6 +34,21 @@ spec = do
   it "names a Rust fn; its body after its brace" $ do
     r <- unitAt (spans [(0, 2)]) rust Nothing "fn add(a: i32) -> i32 {\n    a\n}\n" 2
     fmap (\u -> (unitName u, unitBody u)) r `shouldBe` Right ("add", Just (2, 3))
+ describe "elm units from the queries (grammar runtime m2)" $ do
+  it "the elm pack's fixture: functions, types and record aliases whole, as [unit] kinds gave them" $ do
+    tmp <- getTemporaryDirectory
+    let syn = astGrepSyntax (tmp </> "olifant-test-cache")
+    got <- mapM (\f -> TIO.readFile ("packs/elm/fixtures/app/src" </> f) >>= unitAnswers syn elm (Just f)) ["Main.elm", "Route.elm"]
+    map (fmap (map (\u -> (uaName u, uaLine u, uaEnd u)))) got
+      `shouldBe` [ Right [("Model", 16, 19), ("Page", 22, 25), ("init", 29, 30), ("Msg", 37, 41), ("changeRouteTo", 45, 54), ("update", 58, 78), ("updateWith", 82, 83), ("view", 91, 100), ("viewPage", 104, 105), ("main", 113, 121)]
+                 , Right [("Route", 7, 9), ("parser", 13, 17), ("fromUrl", 21, 22)]
+                 ]
+  it "the unit at a let-bound function is that function; outside it, the function around it" $ do
+    let text = T.unlines ["module A exposing (f)", "", "f x =", "    let", "        helper y =", "            y + 1", "    in", "    helper x"]
+        syn = querying (\_ _ _ -> error "the [unit] kinds query ran")
+    inner <- unitAt syn elm Nothing text 6
+    outer <- unitAt syn elm Nothing text 8
+    (fmap unitName inner, fmap unitName outer) `shouldBe` (Right "helper", Right "f")
  describe "a units provider (4b m1)" $ do
   here <- runIO getCurrentDirectory
   let provided script = python {langUnitProvider = Just (Provider ["sh", T.pack ("testdata/providers" </> script)] (Just (here </> "src/Olifant")))}

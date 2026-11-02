@@ -264,7 +264,11 @@ itemsOfTarget syntax l prefix ws content = case [(t, bs) | t <- langTargets l, J
       Nothing ->
         let generic = if hasLoadableGrammar l then genericPhrases else []
             renamed = if hasLoadableGrammar l then lookup ws renamedPhrases else Nothing
-            suggestion = maybe "" (\s -> "; did you mean `" <> s <> "`?") (maybe (closest (prefix <> " " <> T.unwords ws) (map targetExample (langTargets l) ++ map snd generic)) Just renamed)
+            -- a misspelt kind word (`typo Msg`): the grammar's kind words with the name
+            kinds = case ws of
+              [_, n] -> [prefix <> " " <> w <> " " <> n | w <- kindWords l]
+              _ -> []
+            suggestion = maybe "" (\s -> "; did you mean `" <> s <> "`?") (maybe (closest (prefix <> " " <> T.unwords ws) (map targetExample (langTargets l) ++ map snd generic ++ kinds)) Just renamed)
          in Left ("unknown target `" <> T.unwords ws <> "` for " <> langName l <> suggestion <> " (targets: " <> T.intercalate ", " (map targetPhrase (langTargets l) ++ map fst generic) <> ")", False)
   ((t, binds) : _) -> do
     let env = M.fromList [(k, VText v) | (k, v) <- binds]

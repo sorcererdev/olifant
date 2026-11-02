@@ -1,5 +1,6 @@
-# Elm: tree-sitter-elm via ast-grep; checks with `elm make`. The grammar is
-# not shipped: the elm pack carries its sources (grammar = { source }).
+# Elm: tree-sitter-elm, read in process by olifant's queries (library/queries/elm)
+# and by ast-grep; checks with `elm make`. The grammar is not shipped: the elm
+# pack carries its sources (grammar = { source }).
 files = ["**/*.elm"]
 # Folders a project listing never enters: elm's cache, a front end's packages.
 ignore = ["elm-stuff", "node_modules"]
@@ -30,18 +31,8 @@ format = "elm-json"
 concurrent = false
 install = "npm install -g elm (or brew install elm)"
 
-[targets.type]
-phrase = "type NAME"
-container = { kind = "type_declaration", regex = "^type {= NAME =}\\b" }
-items = { kind = "union_variant" }
-example = "end of type Msg"
-
-[targets.record]
-phrase = "record NAME"
-container = { kind = "record_type", inside = { kind = "type_alias_declaration", regex = "^type alias {= NAME =}\\b", stopBy = "end" } }
-items = { kind = "field_type" }
-example = "end of record Model"
-
+# `type NAME`, `record NAME`, `function NAME` and `imports` are the generic
+# phrases (library/queries/elm); these two are relations no capture names.
 [targets.case_in]
 phrase = "case in FUNCTION"
 container = { kind = "case_of_expr", inside = { kind = "value_declaration", regex = "^{= FUNCTION =}\\b", stopBy = "end" }, not = { inside = { kind = "case_of_expr", stopBy = "end" } } }
@@ -76,14 +67,9 @@ items = { any = [
 ] }
 example = "end of list in parser"
 
-[targets.imports]
-phrase = "imports"
-container = { kind = "file" }
-items = { kind = "import_clause" }
-example = "end of imports"
-
-# The unit: the innermost of these node kinds at the cursor is what `conjure`
-# conjures and `stub` stubs a test for.
+# The unit: the innermost definition at the cursor (from the grammar's
+# queries: a function, a type, a type alias) is what `conjure` conjures and
+# `stub` stubs a test for.
 [unit]
-kinds = ["value_declaration", "type_declaration", "type_alias_declaration"]
+# `name` finds a unit's definition line (units are named by the queries' @name).
 name = ["^type[[:space:]]+alias[[:space:]]+([[:alnum:]_]+)", "^type[[:space:]]+([[:alnum:]_]+)", "^[[:space:]]*([[:alpha:]_][[:alnum:]_']*)"]
