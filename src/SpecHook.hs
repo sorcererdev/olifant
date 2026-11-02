@@ -5,13 +5,34 @@
 -- Every example also fails after 'exampleLimit' seconds instead of hanging
 -- the suite (hspec has no timeout of its own): the slowest example takes
 -- about 17 s on a quiet machine, so the limit leaves room for a loaded one.
-module SpecHook (hook, failAfter, exampleLimit) where
+--
+-- Grammars load from the vendored copies (@library/grammars/@) into the
+-- suite's own cache: no spec fetches, and the olifant processes specs start
+-- find them through @OLIFANT_GRAMMAR_SOURCES@. The shipped three are built
+-- before the first example, so a spec never races a build.
+module SpecHook (hook, failAfter, exampleLimit, grammarSetup) where
 
+import Control.Monad (forM_)
+import Olifant.Language (langGrammar, shippedLanguageNow)
+import Olifant.Language.Grammar (defaultSettings, loadGrammar, setGrammarSettings)
+import System.Directory (getTemporaryDirectory, makeAbsolute)
+import System.Environment (setEnv)
+import System.FilePath ((</>))
 import System.Timeout (timeout)
-import Test.Hspec (Spec, around_, expectationFailure, parallel)
+import Test.Hspec (Spec, around_, beforeAll_, expectationFailure, parallel)
 
 hook :: Spec -> Spec
-hook = parallel . around_ (failAfter exampleLimit)
+hook = parallel . beforeAll_ grammarSetup . around_ (failAfter exampleLimit)
+
+-- | The suite's grammar settings, and the shipped grammars built once.
+grammarSetup :: IO ()
+grammarSetup = do
+  tmp <- getTemporaryDirectory
+  local <- makeAbsolute "library/grammars"
+  setEnv "OLIFANT_GRAMMAR_SOURCES" local
+  setGrammarSettings (defaultSettings (tmp </> "olifant-test-cache") [local])
+  forM_ ["python", "rust", "haskell"] $ \g ->
+    loadGrammar (langGrammar (shippedLanguageNow g)) >>= either (\f -> fail ("the " <> show g <> " grammar does not load: " <> show f)) (const (pure ()))
 
 exampleLimit :: Int
 exampleLimit = 180

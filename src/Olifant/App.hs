@@ -403,7 +403,7 @@ migrationFor ports project = case catalogMigrate cat of
     let unlinked = nub [langName lang | p <- legacy, Just lang <- [languageFor (catalogLanguages cat) p], hasNoFunctionQueries lang]
         countHint
           | null (mgCount mig) && sum [n | (n, _, _, _) <- perFile] == 0 && not (null unlinked) =
-              Just ("counted 0: " <> T.intercalate ", " unlinked <> " has no linked grammar, so set `count` under [migrate] (the node kinds to count)")
+              Just ("counted 0: " <> T.intercalate ", " unlinked <> "'s grammar is not loaded (see `olifant doctor`'s grammar row), so set `count` under [migrate] (the node kinds to count)")
           | otherwise = Nothing
         switches = maybe [] (\t -> maybe [] (`readRegistry'` t) registryPath) registry
         befores = [b | (_, b, _, _) <- perFile]
@@ -508,7 +508,7 @@ relativeTo indent found = case T.lines found of
 
 -- | The definitions a migration counts in a legacy file: `[migrate] count`'s
 -- node kinds (an ast-grep query); with none, the language's functions, by
--- its queries (none for an unlinked grammar).
+-- its queries (none for a grammar that does not load).
 countedIn :: Ports -> MigrateConfig -> Language -> Text -> IO [Match]
 countedIn ports mig lang text
   | null (mgCount mig) = pure (fromMaybe [] (functionMatches lang text))

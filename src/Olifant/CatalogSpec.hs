@@ -4,7 +4,8 @@ module Olifant.CatalogSpec (spec) where
 
 import Control.Monad (forM_)
 import Data.ByteString qualified as BS
-import System.Directory (createDirectoryIfMissing, emptyPermissions, setOwnerExecutable, setOwnerReadable, setOwnerWritable, setPermissions)
+import Olifant.Language.Grammar (GrammarSettings (..), grammarSettings)
+import System.Directory (doesDirectoryExist, createDirectoryIfMissing, emptyPermissions, setOwnerExecutable, setOwnerReadable, setOwnerWritable, setPermissions)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
 import Data.Map.Strict qualified as M
@@ -178,6 +179,11 @@ spec = describe "catalog" $ do
       Right cat <- openWith [("/proj/.olifant/config.toml", "languages = [\"rust\"]\n"), ("/proj/.olifant/queries/rust/imports.scm", "(no_such_node) @import\n")]
       map fst (catalogBrokenLanguages cat) `shouldBe` ["/proj/.olifant/queries/rust/imports.scm"]
       map snd (catalogBrokenLanguages cat) `shouldSatisfy` all (\e -> "imports.scm" `T.isInfixOf` e && "byte" `T.isInfixOf` e)
+    it "reading config never fetches or builds a grammar: a project's git grammar is left for its first use" $ do
+      Right cat <- openWith [("/proj/.olifant/config.toml", "languages = [\"trustprobe\"]\n"), ("/proj/.olifant/languages/trustprobe.toml", "files = [\"**/*.tp\"]\ncomment = \"#\"\ngrammar = { git = \"file:///nonexistent/trustprobe\", rev = \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\" }\n"), ("/proj/.olifant/queries/trustprobe/tags.scm", "(x) @name\n")]
+      catalogBrokenLanguages cat `shouldBe` []
+      settings <- grammarSettings
+      doesDirectoryExist (gsCache settings </> "grammars" </> "src" </> "trustprobe-aaaaaaa") `shouldReturn` False
     it "a project query file nobody reads is a load error, not silence: a subfolder's, an unused grammar's (m2b M3)" $ do
       Right cat <- openWith [("/proj/.olifant/config.toml", "languages = [\"rust\"]\n"), ("/proj/.olifant/queries/rust/more/x.scm", "(identifier) @name\n"), ("/proj/.olifant/queries/python/imports.scm", "(import_statement) @import\n")]
       map fst (catalogBrokenLanguages cat) `shouldBe` ["/proj/.olifant/queries/rust/more/x.scm", "/proj/.olifant/queries/python"]

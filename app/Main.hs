@@ -15,6 +15,7 @@ import System.Environment (lookupEnv)
 import System.Process (readProcessWithExitCode)
 import Olifant.Language (Probe (..), diskProbe, processCheckerWith, processRunner, processVerifierCancellable)
 import Olifant.Language.AstGrep (astGrepSyntax)
+import Olifant.Language.Grammar (GrammarSettings (..), grammarSettings, setGrammarSettings)
 import Olifant.Workspace (diskWorkspace)
 import System.Directory (XdgDirectory (XdgCache, XdgConfig), getCurrentDirectory, getHomeDirectory, getXdgDirectory)
 import System.Environment (getArgs)
@@ -29,6 +30,8 @@ main = do
   home <- getHomeDirectory
   userConfigDir <- getXdgDirectory XdgConfig "olifant"
   cache <- getXdgDirectory XdgCache "olifant"
+  -- grammars build into the cache; $OLIFANT_GRAMMAR_SOURCES is read by the default
+  grammarSettings >>= \s -> setGrammarSettings s {gsCache = cache}
   -- stdin is read at most once; every reader sees the same text
   stdinText <- newIORef Nothing
   let readStdin = readIORef stdinText >>= \case

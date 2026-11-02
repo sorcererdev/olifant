@@ -1,8 +1,9 @@
 {-# LANGUAGE TemplateHaskell #-}
 
--- | Tree-sitter in process: the runtime and the grammars are C compiled into
--- the binary (@cbits/@, pinned to the versions ast-grep locks), reached
--- through a small shim (@cbits/olifant_ts.c@) that holds nodes by pointer.
+-- | Tree-sitter in process: the runtime is C compiled into the binary
+-- (@cbits/tree-sitter@, pinned to the version ast-grep locks), reached
+-- through a small shim (@cbits/olifant_ts.c@) that holds nodes by pointer;
+-- a grammar is built and loaded at run time ('Olifant.Language.Grammar').
 -- 'capturesOf' parses a text, runs a grammar's queries over it (the
 -- vendored and olifant-owned @library/queries/<grammar>/*.scm@) and returns
 -- every capture as plain data ('Cap').
@@ -21,9 +22,11 @@ module Olifant.Language.TreeSitter
   , signatureHead
   , functionMatches
   , hasNoFunctionQueries
-  , linkedGrammars
+  , loadableGrammar
+  , hasLoadableGrammar
   , grammarNodeTypes
   , grammarLabel
+  , queryError
   , queriesFor
   , queriesOf
   , querySet
@@ -57,28 +60,19 @@ import Foreign.Marshal.Utils (copyBytes, with)
 import Foreign.Ptr (FunPtr, Ptr, castPtr, nullPtr, plusPtr)
 import Foreign.Storable (peek, peekElemOff)
 import Olifant.Language.Adapter (Grammar (..), Language (..))
+import Olifant.Language.Grammar (Loaded (..), TSLanguage, grammarFailureText, grammarLabel, loadGrammar, loadIfBuilt)
 import Olifant.Language.Captures (Cap (..), DefSpan (..), PNode (..), anchorFromCaptures, definitionSpans, definitionsWith, functionCaps, genericPhrase, phraseKind)
 import Olifant.Language.Syntax (Match (..), SyntaxFailure (..))
 import System.FilePath (splitDirectories, takeExtension)
 import System.IO.Unsafe (unsafePerformIO)
 import Text.Regex.TDFA (Regex, makeRegexM, matchTest)
 
-data TSLanguage
 data TSTree
 data TSNode
 data TSQuery
 data TSQueryCursor
 data TSQueryMatch
 
--- the grammars compiled in (cbits/tree-sitter-<grammar>/)
-foreign import ccall "&tree_sitter_rust" p_rust :: FunPtr (IO (Ptr TSLanguage))
-foreign import ccall "&tree_sitter_python" p_python :: FunPtr (IO (Ptr TSLanguage))
-foreign import ccall "&tree_sitter_haskell" p_haskell :: FunPtr (IO (Ptr TSLanguage))
-foreign import ccall "dynamic" callLanguage :: FunPtr (IO (Ptr TSLanguage)) -> IO (Ptr TSLanguage)
-
-foreign import ccall unsafe "ts_language_symbol_count" c_symbolCount :: Ptr TSLanguage -> IO Word32
-foreign import ccall unsafe "ts_language_symbol_name" c_symbolName :: Ptr TSLanguage -> Word16 -> IO CString
-foreign import ccall unsafe "ts_language_symbol_type" c_symbolType :: Ptr TSLanguage -> Word16 -> IO CInt
 foreign import ccall unsafe "ots_node_size" c_nodeSize :: IO CSize
 foreign import ccall safe "ots_parse" c_parse :: Ptr TSLanguage -> CString -> Word32 -> IO (Ptr TSTree)
 foreign import ccall unsafe "ts_tree_delete" c_treeDelete :: Ptr TSTree -> IO ()
@@ -104,41 +98,23 @@ foreign import ccall unsafe "ots_captures" c_captures :: Ptr TSQueryMatch -> Ptr
 foreign import ccall unsafe "ts_query_predicates_for_pattern" c_predicates :: Ptr TSQuery -> Word32 -> Ptr Word32 -> IO (Ptr Word32)
 foreign import ccall unsafe "ts_query_string_value_for_id" c_stringValue :: Ptr TSQuery -> Word32 -> Ptr Word32 -> IO CString
 
--- | The grammar table: a language file's `grammar` to its compiled-in
--- parser. Data, keyed by grammar, never by a language's name.
-grammarTable :: [(Text, FunPtr (IO (Ptr TSLanguage)))]
-grammarTable = [(g, fp) | (g, fp, _) <- grammars]
+-- | The language's grammar when olifant reads it in process: it has a
+-- source to build ('grSource') and a query set to run (the shipped one for
+-- its name, or the project's). A bare name, or a grammar with no queries
+-- yet (Elm's, until its queries are vendored), is read by ast-grep only.
+-- No IO: whether it loads is the readers' question ('capturesOf').
+loadableGrammar :: Language -> Maybe Grammar
+loadableGrammar lang = case langGrammar lang of
+  g@(Grammar _ (Just _)) | not (null (querySet lang)) -> Just g
+  _ -> Nothing
 
--- | Each grammar compiled in, with its parser and the crate and version
--- vendored (cbits/tree-sitter-<grammar>/SOURCES).
-grammars :: [(Text, FunPtr (IO (Ptr TSLanguage)), Text)]
-grammars = [("haskell", p_haskell, "tree-sitter-haskell 0.23.1"), ("python", p_python, "tree-sitter-python 0.25.0"), ("rust", p_rust, "tree-sitter-rust 0.24.2")]
+hasLoadableGrammar :: Language -> Bool
+hasLoadableGrammar = maybe False (const True) . loadableGrammar
 
--- | The grammars linked into this binary.
-linkedGrammars :: [Text]
-linkedGrammars = map fst grammarTable
-
--- | A linked grammar's crate and version (`tree-sitter-rust 0.24.2`).
-grammarLabel :: Text -> Maybe Text
-grammarLabel g = listToMaybe [l | (g', _, l) <- grammars, g' == g]
-
--- | A linked grammar's named node types (none for a grammar not linked).
-grammarNodeTypes :: Text -> [Text]
-grammarNodeTypes g = M.findWithDefault [] g nodeTypesTable
-
--- | Read once per process.
-nodeTypesTable :: M.Map Text [Text]
-{-# NOINLINE nodeTypesTable #-}
-nodeTypesTable = M.fromList [(g, unsafePerformIO (nodeTypes fp)) | (g, fp) <- grammarTable]
-  where
-    nodeTypes fp = do
-      lang <- callLanguage fp
-      count <- c_symbolCount lang
-      fmap (nubOrd . concat) . forM (if count == 0 then [] else [0 .. fromIntegral count - 1]) $ \i -> do
-        ty <- c_symbolType lang i
-        -- 0: a regular (named) node type
-        if ty /= 0 then pure [] else (\n -> [T.pack n]) <$> (c_symbolName lang i >>= peekCString)
-    nubOrd = M.keys . M.fromList . map (,())
+-- | A grammar's named node types (none when it does not load).
+grammarNodeTypes :: Grammar -> [Text]
+grammarNodeTypes g = unsafePerformIO (either (const []) ldNodeTypes <$> loadGrammar g)
+{-# NOINLINE grammarNodeTypes #-}
 
 -- | The generic anchor rule for a language whose grammar is linked in (the
 -- 'Olifant.Language.Syntax.anchorSyntax' of the real syntax): 'Nothing' when
@@ -146,10 +122,9 @@ nodeTypesTable = M.fromList [(g, unsafePerformIO (nodeTypes fp)) | (g, fp) <- gr
 -- word names no node type of the grammar (`end of the imports`), so a
 -- provider or "unknown target" answers instead.
 treeSitterAnchors :: Applicative m => Language -> Maybe FilePath -> [Text] -> Text -> m (Maybe (Either SyntaxFailure [(Match, [Match])]))
-treeSitterAnchors lang _ ws source = pure $ case langGrammar lang of
-  Grammar g _
-    | g `elem` linkedGrammars
-    , genericPhrase ws
+treeSitterAnchors lang _ ws source = pure $ case loadableGrammar lang of
+  Just g
+    | genericPhrase ws
     , maybe True (kindKnown g) (phraseKind ws) ->
         case capturesOf g (querySet lang) source of
           Left why -> Just (Left (SyntaxFailed why))
@@ -168,10 +143,9 @@ definitionLines lang source = map (\(n, _, own, unit) -> (n, own, unit)) <$> def
 
 -- | 'definitionLines' with each definition's capture (`definition.impl`, …).
 definitionKinds :: Language -> Text -> Maybe [(Text, Text, (Int, Int), (Int, Int))]
-definitionKinds lang source = case langGrammar lang of
-  Grammar g _
-    | g `elem` linkedGrammars
-    , Right (root, caps) <- capturesOf g (querySet lang) source ->
+definitionKinds lang source = case loadableGrammar lang of
+  Just g
+    | Right (root, caps) <- capturesOf g (querySet lang) source ->
         Just [(dsName d, dsCapture d, linesOf (dsNode d), linesOf (dsUnit d)) | d <- definitionsWith (langUnitJoin lang) root caps]
   _ -> Nothing
   where
@@ -183,10 +157,9 @@ definitionKinds lang source = case langGrammar lang of
 -- | A text's definitions by its language's queries: Nothing when the
 -- grammar is not linked or its queries fail.
 definitionsOf :: Language -> Text -> Maybe [DefSpan]
-definitionsOf lang source = case langGrammar lang of
-  Grammar g _
-    | g `elem` linkedGrammars
-    , Right (root, caps) <- capturesOf g (querySet lang) source -> Just (definitionsWith (langUnitJoin lang) root caps)
+definitionsOf lang source = case loadableGrammar lang of
+  Just g
+    | Right (root, caps) <- capturesOf g (querySet lang) source -> Just (definitionsWith (langUnitJoin lang) root caps)
   _ -> Nothing
 
 -- | The definition a text starts with: the outermost whose unit starts on
@@ -291,6 +264,16 @@ data Pred
   | PMatch Bool Word32 Regex
   | PAnyOf Bool Word32 [Text]
 
+-- | Whether a query set compiles against a grammar: Nothing when it does,
+-- or when the grammar is not built yet (reading config never fetches or
+-- builds one: the error shows at the first use instead).
+queryError :: Grammar -> [(FilePath, Text)] -> Maybe Text
+queryError g qs = unsafePerformIO $
+  loadIfBuilt g >>= \case
+    Just (Right ld) -> either Just (const Nothing) <$> compileQueries (ldLanguage ld) (ldLibrary ld) qs
+    _ -> pure Nothing
+{-# NOINLINE queryError #-}
+
 -- | The predicates olifant evaluates. Any other predicate or directive
 -- (@#make-range!@, @#lua-match?@, @#set!@) fails a query's compile.
 knownPredicates :: [Text]
@@ -362,11 +345,11 @@ predicateCaptures = \case
 -- newest used first: the long-lived LSP sees a new set at every save of a
 -- project `.scm`. A query is freed by the garbage collector once evicted
 -- and no run holds it ('withForeignPtr').
-compiled :: MVar [((Text, [(FilePath, Text)]), Either Text Compiled)]
+compiled :: MVar [((FilePath, [(FilePath, Text)]), Either Text Compiled)]
 compiled = unsafePerformIO (newMVar [])
 {-# NOINLINE compiled #-}
 
-compileQueries :: Ptr TSLanguage -> Text -> [(FilePath, Text)] -> IO (Either Text Compiled)
+compileQueries :: Ptr TSLanguage -> FilePath -> [(FilePath, Text)] -> IO (Either Text Compiled)
 compileQueries lang g qs = modifyMVar compiled $ \cache -> case lookup (g, qs) cache of
   Just r -> pure (((g, qs), r) : filter ((/= (g, qs)) . fst) cache, r)
   Nothing -> do
@@ -428,7 +411,7 @@ compileQueries lang g qs = modifyMVar compiled $ \cache -> case lookup (g, qs) c
 -- query set, text): the LSP asks again and again about one document, and a
 -- request on the same text skips the parse and the marshalling. A changed
 -- text is another key, so a stale tree never answers.
-type Key = (Text, [(FilePath, Text)], Text)
+type Key = (Grammar, [(FilePath, Text)], Text)
 
 answers :: IORef [(Key, Either Text (PNode, [Cap]))]
 answers = unsafePerformIO (newIORef [])
@@ -453,9 +436,10 @@ cacheHolds :: Text -> IO Bool
 cacheHolds t = any (\((_, _, t'), _) -> t' == t) <$> readIORef answers
 
 -- | Every capture of a query set over a text, with the node facts the anchor
--- rule reads, and the root node. Left: the grammar is not linked, or a query
--- does not compile. Pure: see the module header.
-capturesOf :: Text -> [(FilePath, Text)] -> Text -> Either Text (PNode, [Cap])
+-- rule reads, and the root node. Left: the grammar does not load (its
+-- failure, 'grammarFailureText'), or a query does not compile. Pure: see
+-- the module header; the first call for a grammar may fetch and build it.
+capturesOf :: Grammar -> [(FilePath, Text)] -> Text -> Either Text (PNode, [Cap])
 capturesOf g qs content = unsafePerformIO $ do
   let key = (g, qs, content)
       -- the text first: a different text differs in length or bytes fast
@@ -471,21 +455,21 @@ capturesOf g qs content = unsafePerformIO $ do
     lookupBy p = fmap snd . listToMaybe . filter (p . fst)
 {-# NOINLINE capturesOf #-}
 
-capturesIO :: Text -> [(FilePath, Text)] -> Text -> IO (Either Text (PNode, [Cap]))
-capturesIO g qs content = case lookup g grammarTable of
-  Nothing -> pure (Left ("no tree-sitter grammar linked for `" <> g <> "` (linked: " <> T.intercalate ", " linkedGrammars <> ")"))
-  Just fp -> do
-    lang <- callLanguage fp
-    compileQueries lang g qs >>= \case
+capturesIO :: Grammar -> [(FilePath, Text)] -> Text -> IO (Either Text (PNode, [Cap]))
+capturesIO g qs content = loadGrammar g >>= \case
+  Left f -> pure (Left (grammarFailureText (grName g) f))
+  Right ld -> do
+    let lang = ldLanguage ld
+    compileQueries lang (ldLibrary ld) qs >>= \case
       Left why -> pure (Left why)
       Right cqs -> do
         size <- fromIntegral <$> c_nodeSize
         let bytes = TE.encodeUtf8 content
-            ctx = Ctx bytes size (M.findWithDefault M.empty g symbolTable)
+            ctx = Ctx bytes size (ldSymbols ld)
         BU.unsafeUseAsCStringLen bytes $ \(p, n) ->
           bracket (c_parse lang p (fromIntegral n)) (\t -> when (t /= nullPtr) (c_treeDelete t)) $ \tree ->
             if tree == nullPtr
-              then pure (Left ("tree-sitter could not take the `" <> g <> "` grammar (ABI)"))
+              then pure (Left ("tree-sitter could not take the `" <> grName g <> "` grammar (ABI)"))
               else allocaBytes size $ \root -> allocaArray 8 $ \facts -> do
                 c_root tree root
                 out <- newIORef []
@@ -532,17 +516,6 @@ capturesIO g qs content = case lookup g grammarTable of
 -- | What marshalling a node needs: the text's bytes, a node's size, and the
 -- grammar's symbol names.
 data Ctx = Ctx {ctxBytes :: ByteString, ctxSize :: Int, ctxSymbols :: M.Map Word32 Text}
-
--- | Each linked grammar's symbol names (named and anonymous), read once.
-symbolTable :: M.Map Text (M.Map Word32 Text)
-symbolTable = M.fromList [(g, unsafePerformIO (symbols fp)) | (g, fp) <- grammarTable]
-  where
-    symbols fp = do
-      lang <- callLanguage fp
-      count <- c_symbolCount lang
-      fmap M.fromList . forM (if count == 0 then [] else [0 .. count - 1]) $ \i ->
-        (i,) . T.pack <$> (c_symbolName lang (fromIntegral i) >>= peekCString)
-{-# NOINLINE symbolTable #-}
 
 -- | The field names the rule reads, as C strings, made once.
 fieldNames :: [(Text, (CString, Int))]

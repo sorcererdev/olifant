@@ -94,7 +94,7 @@ initMigrateSpec = describe "init --migrate (an existing repo)" $ do
   migrate <- runIO (TIO.readFile "packs/python-strangler/migrate.toml")
   let packs =
         [ ("/u/config.toml", "[packs]\npython-htmx = { path = \"/packs/py\" }\npython-strangler = { path = \"/packs/ps\" }\n")
-        , ("/packs/py/languages/python.toml", "files = [\"**/*.py\"]\ncomment = \"#\"\ngrammar = \"python\"\n")
+        , ("/packs/py/languages/python.toml", "files = [\"**/*.py\"]\ncomment = \"#\"\ngrammar = { git = \"https://github.com/tree-sitter/tree-sitter-python\", rev = \"293fdc02038ee2bf0e2e206711b69c90ac0d413f\" }\n")
         , ("/packs/py/generators/g/generator.toml", "description = \"d\"\nlanguage = \"python\"\n")
         , ("/packs/ps/generators/s/generator.toml", "description = \"d\"\nlanguage = \"python\"\n")
         , ("/packs/ps/migrate.toml", migrate)
@@ -110,7 +110,7 @@ initMigrateSpec = describe "init --migrate (an existing repo)" $ do
     M.member "/w/.olifant/baseline.toml" files `shouldBe` True
     M.findWithDefault "" "/w/.gitignore" files `shouldSatisfy` T.isInfixOf ".olifant/state/"
   it "finds python-strangler beside a --pack directory, with no user config" $ do
-    let beside = [(f, t) | (f, t) <- packs, f /= "/u/config.toml", not ("/packs/ps/" `isPrefixOf` f)] ++ [("/packs/python-htmx/languages/python.toml", "files = [\"**/*.py\"]\ncomment = \"#\"\ngrammar = \"python\"\n"), ("/packs/python-strangler/generators/s/generator.toml", "description = \"d\"\nlanguage = \"python\"\n"), ("/packs/python-strangler/migrate.toml", migrate)]
+    let beside = [(f, t) | (f, t) <- packs, f /= "/u/config.toml", not ("/packs/ps/" `isPrefixOf` f)] ++ [("/packs/python-htmx/languages/python.toml", "files = [\"**/*.py\"]\ncomment = \"#\"\ngrammar = { git = \"https://github.com/tree-sitter/tree-sitter-python\", rev = \"293fdc02038ee2bf0e2e206711b69c90ac0d413f\" }\n"), ("/packs/python-strangler/generators/s/generator.toml", "description = \"d\"\nlanguage = \"python\"\n"), ("/packs/python-strangler/migrate.toml", migrate)]
     (code, out, err, files, _) <- runInit beside ["init", "--migrate", "legacy", "--pack", "/packs/python-htmx", "--human"]
     (code, out <> err) `shouldBe` (ExitSuccess, out <> err)
     M.findWithDefault "" "/w/.olifant/config.toml" files `shouldSatisfy` T.isInfixOf "python-strangler = { path = \"/packs/python-strangler\" }"
@@ -138,7 +138,7 @@ newCodeCheckSpec = describe "check: rules on new code" $ do
         registryNow = "SWITCHES: dict[str, bool] = {\n    \"close-table\": True,\n}\n"
         files =
           [ ("/w/.olifant/config.toml", "[packs]\np = { path = \"/packs/p\" }\n\n[migrate]\nlegacy = [\"legacy/**\"]\nswitches = \"src/app/switches.py\"\n")
-          , ("/packs/p/languages/python.toml", "files = [\"**/*.py\"]\ncomment = \"#\"\ngrammar = \"python\"\n")
+          , ("/packs/p/languages/python.toml", "files = [\"**/*.py\"]\ncomment = \"#\"\ngrammar = { git = \"https://github.com/tree-sitter/tree-sitter-python\", rev = \"293fdc02038ee2bf0e2e206711b69c90ac0d413f\" }\n")
           , ("/packs/p/generators/g/generator.toml", "description = \"d\"\nlanguage = \"python\"\n")
           , ("/packs/p/migrate.toml", migrate)
           , ("/w/legacy/views.py", now)
@@ -159,7 +159,7 @@ newCodeCheckSpec = describe "check: rules on new code" $ do
         now = T.unlines ["def close_table(t):", "    # olifant:switch close-table → booking/commands/close_table", "    return t"]
         files =
           [ ("/w/.olifant/config.toml", "[packs]\np = { path = \"/packs/p\" }\n\n[migrate]\nlegacy = [\"legacy/**\"]\n")
-          , ("/packs/p/languages/python.toml", "files = [\"**/*.py\"]\ncomment = \"#\"\ngrammar = \"python\"\n")
+          , ("/packs/p/languages/python.toml", "files = [\"**/*.py\"]\ncomment = \"#\"\ngrammar = { git = \"https://github.com/tree-sitter/tree-sitter-python\", rev = \"293fdc02038ee2bf0e2e206711b69c90ac0d413f\" }\n")
           , ("/packs/p/generators/g/generator.toml", "description = \"d\"\nlanguage = \"python\"\n")
           , ("/packs/p/migrate.toml", migrate)
           , ("/w/legacy/views.py", now)
@@ -177,7 +177,7 @@ newCodeCheckSpec = describe "check: rules on new code" $ do
         gone = T.unlines ["def charge(c):", "    return c", "", "def refund(c):", "    return c"]
         files =
           [ ("/w/.olifant/config.toml", "[packs]\np = { path = \"/packs/p\" }\n\n[migrate]\nlegacy = [\"legacy/**\"]\n")
-          , ("/packs/p/languages/python.toml", "files = [\"**/*.py\"]\ncomment = \"#\"\ngrammar = \"python\"\n")
+          , ("/packs/p/languages/python.toml", "files = [\"**/*.py\"]\ncomment = \"#\"\ngrammar = { git = \"https://github.com/tree-sitter/tree-sitter-python\", rev = \"293fdc02038ee2bf0e2e206711b69c90ac0d413f\" }\n")
           , ("/packs/p/generators/g/generator.toml", "description = \"d\"\nlanguage = \"python\"\n")
           , ("/w/legacy/views.py", views)
           ]
@@ -218,7 +218,7 @@ newCodeCheckSpec = describe "check: rules on new code" $ do
         files =
           [ ("/w/.olifant/config.toml", "[packs]\np = { path = \"/packs/p\" }\n\n[migrate]\nlegacy = [\"legacy/**\"]\n")
           , ("/w/.olifant/rules.toml", "[rules.no-new-defs]\nfiles = \"{legacy}\"\nonly = \"new\"\nmatch = { kind = \"function_definition\" }\nmessage = \"New work goes in the new architecture\"\n")
-          , ("/packs/p/languages/python.toml", "files = [\"**/*.py\"]\ncomment = \"#\"\ngrammar = \"python\"\n")
+          , ("/packs/p/languages/python.toml", "files = [\"**/*.py\"]\ncomment = \"#\"\ngrammar = { git = \"https://github.com/tree-sitter/tree-sitter-python\", rev = \"293fdc02038ee2bf0e2e206711b69c90ac0d413f\" }\n")
           , ("/packs/p/generators/g/generator.toml", "description = \"d\"\nlanguage = \"python\"\n")
           , ("/w/legacy/views.py", base <> "\ndef waitlist(r):\n    return r\n")
           ]
@@ -232,7 +232,7 @@ newCodeCheckSpec = describe "check: rules on new code" $ do
         files =
           [ ("/w/.olifant/config.toml", "[packs]\np = { path = \"/packs/p\" }\n")
           , ("/w/.olifant/rules.toml", "[rules.no-new-defs]\nfiles = \"legacy/*.py\"\nonly = \"new\"\nmatch = { kind = \"function_definition\" }\nmessage = \"New work goes in the new architecture\"\n")
-          , ("/packs/p/languages/python.toml", "files = [\"**/*.py\"]\ncomment = \"#\"\ngrammar = \"python\"\n")
+          , ("/packs/p/languages/python.toml", "files = [\"**/*.py\"]\ncomment = \"#\"\ngrammar = { git = \"https://github.com/tree-sitter/tree-sitter-python\", rev = \"293fdc02038ee2bf0e2e206711b69c90ac0d413f\" }\n")
           , ("/packs/p/generators/g/generator.toml", "description = \"d\"\nlanguage = \"python\"\n")
           , ("/w/legacy/views.py", now)
           ]
@@ -246,7 +246,7 @@ legacyCount :: FilePath -> Text -> Text -> FilePath -> Text -> IO (Maybe Int)
 legacyCount tmp lang glob file text = do
   let files =
         [ ("/w/.olifant/config.toml", "[packs]\np = { path = \"/packs/p\" }\n\n[migrate]\nlegacy = [\"legacy/**\"]\n")
-        , ("/packs/p/languages/" <> T.unpack lang <> ".toml", "files = [\"" <> glob <> "\"]\ncomment = \"" <> (if lang == "python" then "#" else "--") <> "\"\ngrammar = \"" <> lang <> "\"\n")
+        , ("/packs/p/languages/" <> T.unpack lang <> ".toml", "files = [\"" <> glob <> "\"]\ncomment = \"" <> (if lang == "python" then "#" else "--") <> "\"\n")
         , ("/packs/p/generators/g/generator.toml", "description = \"d\"\nlanguage = \"" <> lang <> "\"\n")
         , ("/w/" <> file, text)
         ]
@@ -652,7 +652,7 @@ runCliSpec = describe "runCli" $ do
       `shouldBe` [("x.rs", [(2, 4), (12, 12)]), ("sub/y.rs", [(1, 2)])]
   describe "olifant fix (spec §5.9, beat 4 feedback)" $ do
     let rustPack =
-          [ ("/packs/p/languages/rust.toml", T.unlines ["files = [\"**/*.rs\"]", "comment = \"//\"", "grammar = \"rust\"", "[holes.stmt]", "placeholder = 'todo!(\"olifant: {= hole =}\");'", "wrap = \"fn __o() { {= fill =} }\""])
+          [ ("/packs/p/languages/rust.toml", T.unlines ["files = [\"**/*.rs\"]", "comment = \"//\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-rust\", rev = \"e2bee853694a1d3e0f6ef308fe3674542fec95d7\" }", "[holes.stmt]", "placeholder = 'todo!(\"olifant: {= hole =}\");'", "wrap = \"fn __o() { {= fill =} }\""])
           , ("/packs/p/generators/port/generator.toml", "description = \"p\"\nlanguage = \"rust\"\n[inputs.service]\ntype = \"ident\"\n[[edits]]\ncreate = \"{= service =}/port.rs\"\ntext = \"// port\\n\"\n")
           , ("/packs/p/rules.toml", T.unlines
               [ "[rules.no-db]", "files = \"{service}/src/*.rs\"", "message = \"no db\""

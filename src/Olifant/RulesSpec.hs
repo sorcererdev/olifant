@@ -17,7 +17,7 @@ import Test.Hspec
 rust :: Language
 rust = l
   where
-    Right l = parseLanguage "rust" "/p" (T.unlines ["files = [\"**/*.rs\"]", "comment = \"//\"", "grammar = \"rust\""])
+    Right l = parseLanguage "rust" "/p" (T.unlines ["files = [\"**/*.rs\"]", "comment = \"//\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-rust\", rev = \"e2bee853694a1d3e0f6ef308fe3674542fec95d7\" }"])
 
 usePorts :: Text
 usePorts =
@@ -62,7 +62,7 @@ findings config content = [(fRule f, fmap (fst . fst) (fRange f), fSeverity f) |
 -- function_definition: its line, through its last non-blank line before
 -- the next line at column 0 (0-based, as ast-grep reports).
 python :: Language
-python = either (error . T.unpack) id (parseLanguage "python" "/p" "files = [\"**/*.py\"]\ncomment = \"#\"\ngrammar = \"python\"\n")
+python = either (error . T.unpack) id (parseLanguage "python" "/p" "files = [\"**/*.py\"]\ncomment = \"#\"\ngrammar = { git = \"https://github.com/tree-sitter/tree-sitter-python\", rev = \"293fdc02038ee2bf0e2e206711b69c90ac0d413f\" }\n")
 
 defs :: Syntax Identity
 defs = querying $ \_ _ content ->

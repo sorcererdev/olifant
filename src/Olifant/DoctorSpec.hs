@@ -15,7 +15,7 @@ import Test.Hspec
 rust :: Language
 rust = l
   where
-    Right l = parseLanguage "rust" "/p" (T.unlines ["files = [\"**/*.rs\"]", "comment = \"//\"", "grammar = \"rust\"", "[check]", "preset = \"cargo\""])
+    Right l = parseLanguage "rust" "/p" (T.unlines ["files = [\"**/*.rs\"]", "comment = \"//\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-rust\", rev = \"e2bee853694a1d3e0f6ef308fe3674542fec95d7\" }", "[check]", "preset = \"cargo\""])
 
 local :: ModelConfig
 local = defaultModelConfig {mcDefault = Just "local", mcBackends = [("local", OpenAICompatible "http://localhost:11434/v1" "qwen3-coder:30b")]}
@@ -55,7 +55,7 @@ spec = describe "olifant doctor (spec §4.7)" $ do
     checkDetail c `shouldSatisfy` T.isInfixOf "/usr/bin:/bin"
     checkFix c `shouldSatisfy` maybe False (\f -> "/opt/homebrew/opt/rustup/bin" `T.isInfixOf` f && "~/.cargo/bin" `T.isInfixOf` f)
   it "(b2) a check tool with no install hint gets the generic one" $ do
-    let Right bare = parseLanguage "x" "/p" (T.unlines ["files = [\"**/*.x\"]", "comment = \"#\"", "grammar = \"rust\"", "[check]", "command = [\"xc\"]", "format = \"sarif\""])
+    let Right bare = parseLanguage "x" "/p" (T.unlines ["files = [\"**/*.x\"]", "comment = \"#\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-rust\", rev = \"e2bee853694a1d3e0f6ef308fe3674542fec95d7\" }", "[check]", "command = [\"xc\"]", "format = \"sarif\""])
         cs = runIdentity (doctor (ports ["ast-grep"] (Right ()) []) ((input local) {diLanguages = [bare]}))
         [c] = [c' | c' <- cs, checkName c' == "check tool xc (x)"]
     checkFix c `shouldBe` Just "install xc and make sure it is on the PATH your editor starts with"
@@ -75,13 +75,13 @@ spec = describe "olifant doctor (spec §4.7)" $ do
     statusOf "model" (runIdentity (doctor probeFails (input claude))) `shouldBe` Just Warn
     statusOf "model" (runIdentity (doctor (ports ["ast-grep", "cargo"] (Left "must not be called") ["MY_KEY"]) (input claude))) `shouldBe` Just Ok
   it "(c) a check run through `env VAR=… uv …` checks uv, with how to install it (Review Focus 3)" $ do
-    let Right python = parseLanguage "python" "/p" (T.unlines ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[check]", "preset = \"pyright\""])
+    let Right python = parseLanguage "python" "/p" (T.unlines ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-python\", rev = \"293fdc02038ee2bf0e2e206711b69c90ac0d413f\" }", "[check]", "preset = \"pyright\""])
         cs = runIdentity (doctor (ports ["ast-grep", "env"] (Right ()) []) (DoctorInput (Just "/proj") ["python-htmx"] [python] [] [] local Nothing defaultPlans [] False))
         [c] = [c' | c' <- cs, checkName c' == "check tool uv (python)"]
     checkStatus c `shouldBe` Bad
     checkFix c `shouldSatisfy` maybe False ("brew install uv" `T.isInfixOf`)
   it "(f) a language with [test] gets a test runner line: the program found, and where its tests live" $ do
-    let Right python = parseLanguage "python" "/p" (T.unlines ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[test]", "preset = \"pytest\"", "tests_for = \"{= dir =}/{= stem =}__test.py\""])
+    let Right python = parseLanguage "python" "/p" (T.unlines ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-python\", rev = \"293fdc02038ee2bf0e2e206711b69c90ac0d413f\" }", "[test]", "preset = \"pytest\"", "tests_for = \"{= dir =}/{= stem =}__test.py\""])
         run exes = runIdentity (doctor (ports exes (Right ()) []) (DoctorInput (Just "/proj") ["python-htmx"] [python] [] [] local Nothing defaultPlans [] False))
         [ok] = [c | c <- run ["ast-grep", "uv"], checkName c == "test runner uv (python)"]
         [bad] = [c | c <- run ["ast-grep"], checkName c == "test runner uv (python)"]
@@ -91,7 +91,7 @@ spec = describe "olifant doctor (spec §4.7)" $ do
     checkStatus bad `shouldBe` Bad
     checkDetail bad `shouldSatisfy` (\d -> "uv" `T.isInfixOf` d && "/usr/bin:/bin" `T.isInfixOf` d)
   it "(f2) the test runner row names the command candidate chosen, and why" $ do
-    let Right python = parseLanguage "python" "/p" (T.unlines ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[test]", "preset = \"pytest\"", "tests_for = \"{= dir =}/{= stem =}__test.py\""])
+    let Right python = parseLanguage "python" "/p" (T.unlines ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-python\", rev = \"293fdc02038ee2bf0e2e206711b69c90ac0d413f\" }", "[test]", "preset = \"pytest\"", "tests_for = \"{= dir =}/{= stem =}__test.py\""])
         withFiles fs = (ports ["ast-grep", "pytest", "/proj/.venv/bin/pytest"] (Right ()) []) {dpRead = \f -> Identity (if f `elem` fs then Just "" else Nothing)}
         rows fs = [(checkName c, checkStatus c, checkDetail c) | c <- runIdentity (doctor (withFiles fs) (DoctorInput (Just "/proj") [] [python] [] [] local Nothing defaultPlans [] False)), "test runner" `T.isPrefixOf` checkName c]
     case rows ["/proj/.venv/bin/pytest"] of
@@ -111,7 +111,7 @@ spec = describe "olifant doctor (spec §4.7)" $ do
     row "build-depends: hspec-junit-formatter" `shouldSatisfy` any (T.isInfixOf "hspec-junit-formatter found in p.cabal; format junit-xml")
     row "build-depends: hspec" `shouldSatisfy` any (T.isInfixOf "no hspec-junit-formatter in *.cabal or package.yaml")
   it "(f3) the check tool row names the [check] command candidate chosen, {= root =}/ dropped" $ do
-    let Right python = parseLanguage "python" "/p" (T.unlines ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[check]", "format = \"sarif\"", "command = [{ when = [\".venv/bin/ruff\"], command = [\"{= root =}/.venv/bin/ruff\", \"check\"] }, { command = [\"ruff\", \"check\"] }]"])
+    let Right python = parseLanguage "python" "/p" (T.unlines ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-python\", rev = \"293fdc02038ee2bf0e2e206711b69c90ac0d413f\" }", "[check]", "format = \"sarif\"", "command = [{ when = [\".venv/bin/ruff\"], command = [\"{= root =}/.venv/bin/ruff\", \"check\"] }, { command = [\"ruff\", \"check\"] }]"])
         withFiles fs = (ports ["ast-grep", "ruff", "/proj/.venv/bin/ruff"] (Right ()) []) {dpRead = \f -> Identity (if f `elem` fs then Just "" else Nothing)}
         rows fs = [(checkName c, checkStatus c, checkDetail c) | c <- runIdentity (doctor (withFiles fs) (DoctorInput (Just "/proj") [] [python] [] [] local Nothing defaultPlans [] False)), "check tool" `T.isPrefixOf` checkName c]
     case rows ["/proj/.venv/bin/ruff"] of
@@ -172,13 +172,13 @@ spec = describe "olifant doctor (spec §4.7)" $ do
     elm <- shippedLanguage "elm" [("pack elm", "packs/elm")]
     let cs = runIdentity (doctor (ports ["ast-grep", "cargo"] (Right ()) []) ((input local) {diLanguages = [rust, elm]}))
         row n = head [(checkStatus c, checkDetail c, checkFix c) | c <- cs, checkName c == n]
-    row "rust: queries" `shouldBe` (Ok, "tree-sitter-rust 0.24.2; impls, imports, tags, textobjects (shipped)", Nothing)
-    row "elm: queries" `shouldBe` (Warn, "no linked grammar (anchors from [targets.*] only)", Nothing)
+    row "rust: queries" `shouldBe` (Ok, "tree-sitter-rust @e2bee85; impls, imports, tags, textobjects (shipped)", Nothing)
+    row "elm: queries" `shouldBe` (Warn, "no grammar (anchors from [targets.*] only)", Nothing)
   it "a queries row names a project's query file and its origin" $ do
     rust <- shippedLanguage "rust" []
     let own = rust {langQueries = [("imports.scm", "(extern_crate_declaration) @import\n", "project")]}
         cs = runIdentity (doctor (ports ["ast-grep", "cargo"] (Right ()) []) ((input local) {diLanguages = [own]}))
-    [checkDetail c | c <- cs, checkName c == "rust: queries"] `shouldBe` ["tree-sitter-rust 0.24.2; imports (project), impls, tags, textobjects (shipped)"]
+    [checkDetail c | c <- cs, checkName c == "rust: queries"] `shouldBe` ["tree-sitter-rust @e2bee85; imports (project), impls, tags, textobjects (shipped)"]
   it "evidence replaces how, origin kept; tests not run keep their text, ok" $ do
     rust <- shippedLanguage "rust" []
     let ev = Evidence (Proven "3 found in 2 files (e.g. src/a.rs:1 add)") (Unproven "not seen (no test file in the 40 sampled)") (Unproven "not run (olifant doctor --run)") (Proven "end of struct X (src/a.rs:3)") (Proven "expr wrappers parse with their placeholders")

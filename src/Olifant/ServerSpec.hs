@@ -808,7 +808,7 @@ testsSpecs = describe "a file's tests (olifant/tests/run)" $ do
   let recording verdict = blocksRun blockSyntax (pure ()) (const verdict)
       passing _ = Right (TestRun [testId] [] Nothing)
       -- a language of the pack's with no [test] table
-      plain = ("/pack/languages/plain.toml", "files = [\"**/*.txt\"]\ncomment = \"#\"\ngrammar = \"python\"\n")
+      plain = ("/pack/languages/plain.toml", "files = [\"**/*.txt\"]\ncomment = \"#\"\ngrammar = { git = \"https://github.com/tree-sitter/tree-sitter-python\", rev = \"293fdc02038ee2bf0e2e206711b69c90ac0d413f\" }\n")
   it "on a module, runs its test file, as one id" $ do
     seen <- newIORef ([] :: [[Text]])
     (s, _) <- recording passing []
@@ -842,7 +842,7 @@ testsSpecs = describe "a file's tests (olifant/tests/run)" $ do
     taFile a `shouldBe` root </> "src/shop/orphan__test.py"
     readIORef seen `shouldReturn` [["src/shop/orphan__test.py"]]
   it "refuses a language whose tests_for names no file, in one sentence" $ do
-    (s, _) <- recording passing [("/pack/languages/blank.toml", "files = [\"**/*.md\"]\ncomment = \"#\"\ngrammar = \"python\"\n[test]\npreset = \"pytest\"\ntests_for = \"\"\n"), ("notes/a.md", "a\n")]
+    (s, _) <- recording passing [("/pack/languages/blank.toml", "files = [\"**/*.md\"]\ncomment = \"#\"\ngrammar = { git = \"https://github.com/tree-sitter/tree-sitter-python\", rev = \"293fdc02038ee2bf0e2e206711b69c90ac0d413f\" }\n[test]\npreset = \"pytest\"\ntests_for = \"\"\n"), ("notes/a.md", "a\n")]
     (_, answer) <- testsRun ScopeFile (root </> "notes/a.md") s
     answer `shouldSatisfy` either (== "blank's tests_for names no test file: nothing to run") (const False)
   it "refuses a language with no [test] table, in one sentence" $ do
@@ -961,7 +961,7 @@ testsSpecs = describe "a file's tests (olifant/tests/run)" $ do
       (_, answer) <- testsFile (root </> "src/shop/orphan__test.py") s
       answer `shouldSatisfy` either (== "no module's test file is src/shop/orphan__test.py: its module cannot be named") (const False)
     it "refuses a file that is its own test file (tests_for names the file itself), in one sentence" $ do
-      (s, _) <- recording passing [("/pack/languages/inline.toml", "files = [\"**/*.txt\"]\ncomment = \"#\"\ngrammar = \"python\"\n[test]\npreset = \"pytest\"\ntests_for = \"{= dir =}/{= stem =}.txt\"\n"), ("notes/a.txt", "a\n")]
+      (s, _) <- recording passing [("/pack/languages/inline.toml", "files = [\"**/*.txt\"]\ncomment = \"#\"\ngrammar = { git = \"https://github.com/tree-sitter/tree-sitter-python\", rev = \"293fdc02038ee2bf0e2e206711b69c90ac0d413f\" }\n[test]\npreset = \"pytest\"\ntests_for = \"{= dir =}/{= stem =}.txt\"\n"), ("notes/a.txt", "a\n")]
       (_, answer) <- testsFile (root </> "notes/a.txt") s
       answer `shouldSatisfy` either (== "notes/a.txt is its own test file (inline's tests_for): no other file to jump to") (const False)
     it "refuses a file in no project" $ do
@@ -1031,7 +1031,7 @@ siteSpecs = describe "a conjure's imported modules" $ do
   it "resolves imports from data: a Haskell language's resolve and paths" $ do
     let Right hs =
           parseLanguage "haskell" "/h" . T.unlines $
-            [ "files = [\"**/*.hs\"]", "comment = \"--\"", "grammar = \"haskell\""
+            [ "files = [\"**/*.hs\"]", "comment = \"--\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-haskell\", rev = \"c30d812bc90827f1a54106a25bc9a6307f5cdcec\" }"
             , "[imports]", "module_of = { strip = [\"^src/\"], separator = \".\" }", "paths = [\"src/{= path =}.hs\"]"
             , "[[imports.resolve]]", "pattern = \"^import +(qualified +)?([A-Z][A-Za-z0-9_.]*)\"", "module = 2" ]
     (ws, _) <- memoryWorkspace [("src/A.hs", "module A where\nimport qualified Data.Map as M\nimport B.C\n"), ("src/B/C.hs", "module B.C where\nc = 1\n")]

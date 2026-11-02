@@ -5,10 +5,10 @@ module Olifant.Capabilities
   , capabilities
   ) where
 
-import Data.Maybe (fromMaybe, isJust, isNothing)
+import Data.Maybe (isJust, isNothing)
 import Data.Text (Text)
 import Data.Text qualified as T
-import Olifant.Language (ConjureDef (..), CheckDef (..), Language (..), Provider (..), StubDef (..), TestDef (..), TypesDef (..), defaultUnitNames, grammarLabel, grammarLinked, linkedGrammarOf, missingFormats, supportsMissing)
+import Olifant.Language (ConjureDef (..), CheckDef (..), Language (..), Provider (..), StubDef (..), TestDef (..), TypesDef (..), defaultUnitNames, grammarLabel, hasLoadableGrammar, loadableGrammar, missingFormats, supportsMissing)
 
 -- | A capability, how it is provided (Right) or the key that would enable
 -- it (Left), and the dotted key its presence depends on (whose layer
@@ -46,7 +46,7 @@ capabilities lang =
     units
       | Just p <- langUnitProvider lang = provided "[unit]" p
       | not (null (langUnitKinds lang)) = Right ("[unit] kinds (ast-grep)" <> (if hasNames then ", named by [unit] name" else "") <> (if langUnitJoin lang then ", joined" else ""))
-      | Just g <- linkedGrammarOf lang = Right ("queries (" <> fromMaybe g (grammarLabel g) <> "): each function and class definition")
+      | Just g <- loadableGrammar lang = Right ("queries (" <> grammarLabel g <> "): each function and class definition")
       | otherwise = Left "[unit] kinds"
     hasNames = langUnitNames lang /= defaultUnitNames
     diagnostics = case check of
@@ -62,7 +62,7 @@ capabilities lang =
       | Just p <- test >>= testUnitProvider = provided "[test] unit" p
       | maybe False (not . null . testUnitRules) test = Right ("[test] unit" <> (if maybe False (isJust . testAbove) test then ", above" else ""))
       | otherwise = Left "[test] unit"
-    anchors = case (langTargets lang, langAnchorProvider lang, grammarLinked lang) of
+    anchors = case (langTargets lang, langAnchorProvider lang, hasLoadableGrammar lang) of
       ([], Nothing, False) -> Left "[targets.*]"
       (ts, p, linked) -> Right (T.intercalate ", " (["[targets] " <> T.pack (show (length ts)) <> " targets" | not (null ts)] ++ ["generic phrases (queries)" | linked] ++ ["anchors provider " <> T.unwords (provArgv q) | Just q <- [p]]))
     holes = case langHoles lang of

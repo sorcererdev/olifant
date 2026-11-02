@@ -24,6 +24,7 @@ module Olifant.Language.Grammar
   , grammarLibrary
   , loadGrammar
   , loadGrammarWith
+  , loadIfBuilt
   , grammarLabel
   , abiRange
   , GrammarInfo (..)
@@ -303,6 +304,22 @@ loadGrammar g = grammarSettings >>= \s -> loadGrammarWith s g
 grammarLibrary :: Grammar -> IO (Either GrammarFailure FilePath)
 grammarLibrary g = fmap ldLibrary <$> loadGrammar g
 
+-- | The grammar when it is loaded or built already, else Nothing: nothing
+-- is fetched or compiled (reading config, 'Olifant.Catalog').
+loadIfBuilt :: Grammar -> IO (Maybe (Either GrammarFailure Loaded))
+loadIfBuilt g = do
+  s <- grammarSettings
+  located s g False >>= \case
+    Left _ -> pure Nothing
+    Right (dir, _) -> do
+      lib <- libraryPath s g dir
+      M.lookup lib <$> readIORef loaded >>= \case
+        Just r -> pure (Just r)
+        Nothing -> doesFileExist lib >>= \built -> if built then Just . fst <$> loadTimed s g else pure Nothing
+
+libraryPath :: GrammarSettings -> Grammar -> FilePath -> IO FilePath
+libraryPath s g dir = (\key -> gsCache s </> "grammars" </> T.unpack key <> libraryExtension) <$> grammarKey s g dir
+
 -- | 'loadGrammar' under given settings: the source located (a git source
 -- not yet fetched still has its library's path), then, once per library
 -- path: fetched, built and loaded.
@@ -315,8 +332,7 @@ loadTimed s g =
   located s g False >>= \case
     Left f -> pure (Left f, Nothing)
     Right (dir, _) -> do
-      key <- grammarKey s g dir
-      let lib = gsCache s </> "grammars" </> T.unpack key <> libraryExtension
+      lib <- libraryPath s g dir
       once lib (buildAndLoad dir lib)
   where
     buildAndLoad dir lib = do

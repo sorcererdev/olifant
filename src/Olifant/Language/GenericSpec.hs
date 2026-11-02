@@ -49,7 +49,7 @@ spec = do
   describe "convert" $ do
     it "a [check] with convert parses what the convert command prints" $ do
       let Right lang = parseLanguage "x" "/x" (T.unlines
-            [ "files = [\"**/*.hs\"]", "comment = \"--\"", "grammar = \"haskell\""
+            [ "files = [\"**/*.hs\"]", "comment = \"--\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-haskell\", rev = \"c30d812bc90827f1a54106a25bc9a6307f5cdcec\" }"
             , "[check]", "command = [\"sh\", \"-c\", \"echo raw\"]"
             , "convert = [\"sh\", \"-c\", \"cat >/dev/null; echo '{\\\"broken\\\":[{\\\"file\\\":\\\"a.hs\\\",\\\"message\\\":\\\"m\\\"}]}'\"]"
             ])
@@ -57,7 +57,7 @@ spec = do
       fmap reportBroken r `shouldBe` Right [("a.hs", "m")]
     it "the convert command sees the check's exit and output on stdin" $ do
       let Right lang = parseLanguage "x" "/x" (T.unlines
-            [ "files = [\"**/*.hs\"]", "comment = \"--\"", "grammar = \"haskell\""
+            [ "files = [\"**/*.hs\"]", "comment = \"--\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-haskell\", rev = \"c30d812bc90827f1a54106a25bc9a6307f5cdcec\" }"
             , "[check]", "command = [\"sh\", \"-c\", \"echo said; exit 3\"]"
             , "convert = [\"sh\", \"-c\", \"in=$(cat); echo \\\"$in\\\" | grep -q '\\\"exit\\\":3' && echo \\\"$in\\\" | grep -q said && echo '{\\\"broken\\\":[{\\\"file\\\":\\\"a.hs\\\",\\\"message\\\":\\\"seen\\\"}]}' || { echo nope >&2; exit 1; }\"]"
             ])
@@ -65,7 +65,7 @@ spec = do
       fmap reportBroken r `shouldBe` Right [("a.hs", "seen")]
     it "convert's stdin has v 1" $ do
       let Right lang = parseLanguage "x" "/x" (T.unlines
-            [ "files = [\"**/*.hs\"]", "comment = \"--\"", "grammar = \"haskell\""
+            [ "files = [\"**/*.hs\"]", "comment = \"--\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-haskell\", rev = \"c30d812bc90827f1a54106a25bc9a6307f5cdcec\" }"
             , "[check]", "command = [\"sh\", \"-c\", \"echo said\"]"
             , "convert = [\"sh\", \"-c\", \"in=$(cat); echo \\\"$in\\\" | grep -q '\\\"v\\\":1' && echo '{\\\"broken\\\":[{\\\"file\\\":\\\"a.hs\\\",\\\"message\\\":\\\"v1\\\"}]}' || { echo nope >&2; exit 1; }\"]"
             ])
@@ -73,7 +73,7 @@ spec = do
       fmap reportBroken r `shouldBe` Right [("a.hs", "v1")]
     it "a failing tool whose converted report is empty is a failed check with the tool's stderr" $ do
       let Right lang = parseLanguage "x" "/x" (T.unlines
-            [ "files = [\"**/*.hs\"]", "comment = \"--\"", "grammar = \"haskell\""
+            [ "files = [\"**/*.hs\"]", "comment = \"--\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-haskell\", rev = \"c30d812bc90827f1a54106a25bc9a6307f5cdcec\" }"
             , "[check]", "command = [\"sh\", \"-c\", \"echo Failed to spawn >&2; exit 2\"]"
             , "convert = [\"sh\", \"-c\", \"cat >/dev/null; echo '{}'\"]"
             ])
@@ -81,7 +81,7 @@ spec = do
       either (\f -> all (`T.isInfixOf` describeCheckFailure f) ["without a report", "Failed to spawn"]) (const False) r `shouldBe` True
     it "a convert command that fails is a failed check with what it said" $ do
       let Right lang = parseLanguage "x" "/x" (T.unlines
-            [ "files = [\"**/*.hs\"]", "comment = \"--\"", "grammar = \"haskell\""
+            [ "files = [\"**/*.hs\"]", "comment = \"--\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-haskell\", rev = \"c30d812bc90827f1a54106a25bc9a6307f5cdcec\" }"
             , "[check]", "command = [\"sh\", \"-c\", \"echo raw\"]"
             , "convert = [\"sh\", \"-c\", \"echo cannot read it >&2; exit 1\"]"
             ])

@@ -17,7 +17,7 @@ import Test.Hspec
 
 -- | The vendored python sources (the specs' local source).
 pythonDir :: FilePath
-pythonDir = "cbits/tree-sitter-python"
+pythonDir = "library/grammars/python"
 
 -- | A fresh cache of this spec's own, and settings over it with no local
 -- sources and the real PATH.

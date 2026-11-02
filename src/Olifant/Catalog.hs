@@ -71,7 +71,7 @@ import Data.Text qualified as T
 import Olifant.Generator
 import Olifant.Snippet (withHoleSources)
 import Olifant.Anchor (Phrase (..), Target (..), itemsOfTarget, parsePhrase, positionWords)
-import Olifant.Language (Grammar (..), Language (..), Layer (..), Match (..), Syntax, capturesOf, languageFor, languageFromLayers, linkedGrammars, matchShape, querySet, shippedLayer, withProviderRoot)
+import Olifant.Language (Grammar (..), Language (..), Layer (..), Match (..), Syntax, languageFor, languageFromLayers, matchShape, queryError, querySet, shippedLayer, withProviderRoot)
 import Olifant.Language.Presets (Presets, overPresets, presetsFrom, shippedPresets)
 import Text.Regex.TDFA (Regex, makeRegexM, matchTest)
 import Olifant.ProjectModel (ModelMap, parseModelMap)
@@ -417,9 +417,9 @@ openAt root loadP olifantDir packs = do
       (assembled, brokenLangs) = assembleLanguages presets (rights layers) [T.pack (takeBaseName p) | Left (p, _) <- layers] named
       -- a provider, from a pack or the project, runs from the project root
       rooted = maybe assembled (\d -> map (withProviderRoot (takeDirectory d)) assembled) olifantDir
-  -- the project's query files over each linked grammar's shipped ones
+  -- the project's query files over each grammar's shipped ones
   queried <- traverse (projectQueries root olifantDir) rooted
-  unused <- maybe (pure []) (unusedQueries root [grName (langGrammar l) | l <- rooted]) olifantDir
+  unused <- maybe (pure []) (unusedQueries root [grName (langGrammar l) | l <- rooted, grSource (langGrammar l) /= Nothing]) olifantDir
   let langs = map fst queried
       broken = lefts layers ++ lefts toolchains ++ either pure (const []) configured ++ concatMap snd queried ++ unused
       base = Catalog Nothing (sortOn entryId (rights loaded)) (sortOn (\(gid, _, _) -> gid) (lefts loaded)) (map fst packs) langs (broken ++ brokenLangs) [] [] defaultModelConfig [] [] (RulesConfig [] []) [m | Just (Right m) <- map lpModel fromPacks] [b | Just (Left b) <- map lpModel fromPacks] (map snd packs) Nothing (RecognizeConfig True Nothing) Nothing Nothing Nothing defaultPlans (listToMaybe [st | Just (Right st) <- map lpStrangler fromPacks])
@@ -434,11 +434,11 @@ catalogIgnores :: Catalog -> [FilePath]
 catalogIgnores cat = S.toList (S.fromList [T.unpack i | l <- catalogLanguages cat, i <- langIgnore l])
 
 -- | A language with its project's query files (`.olifant/queries/<grammar>/*.scm`,
--- origin "project") when its grammar is linked, and the load error of a set
+-- origin "project") when its grammar has a source, and the load error of a set
 -- that does not compile (the file named, and the byte).
 projectQueries :: Monad m => Workspace m -> Maybe FilePath -> Language -> m (Language, [(FilePath, Text)])
 projectQueries root olifantDir lang = case (olifantDir, langGrammar lang) of
-  (Just d, Grammar g _) | g `elem` linkedGrammars -> do
+  (Just d, gr@(Grammar g (Just _))) -> do
     let dir = d </> "queries" </> T.unpack g
     files <- listFiles root dir
     let scms = sort [f | f <- files, takeExtension f == ".scm"]
@@ -450,20 +450,20 @@ projectQueries root olifantDir lang = case (olifantDir, langGrammar lang) of
         skipped =
           [(dir </> f, "unreadable (query files are read as UTF-8)") | (f, Nothing) <- found]
             ++ [(dir </> f, "ignored: query files sit directly in the grammar's folder, not in a subfolder") | f <- scms, f `notElem` top]
-    pure $ case (own, capturesOf g (querySet l) "") of
-      (_ : _, Left why) ->
+    pure $ case (own, queryError gr (querySet l)) of
+      (_ : _, Just why) ->
         let named = [dir </> f | (f, _, _) <- own, ("`" <> T.pack f <> "`") `T.isPrefixOf` why]
          in (lang, skipped ++ [(fromMaybe dir (listToMaybe named), why)])
       _ -> (l, skipped)
   _ -> pure (lang, [])
 
 -- | A project's query folders no active language reads (`.olifant/queries/<g>/`
--- where no language has grammar G, or G is not linked in): one load error each.
+-- where no language has grammar G with a source): one load error each.
 unusedQueries :: Monad m => Workspace m -> [Text] -> FilePath -> m [(FilePath, Text)]
 unusedQueries root used d = do
   files <- listFiles root (d </> "queries")
   let folders = nubOrd [g | f <- files, takeExtension f == ".scm", g : _ : _ <- [splitDirectories f]]
-  pure [(d </> "queries" </> g, "ignored: no active language reads the `" <> T.pack g <> "` grammar's queries") | g <- folders, T.pack g `notElem` filter (`elem` linkedGrammars) used]
+  pure [(d </> "queries" </> g, "ignored: no active language reads the `" <> T.pack g <> "` grammar's queries") | g <- folders, T.pack g `notElem` used]
   where
     nubOrd = foldr (\x acc -> x : filter (/= x) acc) []
 

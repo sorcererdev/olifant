@@ -79,9 +79,9 @@ spec = describe "Olifant.Recognize" $ do
       mapM_ (\w -> (w, w `S.member` ws) `shouldBe` (w, True)) ["dataclass", "frozen", "handle", "NotImplementedError"]
       S.member "Command" ws `shouldBe` False
     it "(e) a language's keywords come from its adapter (`keywords`), none when absent" $ do
-      fmap langKeywords (parseLanguage "x" "/p" "files = [\"*.x\"]\ncomment = \"#\"\ngrammar = \"python\"\nkeywords = [\"def\", \"class\"]\n")
+      fmap langKeywords (parseLanguage "x" "/p" "files = [\"*.x\"]\ncomment = \"#\"\ngrammar = { git = \"https://github.com/tree-sitter/tree-sitter-python\", rev = \"293fdc02038ee2bf0e2e206711b69c90ac0d413f\" }\nkeywords = [\"def\", \"class\"]\n")
         `shouldBe` Right ["def", "class"]
-      fmap langKeywords (parseLanguage "x" "/p" "files = [\"*.x\"]\ncomment = \"#\"\ngrammar = \"python\"\n") `shouldBe` Right []
+      fmap langKeywords (parseLanguage "x" "/p" "files = [\"*.x\"]\ncomment = \"#\"\ngrammar = { git = \"https://github.com/tree-sitter/tree-sitter-python\", rev = \"293fdc02038ee2bf0e2e206711b69c90ac0d413f\" }\n") `shouldBe` Right []
     it "makes overlapping windows of three, and knows which carry a name" $ do
       shingles ["a", "b", "c", "d"] `shouldBe` S.fromList [("a", "b", "c"), ("b", "c", "d")]
       nameShingle ("def", "snake2", "(") `shouldBe` True
