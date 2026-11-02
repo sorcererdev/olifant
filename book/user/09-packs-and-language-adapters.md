@@ -1142,7 +1142,10 @@ The captures olifant reads are `@definition.*` with `@name` (a definition and it
 `@function.inner`, `@class.inner` (a definition's items), `@function.outer`, `@class.outer`
 (a unit's whole span), `@parameter.inner`, `@call.outer` and `@import`. A query set that does
 not compile is a load error naming the file (and the byte, for a syntax error; an unknown
-predicate is named instead), and the language is used with its shipped queries. `olifant doctor`'s `queries` row names each file's origin:
+predicate is named instead), and the language is used with its shipped queries. A query file olifant
+cannot use is a load error too, never silence: one that is not UTF-8 (the rest of the set is
+used), one in a subfolder of the grammar's folder, and a folder for a grammar no active language
+reads. `olifant doctor`'s `queries` row names each file's origin:
 
 ```
 ✓ rust: queries — tree-sitter-rust 0.24.2; imports (project), impls, tags, textobjects (shipped)

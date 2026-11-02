@@ -3,6 +3,10 @@
 module Olifant.CatalogSpec (spec) where
 
 import Control.Monad (forM_)
+import Data.ByteString qualified as BS
+import System.Directory (createDirectoryIfMissing)
+import System.FilePath ((</>))
+import System.IO.Temp (withSystemTempDirectory)
 import Data.Map.Strict qualified as M
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -174,6 +178,18 @@ spec = describe "catalog" $ do
       Right cat <- openWith [("/proj/.olifant/config.toml", "languages = [\"rust\"]\n"), ("/proj/.olifant/queries/rust/imports.scm", "(no_such_node) @import\n")]
       map fst (catalogBrokenLanguages cat) `shouldBe` ["/proj/.olifant/queries/rust/imports.scm"]
       map snd (catalogBrokenLanguages cat) `shouldSatisfy` all (\e -> "imports.scm" `T.isInfixOf` e && "byte" `T.isInfixOf` e)
+    it "a project query file nobody reads is a load error, not silence: a subfolder's, an unused grammar's (m2b M3)" $ do
+      Right cat <- openWith [("/proj/.olifant/config.toml", "languages = [\"rust\"]\n"), ("/proj/.olifant/queries/rust/more/x.scm", "(identifier) @name\n"), ("/proj/.olifant/queries/python/imports.scm", "(import_statement) @import\n")]
+      map fst (catalogBrokenLanguages cat) `shouldBe` ["/proj/.olifant/queries/rust/more/x.scm", "/proj/.olifant/queries/python"]
+      map langQueries (catalogLanguages cat) `shouldBe` [[]]
+    it "a project query file that is not UTF-8 is a load error naming it" $ do
+      withSystemTempDirectory "olifant-queries" $ \dir -> do
+        createDirectoryIfMissing True (dir </> ".olifant/queries/rust")
+        BS.writeFile (dir </> ".olifant/config.toml") "languages = [\"rust\"]\n"
+        BS.writeFile (dir </> ".olifant/queries/rust/imports.scm") (BS.pack [0xff, 0xfe, 0x28])
+        Right cat <- openProjectCatalog (diskWorkspace dir) projectOnly {catalogProjectDir = dir}
+        map fst (catalogBrokenLanguages cat) `shouldSatisfy` ((== 1) . length)
+        map (T.isInfixOf "UTF-8" . snd) (catalogBrokenLanguages cat) `shouldBe` [True]
     it "`ignore` reaches the walk: a Rust project lists no target/ file, a Python-only one does (4b m2)" $ do
       let tree = [("/proj/target/x.rs", "fn x() {}\n"), ("/proj/src/a.rs", "fn a() {}\n")]
           listed langs = do
