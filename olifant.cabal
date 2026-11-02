@@ -94,6 +94,7 @@ library
     Olifant.Language.Elm
     Olifant.Language.Generic
     Olifant.Language.Ghc
+    Olifant.Language.Grammar
     Olifant.Language.Header
     Olifant.Language.Presets
     Olifant.Language.Pyright
@@ -271,6 +272,8 @@ test-suite spec
     Olifant.Language.Generic
     Olifant.Language.GenericSpec
     Olifant.Language.Ghc
+    Olifant.Language.Grammar
+    Olifant.Language.GrammarSpec
     Olifant.Language.Header
     Olifant.Language.Presets
     Olifant.Language.PresetsSpec
