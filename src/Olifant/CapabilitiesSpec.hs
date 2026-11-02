@@ -30,7 +30,7 @@ spec = do
       `shouldBe` [ Right "queries (tree-sitter-python 0.25.0): each function and class definition"
                  , Right "[check] format pyright-json"
                  , Right "[check] format pyright-json"
-                 , Right "[test] format pytest, tests_for {= dir =}/{= stem =}__test.py"
+                 , Right "[test] format junit-xml, tests_for {= dir =}/{= stem =}__test.py"
                  , Right "[test] unit, above"
                  , Right "[targets] 2 targets, generic phrases (queries)"
                  , Right "[holes] block, expr, ident, stmt, text"

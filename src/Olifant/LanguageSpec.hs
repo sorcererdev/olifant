@@ -16,6 +16,7 @@ import Olifant.Language.Elm (parseElmReport, qualifyPattern, visibleAt)
 import Olifant.Anchor (Miss (..), RenderedAnchor (..), Spacing (..), locIndent, locLine, locOpen, locSpacing, insertLines, presentAt, resolveLayers)
 import Olifant.Language
 import Olifant.Language.Presets (shippedPresets)
+import Olifant.Language.TestFormats (fromReported, parseJunit)
 import Olifant.Toml (mergeTables, parseToml)
 import Olifant.Language.AstGrep (astGrepSyntax)
 import Olifant.Server (Unit (..), unitAt)
@@ -67,10 +68,11 @@ spec = do
     it "(a) [test] preset = \"pytest\" fills command, context, format and root" $ do
       let Right lang = py ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[test]", "preset = \"pytest\"", "tests_for = \"{= dir =}/{= stem =}__test.py\""]
           Just t = langTest lang
-      testFormat t `shouldBe` "pytest"
+      testFormat t `shouldBe` "junit-xml"
+      testJunit t `shouldBe` Just (JunitFormat (Just ".") Nothing)
       testRoot t `shouldBe` ["pyproject.toml"]
       testsFor t `shouldBe` "{= dir =}/{= stem =}__test.py"
-      last (testCommand t) `shouldBe` "{= tests =}"
+      take 3 (dropWhile (/= "{= tests =}") (testCommand t)) `shouldBe` ["{= tests =}", "-o", "junit_family=xunit1"]
     it "(a2) the pytest preset picks the runner the project uses: uv, a venv's, or PATH's" $ do
       let Right lang = py ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[test]", "preset = \"pytest\""]
           Just t = langTest lang
@@ -84,7 +86,22 @@ spec = do
       (take 1 (testCommand venv), venvWhy, testContext venv) `shouldBe` (["{= root =}/.venv/bin/pytest"], Just ".venv/bin/pytest found", ["pyproject.toml"])
       take 1 (testCommand plain) `shouldBe` ["{= root =}/venv/bin/pytest"]
       (take 1 (testCommand path), pathWhy) `shouldBe` (["pytest"], Just "no uv.lock, .venv/bin/pytest or venv/bin/pytest")
-      map last [testCommand uv, testCommand venv, testCommand plain, testCommand path] `shouldBe` replicate 4 "{= tests =}"
+      map (dropWhile (/= "{= tests =}") . testCommand) [uv, venv, plain, path] `shouldBe` replicate 4 ["{= tests =}", "-o", "junit_family=xunit1", "--junitxml={= report =}"]
+      concatMap testCommand [uv, venv, plain, path] `shouldSatisfy` notElem "-rA"
+    it "pytest's JUnit failure reads as its text output did: got/expected, explain, line_after" $ do
+      out <- TIO.readFile "src/Olifant/Language/testdata/junit/pytest-xunit1.xml"
+      let py = shippedLanguageNow "python"
+          Just jf = langTest py >>= testJunit
+          Right rs = parseJunit jf out
+          run = fromReported [("tests/test_x.py", Nothing)] (ExitFailure 1) out rs
+          failure i = let Just f = lookup ("tests/test_x.py::" <> i) (trFailed run) in f
+          eq = failure "test_eq"
+          inst = failure "TestGroup::test_inst"
+      gotExpectedIn py eq `shouldBe` Just ("1", "2")
+      failureLineIn py eq `shouldBe` "assert 1 == 2"
+      assertionLineIn py "test_eq" eq `shouldBe` Just "assert f() == 2"
+      failureLineIn py inst `shouldBe` "False = isinstance('a', int)"
+      gotExpectedIn py inst `shouldBe` Just ("'a'", "int")
     it "(a3) a bare command is its own choice; candidates must each have a command; none fitting is an error" $ do
       let x = parseLanguage "x" "/x" . T.unlines . (["files = [\"**/*.x\"]", "comment = \"#\"", "grammar = \"x\"", "[test]", "format = \"tap\"", "tests_for = \"t\""] ++)
           Right bare = x ["command = [\"run\"]"]
@@ -205,7 +222,7 @@ spec = do
       out <- TIO.readFile "src/Olifant/Language/testdata/pytest/all-passed.txt"
       parsePytest ExitSuccess out `shouldSatisfy` \r -> null (trFailed r) && length (trPassed r) == 4 && trBroken r == Nothing
     it "(c) testsForFile: the module's test file" $
-      testsForFile (TestDef [] [] "pytest" [] "{= dir =}/{= stem =}__test.py" Nothing Nothing [] [] Nothing Nothing False Nothing [] Nothing Nothing Nothing Nothing [] Nothing Nothing Nothing [] Nothing) "src/bistro/booking/commands/close_table.py"
+      testsForFile (TestDef [] [] "pytest" [] "{= dir =}/{= stem =}__test.py" Nothing Nothing [] [] Nothing Nothing False Nothing [] Nothing Nothing Nothing Nothing [] Nothing Nothing Nothing [] Nothing False) "src/bistro/booking/commands/close_table.py"
         `shouldBe` "src/bistro/booking/commands/close_table__test.py"
     it "(d) a run that could not start is broken, not red" $ do
       out <- TIO.readFile "src/Olifant/Language/testdata/pytest/broken.txt"
@@ -1046,6 +1063,13 @@ spec = do
     let layer origin dir ls = either (error . T.unpack) (Layer origin dir) (parseToml (T.unlines ls))
         base = ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\""]
         Right two = languageFromLayers shippedPresets "python" [layer "shipped" Nothing (base ++ ["indent = \"  \"", "keywords = [\"a\", \"b\"]", "[unit]", "kinds = [\"a\"]"]), layer "pack p" (Just "/p") ["[unit]", "join = true"]]
+    it "a project command over the pytest preset that names no {= report =} keeps reading the console; naming it, or its own format, reads JUnit" $ do
+      let layers own = languageFromLayers shippedPresets "python" [layer "shipped" Nothing (base ++ ["[test]", "preset = \"pytest\""]), layer "project" (Just "/q/.olifant") ("[test]" : "preset = \"pytest\"" : own)]
+          viewOf own = either (error . T.unpack) (\l -> let Just t = langTest l in (testFormat t, testFellBack t)) (layers own)
+      viewOf ["command = [\"/v/pytest\", \"-q\", \"-rA\", \"{= tests =}\"]"] `shouldBe` ("pytest", True)
+      viewOf ["command = [\"/v/pytest\", \"-q\", \"{= tests =}\", \"--junitxml={= report =}\"]"] `shouldBe` ("junit-xml", False)
+      viewOf ["command = [\"/v/pytest\", \"{= tests =}\"]", "format = \"junit-xml\""] `shouldBe` ("junit-xml", False)
+      viewOf [] `shouldBe` ("junit-xml", False)
     it "mergeTables: the right wins; tables merge, lists and scalars are replaced" $ do
       let Right a = parseToml (T.unlines ["x = 1", "l = [1, 2]", "[t]", "a = 1", "b = 1"])
           Right b = parseToml (T.unlines ["l = [3]", "[t]", "b = 2"])
@@ -1072,7 +1096,7 @@ spec = do
       originOf l "test.preset" `shouldBe` Just "project"
     it "a layer inherits what it does not set (Review Focus 1)" $ do
       let Right l = languageFromLayers shippedPresets "python" [layer "shipped" Nothing (base ++ ["[test]", "preset = \"pytest\""]), layer "pack p" (Just "/p") ["indent = \"    \""]]
-      fmap testFormat (langTest l) `shouldBe` Just "pytest"
+      fmap testFormat (langTest l) `shouldBe` Just "junit-xml"
       fmap testsFor (langTest l) `shouldBe` Just "{= dir =}/test_{= stem =}.py"
       originOf l "test" `shouldBe` Just "shipped"
       originOf l "test.tests_for" `shouldBe` Just "toolchain pytest"

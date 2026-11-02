@@ -6,12 +6,17 @@
 # the language says otherwise.
 [test]
 command = [
-  { when = ["uv.lock"], context = ["pyproject.toml", "uv.lock"], command = ["env", "UV_PROJECT_ENVIRONMENT={= cache =}/venv-{= context =}", "uv", "run", "--quiet", "--frozen", "pytest", "-q", "-rA", "--tb=short", "-p", "no:cacheprovider", "{= tests =}"] },
-  { when = [".venv/bin/pytest"], command = ["{= root =}/.venv/bin/pytest", "-q", "-rA", "--tb=short", "-p", "no:cacheprovider", "{= tests =}"] },
-  { when = ["venv/bin/pytest"], command = ["{= root =}/venv/bin/pytest", "-q", "-rA", "--tb=short", "-p", "no:cacheprovider", "{= tests =}"] },
-  { command = ["pytest", "-q", "-rA", "--tb=short", "-p", "no:cacheprovider", "{= tests =}"] },
+  { when = ["uv.lock"], context = ["pyproject.toml", "uv.lock"], command = ["env", "UV_PROJECT_ENVIRONMENT={= cache =}/venv-{= context =}", "uv", "run", "--quiet", "--frozen", "pytest", "-q", "--tb=short", "-p", "no:cacheprovider", "{= tests =}", "-o", "junit_family=xunit1", "--junitxml={= report =}"] },
+  { when = [".venv/bin/pytest"], command = ["{= root =}/.venv/bin/pytest", "-q", "--tb=short", "-p", "no:cacheprovider", "{= tests =}", "-o", "junit_family=xunit1", "--junitxml={= report =}"] },
+  { when = ["venv/bin/pytest"], command = ["{= root =}/venv/bin/pytest", "-q", "--tb=short", "-p", "no:cacheprovider", "{= tests =}", "-o", "junit_family=xunit1", "--junitxml={= report =}"] },
+  { command = ["pytest", "-q", "--tb=short", "-p", "no:cacheprovider", "{= tests =}", "-o", "junit_family=xunit1", "--junitxml={= report =}"] },
 ]
-format = "pytest"
+# pytest's JUnit report (xunit1: its testcases carry `file` and `line`; the
+# default xunit2 has neither), written where {= report =} says. A project's own
+# `command` that names no {= report =} (an addopts recipe, `-rA` and all) keeps
+# reading the console as before: `console_format` stands in for `format`.
+format = "junit-xml"
+console_format = "pytest"
 context = ["pyproject.toml"]
 root = ["pyproject.toml"]
 tests_for = "{= dir =}/test_{= stem =}.py"
@@ -31,6 +36,9 @@ select = { test = "{= id =}", file = "{= id =}" }
 # `assert ...`, two blank lines before it; a new file starts with the unit's
 # import.
 name = "test_{= words|snake =}"
+
+[test.junit]
+join = "."
 
 [test.stub]
 test = "def {= name =}() -> None:\n{= note =}{= indent =}...\n{= indent =}assert ...\n"

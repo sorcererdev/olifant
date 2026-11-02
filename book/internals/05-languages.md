@@ -19,7 +19,7 @@ olifant doctor
 ✓ test runner uv (python) — /opt/homebrew/bin/uv; uv.lock found; tests_for = {= dir =}/{= stem =}__test.py
 ✓ python: units — [unit] kinds (ast-grep), named by [unit] name · from shipped
 ✓ python: diagnostics — [check] format pyright-json · from toolchain pyright
-✓ python: tests — [test] format pytest, tests_for {= dir =}/{= stem =}__test.py · from toolchain pytest
+✓ python: tests — [test] format junit-xml, tests_for {= dir =}/{= stem =}__test.py · from toolchain pytest
 ✓ python: test selection — [test] select · from toolchain pytest
 ✓ python: mutation — [[mutate]] (17 operators) · from shipped
 ✓ python: conjure shapes — [conjure] port, port.add, fake, constructor, advice · from pack python-htmx
@@ -199,6 +199,12 @@ whole-file test, the scripted runner, conjure through `testCaseAtIn`/`testSource
 so a provider runs through `Provider.providerPure`, memoised by request; that rests on a
 provider being pure by contract. `TestUnitsSpec` fails if `testUnitsIn` appears in any other
 non-spec module.
+
+Which shipped presets read which format: `pytest` reads JUnit (`junit-xml`, `[test.junit] join`),
+`hspec` and `cargo-test` read `lines`. A preset that moved to a report file keeps `console_format`
+(pytest: `pytest`): `Adapter.testFrom` uses it for `TestDef.testFellBack` when the project's own
+`command` names no `{= report =}` and sets no `format`, so such a project reads the console as
+before (doctor adds "reading console output: name {= report =} for JUnit").
 
 `format` is the one place a name is code: `knownTestFormats` (`Language/Support.hs`) lists
 `pytest, lines, tap, junit-xml, olifant-json`, and `readTestReport` dispatches on it. A format
@@ -577,7 +583,7 @@ the rows, so it changes too.
 - **holes:** each `[holes.KIND]` placeholder (`Holes.placeholderFor`) put in its `wrap`, then the
   Syntax port's `ERROR` query, as `FillPhase.parses` does.
 - **tests:** with `epRun`, the first test file runs: "ran uv on src/a__test.py, 3 results parsed
-  (pytest)", or the run's broken reason.
+  (junit-xml)", or the run's broken reason.
 
 ## The rule, and the specs that hold it
 

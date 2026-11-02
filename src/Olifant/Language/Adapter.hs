@@ -407,6 +407,9 @@ data TestDef = TestDef
   -- ^ the folder on disk a run's files are relative to, @{= root =}@: the
   -- project's (set at load, 'withProviderRoot'), narrowed to the package by
   -- 'Olifant.Language.Check.runTestsIn'; unknown for a language read alone
+  , testFellBack :: Bool
+  -- ^ the preset's `console_format` stands in for its `format`: the project's
+  -- own `command` names no @{= report =}@ and no `format` of its own
   }
   deriving stock (Eq, Show)
 
@@ -765,7 +768,16 @@ languageFrom presets name grammarDir top = do
         Just (Select a b _) | any ("{= group =}" `T.isInfixOf`) (a ++ b), Nothing <- fileGroup, not hasModuleOf -> Left "[test.select] uses {= group =}, which needs `file_group` (or [imports] module_of)"
         _ -> Right ()
       (command, candidates) <- required "command" (commandFrom "[test]") t
-      TestDef command <$> (fromMaybe [] <$> optional "context" (list text) t) <*> pure format
+      -- a project's own command over a preset that reads a report file: with
+      -- no @{= report =}@ in it (and no `format` of the project's own), the
+      -- preset's `console_format` reads the run as it did before
+      console <- optional "console_format" text t
+      let namesReport = any ("{= report =}" `T.isInfixOf`) (concat (command : convert : map ccCommand candidates))
+          fell = case console of
+            Just _ | M.notMember "format" t0, format == "junit-xml", not namesReport -> True
+            _ -> False
+          format' = if fell then fromMaybe format console else format
+      TestDef command <$> (fromMaybe [] <$> optional "context" (list text) t) <*> pure format'
         <*> (fromMaybe [] <$> optional "root" (list text) t) <*> required "tests_for" text t
         <*> pure linesFormat <*> pure junitFormat <*> pure convert
         <*> pure unitRules
@@ -783,6 +795,7 @@ languageFrom presets name grammarDir top = do
         <*> pure selectProvider
         <*> pure candidates
         <*> pure Nothing
+        <*> pure fell
     -- a bare command, or candidates: the unconditional one's command until
     -- one is chosen ('chooseTestCommand')
     commandFrom tbl v = case list text v of
