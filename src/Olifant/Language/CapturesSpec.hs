@@ -23,7 +23,7 @@ site :: Text -> Text -> Either [Text] (Int, Text)
 site file p = either (Left . map missReason) (\l -> Right (locLine l, locIndent l)) (runIdentity (resolveLayers syn (Just rust) Nothing [PhraseAnchor p] file))
 
 containers :: Text -> [Text] -> Maybe (Either Text [(Match, [Match])])
-containers file ws = either (error . T.unpack) (\(root, caps) -> anchorFromCaptures root caps ws) (capturesOf "rust" (queriesFor "rust") file)
+containers file ws = either (error . T.unpack) (\(root, caps) -> anchorFromCaptures False root caps ws) (capturesOf "rust" (queriesFor "rust") file)
 
 lineOf :: Text -> Text -> Int
 lineOf file needle = case [i | (i, l) <- zip [0 ..] (T.lines file), needle `T.isInfixOf` l] of

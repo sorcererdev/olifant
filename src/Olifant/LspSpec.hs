@@ -2090,11 +2090,17 @@ planReadingSpec = describe "how a plan reads" $ do
         request SMethod_TextDocumentFoldingRange (FoldingRangeParams Nothing Nothing p) <&> \(TResponseMessage _ _ r) -> r
       fmap (\case InL rs -> [(r ^. L.startLine, r ^. L.endLine, r ^. L.kind) | r <- rs]; InR _ -> []) ranges
         `shouldBe` Right [(0, 1, Just FoldingRangeKind_Region), (2, 3, Just FoldingRangeKind_Region)]
-  it "a changed unit sends semanticTokens/refresh and the next tokens carry stale" $
-    withPython [("plans/t.md", "- c @" <> T.pack table <> ":label \10003 0000000\n"), (table, tableText)] $ \ports dir -> do
+  it "an edit of the cited unit's file sends semanticTokens/refresh and the next tokens carry stale" $
+    withPython [("plans/t.md", "- c @" <> T.pack table <> ":label \10003 " <> Un.fingerprint tableText (1, 2) <> "\n"), (table, tableText)] $ \ports dir -> do
       ((before, after), _) <- inProcessWith ports dir $ do
         p <- openDoc "plans/t.md" "markdown"
+        -- the first pull stores the fingerprint the file has: it matches
+        _ <- pullDiagnostics p
+        _ <- message SMethod_WorkspaceSemanticTokensRefresh
         before <- tokensOf p
+        -- the unit's file changes on disk, as a save from another program would
+        liftIO (TIO.writeFile (dir </> table) (T.replace "return id" "return \"t-\" + id" tableText))
+        sendNotification SMethod_WorkspaceDidChangeWatchedFiles (DidChangeWatchedFilesParams [FileEvent (filePathToUri (dir </> table)) FileChangeType_Changed])
         _ <- pullDiagnostics p
         _ <- message SMethod_WorkspaceSemanticTokensRefresh
         after <- tokensOf p

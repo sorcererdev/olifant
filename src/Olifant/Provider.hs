@@ -25,7 +25,9 @@ module Olifant.Provider
   )
 where
 
-import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar, readMVar)
+import Control.Concurrent (forkIO)
+import Control.Concurrent.MVar (MVar, modifyMVar_, newEmptyMVar, newMVar, putMVar, readMVar, takeMVar)
+import Control.Exception (SomeException, displayException, try)
 import Data.Aeson (FromJSON (..), Key, Result (..), ToJSON (..), Value (..), eitherDecodeStrict, encode, fromJSON, object, withObject, (.:), (.:?), (.=))
 import Data.Aeson.KeyMap qualified as KM
 import Data.ByteString (ByteString)
@@ -156,8 +158,17 @@ runProviderMemo p request = do
 -- | 'runProviderMemo' from pure code (test units are read in pure code).
 -- Sound because a provider is pure by contract: the same request gives the
 -- same answer.
+--
+-- The run is on a thread of its own and this thread only waits. A cancel
+-- (an async exception) that lands on the waiter then finds no handler to
+-- run and rethrow it, so the thunk is frozen and resumes where it left off,
+-- rather than being updated to the cancel's exception for as long as
+-- something retains it. The worker is bounded by the provider's timeout.
 providerPure :: Provider -> Value -> Either Text Value
-providerPure p request = unsafePerformIO (runProviderMemo p request)
+providerPure p request = unsafePerformIO $ do
+  box <- newEmptyMVar
+  _ <- forkIO (try (runProviderMemo p request) >>= putMVar box)
+  takeMVar box <&> either (\e -> Left ("it failed: " <> T.pack (displayException (e :: SomeException)))) id
 {-# NOINLINE providerPure #-}
 
 -- | A units, test-units or anchor request: the text, and its path when the

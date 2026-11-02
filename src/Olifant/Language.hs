@@ -26,6 +26,7 @@ module Olifant.Language
   , grammarLinked
   , hasUnits
   , genericNames
+  , genericFor
   , linkedGrammarOf
   , treeSitterAnchors
   , shippedLanguage
@@ -47,8 +48,8 @@ import Olifant.Language.Support
 import Olifant.Language.Rule
 import Olifant.Language.Syntax
 import Olifant.Language.Test
-import Olifant.Language.Captures (definedNames, genericPhrase, genericPhrases, oneContainer, renamedPhrases)
-import Olifant.Language.TreeSitter (capturesOf, definedName, definedNamesIn, functionMatches, hasNoFunctionQueries, grammarLabel, linkedGrammars, queriesFor, queriesOf, querySet, signatureHead, treeSitterAnchors)
+import Olifant.Language.Captures (definedNames, genericPhrase, genericPhrases, oneContainer, phraseKind, renamedPhrases)
+import Olifant.Language.TreeSitter (capturesOf, definedName, definedNamesIn, functionMatches, hasNoFunctionQueries, grammarLabel, grammarNodeTypes, linkedGrammars, queriesFor, queriesOf, querySet, signatureHead, treeSitterAnchors)
 
 -- | Is the language's grammar linked in, so the generic anchor phrases
 -- work on it?
@@ -67,6 +68,14 @@ genericNames :: Language -> Text -> Text -> [Text]
 genericNames l kind txt = case linkedGrammarOf l of
   Just g -> either (const []) (definedNames kind . snd) (capturesOf g (querySet l) txt)
   Nothing -> []
+
+-- | Does a language answer a phrase by the generic rule: its grammar is
+-- linked, the phrase has a generic shape, and its kind word (`struct`) names
+-- a node type of the grammar?
+genericFor :: Language -> [Text] -> Bool
+genericFor l ws = case linkedGrammarOf l of
+  Just g -> genericPhrase ws && maybe True (\k -> any (\t -> t == k || (k <> "_") `T.isPrefixOf` t) (grammarNodeTypes g)) (phraseKind ws)
+  Nothing -> False
 
 -- | The language's grammar, when it is linked in.
 linkedGrammarOf :: Language -> Maybe Text

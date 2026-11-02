@@ -308,7 +308,9 @@ anchor phrases from community queries (design 4b §A).
   class bodies: `tags.scm` tags a `signature`, `function` and `bind` as `@definition.function`,
   `data_type` and `newtype` as `.type`, `class` as `.class`, and `instance` as
   `@definition.instance` (named by its class for a phrase, `@unit.name` adding its type for its
-  unit: `C Int`);
+  unit: `C Int`); an operator is tagged too: a signature or equation named by a `prefix_id`
+  (`(<+>) ::`), and an infix equation (`a <+> b = …`) named by its `operator` (the rule reads
+  `(<+>)` and `<+>` as one name, so they join);
   `textobjects.scm` makes a data type's constructors and a class's or instance's declarations
   `@class.inner`; `imports.scm` captures each `import` in the `imports` block (the block itself
   runs on to the next declaration under the grammar's layout). They carry no upstream
@@ -367,7 +369,11 @@ anchor phrases from community queries (design 4b §A).
   skips the parse and the marshalling. A changed text is another key, so a stale tree never
   answers; the oldest computed entry goes when a 17th text arrives (`cacheSize`, for the spec). Two
   threads that miss at once both compute the same pure answer; the list is updated with
-  `atomicModifyIORef'`, and no lock is held while parsing.
+  `atomicModifyIORef'`, and no lock is held while parsing. The compiled query sets are bounded the
+  same way (`compiled`, `compiledBound`, 16, least recently used out): every save of a project
+  `.scm` is a new set in the long-lived LSP. A query is a `ForeignPtr` with `ts_query_delete` as
+  its finalizer, so an evicted set is freed by the garbage collector once no run holds it
+  (`runQuery` runs under `withForeignPtr`).
 - **What it costs.** Measured with `OLIFANT_TS_BENCH=<dir>` (the opt-in example in
   `TreeSitterSpec`, `<dir>` holding lock_api's `rwlock.rs` as `big.rs` and main's
   `rust.toml` with its declared targets as `rust-main.toml`), medians of 20 in the test build:
@@ -393,7 +399,9 @@ anchor phrases from community queries (design 4b §A).
   body (a Python block), the body is the container and its named children are the items
   (`wholeBody`). Adjacent function definitions of one name with only white space between
   are one (`adjacent`: a Haskell signature and its equations, captured each on its own, are
-  one function from the signature to the last equation); class-like ones are not joined. A
+  one function from the signature to the last equation); class-like ones are not joined, and
+  nothing is joined unless the language says `[unit] join = true` (Python's `@overload` stubs and
+  their implementation stay separate). A
   definition with no inner range and no `body` field (that Haskell function) is its own
   container and its one item, so `end of` goes after it. With no inner
   capture (an empty body), the container is the definition's `body` field, empty, which
@@ -477,6 +485,10 @@ one type, so everything downstream is the same code.
   (`textRequest (Just path)`, when the caller knows it) and its text, so the long-lived server
   asks again after an edit, and the same text at two paths is asked twice. Only `Answered` runs
   are kept: a timeout, a missing program or a cancel is asked again once the breaker lets it.
+  The run is on a forked thread and the caller only waits on an `MVar`: a progress cancel that
+  lands on the waiter finds no `onException` to rethrow it inside the thunk, so the thunk is
+  frozen and resumes, instead of staying updated to the cancel's exception in any long-lived
+  state that holds it (pinned by ProviderSpec "a cancel landing inside providerPure").
   The memo starts over past 512 answers. It is sound because a
   provider is pure by contract (the same request gives the same answer), which chapter 9's
   protocol section states. It exists for test units, which are read in pure code at many call
