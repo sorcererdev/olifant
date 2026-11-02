@@ -9,6 +9,7 @@ module Olifant.Doctor
   , DoctorInput (..)
   , DoctorPorts (..)
   , doctor
+  , grammarRow
   ) where
 
 import Data.Maybe (fromMaybe)
@@ -17,8 +18,11 @@ import Data.Text qualified as T
 import Olifant.Capabilities (Capability (..), capabilities)
 import Olifant.Evidence (Evidence (..), Proof (..))
 import Olifant.Catalog (PlansConfig (..))
-import Olifant.Language (CheckDef (..), Language (..), TestDef (..), checkProgram, Probe (..), chooseCheckCommand, chooseTestCommand, grammarLabel, loadableGrammar, originOf, queriesOf)
+import Olifant.Language (CheckDef (..), Grammar (..), Language (..), TestDef (..), checkProgram, Probe (..), chooseCheckCommand, chooseTestCommand, grammarLabel, loadableGrammar, originOf, queriesOf)
 import System.FilePath (dropExtension, (</>))
+import Numeric (showFFloat)
+import Olifant.Language.Grammar (GrammarFailure (..), GrammarInfo (..), failureDetail)
+import System.Info (os)
 import Olifant.Model (Backend (..), ModelConfig (..))
 
 data Status = Ok | Warn | Bad
@@ -62,6 +66,9 @@ data DoctorPorts m = DoctorPorts
   -- candidate's `when` and `has`)
   , dpList :: FilePath -> m [FilePath]
   -- ^ the names of the files directly in this folder (a `when` entry with `*`)
+  , dpGrammar :: Grammar -> m (Either GrammarFailure GrammarInfo)
+  -- ^ the grammar loaded as a first use loads it (fetched, built, loaded):
+  -- doctor is the warm-up
   }
 
 doctor :: Monad m => DoctorPorts m -> DoctorInput -> m [Check]
@@ -70,10 +77,11 @@ doctor ports di = do
   tools <- traverse languageTools (diLanguages di)
   model <- modelCheck
   runner <- plansRunner
-  pure ([config] ++ packs ++ languages ++ broken ++ [astGrep] ++ concat tools ++ [model] ++ recognizeCheck ++ concatMap capabilityRows (diLanguages di) ++ [runner])
+  grammars <- traverse (\l -> (langName l,) <$> dpGrammar ports (langGrammar l)) (diLanguages di)
+  pure ([config] ++ packs ++ languages ++ broken ++ [astGrep] ++ concat tools ++ [model] ++ recognizeCheck ++ concatMap (capabilityRows grammars) (diLanguages di) ++ [runner])
   where
     -- what each language can do; an absent capability names its key
-    capabilityRows lang =
+    capabilityRows grammars lang =
       [ case capHow c of
           Right how ->
             let origin = maybe "" (" · from " <>) (originOf lang (capKey c))
@@ -90,6 +98,7 @@ doctor ports di = do
       | c <- capabilities lang
       , let name = langName lang <> ": " <> capName c
       ]
+        ++ [grammarRow lang r | Just r <- [lookup (langName lang) grammars]]
         ++ [queriesRow lang]
     -- the tree-sitter grammar and queries the generic anchor phrases read
     queriesRow lang = case loadableGrammar lang of
@@ -100,7 +109,9 @@ doctor ports di = do
             group o = T.intercalate ", " [T.pack (dropExtension f) | (f, _, o') <- qs, o' == o] <> " (" <> o <> ")"
             nubOrd' = foldr (\x acc -> x : filter (/= x) acc) []
          in Check (langName lang <> ": queries") Ok (grammarLabel g <> "; " <> T.intercalate ", " (map group origins)) Nothing
-      Nothing -> Check (langName lang <> ": queries") Warn "no grammar (anchors from [targets.*] only)" Nothing
+      Nothing
+        | Just _ <- grSource (langGrammar lang) -> Check (langName lang <> ": queries") Warn ("no queries for the " <> grName (langGrammar lang) <> " grammar (anchors from [targets.*] only)") Nothing
+        | otherwise -> Check (langName lang <> ": queries") Warn "no grammar (anchors from [targets.*] only)" Nothing
     -- the evidence row a capability takes
     proofOf cap ev = lookup cap [("units", evUnits ev), ("test units", evTestUnits ev), ("tests", evTests ev), ("anchors", evAnchors ev), ("holes", evHoles ev)]
     plansRunner = do
@@ -183,3 +194,22 @@ modelSnippet =
     , "url = \"http://localhost:11434/v1\""
     , "model = \"qwen3-coder:30b\""
     ]
+
+-- | `LANGUAGE: grammar`: the grammar loaded (its label, ABI and library;
+-- the build's seconds when this run built it), or why not and the fix.
+grammarRow :: Language -> Either GrammarFailure GrammarInfo -> Check
+grammarRow lang = \case
+  Right gi -> Check name Ok (giLabel gi <> ", ABI " <> tshow (giAbi gi) <> "; " <> T.pack (giLibrary gi) <> maybe "" (\t -> "; built now in " <> T.pack (showFFloat (Just 1) t "") <> " s") (giBuiltNow gi)) Nothing
+  Left f -> Check name (if f == NoSource then Warn else Bad) (failureDetail g f) (fixFor f)
+  where
+    name = langName lang <> ": grammar"
+    g = grName (langGrammar lang)
+    tshow :: Show a => a -> Text
+    tshow = T.pack . show
+    fixFor = \case
+      NoSource -> Just ("add grammar = { git = URL, rev = SHA } (or { source = \"dir\" }) to .olifant/languages/" <> langName lang <> ".toml")
+      NeedsCompiler _ -> Just (if os == "darwin" then "xcode-select --install" else "install a C compiler (cc)")
+      FetchFailed _ -> Just ("check the network, or put the sources under $OLIFANT_GRAMMAR_SOURCES/" <> g <> "/")
+      AbiMismatch _ _ -> Just "pin a rev generated with tree-sitter ≤ 0.27, or update olifant"
+      BuildFailed _ -> Nothing
+      LoadFailed _ -> Nothing

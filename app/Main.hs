@@ -15,7 +15,7 @@ import System.Environment (lookupEnv)
 import System.Process (readProcessWithExitCode)
 import Olifant.Language (Probe (..), diskProbe, processCheckerWith, processRunner, processVerifierCancellable)
 import Olifant.Language.AstGrep (astGrepSyntax)
-import Olifant.Language.Grammar (GrammarSettings (..), grammarSettings, setGrammarSettings)
+import Olifant.Language.Grammar (GrammarSettings (..), grammarSettings, probeGrammar, setGrammarSettings)
 import Olifant.Workspace (diskWorkspace)
 import System.Directory (XdgDirectory (XdgCache, XdgConfig), getCurrentDirectory, getHomeDirectory, getXdgDirectory)
 import System.Environment (getArgs)
@@ -71,6 +71,7 @@ main = do
               (fmap isJust . lookupEnv . T.unpack)
               (probeRead (diskProbe "/"))
               (probeList (diskProbe "/"))
+              probeGrammar
         }
       $ args
   case result of

@@ -1,29 +1,25 @@
 -- | The `Syntax` adapter: ast-grep's CLI (`scan --stdin --inline-rules --json`).
--- Custom grammars (pack sources) are compiled once with `cc` into the cache.
-module Olifant.Language.AstGrep (astGrepSyntax) where
+-- A grammar ast-grep lacks is registered from the loader's compiled library.
+module Olifant.Language.AstGrep (astGrepSyntax, astGrepBuiltIn) where
 
 import Data.Aeson (FromJSON (..), ToJSON, Value, eitherDecodeStrict, encode, withObject, (.:), (.:?))
-import Data.Bits (xor)
-import Data.ByteString qualified as BS
 import Data.ByteString.Lazy qualified as BL
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Text.Encoding.Error (lenientDecode)
-import Data.Word (Word64)
-import Numeric (showHex)
 import Olifant.Provider (runProvider)
 import Olifant.Language.Adapter
 import Olifant.Process (runBytes)
 import Olifant.Language.Syntax
 import Olifant.Language.TreeSitter (treeSitterAnchors)
+import Olifant.Language.Grammar (GrammarFailure (..), grammarFailureText, grammarLibrary)
 import Control.Concurrent (myThreadId)
-import System.Directory (createDirectoryIfMissing, doesFileExist, findExecutable, getFileSize, getModificationTime, makeAbsolute, renameFile)
+import System.Directory (createDirectoryIfMissing, doesFileExist, findExecutable, renameFile)
 import System.Posix.Process (getProcessID)
 import System.Exit (ExitCode (..))
-import System.FilePath ((</>))
-import System.Info (os)
+import System.FilePath (takeBaseName, (</>))
 
 -- | One ast-grep match: the node and, when the rule had a fix, its replacement.
 data Found = Found Match (Maybe Text)
@@ -60,7 +56,7 @@ scan cache lang rule fixed source =
       prepare cache lang >>= \case
         Left f -> pure (Left f)
         Right dir -> do
-          let yaml = "id: olifant\nlanguage: " <> langName lang <> "\nrule: " <> asJson rule <> "\n" <> maybe "" (\f -> "fix: " <> asJson f <> "\n") fixed
+          let yaml = "id: olifant\nlanguage: " <> grName (langGrammar lang) <> "\nrule: " <> asJson rule <> "\n" <> maybe "" (\f -> "fix: " <> asJson f <> "\n") fixed
               asJson :: ToJSON a => a -> Text
               asJson = TE.decodeUtf8 . BL.toStrict . encode
           ran <- runBytes sg ["scan", "--stdin", "--inline-rules", T.unpack yaml, "--json=compact"] (Just dir) (TE.encodeUtf8 source)
@@ -69,62 +65,41 @@ scan cache lang rule fixed source =
             Right (ExitSuccess, out, _) -> either (Left . SyntaxFailed . T.pack) Right (eitherDecodeStrict out)
             Right (ExitFailure _, _, err) -> Left (SyntaxFailed ("ast-grep failed: " <> T.strip (TE.decodeUtf8With lenientDecode err)))
 
--- | A directory whose sgconfig.yml registers the language (custom grammars only).
+-- | ast-grep 0.45.3's built-in languages: a grammar of one of these names
+-- is ast-grep's own; any other with a source is registered as a custom
+-- language from the loader's library. A fact about the tool, not a language.
+astGrepBuiltIn :: [Text]
+astGrepBuiltIn = ["bash", "c", "cpp", "csharp", "css", "elixir", "go", "haskell", "html", "java", "javascript", "json", "kotlin", "lua", "nix", "php", "python", "ruby", "rust", "scala", "solidity", "swift", "typescript", "tsx", "yaml"]
+
+-- | A directory whose sgconfig.yml registers the language (a grammar
+-- ast-grep lacks, with a source): the library is the loader's, built once
+-- for both ('grammarLibrary').
 prepare :: FilePath -> Language -> IO (Either SyntaxFailure FilePath)
 prepare cache lang = case langGrammar lang of
-  Grammar _ (Just (SourceDir src0)) -> do
-    src <- makeAbsolute src0
-    -- Keyed on parser.c's size and modification time: a stat per query
-    -- rather than hashing a grammar that can be megabytes (every AST query
-    -- runs this once or twice per file).
-    size <- getFileSize (src </> "parser.c")
-    stamp <- getModificationTime (src </> "parser.c")
-    let key = T.unpack (langName lang) <> "-" <> showHex (fnv (BS.pack (map (fromIntegral . fromEnum) (show (size, stamp) <> src)))) ""
-        lib = cache </> "grammars" </> key <> (if os == "darwin" then ".dylib" else ".so")
-        dir = cache </> "sg" </> key
-    built <- doesFileExist lib
-    compiled <- if built then pure (Right ()) else compile src lib
-    case compiled of
-      Left f -> pure (Left f)
-      Right () -> do
-        let config = dir </> "sgconfig.yml"
-        present <- doesFileExist config
-        if present
-          then pure ()
-          else do
-            createDirectoryIfMissing True dir
-            -- written aside, then renamed: a query at the same moment reads
-            -- the whole config or none
-            mine <- unique config
-            writeFile mine $
-              "ruleDirs: []\ncustomLanguages:\n  " <> T.unpack (langName lang) <> ":\n    libraryPath: " <> lib <> "\n    extensions: [" <> T.unpack (langName lang) <> "]\n"
-            renameFile mine config
-        pure (Right dir)
-  -- ast-grep's built-in language (a git source is loaded in process only, for now)
+  g@(Grammar name (Just _))
+    | name `notElem` astGrepBuiltIn ->
+        grammarLibrary g >>= \case
+          Left f@(NeedsCompiler _) -> pure (Left (SyntaxToolMissing (grammarFailureText name f)))
+          Left f -> pure (Left (SyntaxFailed (grammarFailureText name f)))
+          Right lib -> do
+            let dir = cache </> "sg" </> takeBaseName lib
+                config = dir </> "sgconfig.yml"
+            present <- doesFileExist config
+            if present
+              then pure ()
+              else do
+                createDirectoryIfMissing True dir
+                -- written aside, then renamed: a query at the same moment reads
+                -- the whole config or none
+                mine <- unique config
+                writeFile mine $
+                  "ruleDirs: []\ncustomLanguages:\n  " <> T.unpack name <> ":\n    libraryPath: " <> lib <> "\n    extensions: [" <> T.unpack name <> "]\n"
+                renameFile mine config
+            pure (Right dir)
   _ -> createDirectoryIfMissing True cache >> pure (Right cache)
   where
-    compile src lib =
-      findExecutable "cc" >>= \case
-        Nothing -> pure (Left (SyntaxToolMissing ("a C compiler (cc) is needed to build the " <> langName lang <> " grammar (xcode-select --install)")))
-        Just cc -> do
-          createDirectoryIfMissing True (cache </> "grammars")
-          hasScanner <- doesFileExist (src </> "scanner.c")
-          let sources = (src </> "parser.c") : [src </> "scanner.c" | hasScanner]
-          -- built aside, then renamed: queries (parallel tests, the server's
-          -- threads, other olifant processes) never load a half-written
-          -- library, and builds at the same moment do not collide
-          mine <- unique lib
-          ran <- runBytes cc (["-shared", "-fPIC", "-O2", "-I", src] ++ sources ++ ["-o", mine]) Nothing ""
-          case ran of
-            Right (ExitSuccess, _, _) -> renameFile mine lib
-            _ -> pure ()
-          pure $ case ran of
-            Right (ExitSuccess, _, _) -> Right ()
-            Right (ExitFailure _, _, err) -> Left (SyntaxFailed ("building the " <> langName lang <> " grammar failed: " <> T.strip (TE.decodeUtf8With lenientDecode err)))
-            Left why -> Left (SyntaxFailed ("building the " <> langName lang <> " grammar failed: " <> why))
     -- a name of this process and thread beside @path@
     unique path = do
       pid <- getProcessID
       thread <- myThreadId
       pure (path <> ".tmp-" <> show pid <> "-" <> filter (/= ' ') (show thread))
-    fnv = BS.foldl' (\h b -> (h `xor` fromIntegral b) * 1099511628211) (14695981039346656037 :: Word64)

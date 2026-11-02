@@ -2,6 +2,7 @@
 
 module Olifant.ServerSpec (spec) where
 
+import Olifant.Language.Grammar (GrammarFailure (NoSource))
 import Control.Concurrent (threadDelay)
 import Control.Monad (forM, void)
 import Data.Aeson (Value (..), (.:))
@@ -907,7 +908,7 @@ testsSpecs = describe "a file's tests (olifant/tests/run)" $ do
     (disk, _) <- memoryWorkspace ((root </> ".olifant/config.toml", "languages = [\"rust\"]\n") : [(root </> p, t) | (p, t) <- files])
     seen <- newIORef ([] :: [[Text]])
     let runner = Runner $ \_ ids _ -> modifyIORef' seen (++ [ids]) >> pure (Right (TestRun ids [] Nothing))
-        ports = Ports disk blockSyntax (const noChecker) (const noVerifier) (const runner) (\_ _ -> runner) (pure (UTCTime (fromGregorian 2026 10 12) 0)) Nothing Nothing (DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False) (\_ -> pure Nothing) (\_ -> pure [])) (\_ -> pure Nothing) (\_ _ _ -> pure (Left "no base in tests")) (\_ _ -> pure (Left "no base in tests")) gitStateStamp
+        ports = Ports disk blockSyntax (const noChecker) (const noVerifier) (const runner) (\_ _ -> runner) (pure (UTCTime (fromGregorian 2026 10 12) 0)) Nothing Nothing (DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False) (\_ -> pure Nothing) (\_ -> pure []) (\_ -> pure (Left NoSource))) (\_ -> pure Nothing) (\_ _ _ -> pure (Left "no base in tests")) (\_ _ -> pure (Left "no base in tests")) gitStateStamp
     s <- newServerState ports
     (_, r) <- testsRun ScopeAll (root </> "src/b.rs") s
     fmap (const ()) r `shouldBe` Right ()
@@ -1141,7 +1142,7 @@ blocksRun syntax hook verdict extra = do
         | not (null ids), all ("::" `T.isInfixOf`) ids = run {trPassed = filter named (trPassed run), trFailed = filter (named . fst) (trFailed run)}
         | otherwise = run
         where named t = any (\i -> t == i || (i <> "[") `T.isPrefixOf` t) ids
-      ports = Ports disk syntax (const noChecker) (const noVerifier) (const runner) (\_ _ -> runner) (pure (UTCTime (fromGregorian 2026 10 12) 0)) Nothing Nothing (DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False) (\_ -> pure Nothing) (\_ -> pure [])) (\_ -> pure Nothing) (\_ _ _ -> pure (Left "no base in tests")) (\_ _ -> pure (Left "no base in tests")) gitStateStamp
+      ports = Ports disk syntax (const noChecker) (const noVerifier) (const runner) (\_ _ -> runner) (pure (UTCTime (fromGregorian 2026 10 12) 0)) Nothing Nothing (DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False) (\_ -> pure Nothing) (\_ -> pure []) (\_ -> pure (Left NoSource))) (\_ -> pure Nothing) (\_ _ _ -> pure (Left "no base in tests")) (\_ _ -> pure (Left "no base in tests")) gitStateStamp
   s <- newServerState ports
   pure (s, readIORef runs)
 
@@ -1231,7 +1232,7 @@ serverWith wrap = do
       , ("/r2/a/src/y.py", "y = 1\n") ]
   reads <- newIORef (0 :: Int)
   counted <- wrap disk {readText = \p -> (if "/.olifant/config.toml" `isSuffixOf` p then modifyIORef' reads (+ 1) else pure ()) >> readText disk p}
-  let ports = Ports counted noSyntax (const noChecker) (const noVerifier) (const noRunner) (\_ _ -> noRunner) (pure (UTCTime (fromGregorian 2026 10 6) 0)) Nothing Nothing (DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False) (\_ -> pure Nothing) (\_ -> pure [])) (\_ -> pure Nothing) (\_ _ _ -> pure (Left "no base in tests")) (\_ _ -> pure (Left "no base in tests")) gitStateStamp
+  let ports = Ports counted noSyntax (const noChecker) (const noVerifier) (const noRunner) (\_ _ -> noRunner) (pure (UTCTime (fromGregorian 2026 10 6) 0)) Nothing Nothing (DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False) (\_ -> pure Nothing) (\_ -> pure []) (\_ -> pure (Left NoSource))) (\_ -> pure Nothing) (\_ _ _ -> pure (Left "no base in tests")) (\_ _ -> pure (Left "no base in tests")) gitStateStamp
   s <- newServerState ports
   pure (s, readIORef reads)
 

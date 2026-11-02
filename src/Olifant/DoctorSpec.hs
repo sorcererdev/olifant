@@ -7,7 +7,8 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Doctor
 import Olifant.Evidence (Evidence (..), Proof (..))
-import Olifant.Language (Language (..), parseLanguage, shippedLanguage)
+import Olifant.Language (Grammar (..), Language (..), parseLanguage, shippedLanguage)
+import Olifant.Language.Grammar (GrammarFailure (..), GrammarInfo (..))
 import Olifant.Catalog (PlansConfig (..), defaultPlans)
 import Olifant.Model (Backend (..), ModelConfig (..), defaultModelConfig)
 import Test.Hspec
@@ -37,6 +38,7 @@ ports exes probe envs =
     , dpEnvSet = \v -> Identity (v `elem` envs)
     , dpRead = \f -> Identity (if f `elem` ["/proj/uv.lock"] then Just "" else Nothing)
     , dpList = \_ -> Identity []
+    , dpGrammar = \_ -> Identity (Left NoSource)
     }
 
 statusOf :: Text -> [Check] -> Maybe Status
@@ -173,7 +175,28 @@ spec = describe "olifant doctor (spec §4.7)" $ do
     let cs = runIdentity (doctor (ports ["ast-grep", "cargo"] (Right ()) []) ((input local) {diLanguages = [rust, elm]}))
         row n = head [(checkStatus c, checkDetail c, checkFix c) | c <- cs, checkName c == n]
     row "rust: queries" `shouldBe` (Ok, "tree-sitter-rust @e2bee85; impls, imports, tags, textobjects (shipped)", Nothing)
-    row "elm: queries" `shouldBe` (Warn, "no grammar (anchors from [targets.*] only)", Nothing)
+    row "elm: queries" `shouldBe` (Warn, "no queries for the elm grammar (anchors from [targets.*] only)", Nothing)
+  it "the grammar row: loaded, no source, no compiler, fetch failed, build failed, ABI, load failed" $ do
+    rust <- shippedLanguage "rust" []
+    let go = rust {langName = "go", langGrammar = Grammar "go" Nothing}
+        answer g
+          | grName g == "rust" = Right (GrammarInfo "tree-sitter-rust @e2bee85" 15 "/c/grammars/rust-0123abcd.dylib" (Just 0.31))
+          | otherwise = Left NoSource
+        cs = runIdentity (doctor (ports ["ast-grep", "cargo"] (Right ()) []) {dpGrammar = Identity . answer} ((input local) {diLanguages = [rust, go]}))
+        row n = head [(checkStatus c, checkDetail c, checkFix c) | c <- cs, checkName c == n]
+        names = map checkName cs
+    row "rust: grammar" `shouldBe` (Ok, "tree-sitter-rust @e2bee85, ABI 15; /c/grammars/rust-0123abcd.dylib; built now in 0.3 s", Nothing)
+    -- before the queries row
+    length (takeWhile (/= "rust: grammar") names) + 1 `shouldBe` length (takeWhile (/= "rust: queries") names)
+    row "go: grammar" `shouldBe` (Warn, "no source (grammar = \"go\" names it only): units, generic anchors and counts need one", Just "add grammar = { git = URL, rev = SHA } (or { source = \"dir\" }) to .olifant/languages/go.toml")
+    let one f = let c = grammarRow rust (Left f) in (checkStatus c, checkDetail c, checkFix c)
+    fst3 (one (NeedsCompiler "cc is not on PATH")) `shouldBe` Bad
+    snd3 (one (NeedsCompiler "cc is not on PATH")) `shouldBe` "needs a C compiler to build: cc is not on PATH"
+    one (FetchFailed "fetching https://github.com/tree-sitter/tree-sitter-rust @e2bee85 failed: Could not resolve host: github.com")
+      `shouldBe` (Bad, "fetching https://github.com/tree-sitter/tree-sitter-rust @e2bee85 failed: Could not resolve host: github.com", Just "check the network, or put the sources under $OLIFANT_GRAMMAR_SOURCES/rust/")
+    one (BuildFailed "parser.c:1:1: error: x") `shouldBe` (Bad, "building failed: parser.c:1:1: error: x", Nothing)
+    one (AbiMismatch 16 (13, 15)) `shouldBe` (Bad, "ABI 16; this olifant reads 13–15", Just "pin a rev generated with tree-sitter ≤ 0.27, or update olifant")
+    one (LoadFailed "dlopen: no such file") `shouldBe` (Bad, "loading failed: dlopen: no such file", Nothing)
   it "a queries row names a project's query file and its origin" $ do
     rust <- shippedLanguage "rust" []
     let own = rust {langQueries = [("imports.scm", "(extern_crate_declaration) @import\n", "project")]}
@@ -199,3 +222,9 @@ spec = describe "olifant doctor (spec §4.7)" $ do
     row "rust: tests" `shouldBe` (Ok, "ran cargo on src/a.rs, 1 results parsed (lines) · from toolchain cargo-test", Nothing)
     -- an evidence warning is never an error: doctor's exit stays 0
     [c | c <- cs, checkStatus c == Bad, "rust: " `T.isPrefixOf` checkName c] `shouldBe` []
+
+fst3 :: (a, b, c) -> a
+fst3 (a, _, _) = a
+
+snd3 :: (a, b, c) -> b
+snd3 (_, b, _) = b

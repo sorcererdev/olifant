@@ -1,5 +1,6 @@
 module Olifant.Server.PlansSpec (spec) where
 
+import Olifant.Language.Grammar (GrammarFailure (NoSource))
 import Control.Lens ((^.))
 import Control.Monad (forM)
 import Data.Map.Strict qualified as M
@@ -191,7 +192,7 @@ planServer = do
              ("/a.py", "class Foo:\n    def bar(self):\n        return 1\n")
            , ("/r1/plans/t.md", "# T\n") ]
   let syntax = querying (\_ _ _ -> pure (Right [Match (a, 0) (z, 0) "" (0, 0) | (a, z) <- [(0, 2), (1, 2)]]))
-      ports = Ports disk syntax (const noChecker) (const noVerifier) (const noRunner) (\_ _ -> noRunner) (pure (UTCTime (fromGregorian 2026 10 25) 0)) Nothing Nothing (DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False) (\_ -> pure Nothing) (\_ -> pure [])) (\_ -> pure Nothing) (\_ _ _ -> pure (Left "no base in tests")) (\_ _ -> pure (Left "no base in tests")) gitStateStamp
+      ports = Ports disk syntax (const noChecker) (const noVerifier) (const noRunner) (\_ _ -> noRunner) (pure (UTCTime (fromGregorian 2026 10 25) 0)) Nothing Nothing (DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False) (\_ -> pure Nothing) (\_ -> pure []) (\_ -> pure (Left NoSource))) (\_ -> pure Nothing) (\_ _ _ -> pure (Left "no base in tests")) (\_ _ -> pure (Left "no base in tests")) gitStateStamp
   s0 <- newServerState ports
   projectFor "/r1/plans/t.md" s0 >>= \case
     (s, Just (_, proj)) -> pure (s, proj)

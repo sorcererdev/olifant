@@ -7,10 +7,14 @@ import Data.List (isInfixOf, isPrefixOf)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Time (UTCTime, addUTCTime)
-import Olifant.Language.Adapter (Grammar (..), GrammarSource (..))
+import Data.Aeson (object, (.=))
+import Data.Text.IO qualified as TIO
+import Olifant.Language.Adapter (Grammar (..), GrammarSource (..), Language (..), parseOverShipped)
+import Olifant.Language.AstGrep (astGrepSyntax)
+import Olifant.Language.Syntax (Syntax (..))
 import Olifant.Language.Grammar
-import System.Directory (copyFile, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getModificationTime, getTemporaryDirectory, listDirectory, removePathForcibly, setModificationTime)
-import System.FilePath ((</>))
+import System.Directory (findExecutable, copyFile, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getModificationTime, getTemporaryDirectory, listDirectory, removePathForcibly, setModificationTime)
+import System.FilePath (takeBaseName, (</>))
 import System.Process (readProcess)
 import GHC.Clock (getMonotonicTime)
 import Test.Hspec
@@ -73,6 +77,20 @@ fixtureRepo repo sub = do
 
 spec :: Spec
 spec = do
+ describe "ast-grep and the loader" $
+  it "ast-grep's sgconfig names the loader's library" $ do
+    elmSrc <- TIO.readFile "packs/elm/languages/elm.toml"
+    let Right elm = parseOverShipped "elm" "packs/elm" elmSrc
+    tmp <- getTemporaryDirectory
+    let cache = tmp </> "olifant-test-cache"
+    findExecutable "ast-grep" >>= \case
+      Nothing -> pendingWith "ast-grep is not installed"
+      Just _ -> do
+        r <- querySyntax (astGrepSyntax cache) elm (object ["kind" .= ("value_declaration" :: Text)]) "main = 1\n"
+        fmap length r `shouldBe` Right 1
+        Right l <- loadGrammar (langGrammar elm)
+        config <- TIO.readFile (cache </> "sg" </> takeBaseName (ldLibrary l) </> "sgconfig.yml")
+        config `shouldSatisfy` T.isInfixOf ("libraryPath: " <> T.pack (ldLibrary l) <> "\n")
  describe "git sources" $ do
   it "fetches a pinned revision by file:// and builds it" $ do
     s <- fresh "git"
