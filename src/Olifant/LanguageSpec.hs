@@ -603,6 +603,11 @@ spec = do
       either (T.isInfixOf "errorformat") (const False) (parseLanguage "x" "/x" (base <> "format = \"errorformat\"\n")) `shouldBe` True
       fmap (fmap checkErrorFormat . langCheck) (parseLanguage "x" "/x" (base <> "format = \"errorformat\"\n[check.errorformat]\npattern = '^(.*):([0-9]+): (.*)$'\nfile = 1\nline = 2\nmessage = 3\n"))
         `shouldBe` Right (Just (Just (ErrorFormat "^(.*):([0-9]+): (.*)$" 1 2 3 Nothing Nothing)))
+    it "`ignore` takes folder names: a value with a slash or empty is an error naming the key (m2b M6)" $ do
+      let with v = "files = [\"**/*.x\"]\ncomment = \"#\"\ngrammar = \"x\"\nignore = " <> v <> "\n"
+      fmap langIgnore (parseLanguage "x" "/x" (with "[\"deps\", \".venv\"]")) `shouldBe` Right ["deps", ".venv"]
+      either (\e -> "`ignore`" `T.isInfixOf` e && "build/out" `T.isInfixOf` e) (const False) (parseLanguage "x" "/x" (with "[\"build/out\"]")) `shouldBe` True
+      either (T.isInfixOf "`ignore`") (const False) (parseLanguage "x" "/x" (with "[\"\"]")) `shouldBe` True
     it "[unit] name is a list of valid expressions and join a bool" $ do
       let base = "files = [\"**/*.x\"]\ncomment = \"#\"\ngrammar = \"x\"\n[unit]\nkinds = [\"f\"]\n"
       fmap (\l -> (langUnitNames l, langUnitJoin l)) (parseLanguage "x" "/x" (base <> "name = ['^(a)']\njoin = true\n")) `shouldBe` Right (["^(a)"], True)

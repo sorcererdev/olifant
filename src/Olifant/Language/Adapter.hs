@@ -613,7 +613,7 @@ languageFrom presets name grammarDir top = do
   unitJoin <- fromMaybe False <$> optional "join" bool unit
   mutate <- fromMaybe [] <$> optional "mutate" (list (table >=> mutateFrom)) top
   unitWords <- fromMaybe defaultUnitWords <$> optional "unit_words" text top
-  ignore <- fromMaybe [] <$> optional "ignore" (list text) top
+  ignore <- fromMaybe [] <$> optional "ignore" (list (text >=> folderName)) top
   armSeparator <- fromMaybe "" <$> optional "arm_separator" text top
   loneArmSpaced <- fromMaybe False <$> optional "lone_arm_spaced" bool top
   pure (Language name files comment grammar targets placeholder branch check indent holes imports importsDef separator lineLength importMerge keywords test unitKinds unitNames unitJoin unitWords armSeparator loneArmSpaced opensBlock emptyStatement assertion stubLines conjure types unitProvider anchorProvider mutate [] M.empty ignore [])
@@ -631,6 +631,10 @@ languageFrom presets name grammarDir top = do
         argv <- inKey key (required "provider" (list text) t)
         if null argv then Left ("`" <> key <> "`: `provider` names no program") else Right (Provider argv Nothing)
       other -> Left ("`" <> key <> "`: expected { provider = [...] }, got " <> describeTree other)
+    -- a folder name is compared with each component of a path: no slash
+    folderName n
+      | T.null n || T.any (`elem` ['/', '\\']) n = Left ("`ignore` takes folder names (`target`, `node_modules`), not paths: `" <> n <> "`")
+      | otherwise = Right n
     validRegex key re = maybe (Left ("`" <> key <> "` is not a valid expression: " <> re)) (\(_ :: Regex) -> Right re) (makeRegexM (T.unpack re))
     grammarFrom = \case
       TText builtIn -> Right (BuiltInGrammar builtIn)

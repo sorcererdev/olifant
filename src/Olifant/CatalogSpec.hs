@@ -4,7 +4,7 @@ module Olifant.CatalogSpec (spec) where
 
 import Control.Monad (forM_)
 import Data.ByteString qualified as BS
-import System.Directory (createDirectoryIfMissing)
+import System.Directory (createDirectoryIfMissing, emptyPermissions, setOwnerExecutable, setOwnerReadable, setOwnerWritable, setPermissions)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
 import Data.Map.Strict qualified as M
@@ -198,6 +198,20 @@ spec = describe "catalog" $ do
             listFiles (ignoring (catalogIgnores cat) (within "/proj" root)) "."
       listed "\"rust\"" >>= (`shouldSatisfy` (\ps -> "src/a.rs" `elem` ps && all (not . ("target/" `isPrefixOf`)) ps))
       listed "\"python\"" >>= (`shouldSatisfy` ("target/x.rs" `elem`))
+    it "`ignore` reaches the disk walk: a non-git Rust project's target/ is never entered, even unreadable (m2b M7)" $
+      withSystemTempDirectory "olifant-walk" $ \dir -> do
+        createDirectoryIfMissing True (dir </> "target/deep")
+        createDirectoryIfMissing True (dir </> "src")
+        createDirectoryIfMissing True (dir </> ".olifant")
+        BS.writeFile (dir </> ".olifant/config.toml") "languages = [\"rust\"]\n"
+        BS.writeFile (dir </> "src/a.rs") "fn a() {}\n"
+        BS.writeFile (dir </> "target/deep/x.rs") "fn x() {}\n"
+        setPermissions (dir </> "target/deep") emptyPermissions
+        Right cat <- openProjectCatalog (diskWorkspace dir) projectOnly {catalogProjectDir = dir}
+        files <- listFiles (ignoring (catalogIgnores cat) (diskWorkspace dir)) "."
+        setPermissions (dir </> "target/deep") (setOwnerReadable True (setOwnerWritable True (setOwnerExecutable True emptyPermissions)))
+        files `shouldSatisfy` ("src/a.rs" `elem`)
+        files `shouldSatisfy` all (not . ("target" `isPrefixOf`))
     it "a project's selection provider replaces the shipped [test.select] whole" $ do
       Right cat <- openWith [cfg, ("/packs/p/generators/g/generator.toml", gen "python"), ("/proj/.olifant/languages/python.toml", "[test]\nselect = { provider = [\"sh\", \"tools/select.sh\"] }\n")]
       let [l] = catalogLanguages cat
