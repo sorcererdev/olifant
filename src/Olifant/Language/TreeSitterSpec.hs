@@ -8,7 +8,7 @@ import Data.List (sort)
 import Data.Maybe (listToMaybe)
 import Data.Time (diffUTCTime, getCurrentTime)
 import GHC.Conc (getNumCapabilities)
-import Olifant.Anchor (RenderedAnchor (..), locLine, resolveLayers)
+import Olifant.Anchor (Miss (..), RenderedAnchor (..), locLine, resolveLayers)
 import Olifant.Language (Language (..), parseLanguage)
 import Olifant.Language.Adapter (parseOverShipped)
 import Olifant.Language.AstGrep (astGrepSyntax)
@@ -177,6 +177,13 @@ captureSpec = describe "tree-sitter captures" $ do
           , ("update", "definition.function", (17, 21), (17, 21))
           , ("helper", "definition.function", (19, 19), (19, 19))
           ]
+    it "elm's type, record and imports phrases answer from the queries where its targets did" $ do
+      tmp <- getTemporaryDirectory
+      let syn = astGrepSyntax (tmp </> "olifant-test-cache")
+          at f phrase = TIO.readFile ("packs/elm/fixtures/app/src" </> f) >>= fmap (fmap locLine) . resolveLayers syn (Just elm) Nothing [PhraseAnchor phrase]
+      got <- mapM (uncurry at) [("Main.elm", "end of type Msg"), ("Main.elm", "start of type Msg"), ("Main.elm", "end of type Page"), ("Main.elm", "end of record Model"), ("Main.elm", "start of record Model"), ("Main.elm", "end of imports"), ("Route.elm", "end of type Route"), ("Route.elm", "end of imports")]
+      let sharesLine = "the first item shares its line with other code; Olifant inserts whole lines (use a multi-line layout, or another anchor)"
+      map (either (Left . map missReason) Right) got `shouldBe` [Right 41, Left [sharesLine], Right 25, Right 18, Left [sharesLine], Right 9, Right 9, Right 4]
   it "every shipped query compiles and uses only known predicates" $
     forM_ ["haskell", "python", "rust"] $ \g ->
       either (Just . ((g <> ": ") <>)) (const Nothing) (capturesOf (shipped g) (queriesFor g) "") `shouldBe` Nothing
