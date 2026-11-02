@@ -58,8 +58,8 @@ built in (any file):
   before|after last line matching REGEX
 ```
 
-For a language whose grammar olifant links in (Rust, Python, Haskell), the listing has a second section,
-`from queries (tree-sitter-rust 0.24.2):`, with the generic phrases below, and
+For a language with a `grammar` source and its queries (the shipped Python, Rust and Haskell), the listing has a second section,
+`from queries (tree-sitter-rust @77a3747):`, with the generic phrases below, and
 `olifant anchors rust --json` gives each target an `origin`: `targets` for a declared one,
 `queries` for a generic phrase.
 
@@ -80,8 +80,8 @@ error: `end of cases in update`: unknown target `cases in update` for elm; did y
 
 ### The generic phrases
 
-A language whose grammar olifant links in (today Rust, Python and Haskell; `olifant doctor`'s `queries`
-row says which) knows these phrases with no `[targets.*]` table. They are read from tree-sitter's
+A language with a `grammar` source (the shipped Python, Rust and Haskell; Elm from its pack, once it has queries; `olifant doctor`'s `grammar` and `queries`
+rows say which) knows these phrases with no `[targets.*]` table. They are read from tree-sitter's
 community queries for the grammar, shipped inside olifant:
 
 | phrase | the container | its items |
@@ -149,8 +149,10 @@ Use this when a structural target needs a tool (below) that might not be install
   lines (using the adapter's `comment`) are left out on both sides, so a template's hint
   such as `// pub worksite_repository: Arc<dyn WorksiteRepository>,` does not count as the
   field being there.
-- **Tools.** Declared language targets need `ast-grep` (and a C compiler, the first time, to build
-  the Elm grammar); the generic phrases need nothing, the parser is inside olifant. Without them the edit misses with "ast-grep is not installed (brew
+- **Tools.** Declared language targets need `ast-grep`. Every grammar needs a C compiler once
+  per machine and revision, the first time it is used, to build it (and the network, or
+  `OLIFANT_GRAMMAR_SOURCES`, to fetch its source; [chapter 9](09-packs-and-language-adapters.md#grammars-built-once-loaded-at-run-time));
+  after that the generic phrases need nothing more, the parser runs inside olifant. Without them the edit misses with "ast-grep is not installed (brew
   install ast-grep)" and the next fallback is tried. Line and marker targets need nothing.
 
 ## Opening an empty container

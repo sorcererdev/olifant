@@ -44,7 +44,7 @@ It adds the target pack, the strangler pack (`python-strangler`), and
 legacy = ["legacy/**"]   # the legacy folders, as globs
 # base = "main"          # what "new" is measured from: the merge-base of HEAD and this
 # switches = "src/bistro/switches.py"   # the registry; when not set, the strangler pack's [switches] registry glob finds it
-# count = ["function_definition"]       # what a legacy function is, as node kinds; when not set, the language's top-level functions
+# count = ["function_definition"]       # what a legacy function is, as node kinds; when not set, the language's top-level functions (not one nested in another: a Haskell `where`)
 ```
 
 and records a baseline, so today's code passes ([chapter 2](02-running-generators.md#an-existing-repo-olifant-init---migrate)).
@@ -259,9 +259,10 @@ An answer outside the options, or none, changes nothing. A `jev` backend ([chapt
   branch has another name.
 - **`rule-failed: … names {legacy}, but the project has no [migrate] legacy`.** A pack's rule
   uses `{legacy}` in a project that isn't migrating: `olifant init --migrate PATH`.
-- **The report counts 0 legacy functions, with `(counted 0: … has no linked grammar, so set \`count\`…)`.**
-  A language whose grammar olifant does not link has no queries to count by, so without
-  `[migrate] count` it counts nothing: list the node kinds of its functions in `count`.
+- **The report counts 0 legacy functions, with `(counted 0: …'s grammar is not loaded (see \`olifant doctor\`'s grammar row), so set \`count\`…)`.**
+  A language whose grammar does not load (a bare `grammar` name, or a build or fetch that
+  failed: doctor's `grammar` row says which) has no queries to count by, so without
+  `[migrate] count` it counts nothing: fix the grammar, or list the node kinds of its functions in `count`.
 - **The report counts 0 switches.** The registry is not where it is looked for: set
   `[migrate] switches`. Or no configured pack has a `migrate.toml` with `[switches]`, so no
   registry line reads as a switch.
