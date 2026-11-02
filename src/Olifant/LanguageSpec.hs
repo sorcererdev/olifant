@@ -127,6 +127,16 @@ spec = do
         `shouldSatisfy` either ("`format` in a [check] candidate is not supported" `T.isInfixOf`) (const False)
       parseLanguage "x" "/x" (T.unlines ["files = [\"**/*.x\"]", "comment = \"#\"", "grammar = \"x\"", "[test]", "format = \"tap\"", "tests_for = \"t\"", "command = [{ command = [\"r\"], format = \"nope\" }]"])
         `shouldSatisfy` either ("unknown test format `nope`" `T.isInfixOf`) (const False)
+    it "the hspec preset runs JUnit when *.cabal names hspec-junit-formatter" $ do
+      let hs = shippedLanguageNow "haskell"
+          Just t = langTest hs
+          pick files = runIdentity (chooseTestCommand (probeOf files) t)
+          Right (with, _) = pick [("p.cabal", "test-suite s\n  build-depends: hspec, hspec-junit-formatter\n")]
+          Right (without, _) = pick [("p.cabal", "build-depends: hspec")]
+      testFormat with `shouldBe` "junit-xml"
+      take 3 (testCommand with) `shouldBe` ["env", "JUNIT_ENABLED=1", "JUNIT_OUTPUT_FILE={= report =}"]
+      testFormat without `shouldBe` "lines"
+      testJunit t `shouldBe` Just (JunitFormat (Just "/") Nothing)
     it "(b) the table's own keys win over the preset's" $ do
       let Right lang = py ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[test]", "preset = \"pytest\"", "tests_for = \"tests/test_{= stem =}.py\"", "root = [\"setup.cfg\"]"]
       fmap testRoot (langTest lang) `shouldBe` Just ["setup.cfg"]

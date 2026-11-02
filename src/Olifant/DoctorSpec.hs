@@ -104,6 +104,12 @@ spec = describe "olifant doctor (spec §4.7)" $ do
         (name, st) `shouldBe` ("test runner pytest (python)", Ok)
         detail `shouldSatisfy` T.isInfixOf "no uv.lock, .venv/bin/pytest or venv/bin/pytest"
       other -> expectationFailure (show other)
+  it "the hspec runner row says which it found" $ do
+    hs <- shippedLanguage "haskell" []
+    let withCabal t = (ports ["ast-grep", "cabal", "env"] (Right ()) []) {dpRead = \f -> Identity (if f == "/proj/p.cabal" then Just t else Nothing), dpList = \_ -> Identity ["p.cabal"]}
+        row t = [checkDetail c | c <- runIdentity (doctor (withCabal t) (DoctorInput (Just "/proj") [] [hs] [] [] local Nothing defaultPlans [] False)), "test runner" `T.isPrefixOf` checkName c]
+    row "build-depends: hspec-junit-formatter" `shouldSatisfy` any (T.isInfixOf "hspec-junit-formatter found in p.cabal; format junit-xml")
+    row "build-depends: hspec" `shouldSatisfy` any (T.isInfixOf "no hspec-junit-formatter in *.cabal or package.yaml")
   it "(f3) the check tool row names the [check] command candidate chosen, {= root =}/ dropped" $ do
     let Right python = parseLanguage "python" "/p" (T.unlines ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[check]", "format = \"sarif\"", "command = [{ when = [\".venv/bin/ruff\"], command = [\"{= root =}/.venv/bin/ruff\", \"check\"] }, { command = [\"ruff\", \"check\"] }]"])
         withFiles fs = (ports ["ast-grep", "ruff", "/proj/.venv/bin/ruff"] (Right ()) []) {dpRead = \f -> Identity (if f `elem` fs then Just "" else Nothing)}

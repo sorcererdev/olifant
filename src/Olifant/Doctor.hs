@@ -141,7 +141,7 @@ doctor ports di = do
     checkTool lang c0 =
       chooseCheckCommand atProject c0 >>= commandRow "check tool" "[check]" lang (\c -> (checkCommand c, checkInstall c, ""))
     testRunner lang td0 =
-      chooseTestCommand atProject td0 >>= commandRow "test runner" "[test]" lang (\td -> (testCommand td, testInstall td, "; tests_for = " <> testsFor td <> (if testFellBack td then "; reading console output: name {= report =} for JUnit" else "")))
+      chooseTestCommand atProject td0 >>= commandRow "test runner" "[test]" lang (\td -> (testCommand td, testInstall td, (if testFormat td /= testFormat td0 then "; format " <> testFormat td else "") <> "; tests_for = " <> testsFor td <> (if testFellBack td then "; reading console output: name {= report =} for JUnit" else "")))
     -- one line for the command candidate the project's files choose, named
     -- by what it is for and as written (`{= root =}/` dropped), found at the
     -- project root, and why
