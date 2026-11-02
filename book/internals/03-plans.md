@@ -32,17 +32,17 @@ a new-step ghost worded from the unit's header.
 
 | module | what it holds |
 |---|---|
-| `src/Olifant/Plans.hs` | the **pure parser**: `parsePlan :: Text -> [Line]` (`Plans.hs:51`), `Kind`, `Anchor`, `Verdict`, sections, test marks, excerpt fences |
-| `Server/Plans.hs` | the plan as the server sees it: `resolveAnchor` (`:80`), `planDiagnostics`, `anchorItems` (completion after `@`), `planFiles`, and `runErrand` (`:272`), the ask/validate/do runner; also the small git helpers the loop shares (`currentBranch`, `gitOut`, `gitText`) |
-| `Server/Errand.hs` | the **runner**: one `claude -p` call (`runClaude`, `:74`), its JSON read into `RunResult`; the prompts (`errandPrompt`, `:205`) and the answer reader (`parseAnswer`, `:261`) |
-| `Server/Loop.hs` | the **reconcile** (`reconcile`, `:340`), the work set (`workSet`, `:234`; `baseline`, `:99`; `changedUnits`, `:135`; `accounted`, `:202`) and the facts that need no model |
+| `src/Olifant/Plans.hs` | the **pure parser**: `parsePlan :: Text -> [Line]` (`Plans.hs`), `Kind`, `Anchor`, `Verdict`, sections, test marks, excerpt fences |
+| `Server/Plans.hs` | the plan as the server sees it: `resolveAnchor`, `planDiagnostics`, `anchorItems` (completion after `@`), `planFiles`, and `runErrand`, the ask/validate/do runner; also the small git helpers the loop shares (`currentBranch`, `gitOut`, `gitText`) |
+| `Server/Errand.hs` | the **runner**: one `claude -p` call (`runClaude`), its JSON read into `RunResult`; the prompts (`errandPrompt`) and the answer reader (`parseAnswer`) |
+| `Server/Loop.hs` | the **reconcile** (`reconcile`), the work set (`workSet`; `baseline`; `changedUnits`; `accounted`) and the facts that need no model |
 | `Server/LoopTypes.hs` | the loop's data: `ChangedUnit`, `Fact`, `ReadingKind`, `ReconcileBlock`, `ReconcileAnswer` |
-| `Server/LoopQuestions.hs` | Jev's two questions (`planStepQuestion` `:41`, `planStateQuestion` `:69`), the ladder (`rungsFor` `:156`, `gate` `:175`, `decideOver` `:186`) and the one "words" call (`planWords` `:117`) |
-| `Server/LoopTests.hs` | a step's tests: `stepStub` (`:58`) writes one, `stepTest` (`:91`) runs them, `testFacts` (`:176`) turns results into marks and a tick |
-| `Server/Review.hs` | the **do review**: the tree reference taken before a `do` (`takeRef` `:104`), the change since it (`changeSince` `:142`), `revertChange` (`:181`), review records and the archive of past dos |
-| `Server/ReviewReadings.hs` | a reconcile's readings as **one review per plan** (`readingsReview` `:141`, `replaceReadings` `:338`, `answerReading` `:316`) |
+| `Server/LoopQuestions.hs` | Jev's two questions (`planStepQuestion`, `planStateQuestion`), the ladder (`rungsFor`, `gate`, `decideOver`) and the one "words" call (`planWords`) |
+| `Server/LoopTests.hs` | a step's tests: `stepStub` writes one, `stepTest` runs them, `testFacts` turns results into marks and a tick |
+| `Server/Review.hs` | the **do review**: the tree reference taken before a `do` (`takeRef`), the change since it (`changeSince`), `revertChange`, review records and the archive of past dos |
+| `Server/ReviewReadings.hs` | a reconcile's readings as **one review per plan** (`readingsReview`, `replaceReadings`, `answerReading`) |
 | `Server/Journal.hs` | the plan's dated lines under a step (`record`, `journalLine`, `pendingFacts`) |
-| `Server/Telemetry.hs` | `.olifant/state/errands.jsonl`: errand, outcome and reconcile records (`appendRecord` `:154`) |
+| `Server/Telemetry.hs` | `.olifant/state/errands.jsonl`: errand, outcome and reconcile records (`appendRecord`) |
 | `Server/Excerpt.hs` | code excerpts kept under a step, and the hover over an anchor |
 | `Transcripts.hs`, `Cli.hs` `runPlansCost` | `olifant plans cost`: the records beside Claude Code's own transcripts |
 | `Landings.hs` | a plan's landings from `git log --first-parent` (`landingsOf`, `parseLandings`), and `landingFor`, the first landing at or after a time |
@@ -58,7 +58,7 @@ plans.
 
 ## The grammar is a parser, not a convention
 
-`parsePlan` reads a file once into `[Line]`. A `Line` (`Plans.hs:42`) has its row, indent, a
+`parsePlan` reads a file once into `[Line]`. A `Line` (`Plans.hs`) has its row, indent, a
 `Kind`, the text, an optional `Anchor` (columns of the `@path:Unit` token) and a `Verdict`
 (`Verified fp | NotFound | NoVerdict`). `Kind` is `Heading Int | Claim | Question | Step Bool |
 TestChild | AlsoChild | Evidence | Journal | Prose`. Everything else in the system works on
@@ -70,21 +70,21 @@ step.
 Two details matter when you change it. A code fence the file never closes is no fence
 (`parseWith` retries without the opener), so a stray fence cannot swallow the plan. And every
 function that changes a line returns *text*, not a `Line`: callers build the edit by parsing
-the new text again (`applyFacts` in `Loop.hs:323` does exactly that).
+the new text again (`applyFacts` in `Loop.hs` does exactly that).
 
 `PlansSpec` (`src/Olifant/PlansSpec.hs`) is the spec for the grammar, one example per row of the
 user book's table.
 
 ## Anchors: a name, a fingerprint, a unit
 
-`resolveAnchor s p a` (`Server/Plans.hs:80`) is the one place an anchor becomes a unit. It
-confines the path (`confined`, `:94`: absolute or `..` paths are never read), reads the file
+`resolveAnchor s p a` (`Server/Plans.hs`) is the one place an anchor becomes a unit. It
+confines the path (`confined`: absolute or `..` paths are never read), reads the file
 over the editor's text (`readText (prWorkspace p)`, so unsaved buffers count), finds the
-language by file name (`languageFor`), and asks `unitsOf` (`Server/Unit.hs:154`) for the
+language by file name (`languageFor`), and asks `unitsOf` (`Server/Unit.hs`) for the
 file's named units, then `unitNamed` for the anchor's name. It returns a `Resolved` with the
 unit's `Named` (its lines, `namedDef`), its text and its **fingerprint**.
 
-The fingerprint (`Server/Unit.hs:219`) is seven hex digits of an FNV hash of the unit's text
+The fingerprint (`Server/Unit.hs`) is seven hex digits of an FNV hash of the unit's text
 with formatting taken out, so a formatter's reflow leaves it alone and a real edit changes it.
 That one number is what every verdict means: `✓ a1b2c3d` is "this was true when the unit hashed
 to a1b2c3d". `planDiagnostics` (`Server/Plans.hs`) raises `? not found` (a hint) wherever an anchor
@@ -101,8 +101,8 @@ language.
 ## An errand: ask, validate, do
 
 An errand is one line of a plan sent to a model that can read (and, for `do`, edit) the
-repository. `Lsp.errandRequest` (`Lsp.hs:1651`) handles the three `olifant/plans/ask`,
-`validate` and `do` requests; it runs `runErrand` (`Server/Plans.hs:272`) in the background,
+repository. `Lsp.errandRequest` (`Lsp.hs`) handles the three `olifant/plans/ask`,
+`validate` and `do` requests; it runs `runErrand` (`Server/Plans.hs`) in the background,
 and for `do` takes a lock first (`envDoing`: a second `do` while one runs is refused without
 starting).
 
@@ -118,7 +118,7 @@ starting).
    `sed -i` or `python -`), then the project's exact test command as the one shell command it may
    run (`doTestCommand`, from `[test] command`, the path as configured), and that Olifant runs
    the tests after the change.
-4. **Run the runner** (`runClaude`, `Errand.hs:74`): `[plans] runner` with `-p
+4. **Run the runner** (`runClaude`, `Errand.hs`): `[plans] runner` with `-p
    --output-format json --model <model>` and `--allowedTools Read,Grep,Glob` (a `do` adds
    `Edit`, `Write`, the test tool and `[plans] do_tools`, and `--permission-mode acceptEdits`).
    `--permission-prompts none` (every verb): a refused call is denied at once and the runner
@@ -138,7 +138,7 @@ starting).
    this answers the `do` without a ghost, see `doAnswered`), `BLOCKED <why>`, or a `- ?` line.
 6. **Record it.** Every ending that reached the runner appends an `AnErrand` record to
    `errands.jsonl` and a `plan-<verb>` line to the step log. The id (`errandId`,
-   `Telemetry.hs:172`) is the runner's session id when it answered, so the editor's later
+   `Telemetry.hs`) is the runner's session id when it answered, so the editor's later
    `olifant/plans/outcome` notification (accepted or rejected, by block index) can name it.
    durandal.nvim sends `accepted` for each block of an `ask` as soon as it lands, since it writes
    the answer straight in (`plans.lua` `M.write_answer`, through `ghosts.lua` `M.accept_id`);
@@ -147,7 +147,7 @@ starting).
 Nothing is written to the plan. A `do` is different only in what surrounds it, below.
 
 The runner is a port by configuration, not by type: `[plans] runner` is a command name, and the
-specs point it at `src/Olifant/Server/testdata/claude-shim.sh` (`ErrandSpec.hs:25`). The shim
+specs point it at `src/Olifant/Server/testdata/claude-shim.sh` (`ErrandSpec.hs`). The shim
 answers from environment variables, so `ErrandSpec`, `PlansSpec` and the plans parts of
 `LspSpec` run real subprocesses without a model.
 
@@ -155,21 +155,21 @@ answers from environment variables, so `ErrandSpec`, `PlansSpec` and the plans p
 
 A `do` edits the repository, so the engine wraps it in four things.
 
-**A tree reference.** `takeRef` (`Review.hs:104`) records the tree before the runner starts:
+**A tree reference.** `takeRef` (`Review.hs`) records the tree before the runner starts:
 `git stash create` (else HEAD, which changes nothing), plus the untracked files listed and their
 blobs written with `git hash-object -w` (at most `untrackedLimit`). After the run
-`changeSince` (`:142`) is the diff against that reference plus the new and changed untracked
-files, minus the plan, `.olifant/state/` and `.olifant/config.toml`. `revertChange` (`:181`)
+`changeSince` is the diff against that reference plus the new and changed untracked
+files, minus the plan, `.olifant/state/` and `.olifant/config.toml`. `revertChange`
 undoes it: `git restore --source=<ref> --worktree`, new files removed, untracked ones put back
 from their blobs. The index is never touched.
 
 **A review.** A `do` that answered, or changed the tree however it ended, saves a `Review`
 (`Review.hs` record `rvId`, `rvStep`, `rvSaid`, `rvDenials`, `rvTests`, `rvRef`, `rvDiff`…) under
-`.olifant/state/reviews/<plan>/<id>.json` (`saveReview`, `:329`) and the server notifies
+`.olifant/state/reviews/<plan>/<id>.json` (`saveReview`) and the server notifies
 `olifant/plans/review/ready`. The editor reads it with `olifant/plans/review` (`reviewView`,
-`Lsp.hs:1966`; the change is re-derived from the reference on open) and answers with
+`Lsp.hs`; the change is re-derived from the reference on open) and answers with
 `olifant/plans/review/choose`: `keep`, `revert`, `reopen`, `test` or `allow` (`chooseReview`,
-`Lsp.hs:2004`). `allow` takes the tool permissions the runner refused (`deniedWords`,
+`Lsp.hs`). `allow` takes the tool permissions the runner refused (`deniedWords`,
 `allowPattern`) and writes them into `[plans] do_tools` (`allowInConfig`, a text edit of
 `config.toml`). `keep` writes `keepTicked` (`Review.hs`): the `do`'s lines, and on an open step with
 no test children (in the plan or among those lines) the step ticked, stamped and its excerpts
@@ -180,7 +180,7 @@ telemetry is graded by. `Lsp` adds a code lens on each open review's step (`text
 refreshed with `workspace/codeLens/refresh` by `lensesChanged`).
 
 **An archive.** Every `do`, however it ended, is also written to `.olifant/state/errands/<plan>/`
-with an `index.jsonl` (`archiveErrand`, `:408`), so a step's past dos can be listed
+with an `index.jsonl` (`archiveErrand`), so a step's past dos can be listed
 (`olifant/plans/errands`, `pastDosAt`) and one reopened (`olifant/plans/errand`). A
 `Reopen` (`Server/Plans.hs`) resumes the earlier run's session with `--resume <id>
 --fork-session`.
@@ -198,7 +198,7 @@ The loop's central distinction is who may write to the plan.
   test's `○ ● ✗`, a tick when a step's tests are green, a journal line, an excerpt kept current.
   `Fact` (`LoopTypes.hs`) is `Replace row text | Insert row [text] | ReplaceRows from to
   [text]`. Facts reach the buffer through `workspace/applyEdit` in one undo step (`sendFacts`,
-  `Lsp.hs:1759`).
+  `Lsp.hs`).
 - A **reading** is a model's judgement: a step looks done, a step needs reopening, a unit placed
   under a step, work no step covers. It is a `ReconcileBlock` (a `Block` of ghost lines, the unit
   it is about, its `ReadingKind`) and the editor shows it as a ghost, never applied by the engine.
@@ -207,7 +207,7 @@ The reconcile produces both, in that order.
 
 ## The reconcile, end to end
 
-`olifant/plans/reconcile` (`Lsp.hs:732`) calls `reconcile token forced path` (`Loop.hs:340`)
+`olifant/plans/reconcile` (`Lsp.hs`) calls `reconcile token forced path` (`Loop.hs`)
 under a snapshot of the server state, then stores the readings (`replaceReadings`) and sends
 the facts. `forced` is the user's `<leader>mpc`; an automatic reconcile (the plugin fires one on
 entering a plan buffer, after a tool lands and a second after a save) is not forced. `forced`
@@ -215,18 +215,18 @@ changes two things only: it runs the touched steps' tests, and it lets the ladde
 rungs.
 
 1. **Read the plan** from the editor's text (`ssDocs`) or the disk, and `parsePlan` it.
-2. **The work set** (`workSet`, `:234`). `baseline` (`:99`) picks the commit to compare with: on
+2. **The work set** (`workSet`). `baseline` picks the commit to compare with: on
    a branch other than the default, the merge-base with the default (local, else
    `origin/<default>`); on the default branch, the commit that added the plan, HEAD while the
-   plan is uncommitted. `changedUnits` (`:135`) lists every unit that differs from that commit
+   plan is uncommitted. `changedUnits` lists every unit that differs from that commit
    (`Change`: `Added | Changed baseFp | Removed | Moved path name`; `compareUnits` and `folded`
-   fold a removal and an addition of the same fingerprint into a `Moved`). `accounted` (`:202`)
+   fold a removal and an addition of the same fingerprint into a `Moved`). `accounted`
    collects the `(path, unit, fingerprint)` triples that **any** plan under `[plans] dir`
    already carries (verified anchors, test children's units as they are now, and readings you
-   rejected: `rejectedReadings`, `:221`, replays `errands.jsonl`). The units left over are
+   rejected: `rejectedReadings`, replays `errands.jsonl`). The units left over are
    *unaccounted* (capped at `unaccountedCap` = 40, the rest counted as `wsMore`); the units
    whose own step's anchor changed are *touched* (`wsTouched`).
-3. **Facts first** (`loopFacts`, `:297`): `reanchorFacts` for moved units, `pendingFacts` to
+3. **Facts first** (`loopFacts`): `reanchorFacts` for moved units, `pendingFacts` to
    mark a changed step's tests `○` when their unit moved on past the stamp, and, when forced,
    `stepTestFacts` for every touched step with tests. Then the excerpts: `excerptFacts`
    re-renders an open step's code fence or freezes a ticked step's (`Server/Excerpt.hs`).
@@ -236,13 +236,13 @@ rungs.
    the answer is the facts alone, with no record. If the situation is the same as the last
    answer (`key`, built from the plan text, the changed triples and the rejected set), the cache
    in `ssReconciled` replays the last blocks with fresh facts.
-5. **Ask.** `rungsFor` (`LoopQuestions.hs:156`) builds the rungs: Jev (`deciderUnder`, the
+5. **Ask.** `rungsFor` (`LoopQuestions.hs`) builds the rungs: Jev (`deciderUnder`, the
    `[decide] model`) first, then the chat ladder (`[plans] ladder`, else `[model] ladder`) minus
    Jev backends, each filtered by its `escalate` policy against `forced`. For each changed file
    with unaccounted units, `planStepQuestion` asks which open step it belongs to (or none), one
    question per file; for each touched or newly placed step `planStateQuestion` asks `done`,
    `in_progress` or `diverged` (a done step: `still_done`, `reopened`, `diverged`).
-   `decideOver` (`:186`) tries each rung until an answer clears `gate` (0.6), recording each rung
+   `decideOver` tries each rung until an answer clears `gate` (0.6), recording each rung
    it called and its seconds. Every question checks a monotonic clock against
    `[plans] budget` (default `[model] budget`) first; past it, the file is `Unasked` and counted
    in `more`.
@@ -261,13 +261,13 @@ rungs.
    line goes to the step log. A cancel at either of two checkpoints returns `Left "cancelled"`
    with no record and nothing cached.
 
-`reconcileJson` (`Loop.hs:546`) is the wire shape; `Lsp` empties `raFacts` and `raBlocks` from it
+`reconcileJson` (`Loop.hs`) is the wire shape; `Lsp` empties `raFacts` and `raBlocks` from it
 because facts land by edit and readings by review (next section).
 
 ## Readings are a review
 
 A reconcile's blocks do not travel in the response. `replaceReadings`
-(`ReviewReadings.hs:338`) turns the answer into a `ReadingsReview` (one per plan, id
+(`ReviewReadings.hs`) turns the answer into a `ReadingsReview` (one per plan, id
 `readingsId` = `"reconcile"`), stored in `.olifant/state/reviews/<plan>/reconcile.json`, replacing
 the previous one and deleting it when there are no readings. Each `Reading` keeps its
 `readingKey` (kind, path, unit, fingerprint, and for a step's reading the step's words), so a
@@ -277,7 +277,7 @@ at a stale row.
 
 The editor lists the open reviews (`olifant/plans/reviews`: do reviews and the reconcile's
 entries), shows one (`olifant/plans/review`) and answers entries with `apply`, `leave`, `place`
-(under a given open step), `new` or `ignore` (`choiceOf`, `chooseReading`, `Lsp.hs:1886`).
+(under a given open step), `new` or `ignore` (`choiceOf`, `chooseReading`, `Lsp.hs`).
 `outcomeOf` maps `leave` and `ignore` to `rejected`, everything else to `accepted`, and the
 answer appends an `AnOutcome` against the reconcile record's block, which is what
 `rejectedReadings` replays later to keep a rejected ghost from returning until its unit
@@ -289,7 +289,7 @@ changes.
 (`doEvent`), a review answered (`keepEvent`), tests ticked, unticked or red (`testEvents`),
 a unit moved (`movedEvent`). Each event has a key and is written once, so a line the user
 deletes is not written again; the store is `.olifant/state/journal/<plan>.jsonl` with each
-entry `Pending | Landed | Lost`. Lines reach the plan as facts: `journalOn` (`Lsp.hs:1795`)
+entry `Pending | Landed | Lost`. Lines reach the plan as facts: `journalOn` (`Lsp.hs`)
 turns the pending entries into `Insert` facts for the plan as it is open now, and
 `flushJournal` sends them as their own edit when no other answer is carrying them. A step that
 has gone from the plan marks its entries `Lost`.
@@ -297,10 +297,10 @@ has gone from the plan marks its entries `Lost`.
 ## Step tests
 
 A step's test children are anchors to tests (`- test: sentence @file:name ○`). `stepStub`
-(`LoopTests.hs:58`) writes a new one: it names the test from the step's words (`testNameFor`,
+(`LoopTests.hs`) writes a new one: it names the test from the step's words (`testNameFor`,
 using the language's `[test] name`), calls `Server/Stub.stubWith` for the file edit, and returns
-the child line as an `Insert` fact. `stepTest` (`:91`) runs them: `testsRan` (`:115`) runs each
-test alone over the editor's text through the `[test]` runner and `testFacts` (`:176`) turns the
+the child line as an `Insert` fact. `stepTest` runs them: `testsRan` runs each
+test alone over the editor's text through the `[test]` runner and `testFacts` turns the
 verdicts into marks, stamps the step with its unit's fingerprint, and ticks the step when all
 are green. A test that cannot run, or is not in the report, is pending, never keeping its old
 mark. Which tests a name can denote, and how `Olifant.Plans.Foo` becomes a `describe` path, is
@@ -312,15 +312,15 @@ The plans requests, all in `Lsp.hs` (the line numbers are the handlers):
 
 | method | what it answers |
 |---|---|
-| `olifant/plans/anchor` (`:576`) | where an anchor on a line points (file, line, unit, fingerprint) |
-| `olifant/plans/files` (`:612`) | a plan's anchored lines by section |
-| `olifant/plans/ask`, `validate`, `do` (`:623`) | the errands, via `errandRequest` |
+| `olifant/plans/anchor` | where an anchor on a line points (file, line, unit, fingerprint) |
+| `olifant/plans/files` | a plan's anchored lines by section |
+| `olifant/plans/ask`, `validate`, `do` | the errands, via `errandRequest` |
 | `olifant/plans/errand`, `errands` | one past `do`, or a step's past dos |
 | `olifant/plans/reviews`, `review`, `review/choose` | open reviews: a `do`'s and the reconcile's |
 | `olifant/plans/review/ready` | **notification**: a `do`'s review is saved |
-| `olifant/plans/reconcile` (`:732`) | the reconcile above |
+| `olifant/plans/reconcile` | the reconcile above |
 | `olifant/plans/stub`, `test` | a step's test written / run |
-| `olifant/plans/outcome` (`:791`) | **notification**: a block was accepted or rejected (an `ask`'s at once, unless the editor reviews answers) |
+| `olifant/plans/outcome` | **notification**: a block was accepted or rejected (an `ask`'s at once, unless the editor reviews answers) |
 | `textDocument/definition`, `hover`, `completion`, `codeLens`, `foldingRange`, `semanticTokens/full` | `gd` on an anchor, the unit hover, `@` completion, review and delegation lenses, folds (excerpts from `excerptSpans`, ticked steps and answered questions from `planFolds`, all kind `region`), the plan's tokens (`planTokens`, encoded by `encodePlanTokens`; the legend is `planTokenTypes`/`planTokenModifiers`, advertised by `advertise`; any other file answers `[]`) |
 
 `workspace/semanticTokens/refresh` goes to the client when a pulled diagnostics pass changes a plan's
@@ -328,18 +328,18 @@ The plans requests, all in `Lsp.hs` (the line numbers are the handlers):
 
 All the slow ones go through `inBackground` and `planProgress` like the other slow requests
 ([tour](01-tour.md#lsp-the-adapter)). `olifant plans cost` is not in the server: `runPlansCost`
-(`Cli.hs:579`) reads `errands.jsonl` with `Telemetry.readRecords` and Claude Code's transcripts
+(`Cli.hs`) reads `errands.jsonl` with `Telemetry.readRecords` and Claude Code's transcripts
 with `Transcripts.readTranscripts`, and prices both from `[plans.prices]`. `--by branch` is
 `costRows`; the default view reads each plan's landings through `rtGit` with `Landings.landingsOf`
 (`git log --first-parent -- PLAN`, so the runtime's git seam, faked in specs) and buckets records
-with `landingRows` (`Cli.hs:712`): errands and reconciles by `landingFor` over their own plan's
+with `landingRows` (`Cli.hs`): errands and reconciles by `landingFor` over their own plan's
 landings, messages over every plan's. Both views build a line with `rowOf` and print with
 `rowTable`; `landingTable` is the plan, landing and `(not landed)` layout. A failing `git log`
 is a stderr note and no landings, never a failure.
 
 ## The seams
 
-- **`[plans]`** (`Catalog.hs:313`, the `PlansConfig` record at `:140`): `dir`, `runner`, `model`,
+- **`[plans]`** (`Catalog.hs`, the `PlansConfig` record): `dir`, `runner`, `model`,
   `timeout`, `do_tools`, `ladder`, `budget`, `prices`. An unknown key is a configuration error;
   a `ladder` name not under `[model.backends]` is one too (`plansLadderIn`).
 - **`[decide] model`** names the backend Jev answers on; `catalogDecideModel` is what `rungsFor`
@@ -398,7 +398,7 @@ temp folder, scripts the model answers with a recorded decider (`scDecideAnswers
   the unchanged plan.
 - **The budget is checked before each question, not during.** A slow rung can overrun it by one
   call's timeout (`[model] timeout`, default 120 s).
-- **Branch work depends on finding the default branch.** `defaultBranch` (`Loop.hs:119`) tries
+- **Branch work depends on finding the default branch.** `defaultBranch` (`Loop.hs`) tries
   `origin/HEAD`, then a local `main`, then `master`; a repository with none of them (a trunk
   called `develop`, say) is reconciled against the commit that added the plan, on every branch.
 - **`[conjure] wire` and the language's `[conjure]` table are different things** with the same
