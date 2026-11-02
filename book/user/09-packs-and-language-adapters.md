@@ -654,9 +654,9 @@ it in `test/SpecHook.hs`:
 module SpecHook (hook) where
 
 import Test.Hspec.Core.Spec
-import Test.Hspec.JUnit.Formatter.Env qualified as FormatterEnv
+import qualified Test.Hspec.JUnit.Formatter.Env as FormatterEnv
 
-hook :: SpecWith a -> SpecWith a
+hook :: Spec -> Spec
 hook = FormatterEnv.whenEnabled FormatterEnv.add
 ```
 
