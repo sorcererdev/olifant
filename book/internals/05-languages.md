@@ -509,7 +509,9 @@ anchor phrases from community queries (design 4b §A).
   `functionMatches`: the top-level `functionCaps` definitions: those inside no other function's byte span, so a method counts and a nested def, `let` or `where` binding does not; `MigrationReport.mrCountHint` says so, naming doctor's grammar row, when a language whose grammar does not load counted 0 for want of a `count` key, shown in `reportLine` and `count_hint`); and the folders a listing skips (each
   language's `ignore`, `Catalog.catalogIgnores`, `Workspace.ignoring`). `Newness`'
   `definitionKeywords`, `App`'s colon-scanning `signatureHead` and `Workspace.pruned`'s
-  language folders are gone. `TestName`'s string prefixes and `self` move in m4.
+  language folders are gone, and so are `TestName`'s string prefixes and `self`: `literalBody`
+  drops any leading run of ASCII letters a quote follows, and `self` is filtered only as one of
+  the language's `keywords`.
 - **Pure.** A parse and a query run are functions of (grammar, queries, text), so
   `capturesOf` is pure and wraps its IO in `unsafePerformIO` (Decision 6 of the m2 plan). Pure
   callers (the anchor rule; later, units and test units) read captures without threading IO.

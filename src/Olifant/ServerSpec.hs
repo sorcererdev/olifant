@@ -18,6 +18,7 @@ import Data.Map.Strict qualified as M
 import Data.Text.Encoding qualified as TE
 import Data.Text.IO qualified as TIO
 import Olifant.Mutate (Mutant (..))
+import Olifant.TestName (stubNameFor)
 import Olifant.Language (Failure (..), Match (..), Rewrite (..), Runner (..), Syntax (..), TestRun (..))
 import System.Directory (canonicalizePath, doesDirectoryExist, doesFileExist, listDirectory)
 import System.Directory qualified as Dir
@@ -57,6 +58,17 @@ import Test.Hspec.Hedgehog (hedgehog)
 
 spec :: Spec
 spec = describe "Olifant.Server (projects across roots, open documents, jobs)" $ do
+  describe "TestName (Olifant.TestName)" $ do
+    let mutant op from text = Mutant 1 op from "\"\"" text False
+    it "a literal's letter prefix is dropped before its quote, any letters" $ do
+      stubNameFor (mutant "string" "rb\"hello world\"" "x = rb\"hello world\"") ("test_", "") "#" [] [] `shouldBe` "test_hello_world"
+      stubNameFor (mutant "string" "br'hello world'" "x = br'hello world'") ("test_", "") "#" [] [] `shouldBe` "test_hello_world"
+      stubNameFor (mutant "string" "\"hello world\"" "x = \"hello world\"") ("test_", "") "#" [] [] `shouldBe` "test_hello_world"
+      -- an identifier then a string reads as a prefix too: the rule cannot tell them apart (ruling)
+      stubNameFor (mutant "string" "x\"y\"" "z = x\"y\"") ("test_", "") "#" [] [] `shouldBe` "test_y"
+    it "self is a keyword, not a hard-coded word" $ do
+      stubNameFor (mutant "arith" "+" "total = self + 1") ("test_", "") "#" [] [] `shouldBe` "test_arith_total_self"
+      stubNameFor (mutant "arith" "+" "total = self + 1") ("test_", "") "#" [] ["self"] `shouldBe` "test_arith_total"
   it "an inline Rust test's conjure: the module is the file outside its test mod, once" $ do
     let file = T.unlines ["pub fn one() -> i32 {", "    1", "}", "", "#[cfg(test)]", "mod tests {", "    use super::*;", "", "    #[test]", "    fn is_one() {", "        todo!(\"write this test\");", "    }", "}"]
         rs = shippedLanguageNow "rust"

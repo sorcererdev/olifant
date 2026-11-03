@@ -49,7 +49,7 @@ neutralModules =
 neutralLiterals :: [Text]
 neutralLiterals =
   filter (/= "\"self") literals
-    ++ ["\"import ", "\"from ", "\"async ", "datetime", "SWITCHES", "switches.on", "switches.py", ".commit(", ".save(", "db.rows", "db.row(", "\"global ", "\"True\"", "python"]
+    ++ ["\"import ", "\"from ", "\"async ", "datetime", "SWITCHES", "switches.on", "switches.py", ".commit(", ".save(", "db.rows", "db.row(", "\"global ", "\"True\"", "python", "\"self\"", "rRbBfFuU"]
 
 -- | A line less its comment (@--@ outside a string), and @{- … -}@ blocks dropped.
 code :: Text -> [Text]

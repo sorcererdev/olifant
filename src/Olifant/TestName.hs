@@ -14,7 +14,7 @@ import Olifant.Mutate (Mutant (..))
 -- | The name of a survivor's test, from its mutant: a literal's first four
 -- words (`string`), else the operator and the names on the mutated line
 -- (or, with none there, in what it changed from), four at most, leaving
--- out KEYWORDS, `self` and the heads of attributes (`seats` of
+-- out KEYWORDS (a language lists `self` there) and the heads of attributes (`seats` of
 -- `table.seats`); with no name at all, the line. AFFIXES: the text the
 -- language's `[test] name` puts before and after the words (pytest's
 -- @test_@). COMMENT: the language's comment marker (no name after it). A
@@ -34,14 +34,15 @@ stubNameFor m (before, after) comment defined keywords = unique (capped (before 
       | muOperator m == "string" = nonEmpty (snakeOf (T.unwords (take 4 (T.words (literalBody (muFrom m))))))
       | otherwise = ((operator <> "_") <>) <$> nonEmpty (T.intercalate "_" (take 4 (nub (namesOf mutatedLine <> namesOf (muFrom m)))))
     mutatedLine = fromMaybe "" (listToMaybe (drop (muLine m - 1) (T.splitOn "\n" (muText m))))
-    namesOf = filter (`notElem` ("self" : keywords)) . identifiers comment
+    namesOf = filter (`notElem` keywords) . identifiers comment
     nonEmpty t = if T.null t then Nothing else Just t
 
--- | A literal's text without its prefix (`f`, `rb`, …) and quotes.
+-- | A literal's text without its prefix and quotes: a leading run of ASCII letters is a
+-- prefix when a quote follows it (`f"…"`, `rb'…'`), whatever the letters.
 literalBody :: Text -> Text
 literalBody lit = T.dropAround (`elem` ['"', '\'']) (if T.any isQuote (T.take 1 rest) then rest else lit)
   where
-    rest = T.dropWhile (`elem` ("rRbBfFuU" :: String)) lit
+    rest = T.dropWhile (\c -> isAsciiLower c || isAsciiUpper c) lit
     isQuote c = c == '"' || c == '\''
 
 -- | Lowercase ASCII letters and digits, every run of
