@@ -718,9 +718,10 @@ pyHtmx = withShapes (unsafePerformIO (shippedLanguage "python" [("pack python-ht
     declaredCtor = CtorShape ["commands/**/*.py", "queries/**/*.py"] "^class ([[:alnum:]_]+)" "def __init__\\(" "^([[:alnum:]_]+)[[:space:]]*:[[:space:]]*([^=]*[^=[:space:]])"
 {-# NOINLINE pyHtmx #-}
 
--- | Python's method signature template (`[types] method`).
+-- | Python's method signature template: the python-htmx port-method snippet's, by
+-- 'signatureTemplate'.
 pyMethod :: Maybe Text
-pyMethod = langTypes pyNow >>= tyMethod
+pyMethod = Just "{= name =}(self{= params =}) -> {= returns =}"
 
 -- | What cancel_booking's tests' names drop to be short (pytest's `test_cancel_booking`, `test_`).
 cancelPrefixes :: [Text]

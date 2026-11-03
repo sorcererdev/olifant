@@ -992,6 +992,8 @@ data PausedConjure = PausedConjure
   , pdRewritten :: [Text]
   , pdSteps :: [ConjureStep]
   , pdWireWrites :: Map FilePath Text
+  , pdSignature :: Maybe ((Text, Text), Maybe ((Text, Text), Text))
+  -- ^ the model's signature for a port's missing method, asked once (restored on resume)
   }
   deriving stock (Eq, Show)
 

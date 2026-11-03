@@ -246,12 +246,17 @@ writes nothing is not tried again.
 
 **A missing method.** When the check says a port the unit takes has no such method (pyright's
 `Cannot access attribute "close" for class "BookingRepository"`, by the pack's `[check]
-missing_member`), the conjure pauses (`a port lacks a method: BookingRepository.close`). If the
-signature follows from the call and the test's fake (written in the language's own words by
-`[types]`) and the pack names a generator for it (`[conjure.port] add`,
-[chapter 9](09-packs-and-language-adapters.md#conjures-shapes-conjure)), the pause offers `add close to
-BookingRepository`, with the signature in its detail; if not, it says to add the method yourself,
-and the signature is not guessed. Choosing it (`port`, `arg` `Port.method`) has that generator
+missing_member`), the conjure pauses (`a port lacks a method: BookingRepository.close`). When the
+pack names a generator for it (`[conjure.port] add`,
+[chapter 9](09-packs-and-language-adapters.md#conjures-shapes-conjure)), the rung's model is
+asked once for the method's whole declaration line, shown the lines that call it (the round's
+body, the test), the port's first method as the house style, and the port with a hole where the
+method goes. Its answer is read back through that generator's own line (python-htmx's
+`def ⟨name⟩(self⟨params⟩) -> ⟨returns⟩: ...`): one line of that shape naming the method, or
+nothing. The step log says what it gave, `conjure-signature BookingRepository.find_by_id
+find_by_id(self, id: str) -> Booking | None` (or `… none`), and a resume keeps it, so the model
+is not asked again. With a signature, the pause offers `add close to BookingRepository`, the
+signature in its detail; without one (or without `add`), it says to add the method yourself. Choosing it (`port`, `arg` `Port.method`) has that generator
 (python-htmx's `port-method`) add the method to the port, then the one `[conjure.port] adapters`
 names (python-htmx's `port-method-adapters`) add it to each adapter beside the port (the model
 writes their bodies) and the contract test's stub, and answers a **proposal** like a re-conjured

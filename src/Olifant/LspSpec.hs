@@ -1496,7 +1496,8 @@ conjureSpec = describe "olifant/conjure" $ do
     withSystemTempDirectory "olifant-conjure-real" $ \tmp -> do
       let fills = tmp </> "fills.toml"
           answers = tmp </> "answers.json"
-      TIO.writeFile fills ("[fills]\nbody = " <> T.pack (show (T.unpack body)) <> "\n")
+      -- the model's answer for the port method's signature line, beside the body's
+      TIO.writeFile fills ("[fills]\nbody = " <> T.pack (show (T.unpack body)) <> "\nsignature = \"def find_by_id(self, id: str) -> Booking | None: ...\"\n")
       TIO.writeFile answers "{\"answers\": {}}"
       withPythonChecked [(cbModule, morningModule), (cbTest, morningTest)] $ \ports0 dir -> do
         let ports = ports0 {pVerifier = (`processVerifierCancellable` 120), pTester = (`processRunner` 120), pTesterWithin = flip processRunner}
@@ -1523,6 +1524,8 @@ conjureSpec = describe "olifant/conjure" $ do
         inner "round" (field "paused" paused) `shouldBe` Just (Number 1)
         offerLabels (field "paused" paused) `shouldSatisfy` \ls -> "add find_by_id to BookingRepository" `elem` ls && "fix the test: not_found" `elem` ls
         offerDetails (field "paused" paused) `shouldSatisfy` elem "hand repository to command(bookings=repository); you see the diff"
+        -- the offer says the model's signature, read through the port-method snippet's shape
+        offerDetails (field "paused" paused) `shouldSatisfy` elem "find_by_id(self, id: str) -> Booking | None in the port and its adapters, then round 2"
         inner "diff" (inner "proposal" (field "paused" proposed)) `shouldSatisfy` \case Just (String d) -> changedLines d == ["-    cancel_booking = command()", "+    cancel_booking = command(bookings=repository)"]; _ -> False
         -- with not_found fixed, round 2 writes the same body: no repeat (a step came between),
         -- and the check refuses it for the same wall
@@ -1536,6 +1539,8 @@ conjureSpec = describe "olifant/conjure" $ do
           _ -> False
         offerLabels (field "paused" after) `shouldSatisfy` notElem "fix the test: not_found"
         offerLabels (field "paused" after) `shouldSatisfy` elem "add find_by_id to BookingRepository"
+        -- after a pause and a resume the signature is the one asked before: not asked again
+        offerDetails (field "paused" after) `shouldSatisfy` elem "find_by_id(self, id: str) -> Booking | None in the port and its adapters, then round 3"
         -- the failing section is round 2's real failure: the check's refusal, its line; the
         -- diagnosis says it, not the before-run's assertion
         inner "kind" (inner "failure" (field "paused" after)) `shouldBe` Just (String "check")
@@ -1573,6 +1578,9 @@ conjureSpec = describe "olifant/conjure" $ do
         logged <- T.lines <$> TIO.readFile (dir </> ".olifant/state/steps.log")
         [l | l <- logged, "conjure-sibling" `T.isInfixOf` l] `shouldSatisfy` \case
           [l] -> "create_booking__test.py" `T.isInfixOf` l && "owner=CreateBooking" `T.isInfixOf` l
+          _ -> False
+        [T.unwords (T.words l) | l <- logged, "conjure-signature" `T.isInfixOf` l] `shouldSatisfy` \case
+          [l] -> "conjure-signature BookingRepository.find_by_id find_by_id(self, id: str) -> Booking | None" `T.isSuffixOf` l
           _ -> False
   it "with no sibling in the radius, a test elsewhere in the project that builds a same-shaped owner teaches (ruling B)" $
     withPython [(cbModule, morningModule), (cbTest, morningTest)] $ \ports dir -> do

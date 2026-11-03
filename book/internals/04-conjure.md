@@ -30,7 +30,7 @@ book's [step log](../user/18-tdd-in-the-editor.md#the-step-log).
 |---|---|
 | `Server/Conjure.hs` (1,462 lines) | the command: `conjureAt` and `resumeConjure` both end in `conjureWith`; building the hole (`functionConjure`, `testConjure`); the fill (`fill`); the steering hook (`steer`); the wire (`wireFor`) and the port method (`portMethodPlan`) |
 | `Server/ConjureNext.hs` (1,042) | the **pure rules**: the policy (`policy`), Jev's question (`conjureNextQuestion`) and how to read its answer (`nextFrom`), the offers (`offersAt`), the diagnosis (`diagnosis`), the pause's wire shape (`PausedAnswer`, `pausedJson`), `PausedConjure`, the round records |
-| `Server/ConjureScan.hs` (402) | **pure reading of source** by the pack's shapes: the fakes a test builds and never passes in (`unpassedFake`, `fakeIn`), the service's ports (`portsIn`), a fake's port (`derivePort`), a constructor's parameters (`ctorParamsIn`), Jev's port question (`conjurePortQuestion`), a new method's signature (`methodSignature`) |
+| `Server/ConjureScan.hs` (402) | **pure reading of source** by the pack's shapes: the fakes a test builds and never passes in (`unpassedFake`, `fakeIn`), the service's ports (`portsIn`), a fake's port (`derivePort`), a constructor's parameters (`ctorParamsIn`), Jev's port question (`conjurePortQuestion`), a model's signature line read through the port-method snippet (`readSignature`, `snippetLine`, `signatureTemplate`, `callLines`) |
 | `Server/Sibling.hs` | **a sibling test, read** (spike D): the owner, constructor and fakes a nearby test already uses (`siblingShapes`, `findSibling`), the service's ports (`servicePorts`), the library doubles of the test being conjured (`conjuredFakes`); `serviceBase` and `filesUnder` live here |
 | `Generation/Steer.hs` | the contract between a fill loop and its steerer: `RoundState`, `Steer = Again | Climb filler | Pause why`, `Steering` |
 | `Generation/FillPhase.hs` | the fill loop that calls the hook (`stSteer`) |
@@ -184,15 +184,25 @@ Two behaviours go past writing a body. Both lean on the **pack's generators**, r
   conjure's, and land with it as one edit.
 - **A port method** (`portMethodPlan`): when the check says a port the unit takes lacks
   a method (`CauseMethod`), the pause offers `add <m> to <Port>`, but only when the language's
-  `[conjure.port] add` names a generator (`methodWall` gives no signature otherwise, so the pause
-  asks the person to add it). On `port`, that generator is placed on the line after the port's
+  `[conjure.port] add` names a generator and the model wrote a signature (`methodWall` gives
+  none otherwise, so the pause asks the person to add it). The signature is `askSignature`'s:
+  `portSnippet` places the `add` generator at the port's end as a snippet (`PortSnippet`: the
+  port's file and text, the line, the marked text), and one `signature` hole (kind `line`,
+  `FillStance`) goes to the rung's filler with `callLines` over the round's body and the test,
+  the port's first method as the house style, and the port's text with `⟦signature⟧` where the
+  method goes. `readSignature` reads the answer through the snippet's marked line
+  (`snippetLine`): one line of its shape naming the method gives (`params`, `returns`), anything
+  else (a fence, two lines, another name, a missing prefix) nothing; `signatureTemplate` turns
+  that line into the template the offer and the adapters write it by. It is asked once per
+  (port, method): `Counters.cSignature` keeps it, `steer` re-reads it after the wall, a pause
+  saves it in `pdSignature`, and a resume restores it; steps.log has `conjure-signature`. On `port`, that generator is placed on the line after the port's
   block (`portEnd`, `ConjureScan.hs`; `blankAt` makes that line blank, since a snippet
   replaces the line it is placed on), its holes `name`, `params`, `returns` filled from the
-  signature `methodSignature` made from `[types]` facts. Then the generator `[conjure.port]
+  model's signature. Then the generator `[conjure.port]
   adapters` names, if any, is planned over that, the rung's model writing the bodies it leaves.
   Its inputs are what it declares out of: the slots of its own `[applies_at] path` matched on the
   port's file (`matchPathSlots`), the service's sets, `name`, `params`, `returns` and
-  `signature` (`[types] method` rendered). The result is a `Proposal` to accept or reject like a
+  `signature` (`methodText` over the snippet's `signatureTemplate`). The result is a `Proposal` to accept or reject like a
   re-conjured test. In python-htmx, `add = "port-method"`, `adapters = "port-method-adapters"`.
 - **Advice for a test's body** (`advisedIn`, `ConjureScan.hs`): `testConjure` adds to the
   model's instruction the `say` of the first `[[conjure.advice]]` whose `when` matches a line of
@@ -221,7 +231,7 @@ cjAdvice}`, each optional, parsed by `conjureFrom` (`Adapter.hs`). Which functio
 | `[[conjure.advice]]` `when`, `say` | `[Advice]` | `advisedIn`: a sentence for `testConjure`'s instruction |
 | `[conjure.fake]` `bound`, `classes`, `prefixes`, `keyword`, `stub` | `FakeShape` (learned from a sibling test, `Sibling.hs`; declared only as a first test's fallback) | `fakeIn`/`unpassedFake`: a test's fake; `derivePort` strips a prefix to name the port; `handFake` hands a fake to a helper |
 | `[conjure.constructor]` `files`, `owner`, `start`, `param` | `CtorShape` (likewise) | `ctorParamsIn`: what siblings call a port's parameter (`deriveParam`); `takesPortIn`: whether the class takes it |
-| `[types]` | `TypesDef` | `methodSignature`, `methodText`: a new port method's signature from the call and the fake |
+| `[types]` | `TypesDef` | read by nothing in conjure any more (the model writes a missing method's signature) |
 | `[check] undefined`, `missing_member`; `[test] undefined`, `[test.failure]` | the toolchain's words | `undefinedLabelIn` (`ConjureNext.hs`), `missingMemberIn` (`ConjureScan.hs`), `failureLineWith`: a `NameError`, a missing member, the failing assertion's line |
 
 A language with **no** `[conjure]` conjures at the **floor**: a test's body, or a function's,
