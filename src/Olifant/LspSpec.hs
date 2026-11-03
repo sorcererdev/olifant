@@ -1569,6 +1569,23 @@ conjureSpec = describe "olifant/conjure" $ do
         inner "round" (field "paused" afterPort) `shouldBe` Just (Number 3)
         inner "kind" (inner "failure" (field "paused" afterPort)) `shouldBe` Just (String "tests")
         offerLabels (field "paused" afterPort) `shouldSatisfy` notElem "add find_by_id to BookingRepository"
+        -- the conjure language: the sibling test's fakes and constructor, said once
+        logged <- T.lines <$> TIO.readFile (dir </> ".olifant/state/steps.log")
+        [l | l <- logged, "conjure-sibling" `T.isInfixOf` l] `shouldSatisfy` \case
+          [l] -> "create_booking__test.py" `T.isInfixOf` l && "owner=CreateBooking" `T.isInfixOf` l
+          _ -> False
+  it "with no sibling and no tables, conjure says floor" $
+    withPython [(cbModule, morningModule), (cbTest, morningTest)] $ \ports dir -> do
+      mapM_ (removeFile . (dir </>)) ["src/bistro/booking/commands/create_booking__test.py", "src/bistro/booking/queries/get_day_schedule__test.py"]
+      _ <- inProcessWith ports dir $ do
+        doc <- openDoc cbModule "python"
+        text <- documentContents doc
+        let handleAt = length (takeWhile (not . ("    def handle(" `T.isPrefixOf`)) (T.lines text))
+        blockMove (Proxy :: Proxy "olifant/conjure") (object ["textDocument" .= object ["uri" .= (doc ^. L.uri)], "position" .= object ["line" .= (handleAt + 1 :: Int), "character" .= (0 :: Int)]])
+      logged <- T.lines <$> TIO.readFile (dir </> ".olifant/state/steps.log")
+      [T.unwords (T.words l) | l <- logged, "conjure-sibling" `T.isInfixOf` l] `shouldSatisfy` \case
+        [l] -> "conjure-sibling none floor" `T.isSuffixOf` l
+        _ -> False
   it "a re-conjure is refused only for what it adds: the lambda's error the test already had does not refuse it" $ do
     (proposed, steps, _) <- cancelChecked $ \script ask resume -> do
       _ <- ask []

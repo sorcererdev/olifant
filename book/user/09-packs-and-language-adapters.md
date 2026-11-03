@@ -1259,19 +1259,54 @@ its start that are blank or indented deeper.
 | `[conjure.port] method` | `'^def '` | a stripped line of the port's block that is one of its methods |
 | `[conjure.port] add` | `"port-method"` | a generator id: the snippet that adds a method a port lacks. Conjure places it on the line after the port's block (made blank if it is not) and fills its holes `name`, `params` and `returns` with the signature `[types]` gives. Without it, conjure never offers to add a method: the pause asks you to add it |
 | `[conjure.port] adapters` | `"port-method-adapters"` | a generator id (optional, needs `add`): run after `add`, to put the method in the port's adapters. It is given, of the inputs it declares: the slots of its `[applies_at] path` matched on the port's file (`app`, `service`, `port` for python-htmx's `src/{app}/{service}/ports/{port}/{port}.py`), the service's `app`/`service`, `name`, `params`, `returns` and `signature` (`[types] method` written out). The model fills the bodies it leaves |
-| `[conjure.fake] bound` | `'^[[:space:]]+([[:alnum:]_]+)[[:space:]]*=[[:space:]]*([[:alnum:]_]+)\('` | a test's line binding a fake: group 1 the variable, group 2 the class |
-| `[conjure.fake] classes` | `["Mock", "MagicMock"]` | classes that are fakes |
-| `[conjure.fake] prefixes` | `["Fake", "InMemory", "Stub"]` | a class starting with one (and longer) is a fake; less the prefix, it names a port |
-| `[conjure.fake] keyword` | `"{= param =}={= var =}"` | how a fake is handed to a call by name. Without it, only positional arguments count as handing it in, and conjure cannot hand a fake to a helper |
-| `[conjure.fake] stub` | `'\.{= method =} = lambda[[:space:]]*([^:]*):(.*)'` | a fake's stand-in for a method: group 1 its parameters, group 2 what it returns |
-| `[conjure.constructor] files` | `["commands/**/*.py", "queries/**/*.py"]` | globs under the service for the siblings whose constructors show what a port's parameter is called (test files left out) |
-| `[conjure.constructor] owner` | `'^class ([[:alnum:]_]+)'` | a line starting what holds a constructor, group 1 its name |
-| `[conjure.constructor] start` | `'def __init__\('` | where a constructor's parameters start, up to the bracket closing the one it opens |
-| `[conjure.constructor] param` | `'^([[:alnum:]_]+)[[:space:]]*:[[:space:]]*([^=]*[^=[:space:]])'` | one parameter: group 1 its name, group 2 its type. One that does not match (`self`, an untyped one) is left out |
 | `[[conjure.advice]] when`, `say` | `'^def command\('` and "build the command with the helper, passing the adapters you arranged (…)"; the same for `query` | when a line of the test file matches `when`, `say` is added to the model's instruction for a test's body (the first advice that matches, by line, then by order). python-htmx's tell the model to build a command or query through the stub's helper |
 
+**Fakes and the constructor come from a sibling test.** A test that already builds a command
+with a port's fake teaches conjure everything the tables below used to declare: which class
+owns the unit and how its constructor starts, what each of its parameters is called and which
+port it takes (by `[unit] annotation`), the fake handed for it (`InMemoryBookingRepository`
+for `bookings`), how a fake is bound (`bookings = InMemoryBookingRepository(…)`) and handed in
+(`bookings=bookings`). Conjure looks in the module's own test file, then the test files of the
+other modules in its folder, then those of the folders beside it, nearest first. A library
+double the test being conjured binds (`repository = Mock()`) is a fake when its variable
+names a port (`repository`) or the test sets one of its methods. python-htmx declares neither
+table any more. Conjure's steps log says which it used, in a `conjure-sibling` line
+([chapter 18](18-tdd-in-the-editor.md#conjuring)).
+
+**A service's first test** has no sibling. It conjures at the floor (the test's body or the
+function's, no ports), unless the language declares the two tables, which are then the
+fallback. To have conjure wire ports in a new service before its first test exists, copy them
+into the project's `.olifant/languages/python.toml` and delete them once a sibling test exists:
+
+```toml
+[conjure.fake]
+bound = '^[[:space:]]+([[:alnum:]_]+)[[:space:]]*=[[:space:]]*([[:alnum:]_]+)\('
+classes = ["Mock", "MagicMock"]
+prefixes = ["Fake", "InMemory", "Stub"]
+keyword = "{= param =}={= var =}"
+stub = '\.{= method =} = lambda[[:space:]]*([^:]*):(.*)'
+
+[conjure.constructor]
+files = ["commands/**/*.py", "queries/**/*.py"]
+owner = '^class ([[:alnum:]_]+)'
+start = 'def __init__\('
+param = '^([[:alnum:]_]+)[[:space:]]*:[[:space:]]*([^=]*[^=[:space:]])'
+```
+
+| Key | What it says |
+|---|---|
+| `[conjure.fake] bound` | a test's line binding a fake: group 1 the variable, group 2 the class |
+| `[conjure.fake] classes` | classes that are fakes |
+| `[conjure.fake] prefixes` | a class starting with one (and longer) is a fake; less the prefix, it names a port |
+| `[conjure.fake] keyword` | how a fake is handed to a call by name. Without it, only positional arguments count as handing it in, and conjure cannot hand a fake to a helper |
+| `[conjure.fake] stub` | a fake's stand-in for a method: group 1 its parameters, group 2 what it returns |
+| `[conjure.constructor] files` | globs under the service for the siblings whose constructors show what a port's parameter is called (test files left out) |
+| `[conjure.constructor] owner` | a line starting what holds a constructor, group 1 its name |
+| `[conjure.constructor] start` | where a constructor's parameters start, up to the bracket closing the one it opens |
+| `[conjure.constructor] param` | one parameter: group 1 its name, the last non-empty group its type. One that does not match (`self`, an untyped one) is left out |
+
 `olifant doctor` shows a row "conjure shapes" per language: the parts a pack
-declares (`port, port.add, fake, constructor, advice` for python-htmx), or the
+declares (`port, port.add, advice` for python-htmx), or the
 floor. A port without `add` is marked "(no [conjure.port] add: a method a port
 lacks is yours to add)".
 

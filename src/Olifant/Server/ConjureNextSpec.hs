@@ -706,9 +706,16 @@ pyNow :: Language
 pyNow = pyHtmx
 
 -- | Python as the python-htmx pack has it (its `[conjure]` shapes over the
--- shipped language), read once for the pure fixtures here.
+-- shipped language), read once for the pure fixtures here. The pack no longer
+-- declares `[conjure.fake]` and `[conjure.constructor]` (a conjure learns them
+-- from a sibling test): these pure specs run with the shapes it had, as the
+-- conjure language carries them once read.
 pyHtmx :: Language
-pyHtmx = unsafePerformIO (shippedLanguage "python" [("pack python-htmx", "packs/python-htmx")])
+pyHtmx = withShapes (unsafePerformIO (shippedLanguage "python" [("pack python-htmx", "packs/python-htmx")]))
+  where
+    withShapes l = l {langConjure = (\cj -> cj {cjFake = Just declaredFake, cjConstructor = Just declaredCtor}) <$> langConjure l}
+    declaredFake = FakeShape "^[[:space:]]+([[:alnum:]_]+)[[:space:]]*=[[:space:]]*([[:alnum:]_]+)\\(" ["Mock", "MagicMock"] ["Fake", "InMemory", "Stub"] (Just "{= param =}={= var =}") (Just "\\.{= method =} = lambda[[:space:]]*([^:]*):(.*)")
+    declaredCtor = CtorShape ["commands/**/*.py", "queries/**/*.py"] "^class ([[:alnum:]_]+)" "def __init__\\(" "^([[:alnum:]_]+)[[:space:]]*:[[:space:]]*([^=]*[^=[:space:]])"
 {-# NOINLINE pyHtmx #-}
 
 -- | Python's method signature template (`[types] method`).

@@ -22,7 +22,7 @@ olifant doctor
 ✓ python: tests — [test] format junit-xml, tests_for {= dir =}/{= stem =}__test.py · from toolchain pytest
 ✓ python: test selection — [test] select · from toolchain pytest
 ✓ python: mutation — [[mutate]] (17 operators) · from shipped
-✓ python: conjure shapes — [conjure] port, port.add, fake, constructor, advice · from pack python-htmx
+✓ python: conjure shapes — [conjure] port, port.add, advice · from pack python-htmx
 …
 ```
 

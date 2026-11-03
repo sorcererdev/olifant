@@ -37,7 +37,7 @@ spec = do
                  , Right "[test] select"
                  , Right "[[mutate]] (17 operators)"
                  , Right "[test] stub"
-                 , Right "[conjure] port, port.add, fake, constructor, advice"
+                 , Right "[conjure] port, port.add, advice"
                  , Right "[check] undefined, missing_member"
                  , Right "[test] undefined, failure"
                  , Right "stub_lines (4)"

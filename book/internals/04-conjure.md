@@ -219,8 +219,8 @@ cjAdvice}`, each optional, parsed by `conjureFrom` (`Adapter.hs`). Which functio
 | `[conjure.port]` `files`, `start`, `method` | `PortShape` | `portsIn`: the ports of a service, the methods of each; `portEnd` where a port's block ends |
 | `[conjure.port]` `add`, `adapters` | `AddMethod` | `portMethodPlan`: the generators that add a method a port lacks; `methodWall` offers the port row only with `add` |
 | `[[conjure.advice]]` `when`, `say` | `[Advice]` | `advisedIn`: a sentence for `testConjure`'s instruction |
-| `[conjure.fake]` `bound`, `classes`, `prefixes`, `keyword`, `stub` | `FakeShape` | `fakeIn`/`unpassedFake`: a test's fake; `derivePort` strips a prefix to name the port; `handFake` hands a fake to a helper |
-| `[conjure.constructor]` `files`, `owner`, `start`, `param` | `CtorShape` | `ctorParamsIn`: what siblings call a port's parameter (`deriveParam`); `takesPortIn`: whether the class takes it |
+| `[conjure.fake]` `bound`, `classes`, `prefixes`, `keyword`, `stub` | `FakeShape` (learned from a sibling test, `Sibling.hs`; declared only as a first test's fallback) | `fakeIn`/`unpassedFake`: a test's fake; `derivePort` strips a prefix to name the port; `handFake` hands a fake to a helper |
+| `[conjure.constructor]` `files`, `owner`, `start`, `param` | `CtorShape` (likewise) | `ctorParamsIn`: what siblings call a port's parameter (`deriveParam`); `takesPortIn`: whether the class takes it |
 | `[types]` | `TypesDef` | `methodSignature`, `methodText`: a new port method's signature from the call and the fake |
 | `[check] undefined`, `missing_member`; `[test] undefined`, `[test.failure]` | the toolchain's words | `undefinedLabelIn` (`ConjureNext.hs`), `missingMemberIn` (`ConjureScan.hs`), `failureLineWith`: a `NameError`, a missing member, the failing assertion's line |
 
@@ -293,6 +293,19 @@ by `[test]`. It names no literal of any language (`ConjureNeutralSpec` reads it)
   without them; **`conjuredFakes bound ports test`** finds the test being conjured's library
   doubles (a `Mock()` bound to a variable named after a port's last word, or one whose attribute
   the test sets), so no declared `classes` list is needed.
+
+**The conjure language.** `conjureWith` binds `lang0 = siteLang site` only until the unit is
+known, then builds one `ConjureLanguage` (`conjureLanguage ws lang0 (module rel, module text,
+test text) unit`: `clLanguage`, `clSibling`, `clPorts`) and binds `lang = clLanguage cl`: the
+site's language with `cjFake` and `cjConstructor` the sibling's when one reads, else as declared.
+Every later read (`ownerHeader`, `ctorParamsIn`, `takesPortIn`, `serviceFacts`, `diagnosisFacts`)
+goes through it. A resume rebuilds it from the same files (it is deterministic, so
+`PausedConjure` holds nothing for it). The flag scans take `scanDef cl <the test file's current
+text>`: the learned classes plus `conjuredFakes` over that text, re-derived at every scan, so a
+fill that binds a `Mock()` is seen; that is `scanFlags`' `Maybe ConjureDef`, the two `fakeIn`
+sites after a test conjure's fill, and `steer`'s `scanD`. When not resuming it logs
+`siblingLine cl` (`conjure-sibling …`, or `none declared shapes` / `none floor`). No sibling
+text goes into any prompt: the sibling teaches facts only.
 
 `SiblingSpec` holds it to the old tables on the python-htmx fixture, character for character
 (the owner, fakes, `def __init__\(`, the `bound` expression, `InMemory`, the keyword form). A

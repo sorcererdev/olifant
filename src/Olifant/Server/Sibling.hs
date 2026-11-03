@@ -8,6 +8,10 @@
 -- literal of any language is named here.
 module Olifant.Server.Sibling
   ( Sibling (..)
+  , ConjureLanguage (..)
+  , conjureLanguage
+  , scanDef
+  , siblingLine
   , siblingShapes
   , conjuredFakes
   , siblingCandidates
@@ -20,6 +24,7 @@ module Olifant.Server.Sibling
   ) where
 
 import Data.Char (isAlphaNum, isSpace)
+import Data.Functor ((<&>))
 import Data.List (isPrefixOf, nub, sortOn)
 import Data.Maybe (catMaybes, fromMaybe, isJust, listToMaybe, mapMaybe)
 import Data.Text (Text)
@@ -39,6 +44,41 @@ import System.FilePath (joinPath, makeRelative, splitDirectories, takeDirectory,
 -- pack used to declare, learned from it ('ctFiles' set by 'findSibling').
 data Sibling = Sibling {sbTest :: FilePath, sbOwner :: Text, sbFakes :: [(Text, Text, Text)], sbAct :: Text, sbFake :: FakeShape, sbCtor :: CtorShape}
   deriving stock (Eq, Show)
+
+-- | The language one conjure request runs on: the site's, with `[conjure.fake]` and
+-- `[conjure.constructor]` the sibling's when one reads ('clSibling'); else as declared (the
+-- first test's recipe), or neither (the floor). 'clPorts' the service's ports.
+data ConjureLanguage = ConjureLanguage {clLanguage :: Language, clSibling :: Maybe Sibling, clPorts :: [Port]}
+
+-- | Once per conjure request (a resume rebuilds it from the same files): LANG for UNIT of
+-- the module (REL, its text, its test file's text).
+conjureLanguage :: Workspace IO -> Language -> (FilePath, Text, Maybe Text) -> Text -> IO ConjureLanguage
+conjureLanguage ws lang site@(rel, _, _) unit = do
+  ports <- servicePorts ws lang rel
+  findSibling ws lang ports site unit <&> \case
+    Just sb -> ConjureLanguage lang {langConjure = (\cj -> cj {cjFake = Just (sbFake sb), cjConstructor = Just (sbCtor sb)}) <$> langConjure lang} (Just sb) ports
+    Nothing -> ConjureLanguage lang Nothing ports
+
+-- | The conjure def a flag scan of TEST (the test file's current text) uses: with a sibling,
+-- its fakes' classes plus the library doubles TEST binds ('conjuredFakes'), re-derived at
+-- every scan (a fill that binds a @Mock()@ is seen); without one, as declared.
+scanDef :: ConjureLanguage -> Text -> Maybe ConjureDef
+scanDef cl test = case clSibling cl of
+  Nothing -> langConjure (clLanguage cl)
+  Just _ -> (\cj -> cj {cjFake = learned <$> cjFake cj}) <$> langConjure (clLanguage cl)
+  where
+    learned fs = fs {fsClasses = nub (fsClasses fs ++ conjuredFakes (fsBound fs) (clPorts cl) test)}
+
+-- | The steps.log words for the conjure language: the sibling read, or the fallback taken.
+siblingLine :: ConjureLanguage -> [Text]
+siblingLine cl = case clSibling cl of
+  Just sb ->
+    let fs = sbFake sb
+        ct = sbCtor sb
+     in [ "conjure-sibling", T.pack (sbTest sb), "owner=" <> sbOwner sb, "start=" <> ctStart ct, "files=" <> T.intercalate "," (ctFiles ct)
+        , "fakes=" <> T.intercalate "," [p <> ":" <> ty <> "=" <> c | (ty, c, p) <- sbFakes sb]
+        , "classes=" <> T.intercalate "," (fsClasses fs), "prefixes=" <> T.intercalate "," (fsPrefixes fs), "keyword=" <> fromMaybe "-" (fsKeyword fs), "bound=" <> fsBound fs, "act=" <> sbAct sb ]
+  Nothing -> ["conjure-sibling", "none", maybe "floor" (\cj -> if isJust (cjFake cj) || isJust (cjConstructor cj) then "declared shapes" else "floor") (langConjure (clLanguage cl))]
 
 -- | The shapes a sibling test teaches for UNIT, by LANG's `[unit] annotation` and the
 -- service's PORTS: (test path TP, test text TT, subject text ST).
