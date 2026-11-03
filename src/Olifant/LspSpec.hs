@@ -1574,9 +1574,21 @@ conjureSpec = describe "olifant/conjure" $ do
         [l | l <- logged, "conjure-sibling" `T.isInfixOf` l] `shouldSatisfy` \case
           [l] -> "create_booking__test.py" `T.isInfixOf` l && "owner=CreateBooking" `T.isInfixOf` l
           _ -> False
-  it "with no sibling and no tables, conjure says floor" $
+  it "with no sibling in the radius, a test elsewhere in the project that builds a same-shaped owner teaches (ruling B)" $
     withPython [(cbModule, morningModule), (cbTest, morningTest)] $ \ports dir -> do
       mapM_ (removeFile . (dir </>)) ["src/bistro/booking/commands/create_booking__test.py", "src/bistro/booking/queries/get_day_schedule__test.py"]
+      _ <- inProcessWith ports dir $ do
+        doc <- openDoc cbModule "python"
+        text <- documentContents doc
+        let handleAt = length (takeWhile (not . ("    def handle(" `T.isPrefixOf`)) (T.lines text))
+        blockMove (Proxy :: Proxy "olifant/conjure") (object ["textDocument" .= object ["uri" .= (doc ^. L.uri)], "position" .= object ["line" .= (handleAt + 1 :: Int), "character" .= (0 :: Int)]])
+      logged <- T.lines <$> TIO.readFile (dir </> ".olifant/state/steps.log")
+      [T.unwords (T.words l) | l <- logged, "conjure-sibling" `T.isInfixOf` l] `shouldSatisfy` \case
+        [l] -> "routes__test.py" `T.isInfixOf` l && "owner=CreateBooking" `T.isInfixOf` l && "fakes=bookings:BookingRepository=InMemoryBookingRepository,ids:IdGenerator=InMemoryIdGenerator" `T.isInfixOf` l
+        _ -> False
+  it "with no sibling anywhere and no tables, conjure says floor" $
+    withPython [(cbModule, morningModule), (cbTest, morningTest)] $ \ports dir -> do
+      mapM_ (removeFile . (dir </>)) ["src/bistro/booking/commands/create_booking__test.py", "src/bistro/booking/queries/get_day_schedule__test.py", "src/bistro/web/bookings/routes__test.py"]
       _ <- inProcessWith ports dir $ do
         doc <- openDoc cbModule "python"
         text <- documentContents doc

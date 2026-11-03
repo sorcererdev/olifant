@@ -9,7 +9,8 @@ import Olifant.Language (CtorShape (..), FakeShape (..), Language (..), shippedL
 import Olifant.Server.ConjureNextSpec (cancelTestText, pyHtmx)
 import Olifant.Server.ConjureScan (Port (..))
 import Olifant.Server.Sibling
-import Olifant.Workspace (diskWorkspace)
+import Olifant.Workspace (Workspace (..), diskWorkspace)
+import System.FilePath (normalise, (</>))
 import Test.Hspec
 
 commands :: FilePath
@@ -52,6 +53,10 @@ spec = describe "Olifant.Server.Sibling" $ do
     let Just td = langTest py
     siblingCandidates td "a/b/x.py" ["a/b/x.py", "a/b/w.py", "a/c/y.py", "a/c/d/z.py", "a/b/x__test.py"]
       `shouldBe` ["a/b/x.py", "a/b/w.py", "a/c/y.py", "a/c/d/z.py"]
+  it "candidates: then the whole project, nearest folder first, then by name (ruling B)" $ do
+    let Just td = langTest py
+    siblingCandidates td "a/b/x.py" ["z/q/r.py", "a/b/x.py", "web/v.py", "a/c/y.py", "web/v__test.py", "top.py"]
+      `shouldBe` ["a/b/x.py", "a/c/y.py", "top.py", "web/v.py", "z/q/r.py"]
   it "no [unit] annotation, no sibling" $ do
     tt <- TIO.readFile (commands <> "create_booking__test.py")
     st <- TIO.readFile (commands <> "create_booking.py")
@@ -65,6 +70,28 @@ spec = describe "Olifant.Server.Sibling" $ do
     Just sb <- findSibling ws py found (rel, st, Nothing) "handle"
     sbTest sb `shouldSatisfy` (`elem` ["src/bistro/booking/queries/get_day_schedule__test.py", "src/bistro/booking/commands/create_booking__test.py"])
     ctFiles (sbCtor sb) `shouldSatisfy` (not . null)
+  it "no sibling in the radius: a test elsewhere that builds a same-shaped owner teaches (ruling B)" $ do
+    let disk = diskWorkspace "packs/python-htmx/fixtures/app"
+        gone = ["src/bistro/booking/commands/create_booking__test.py", "src/bistro/booking/queries/get_day_schedule__test.py"]
+        ws = disk {readText = \p -> if p `elem` gone then pure Nothing else readText disk p, listFiles = \d -> filter (\f -> normalise (d </> f) `notElem` gone) <$> listFiles disk d}
+        rel = "src/bistro/booking/commands/cancel_booking.py"
+        st = "class CancelBooking:\n    def __init__(self) -> None:\n        pass\n\n    def handle(self, input: CancelBookingInput) -> CancelBookingOutput:\n        return Ok(None)\n"
+    found <- servicePorts ws py rel
+    Just sb <- findSibling ws py found (rel, st, Just cancelTestText) "handle"
+    sbTest sb `shouldBe` "src/bistro/web/bookings/routes__test.py"
+    sbOwner sb `shouldBe` "CreateBooking"
+    sbFakes sb `shouldBe` [("BookingRepository", "InMemoryBookingRepository", "bookings"), ("IdGenerator", "InMemoryIdGenerator", "ids")]
+    ctStart (sbCtor sb) `shouldBe` "def __init__\\("
+    ctFiles (sbCtor sb) `shouldBe` ["commands/**/*.py"]
+    fsBound (sbFake sb) `shouldBe` oldBound
+    fsKeyword (sbFake sb) `shouldBe` Just "{= param =}={= var =}"
+  it "the project ring needs an owner that holds the unit: a test building another shape teaches nothing" $ do
+    let disk = diskWorkspace "packs/python-htmx/fixtures/app"
+        ws = disk {readText = \p -> if "__test.py" `T.isSuffixOf` T.pack p && "booking/" `T.isInfixOf` T.pack p then pure Nothing else readText disk p}
+        rel = "src/bistro/booking/commands/cancel_booking.py"
+        st = "class CancelBooking:\n    def __init__(self) -> None:\n        pass\n\n    def run(self, input: CancelBookingInput) -> CancelBookingOutput:\n        return Ok(None)\n"
+    found <- servicePorts ws py rel
+    findSibling ws py found (rel, st, Just cancelTestText) "run" >>= (`shouldBe` Nothing) . fmap sbTest
   it "Rust: a sibling in mod tests reads Arc<dyn X> ports" $ do
     let rust = shippedLanguageNow "rust"
         st = T.unlines

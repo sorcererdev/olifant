@@ -282,13 +282,19 @@ by `[test]`. It names no literal of any language (`ConjureNeutralSpec` reads it)
     `=` or `:` between them; `sbAct` is `plain`, `await` or `.await` from the line calling the unit.
 - **`siblingCandidates`** is the radius: the module itself, the other source files of its
   folder by name, then those of the folders beside it (under its parent) by distance, then by
-  name; test files and other extensions out. There is no project-wide ring: a service's first
-  test with no tables conjures at the floor.
+  name (`inRadius`: under the folder above the module's); then the **project ring** (user ruling
+  B), every other source file of the project by folder distance (`apart`), then by name; test
+  files and other extensions out.
 - **`findSibling ws lang ports (rel, module text, its test text) unit`** reads every candidate
   whose `tests_for` file has tests and reads, nearest first, and merges them: the nearest gives
   the owner, constructor, keyword and act; the fakes' classes and prefixes are all of theirs, the
   binding form the nearest that shows one. The constructor's `files` are the sibling's and the
-  unit's folders under the service base (`serviceBase`).
+  unit's folders under the service base (`serviceBase`). Only when no candidate in the radius
+  reads does it walk the project ring (`readRing`): a candidate counts only if it holds an owner
+  of the same shape (`holders`: a class-like definition whose span holds a definition named the
+  unit), and is tried with its own test, then with every test of the project that calls that
+  owner (`Owner(`), the owner checked again on the result. Only when that finds nothing either
+  do the declared tables (or the floor) apply.
 - **`servicePorts`** is the service's ports (`[conjure] service` and `[conjure.port]`), none
   without them; **`conjuredFakes bound ports test`** finds the test being conjured's library
   doubles (a `Mock()` bound to a variable named after a port's last word, or one whose attribute

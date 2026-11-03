@@ -1267,16 +1267,20 @@ owns the unit and how its constructor starts, what each of its parameters is cal
 port it takes (by `[unit] annotation`), the fake handed for it (`InMemoryBookingRepository`
 for `bookings`), how a fake is bound (`bookings = InMemoryBookingRepository(…)`) and handed in
 (`bookings=bookings`). Conjure looks in the module's own test file, then the test files of the
-other modules in its folder, then those of the folders beside it, nearest first. A library
+other modules in its folder, then those of the folders beside it, nearest first. When none of
+those reads, it looks through the whole project for a test that builds a class of the same
+shape (one holding a definition named like the unit being conjured, `handle`), so a new
+service's first command learns from, say, a route's test that builds another service's
+`CreateBooking(bookings=…, ids=…)`. A library
 double the test being conjured binds (`repository = Mock()`) is a fake when its variable
 names a port (`repository`) or the test sets one of its methods. python-htmx declares neither
 table any more. Conjure's steps log says which it used, in a `conjure-sibling` line
 ([chapter 18](18-tdd-in-the-editor.md#conjuring)).
 
-**A service's first test** has no sibling. It conjures at the floor (the test's body or the
-function's, no ports), unless the language declares the two tables, which are then the
-fallback. To have conjure wire ports in a new service before its first test exists, copy them
-into the project's `.olifant/languages/python.toml` and delete them once a sibling test exists:
+**A project with no such test anywhere** has no sibling. It conjures at the floor (the test's
+body or the function's, no ports), unless the language declares the two tables, which are then
+the fallback. Only then are they worth copying, into the project's
+`.olifant/languages/python.toml`, to delete once a sibling test exists:
 
 ```toml
 [conjure.fake]
