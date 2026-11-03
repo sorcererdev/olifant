@@ -222,7 +222,11 @@ conjure's context), `Server/Stub.hs` (a stub's import line), `Language/Check.hs`
 a test file's group when `file_group` is absent) and the fill phase: `example` (`imExample`, a
 name and a fill) becomes `FillHole`'s `fhImportExample`, the example `Model.userPrompt` shows
 under its imports rule (none: the rule alone).
-`moduleOf` (`Adapter.hs`) is the pure path-to-module function.
+`moduleOf` (`Adapter.hs`) is the pure path-to-module function, and `moduleBase` beside it the
+path up to the end of the `strip` it applies (`billing/billing-service/src/` for a Rust crate's
+file, `src/` for Haskell's): `importedContext` takes (file, text) pairs and renders each
+import's `paths` over `{= path =}` and that importing file's `{= base =}`, so Rust resolves
+`use crate::…` inside its own crate.
 
 ### `[check]`: the compiler's report
 

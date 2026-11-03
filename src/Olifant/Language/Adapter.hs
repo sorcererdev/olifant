@@ -29,6 +29,7 @@ module Olifant.Language.Adapter
   , ModuleOf (..)
   , Resolve (..)
   , moduleOf
+  , moduleBase
   , MutateDef (..)
   , Transform (..)
   , parseLanguage
@@ -302,6 +303,18 @@ moduleOf mo path = T.intercalate (moSeparator mo) (dropTrailing (filter (not . T
       Just rx -> case matchOnceText rx (T.unpack t) of
         Just (before, _, after) -> Just (T.pack before <> T.pack after)
         Nothing -> Nothing
+
+-- | PATH up to the end of 'moduleOf''s first matching `strip` (what it removes): what a module's
+-- path is relative to (@billing/billing-service/src/@ for a Rust crate's file, @src/@ for
+-- Haskell's); empty when no `strip` matches. `[imports] paths` render it as @{= base =}@.
+moduleBase :: ModuleOf -> FilePath -> FilePath
+moduleBase mo path = case [b | re <- moStrip mo, Just b <- [removed re]] of
+  b : _ -> b
+  [] -> ""
+  where
+    removed re = case makeRegexM (T.unpack re) :: Maybe Regex of
+      Nothing -> Nothing
+      Just rx -> (\(_, _, after) -> take (length path - length after) path) <$> matchOnceText rx path
 
 -- | Where a grammar's C sources come from: a folder a pack or the project
 -- carries (resolved against its @languages/@), or a git repository at a
@@ -727,7 +740,7 @@ languageFrom presets name grammarDir top = do
           onlyKeys ["pattern", "module", "names"] r
           let group k = int >=> \n -> if n > 0 then Right (fromIntegral n) else Left ("`[[imports.resolve]] " <> k <> "`: expected a group number above 0")
           Resolve <$> required "pattern" (text >=> validRegex "[[imports.resolve]] pattern") r <*> required "module" (group "module") r <*> optional "names" (group "names") r)) t
-        paths <- fromMaybe [] <$> optional "paths" (list (text >=> \p -> tmpl p >>= \tp -> if freeVariables tp `S.isSubsetOf` S.fromList ["path"] then Right p else Left "`[imports] paths` may use only {= path =}")) t
+        paths <- fromMaybe [] <$> optional "paths" (list (text >=> \p -> tmpl p >>= \tp -> if freeVariables tp `S.isSubsetOf` S.fromList ["path", "base"] then Right p else Left "`[imports] paths` may use only {= path =} and {= base =}")) t
         example <- optional "example" (table >=> \e -> do
           onlyKeys ["needs", "fill"] e
           (,) <$> required "needs" text e <*> required "fill" text e) t

@@ -32,7 +32,7 @@ import Olifant.Anchor (locateContainers)
 import Olifant.App (Ports (..), Project (..))
 import Olifant.Catalog (catalogLanguages)
 import Olifant.Generation.FillPhase (projectFiles)
-import Olifant.Language (ImportsDef (..), Language (..), ModuleOf (..), Resolve (..), Syntax, TestId, TestRun, languageFor, moduleOf, runTestsIn, testsForFile)
+import Olifant.Language (ImportsDef (..), Language (..), ModuleOf (..), Resolve (..), Syntax, TestId, TestRun, languageFor, moduleBase, moduleOf, runTestsIn, testsForFile)
 import Olifant.Template (Value (..), parseTemplate, render)
 import Text.Regex.TDFA (AllTextSubmatches (..), Regex, makeRegexM, matchM)
 import Olifant.Server.State (ServerState (..), appendStepLine, projectFor)
@@ -89,26 +89,30 @@ importOf lang moduleRel qualified = do
   either (const Nothing) Just (render (M.fromList [("module", VText m), ("owner", VText owner)]) tp)
 
 -- | The project modules a conjure sees beside its file and the file beside it
--- (KNOWN, never repeated): the modules the import lines of TEXTS name (by
--- the language's `[[imports.resolve]]`), each found as the first of its
--- `[imports] paths` that is a file, then what those import (one level, so
+-- (FILES: their paths, never repeated, and texts): the modules the import lines of each
+-- name (by the language's `[[imports.resolve]]`), each found as the first of its
+-- `[imports] paths` that is a file (rendered over @{= path =}@ and @{= base =}@, the
+-- importing file's 'moduleBase'), then what those import (one level, so
 -- the cap cuts these first); in import order, at most 'importedFiles' of
 -- them, each at most 'importedLines' lines (cut with a comment saying how
 -- many more) and 'importedTotal' in all. A module that is no file of the
 -- project (the standard library, a dependency) is skipped. A language with
 -- no `resolve` sees none.
-importedContext :: Workspace IO -> Language -> [FilePath] -> [Text] -> IO [(FilePath, Text)]
-importedContext ws lang known texts = case langImportsDef lang of
+importedContext :: Workspace IO -> Language -> [(FilePath, Text)] -> IO [(FilePath, Text)]
+importedContext ws lang files = case langImportsDef lang of
   Just im | not (null (imResolve im)) -> do
     let sep = maybe "." moSeparator (imModuleOf im)
-        resolved seen ts = do
-          found <- forM (concatMap (importedModulesWith (langComment lang) sep (imResolve im)) ts) $ \m ->
+        known = map fst files
+        baseOf f = maybe "" (`moduleBase` f) (imModuleOf im)
+        resolved seen fs = do
+          found <- forM [(baseOf f, m) | (f, t) <- fs, m <- importedModulesWith (langComment lang) sep (imResolve im) t] $ \(base, m) ->
             let path = T.intercalate "/" (filter (not . T.null) (T.splitOn sep m))
-             in firstFile [T.unpack p | Right tp <- map parseTemplate (imPaths im), Right p <- [render (M.singleton "path" (VText path)) tp]]
+                vars = M.fromList [("path", VText path), ("base", VText (T.pack base))]
+             in firstFile [normalisePath (T.unpack p) | Right tp <- map parseTemplate (imPaths im), Right p <- [render vars tp]]
           pure (dedupe [(p, t) | Just (p, t) <- found, p `notElem` seen, not (T.null (T.strip t))])
-    direct <- resolved known texts
+    direct <- resolved known files
     -- one level further: what those import (a port's models)
-    further <- resolved (known ++ map fst direct) (map snd direct)
+    further <- resolved (known ++ map fst direct) direct
     pure (capped importedTotal (take importedFiles (direct ++ further)))
   _ -> pure []
   where

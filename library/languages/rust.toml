@@ -41,6 +41,20 @@ assertion = ['^[[:space:]]*(debug_)?assert(_eq|_ne)?!']
 # in the file's own `mod tests` need no import (`use super::*;`).
 [imports]
 module_of = { strip = ["^(.*/)?src/"], drop = ["lib", "main", "mod"], separator = "::" }
+# A conjure sees the crate's modules its file imports (`use crate::…`), found
+# under the file's own crate (`{= base =}`: the path up to its `src/`). A
+# `use` of another crate is not resolved.
+paths = ["{= base =}{= path =}.rs", "{= base =}{= path =}/mod.rs"]
+
+[[imports.resolve]]
+pattern = '^use crate::([[:alnum:]_:]+)::\{(.*)\};'
+module = 1
+names = 2
+
+[[imports.resolve]]
+pattern = '^use crate::([[:alnum:]_:]+)::([[:alnum:]_]+);'
+module = 1
+names = 2
 
 # cargo, over the whole workspace (spec §5.6, §9). Diesel adapters need libpq
 # and the template's real db crate, so they are left out of the build. One

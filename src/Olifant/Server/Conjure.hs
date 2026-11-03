@@ -452,7 +452,7 @@ conjureWith progress path line selected resuming s0 = do
                   name <- maybe (throwE ("no test at line " <> tshow line)) pure (testCaseAtIn lang (Just rel) working (fst at))
                   except (testConjure lang working at (T.pack testRel <> "::" <> name) (siteModuleRel site) moduleText)
                 else except (functionConjure lang working at unit testRel testText before)
-            imported <- lift (importedContext ws' lang (rel : map fst context) (working : map snd context))
+            imported <- lift (importedContext ws' lang ((rel, working) : context))
             -- every hint the person gave stays in force, round after round
             let hints = [("the person says", h) | Just (re, pd) <- [resuming], h <- [h' | ConjureStep _ (StepHint h') _ _ <- pdSteps pd] ++ maybe [] pure (reHint re)]
             pure (Working project {prWorkspace = ws'} working at testText before template verify (context ++ imported ++ hints))
@@ -557,7 +557,7 @@ conjureWith progress path line selected resuming s0 = do
                     ++ [("the test's errors", knownNote ownKnown) | not (null ownKnown)]
                     ++ [("the person says", h) | Just h <- [reHint re]]
                 ws' = prWorkspace (wkProject wk)
-            imported <- lift (importedContext ws' lang (testRel : map fst context') (working : map snd context'))
+            imported <- lift (importedContext ws' lang ((testRel, working) : context'))
             rounds' <- lift (newIORef 0)
             fill [] (worded (fixWords (shortName (paPrefixes plain) tid)) progress) rounds' s' (wkProject wk) testRel working template verify (context' ++ imported) filler (const Nothing)
           stop <- lift (cancelled (ssCancel s))

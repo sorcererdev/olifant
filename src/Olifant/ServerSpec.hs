@@ -1048,7 +1048,18 @@ siteSpecs = describe "a conjure's imported modules" $ do
             , "[imports]", "module_of = { strip = [\"^src/\"], separator = \".\" }", "paths = [\"src/{= path =}.hs\"]"
             , "[[imports.resolve]]", "pattern = \"^import +(qualified +)?([A-Z][A-Za-z0-9_.]*)\"", "module = 2" ]
     (ws, _) <- memoryWorkspace [("src/A.hs", "module A where\nimport qualified Data.Map as M\nimport B.C\n"), ("src/B/C.hs", "module B.C where\nc = 1\n")]
-    importedContext ws hs ["src/A.hs"] ["module A where\nimport qualified Data.Map as M\nimport B.C\n"] `shouldReturn` [("src/B/C.hs", "module B.C where\nc = 1\n")]
+    importedContext ws hs [("src/A.hs", "module A where\nimport qualified Data.Map as M\nimport B.C\n")] `shouldReturn` [("src/B/C.hs", "module B.C where\nc = 1\n")]
+  it "Rust: use crate:: names its crate's files" $ do
+    rust <- shippedLanguage "rust" []
+    let service = "use crate::ports::{Invoices, Clock};\nuse std::sync::Arc;\n\npub struct Billing;\n"
+        portsText = "pub trait Invoices {}\npub trait Clock {}\n"
+    (ws, _) <- memoryWorkspace [("billing/billing-service/src/service.rs", service), ("billing/billing-service/src/ports.rs", portsText), ("other/src/ports.rs", "pub trait Other {}\n")]
+    importedContext ws rust [("billing/billing-service/src/service.rs", service)] `shouldReturn` [("billing/billing-service/src/ports.rs", portsText)]
+  it "Haskell: import [qualified] M names src/M.hs" $ do
+    hs <- shippedLanguage "haskell" []
+    let app = "module Olifant.App where\nimport qualified Olifant.Language as L\nimport Data.Text (Text)\n"
+    (ws, _) <- memoryWorkspace [("src/Olifant/App.hs", app), ("src/Olifant/Language.hs", "module Olifant.Language where\nx = 1\n")]
+    importedContext ws hs [("src/Olifant/App.hs", app)] `shouldReturn` [("src/Olifant/Language.hs", "module Olifant.Language where\nx = 1\n")]
 
 root, moduleRel, testRel :: FilePath
 root = "/r"
