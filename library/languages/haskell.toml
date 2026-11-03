@@ -71,6 +71,8 @@ wrap = "olifantHole = \"{= fill =}\""
 # The unit: the innermost definition at the cursor (from olifant's Haskell
 # queries) is what `conjure` conjures and `stub` stubs a test for.
 [unit]
+# A name's declared type (a parameter's, a field's): the last non-empty group.
+annotation = '{= name =}[[:space:]]*::[[:space:]]*([^,}]+)'
 # A function is its signature and its equations: units of one name, at one
 # indentation, with only blank lines between, are one.
 join = true
@@ -92,6 +94,5 @@ integer = "Int"
 nothing = "()"
 optional = "Maybe {= type =}"
 param = "{= name =} :: {= type =}"
-annotation = '{= name =}[[:space:]]*::[[:space:]]*([^,}]+)'
 checks_none = ['{= name =} `shouldBe` Nothing', 'isNothing {= name =}']
 record = '^data {= name =}([^[:alnum:]_]|$)'

@@ -121,6 +121,10 @@ data Language = Language
   , langUnitNames :: [Text]
   -- ^ `[unit] name`: POSIX expressions over a unit's line; the first that
   -- matches names it by its last group (the whole match when it has none)
+  , langUnitAnnotation :: Maybe Text
+  -- ^ `[unit] annotation`: an expression over @{= name =}@ matching that
+  -- name's declared type (a parameter's, a field's); the type is its last
+  -- non-empty group
   , langUnitJoin :: Bool
   -- ^ `[unit] join`: units of one name separated only by blank lines are one
   -- (a Haskell signature and its equations)
@@ -251,15 +255,14 @@ data Advice = Advice {avWhen :: Text, avSay :: Text}
 -- literal; 'tyNothing' (`nothing`), what a call whose result is unused returns;
 -- 'tyOptional' (`optional`), a template over @{= type =}@ for a result that may be absent;
 -- 'tyParam' (`param`), a template over @{= name =}@ and @{= type =}@ writing one parameter;
--- 'tyAnnotation' (`annotation`), an expression over @{= name =}@ whose last group is that
--- name's declared type; 'tyReturns' (`returns`), an expression over a method's line, group 1
+-- 'tyReturns' (`returns`), an expression over a method's line, group 1
 -- what it returns; 'tyAssigned' (`assigned`), an expression over a line assigning a call's
 -- result, its last group the variable; 'tyChecksNone' (`checks_none`), expressions over
 -- @{= name =}@ testing a result for absence; 'tyRecord' (`record`), an expression over
 -- @{= name =}@ starting a type with fields; 'tyMethod' (`method`), a template over @{= name =}@,
 -- @{= params =}@ (each @, @ and `param`) and @{= returns =}@ writing a method's signature.
 data TypesDef = TypesDef
-  { tyString, tyInteger, tyNothing, tyOptional, tyParam, tyAnnotation, tyReturns, tyAssigned, tyRecord, tyMethod :: Maybe Text
+  { tyString, tyInteger, tyNothing, tyOptional, tyParam, tyReturns, tyAssigned, tyRecord, tyMethod :: Maybe Text
   , tyChecksNone :: [Text]
   }
   deriving stock (Eq, Show)
@@ -647,17 +650,18 @@ languageFrom presets name grammarDir top = do
   conjure <- optional "conjure" (table >=> conjureFrom) top
   types <- optional "types" (table >=> typesFrom) top
   unit <- fromMaybe M.empty <$> optional "unit" table top
-  onlyKeys ["kinds", "name", "join"] unit
+  onlyKeys ["kinds", "name", "join", "annotation"] unit
   (unitKinds, unitProvider) <- maybe ([], Nothing) id <$> optional "kinds" (ruleOrProvider "unit.kinds" (list text) []) unit
   anchorProvider <- optional "anchors" (providerFrom "anchors") top
   unitNames <- fromMaybe defaultUnitNames <$> optional "name" (list (text >=> validRegex "[unit] name")) unit
   unitJoin <- fromMaybe False <$> optional "join" bool unit
+  unitAnnotation <- optional "annotation" (text >=> templateOver "[unit] annotation" ["name"] >=> \x -> validRegex "[unit] annotation" (T.replace "{= name =}" "x" x) >> Right x) unit
   mutate <- fromMaybe [] <$> optional "mutate" (list (table >=> mutateFrom)) top
   unitWords <- fromMaybe defaultUnitWords <$> optional "unit_words" text top
   ignore <- fromMaybe [] <$> optional "ignore" (list (text >=> folderName)) top
   armSeparator <- fromMaybe "" <$> optional "arm_separator" text top
   loneArmSpaced <- fromMaybe False <$> optional "lone_arm_spaced" bool top
-  pure (Language name files comment grammar targets placeholder branch check indent holes imports importsDef separator lineLength importMerge keywords test unitKinds unitNames unitJoin unitWords armSeparator loneArmSpaced opensBlock emptyStatement assertion stubLines conjure types unitProvider anchorProvider mutate [] M.empty ignore [])
+  pure (Language name files comment grammar targets placeholder branch check indent holes imports importsDef separator lineLength importMerge keywords test unitKinds unitNames unitAnnotation unitJoin unitWords armSeparator loneArmSpaced opensBlock emptyStatement assertion stubLines conjure types unitProvider anchorProvider mutate [] M.empty ignore [])
   where
     tmpl = first describeTemplateError . parseTemplate
     -- a slot's value: the rule, or `{ provider = [...] }` alone in its place
@@ -755,12 +759,12 @@ languageFrom presets name grammarDir top = do
         pure (line, Just (ImportsDef write mo resolve paths example spaced whenEmpty))
       other -> Left ("`imports`: expected an expression or an [imports] table, got " <> describeTree other)
     typesFrom t = do
-      onlyKeys ["string", "integer", "nothing", "optional", "param", "annotation", "returns", "assigned", "checks_none", "record", "method"] t
+      onlyKeys ["string", "integer", "nothing", "optional", "param", "returns", "assigned", "checks_none", "record", "method"] t
       let o k = optional k text t
           -- a template over VARS; an expression over @{= name =}@, valid once it is filled
           over k vars = optional k (text >=> templateOver ("[types] " <> k) vars) t
           named k = text >=> templateOver ("[types] " <> k) ["name"] >=> \x -> validRegex ("[types] " <> k) (T.replace "{= name =}" "x" x) >> Right x
-      TypesDef <$> o "string" <*> o "integer" <*> o "nothing" <*> over "optional" ["type"] <*> over "param" ["name", "type"] <*> optional "annotation" (named "annotation") t <*> optional "returns" (text >=> validRegex "[types] returns") t <*> optional "assigned" (text >=> validRegex "[types] assigned") t <*> optional "record" (named "record") t <*> over "method" ["name", "params", "returns"]
+      TypesDef <$> o "string" <*> o "integer" <*> o "nothing" <*> over "optional" ["type"] <*> over "param" ["name", "type"] <*> optional "returns" (text >=> validRegex "[types] returns") t <*> optional "assigned" (text >=> validRegex "[types] assigned") t <*> optional "record" (named "record") t <*> over "method" ["name", "params", "returns"]
         <*> (fromMaybe [] <$> optional "checks_none" (list (named "checks_none")) t)
     conjureFrom t = do
       onlyKeys ["service", "port", "fake", "constructor", "advice"] t

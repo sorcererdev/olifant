@@ -234,10 +234,10 @@ spec = do
       bad (lang ["[types]", "param = \"{= nme =}: {= type =}\""]) `shouldBe` True
       bad (lang ["[types]", "optional = \"{= typ =} | None\""]) `shouldBe` True
       bad (lang ["[types]", "method = \"{= name =}({= args =})\""]) `shouldBe` True
-      bad (lang ["[types]", "annotation = '{= name =}:[[:space:]]*(['"]) `shouldBe` True
+      bad (lang ["[unit]", "annotation = '{= name =}:[[:space:]]*(['"]) `shouldBe` True
       bad (lang ["[types]", "record = '^class {= nam =}'"]) `shouldBe` True
       bad (lang ["[types]", "checks_none = ['{= name =} is (']"]) `shouldBe` True
-      bad (lang ["[types]", "param = \"{= name =}: {= type =}\"", "optional = \"{= type =} | None\"", "method = \"{= name =}(self{= params =}) -> {= returns =}\"", "annotation = '{= name =}:[[:space:]]*([^,)=]+)'", "record = '^class {= name =}[(:]'", "checks_none = ['{= name =} is None']"]) `shouldBe` False
+      bad (lang ["[types]", "param = \"{= name =}: {= type =}\"", "optional = \"{= type =} | None\"", "method = \"{= name =}(self{= params =}) -> {= returns =}\"", "record = '^class {= name =}[(:]'", "checks_none = ['{= name =} is None']"]) `shouldBe` False
     it "an undefined-name expression with no group is an error (the name is its last group)" $ do
       bad (lang ["[check]", "command = [\"c\"]", "format = \"pyright-json\"", "undefined = ['is not defined']"]) `shouldBe` True
       bad (lang ["[check]", "command = [\"c\"]", "format = \"pyright-json\"", "undefined = [{ pattern = 'is not defined' }]"]) `shouldBe` True
@@ -741,6 +741,11 @@ spec = do
       fmap langIgnore (parseLanguage "x" "/x" (with "[\"deps\", \".venv\"]")) `shouldBe` Right ["deps", ".venv"]
       either (\e -> "`ignore`" `T.isInfixOf` e && "build/out" `T.isInfixOf` e) (const False) (parseLanguage "x" "/x" (with "[\"build/out\"]")) `shouldBe` True
       either (T.isInfixOf "`ignore`") (const False) (parseLanguage "x" "/x" (with "[\"\"]")) `shouldBe` True
+    it "[unit] annotation is a template over name; [types] annotation is unknown" $ do
+      langUnitAnnotation (shippedLanguageNow "python") `shouldBe` Just "{= name =}:[[:space:]]*([^,)=]+)"
+      let base = "files = [\"**/*.x\"]\ncomment = \"#\"\ngrammar = \"x\"\n"
+      either (T.isInfixOf "annotation") (const False) (parseLanguage "x" "/x" (base <> "[types]\nannotation = \"x\"\n")) `shouldBe` True
+      either (T.isInfixOf "[unit] annotation") (const False) (parseLanguage "x" "/x" (base <> "[unit]\nannotation = '{= name =}('\n")) `shouldBe` True
     it "[unit] name is a list of valid expressions and join a bool" $ do
       let base = "files = [\"**/*.x\"]\ncomment = \"#\"\ngrammar = \"x\"\n[unit]\nkinds = [\"f\"]\n"
       fmap (\l -> (langUnitNames l, langUnitJoin l)) (parseLanguage "x" "/x" (base <> "name = ['^(a)']\njoin = true\n")) `shouldBe` Right (["^(a)"], True)

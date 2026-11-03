@@ -10,7 +10,9 @@ keywords = ["False", "None", "True", "and", "as", "assert", "async", "await", "b
 # The unit (`conjure`, `stub`): the innermost function or class at the cursor,
 # from the grammar's queries; `name` finds its def line (a decorator's is the
 # def below it).
-unit = { name = ['^[[:space:]]*(async[[:space:]]+)?(def|class)[[:space:]]+([^[:space:](:[]+)'] }
+# `annotation`: a name's declared type (a parameter's, a field's), the last
+# non-empty group.
+unit = { name = ['^[[:space:]]*(async[[:space:]]+)?(def|class)[[:space:]]+([^[:space:](:[]+)'], annotation = '{= name =}:[[:space:]]*([^,)=]+)' }
 comment = "#"
 # The grammar: tree-sitter-python 0.25.0 (the revision ast-grep 0.45.3 pins), built once into
 # olifant's cache and loaded at run time.
@@ -204,7 +206,6 @@ integer = "int"
 nothing = "None"
 optional = "{= type =} | None"
 param = "{= name =}: {= type =}"
-annotation = '{= name =}:[[:space:]]*([^,)=]+)'
 returns = '->(.*)$'
 assigned = '^[[:space:]]*([[:alnum:]_]+)[[:space:]]*=[^=]'
 checks_none = ['{= name =} is None', '{= name =} is not None']

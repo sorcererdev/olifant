@@ -253,12 +253,16 @@ runs, caps (`capMutants 20`) and orders them. Only `python.toml` has any (17 ope
 
 ### `[types]`, `[conjure]`
 
-`langTypes` (`TypesDef`: `string, integer, nothing, optional, param, annotation, returns,
-assigned, checks_none, record, method`) and `langConjure` (`ConjureDef`: `service`, `port`
+`langTypes` (`TypesDef`: `string, integer, nothing, optional, param, returns, assigned,
+checks_none, record, method`) and `langConjure` (`ConjureDef`: `service`, `port`
 with its `add` and `adapters`, `fake`, `constructor`, `advice`) belong to the pack and are read
 only by conjure, in `Server/Conjure.hs` and `Server/ConjureScan.hs`: [chapter 4](04-conjure.md#the-conjure-shapes-and-the-floor)
 has the table of which field feeds which function. A language without them conjures at the
-floor. What a pack *does* there is named here too: `[conjure.port] add` and `adapters` are the
+floor. A name's declared type is the language's, not the pack's: `[unit] annotation`
+(`langUnitAnnotation`, beside `langUnitNames`; it was `[types] annotation`), an expression over
+`{= name =}` whose last non-empty group is the type. `methodSignature` reads it, and
+`ConjureScan.ctorParams` takes a constructor parameter's type from its `param`'s last non-empty
+group the same way (Rust's `Arc<dyn X>` is `X`). What a pack *does* there is named here too: `[conjure.port] add` and `adapters` are the
 ids of the pack's generators that add a method a port lacks, so the engine names no generator
 of its own. The `conjure shapes` row lists `port.add` and `advice` when present, and says
 "(no [conjure.port] add: a method a port lacks is yours to add)" for a port without `add`.

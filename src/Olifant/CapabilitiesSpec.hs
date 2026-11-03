@@ -41,7 +41,7 @@ spec = do
                  , Right "[check] undefined, missing_member"
                  , Right "[test] undefined, failure"
                  , Right "stub_lines (4)"
-                 , Right "[types] string, integer, nothing, optional, param, annotation, returns, assigned, record, method, checks_none"
+                 , Right "[types] string, integer, nothing, optional, param, returns, assigned, record, method, checks_none"
                  ]
   it "a bare language: fifteen absences, each naming its key" $ do
     let Right bare = parseLanguage "x" "/x" "files = [\"**/*.x\"]\ncomment = \"#\"\ngrammar = \"x\"\n"

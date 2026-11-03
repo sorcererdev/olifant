@@ -207,7 +207,8 @@ snake = T.pack . go . T.unpack
 
 -- | Each constructor of a module's TEXT by the shape (its parameters after a match of its
 -- `start`, to the bracket closing the one it opens): the (param, Type) pairs its `param`
--- matches (group 1, group 2; the rest, @self@ or an untyped one, left out).
+-- matches (group 1 the name, the last non-empty group the type, as `[unit] annotation`
+-- reads it: @Arc<dyn X>@ is @X@; the rest, @self@ or an untyped one, left out).
 ctorParams :: CtorShape -> Text -> [(Text, Text)]
 ctorParams ct text = concat [params a | r <- starts, Just a <- [balanced r]]
   where
@@ -216,7 +217,7 @@ ctorParams ct text = concat [params a | r <- starts, Just a <- [balanced r]]
       Just rx -> [T.pack (drop (o + n) s) | let s = T.unpack text, (o, n) <- map (\m -> m Data.Array.! 0) (matchAll rx s)]
     params a = mapMaybe param (splitTop (T.dropEnd 1 a))
     param p = case groups (ctParam ct) (T.strip p) of
-      Just (_ : n : t : _) | not (T.null n), not (T.null t) -> Just (n, T.strip t)
+      Just (_ : n : rest) | not (T.null n), t : _ <- reverse (filter (not . T.null) rest) -> Just (n, T.strip t)
       _ -> Nothing
     splitTop = go (0 :: Int) ""
     go depth acc t = case T.uncons t of
@@ -331,7 +332,7 @@ methodSignature lang m port body moduleText testText = do
           fieldType ty t (T.drop 1 f)
       | otherwise = Nothing
     -- NAME's declared type on a line, by `annotation`, not inside a longer name
-    declared ty name l = tyAnnotation ty >>= \re -> T.strip <$> lastGroup ("(^|[^[:alnum:]_])" <> fill "name" name re) l
+    declared _ name l = langUnitAnnotation lang >>= \re -> T.strip <$> lastGroup ("(^|[^[:alnum:]_])" <> fill "name" name re) l
     -- @o: T@ on a unit's header line of the module
     paramType ty o = listToMaybe [t | l <- T.lines moduleText, isJust (unitNameOf l), Just t <- [declared ty o l]]
     unitNameOf l = listToMaybe (mapMaybe (`regexName` l) (langUnitNames lang))

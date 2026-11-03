@@ -2,10 +2,11 @@
 
 module Olifant.Server.ConjureScanSpec (spec) where
 
+import Control.Monad (forM_)
 import Data.Maybe (fromJust)
 import Data.Text qualified as T
 import Olifant.Decide
-import Olifant.Language (Advice (..), ConjureDef (..), Language (..), PortShape (..), shippedLanguageNow)
+import Olifant.Language (Advice (..), ConjureDef (..), CtorShape (..), Language (..), PortShape (..), shippedLanguageNow)
 import Olifant.Language.TestUnits (testSourceIn)
 import Olifant.Server.ConjureNextSpec (cancelTestText, pyHtmx)
 import Olifant.Server.ConjureScan
@@ -136,6 +137,11 @@ spec = describe "ConjureScan (Olifant.Server.ConjureScan)" $ do
     methodSignature rust "table" port "let t = self.tables.table(input.table_id);\nif t.is_none() {\n    return NotFound;\n}" moduleText ""
       `shouldBe` Just (", table_id: String", "Option<Table>")
     methodSignature rust "table" port "self.tables.table(input.table_id);" moduleText "" `shouldBe` Just (", table_id: String", "()")
+  it "(r) Rust's annotation reads Arc<dyn X>, Box<dyn X>, &dyn X and a plain type" $ do
+    let Just ann = langUnitAnnotation (shippedLanguageNow "rust")
+        ct = CtorShape [] "" "pub fn new\\(" ("^([[:alnum:]_]+)" <> T.replace "{= name =}" "" ann)
+    forM_ ["Arc<dyn BookingRepository>", "Box<dyn BookingRepository>", "&dyn BookingRepository", "BookingRepository"] $ \ty ->
+      ctorParams ct ("pub fn new(bookings: " <> ty <> ") -> Self {\n") `shouldBe` [("bookings", "BookingRepository")]
   it "(p) an argument a.f whose T's field f has a default: the field's type alone" $ do
     let port = Port "BookingRepository" ["def booking_at(self, table_id: str) -> Booking | None: ..."]
         moduleText = "class Query:\n    seats: int = 0\n\n\nclass Count:\n    def handle(self, query: Query) -> int:\n        return 0\n"

@@ -507,7 +507,7 @@ $ olifant doctor
 ! rust: test messages — absent
   fix: add [test] undefined, [test.failure] to .olifant/languages/rust.toml (the panel shows the test's last assertion)
 ✓ rust: stub bodies — stub_lines (2) · from shipped
-✓ rust: signature facts — [types] string, integer, nothing, optional, param, annotation, returns, assigned, record, method, checks_none · from shipped
+✓ rust: signature facts — [types] string, integer, nothing, optional, param, returns, assigned, record, method, checks_none · from shipped
 ✓ rust: grammar — tree-sitter-rust @77a3747, ABI 15; /Users/you/.cache/olifant/grammars/rust-6eeb063a.dylib
 ✓ rust: queries — tree-sitter-rust @77a3747; impls, imports, tags, textobjects (shipped)
 ✓ plans runner claude — /opt/homebrew/bin/claude; timeout 300 s
