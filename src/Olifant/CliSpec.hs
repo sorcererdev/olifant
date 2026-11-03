@@ -210,7 +210,7 @@ newCodeCheckSpec = describe "check: rules on new code" $ do
     let elm = T.unlines ["module Views exposing (close, open)", "", "close : Int -> Int", "close x =", "    let", "        helper y =", "            y + 1", "    in", "    helper x", "", "open : Int", "open =", "    1"]
     n <- elmLegacyCount tmp [] [("Views.elm", elm)]
     n `shouldBe` Just 2
-  it "says why the count is 0 for a language whose grammar is not loaded and no `count` key" $ do
+  it "a language whose grammar cannot load stops check's count (ruling 8: no count that depends on the machine)" $ do
     tmp <- getTemporaryDirectory
     let files =
           [ ("/w/.olifant/config.toml", "[packs]\np = { path = \"/packs/p\" }\n\n[migrate]\nlegacy = [\"legacy/**\"]\n")
@@ -219,11 +219,9 @@ newCodeCheckSpec = describe "check: rules on new code" $ do
           , ("/w/legacy/Main.elm", "main = 1\n")
           ]
         baseOf _ _ _ = pure (Right ("c0ffee", Nothing))
-    (_, out, _, _) <- runInBase (astGrepSyntax (tmp </> "olifant-test-cache")) baseOf "/w" "" files False ["check"]
-    let Just v = Aeson.decodeStrict (TE.encodeUtf8 out) :: Maybe Aeson.Value
-        line = lookupKey "migration" v >>= lookupKey "line"
-    (lookupKey "migration" v >>= lookupKey "legacy_now") `shouldBe` Just (Aeson.Number 0)
-    line `shouldSatisfy` maybe False (\(Aeson.String t) -> "set `count`" `T.isInfixOf` t)
+    (code, _, err, _) <- runInBase (astGrepSyntax (tmp </> "olifant-test-cache")) baseOf "/w" "" files False ["check"]
+    code `shouldBe` ExitFailure 1
+    err `shouldSatisfy` T.isPrefixOf "olifant: the `elm` grammar is not loaded"
   it "the hint names doctor's grammar row when a language's grammar does not load" $ do
     tmp <- getTemporaryDirectory
     let files =
