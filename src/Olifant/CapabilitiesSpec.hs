@@ -16,8 +16,8 @@ spec :: Spec
 spec = do
   it "olifant's own haskell.toml: the six capabilities of milestone 1 and the stub present; no mutation" $ do
     hs <- packLanguage "haskell" ".olifant"
-    map capName (capabilities hs) `shouldBe` ["units", "diagnostics", "missing cases", "tests", "test units", "anchors", "holes", "test selection", "mutation", "stub", "conjure shapes", "messages", "test messages", "stub bodies", "signature facts"]
-    map (isRight . capHow) (capabilities hs) `shouldBe` replicate 8 True ++ [False, True, False, True, False, True, True]
+    map capName (capabilities hs) `shouldBe` ["units", "diagnostics", "missing cases", "tests", "test units", "anchors", "holes", "test selection", "mutation", "stub", "conjure shapes", "messages", "test messages", "stub bodies", "signature"]
+    map (isRight . capHow) (capabilities hs) `shouldBe` replicate 8 True ++ [False, True, False, True, False, True, False]
     lookup "messages" [(capName c, capHow c) | c <- capabilities hs] `shouldBe` Just (Right "[check] undefined")
     lookup "stub" [(capName c, capHow c) | c <- capabilities hs] `shouldBe` Just (Right "[test] stub at end of do in spec")
     lookup "mutation" [(capName c, capFix c) | c <- capabilities hs] `shouldBe` Just Nothing
@@ -41,7 +41,7 @@ spec = do
                  , Right "[check] undefined, missing_member"
                  , Right "[test] undefined, failure"
                  , Right "stub_lines (4)"
-                 , Right "[types] string, integer, nothing, optional, param, returns, assigned, record, method, checks_none"
+                 , Right "asked of the model, read by port-method's line"
                  ]
   it "a bare language: fifteen absences, each naming its key" $ do
     let Right bare = parseLanguage "x" "/x" "files = [\"**/*.x\"]\ncomment = \"#\"\ngrammar = \"x\"\n"
@@ -60,7 +60,7 @@ spec = do
                  , Left "[check] undefined, missing_member (no undefined names read from the check)"
                  , Left "[test] undefined, [test.failure] (the panel shows the test's last assertion)"
                  , Left "stub_lines (a body is a stub only when it is empty, a comment or a hole)"
-                 , Left "[types] (no new port method's signature is derived)"
+                 , Left "[conjure.port] add (a method a port lacks is yours to add)"
                  ]
   it "a units provider is a capability, and test units and selection by program" $ do
     let Right l = parseLanguage "x" "/x" "files = [\"**/*.x\"]\ncomment = \"#\"\ngrammar = \"x\"\n[unit]\nkinds = { provider = [\"sh\", \"tools/units.sh\"] }\n[test]\ncommand = [\"t\"]\nformat = \"tap\"\ntests_for = \"x\"\nunit = { provider = [\"tests\"] }\nselect = { provider = [\"pick\"] }\n"

@@ -212,11 +212,13 @@ Some pauses need no question either; the engine decides them in code, in this or
 run before round 1 and after every red round. The **scan** reads each failing test for a fake it
 builds and never hands to any call. What a fake is comes from a **sibling test**: the module's own
 test file, else the tests of the modules beside it (its folder first, then the folders next to
-it), the nearest one that already builds the command with a port's fake. Its fakes' classes
+it), the nearest one that already builds the command with a port's fake; when none there does,
+any test in the project that builds a class of the same shape (one that holds the unit being
+conjured, `handle`), such as a route's test that builds `CreateBooking(bookings=…)`. Its fakes' classes
 (`InMemoryBookingRepository`), its prefixes (`InMemory`), how it binds and hands them in, and the
 command's constructor are what conjure reads; a library double the test binds (`repository =
-Mock()`) counts when its variable names a port or the test sets one of its methods. A service's
-first test has no sibling: it conjures at the floor (no scan, no wire), unless the language
+Mock()`) counts when its variable names a port or the test sets one of its methods. A project
+with no such test anywhere has no sibling: it conjures at the floor (no scan, no wire), unless the language
 declares `[conjure.fake]` and `[conjure.constructor]` ([chapter 9](09-packs-and-language-adapters.md#conjures-shapes-conjure)
 has them to copy). A flagged test whose class lacks the fake's port is **wired** (below), silently, when a wire
 generator applies and the port and its parameter can be named; when they cannot, it pauses
@@ -244,12 +246,17 @@ writes nothing is not tried again.
 
 **A missing method.** When the check says a port the unit takes has no such method (pyright's
 `Cannot access attribute "close" for class "BookingRepository"`, by the pack's `[check]
-missing_member`), the conjure pauses (`a port lacks a method: BookingRepository.close`). If the
-signature follows from the call and the test's fake (written in the language's own words by
-`[types]`) and the pack names a generator for it (`[conjure.port] add`,
-[chapter 9](09-packs-and-language-adapters.md#conjures-shapes-conjure)), the pause offers `add close to
-BookingRepository`, with the signature in its detail; if not, it says to add the method yourself,
-and the signature is not guessed. Choosing it (`port`, `arg` `Port.method`) has that generator
+missing_member`), the conjure pauses (`a port lacks a method: BookingRepository.close`). When the
+pack names a generator for it (`[conjure.port] add`,
+[chapter 9](09-packs-and-language-adapters.md#conjures-shapes-conjure)), the rung's model is
+asked once for the method's whole declaration line, shown the lines that call it (the round's
+body, the test), the port's first method as the house style, and the port with a hole where the
+method goes. Its answer is read back through that generator's own line (python-htmx's
+`def ⟨name⟩(self⟨params⟩) -> ⟨returns⟩: ...`): one line of that shape naming the method, or
+nothing. The step log says what it gave, `conjure-signature BookingRepository.find_by_id
+find_by_id(self, id: str) -> Booking | None` (or `… none`), and a resume keeps it, so the model
+is not asked again. With a signature, the pause offers `add close to BookingRepository`, the
+signature in its detail; without one (or without `add`), it says to add the method yourself. Choosing it (`port`, `arg` `Port.method`) has that generator
 (python-htmx's `port-method`) add the method to the port, then the one `[conjure.port] adapters`
 names (python-htmx's `port-method-adapters`) add it to each adapter beside the port (the model
 writes their bodies) and the contract test's stub, and answers a **proposal** like a re-conjured

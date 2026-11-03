@@ -25,7 +25,8 @@ module Olifant.Server.Sibling
 
 import Data.Char (isAlphaNum, isSpace)
 import Data.Functor ((<&>))
-import Data.List (isPrefixOf, nub, sortOn)
+import Control.Monad (forM, mfilter)
+import Data.List (isPrefixOf, nub, partition, sortOn)
 import Data.Maybe (catMaybes, fromMaybe, isJust, listToMaybe, mapMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -145,7 +146,7 @@ siblingShapes lang ports unit0 (tp, tt, st) = do
           | "await " `T.isInfixOf` l -> "await"
           | ".await" `T.isInfixOf` l -> ".await"
         _ -> "plain"
-  pure (Sibling tp owner [(ty, c, p) | (ty, c, p, _, _) <- fakes] act (FakeShape bound' classes prefixes keyword Nothing) ctor)
+  pure (Sibling tp owner [(ty, c, p) | (ty, c, p, _, _) <- fakes] act (FakeShape bound' classes prefixes keyword) ctor)
   where
     lastSegment = last . ("" :) . T.splitOn "."
     -- a call of N in T (not a method of something): its top-level arguments
@@ -191,47 +192,83 @@ conjuredFakes bound' ports conjured
 
 -- | Where a sibling is looked for, nearest first: REL itself, then the other source files of
 -- its folder by name, then those of the folders beside it (under its parent) by distance,
--- then by name. Test files and files of another extension are left out.
+-- then by name (the radius); then every other source file of the project, nearest folder
+-- first, then by name (the project ring, user ruling B). Test files and files of another
+-- extension are left out.
 siblingCandidates :: TestDef -> FilePath -> [FilePath] -> [FilePath]
-siblingCandidates td rel0 files = rel : sortOn (\f -> (takeDirectory f /= dir, distance f, f)) others
+siblingCandidates td rel0 files = rel : sortOn (\f -> (takeDirectory f /= dir, distance f, f)) near ++ sortOn (\f -> (apart f, f)) far
   where
     rel = normalisePath rel0
     dir = takeDirectory rel
-    up = takeDirectory dir
     ext = takeExtension rel
-    under f = up == "." || (up <> "/") `isPrefixOf` f
-    others = nub [f | f0 <- files, let f = normalisePath f0, f /= rel, under f, takeExtension f == ext, not (isTestFile td f)]
+    others = nub [f | f0 <- files, let f = normalisePath f0, f /= rel, takeExtension f == ext, not (isTestFile td f)]
+    (near, far) = partition (inRadius rel) others
+    up = takeDirectory dir
     distance f = length (splitDirectories (makeRelative up (takeDirectory f))) + (if takeDirectory f == dir then 0 else 1)
+    -- the folders between REL's and F's, through their common one
+    apart f =
+      let a = folders dir
+          b = folders (takeDirectory f)
+          common = length (takeWhile id (zipWith (==) a b))
+       in length a + length b - 2 * common
+    folders d = filter (/= ".") (splitDirectories d)
+
+-- | Whether F is within REL's radius: under the folder above REL's.
+inRadius :: FilePath -> FilePath -> Bool
+inRadius rel f = up == "." || (up <> "/") `isPrefixOf` f
+  where
+    up = takeDirectory (takeDirectory rel)
 
 -- | The sibling of UNIT in the module (REL, its text, its test file's text): every candidate
 -- ('siblingCandidates') whose test reads ('siblingShapes'), nearest first, merged. The
 -- nearest gives the owner, the constructor, the keyword and the act; the fakes' classes and
 -- prefixes are all of theirs, the binding form the nearest one's that shows one. The
 -- constructor's files are the sibling's and the unit's folders under the service base.
+--
+-- The radius is read first: each candidate with its own test. Only when nothing there reads,
+-- the project ring (user ruling B): each candidate whose own definition holds UNIT (the same
+-- shape), with its own test, then with any test of the project that builds that owner.
 findSibling :: Workspace IO -> Language -> [Port] -> (FilePath, Text, Maybe Text) -> Text -> IO (Maybe Sibling)
 findSibling ws lang ports (rel0, moduleText, ownTest) unit = case langTest lang of
   Nothing -> pure Nothing
   Just _ | null ports || isNothingAnn -> pure Nothing
   Just td -> do
     let rel = normalisePath rel0
-        up = takeDirectory (takeDirectory rel)
         ext = takeExtension rel
         cj = langConjure lang
         base = serviceBase cj (servicePaths cj rel)
-    listed <- map (normalisePath . (up </>)) <$> listFiles ws up
-    let readOne f = do
+    listed <- map normalisePath <$> listFiles ws "."
+    let candidates = siblingCandidates td rel listed
+        source f = if f == rel then pure (Just moduleText) else readText ws f
+        testOf f tf = if f == rel && tf == testsForFile td f then maybe (readText ws tf) (pure . Just) ownTest else readText ws tf
+        shapes f tf tt st
+          | not (null (testSourcesIn lang (Just tf) tt))
+          , Just sb <- siblingShapes lang ports unit (tf, tt, st) =
+              let rd d = maybe d (`makeRelative` d) base
+                  globs = nub [T.pack (rd (takeDirectory g) </> "**" </> ("*" <> ext)) | g <- [f, rel]]
+               in Just sb {sbCtor = (sbCtor sb) {ctFiles = globs}}
+          | otherwise = Nothing
+        readOne f = do
           let tf = testsForFile td f
-          tt <- if f == rel then maybe (readText ws tf) (pure . Just) ownTest else readText ws tf
-          st <- if f == rel then pure (Just moduleText) else readText ws f
-          pure $ case (tt, st) of
-            (Just tt', Just st')
-              | not (null (testSourcesIn lang (Just tf) tt'))
-              , Just sb <- siblingShapes lang ports unit (tf, tt', st') ->
-                  let rd d = maybe d (`makeRelative` d) base
-                      globs = nub [T.pack (rd (takeDirectory g) </> "**" </> ("*" <> ext)) | g <- [f, rel]]
-                   in Just sb {sbCtor = (sbCtor sb) {ctFiles = globs}}
-            _ -> Nothing
-    found <- catMaybes <$> traverse readOne (siblingCandidates td rel listed)
+          tt <- testOf f tf
+          st <- source f
+          pure (fromMaybe Nothing (shapes f tf <$> tt <*> st))
+        -- the project ring: F's owners that hold UNIT, with F's own test, then any test that builds one
+        tests = [f | f <- listed, isTestFile td f]
+        readRing f = do
+          st <- source f
+          case st of
+            Just st' | unit' `T.isInfixOf` st', hs@(_ : _) <- holders st' -> do
+              let own = testsForFile td f
+              found <- forM (own : sortOn id (filter (/= own) tests)) $ \tf -> do
+                tt <- testOf f tf
+                pure $ case tt of
+                  Just tt' | any (\o -> (o <> "(") `T.isInfixOf` tt') hs -> mfilter ((`elem` hs) . sbOwner) (shapes f tf tt' st')
+                  _ -> Nothing
+              pure (listToMaybe (catMaybes found))
+            _ -> pure Nothing
+    nearby <- catMaybes <$> traverse readOne (filter (inRadius rel) candidates)
+    found <- if null nearby then catMaybes <$> traverse readRing candidates else pure nearby
     pure $ case found of
       sb : _ ->
         let all' = map sbFake found
@@ -240,6 +277,19 @@ findSibling ws lang ports (rel0, moduleText, ownTest) unit = case langTest lang 
       [] -> Nothing
   where
     isNothingAnn = not (isJust (langUnitAnnotation lang))
+    unit' = lastSegment unit
+    lastSegment = last . ("" :) . T.splitOn "."
+    -- the class-like definitions of ST whose own span holds a definition named UNIT
+    holders st = case definitionKinds lang st of
+      Nothing -> []
+      Just defs ->
+        nub
+          [ lastSegment n
+          | (n, cap, own, _) <- defs
+          , "definition.class" `T.isPrefixOf` cap || "definition.impl" `T.isPrefixOf` cap
+          , or [lastSegment m == unit' | (m, _, s, _) <- defs, inside own s]
+          ]
+    inside (a, z) (a', z') = a <= a' && z' <= z && (a, z) /= (a', z')
 
 -- | The service's ports for the module REL: the `[conjure.port]` shape over the files under
 -- the `[conjure] service` folder; none without them.

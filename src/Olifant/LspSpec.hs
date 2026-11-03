@@ -1491,12 +1491,48 @@ conjureSpec = describe "olifant/conjure" $ do
     steps `shouldSatisfy` any (== ["conjure-proposal", notFound])
     steps `shouldSatisfy` any (== ["conjure-resume", "reject"])
 
+  it "cancel_booking with the real checker and pytest: a nonsense signature gives no p offer and the snippet's ghost line (Review focus 4)" $ do
+    let body = T.intercalate "\n" ["booking = self.bookings.find_by_id(input.id)", "if booking is None:", "    return NotFound(\"Booking not found\")", "return Ok(None)"]
+    withSystemTempDirectory "olifant-conjure-real" $ \tmp -> do
+      let fills = tmp </> "fills.toml"
+          answers = tmp </> "answers.json"
+      -- the model's answer for the port method's signature line, beside the body's
+      TIO.writeFile fills ("[fills]\nbody = " <> T.pack (show (T.unpack body)) <> "\nsignature = \"nonsense\"\n")
+      TIO.writeFile answers "{\"answers\": {}}"
+      withPythonChecked [(cbModule, morningModule), (cbTest, morningTest)] $ \ports0 dir -> do
+        let ports = ports0 {pVerifier = (`processVerifierCancellable` 120), pTester = (`processRunner` 120), pTesterWithin = flip processRunner}
+        old <- TIO.readFile (dir </> ".olifant/config.toml")
+        TIO.writeFile (dir </> ".olifant/config.toml") (old <> "\n[model]\ndefault = \"local\"\nrounds = 6\n[model.backends.local]\nkind = \"openai-compatible\"\nurl = \"http://127.0.0.1:9\"\nmodel = \"q\"\n[model.backends.jev]\nkind = \"jev\"\n[decide]\nmodel = \"jev\"\n[conjure]\nwire = \"wire\"\n")
+        let config = [("fills", String (T.pack fills)), ("decide_answers", String (T.pack answers))]
+        (paused, _) <- inProcessWithConfig config ports dir $ do
+          doc <- openDoc cbModule "python"
+          text <- documentContents doc
+          let handleAt = length (takeWhile (not . ("    def handle(" `T.isPrefixOf`)) (T.lines text))
+              base = ["textDocument" .= object ["uri" .= (doc ^. L.uri)], "position" .= object ["line" .= (handleAt + 1 :: Int), "character" .= (0 :: Int)]]
+              ask extra = blockMove (Proxy :: Proxy "olifant/conjure") (object (base <> extra))
+              resume tok choice = ask ["resume" .= object ["token" .= (tok :: Text), "choice" .= (choice :: Text)]]
+              tokenOf v = case inner "token" (field "paused" v) of Just (String t) -> t; _ -> ""
+          ask []
+        inner "trigger" (field "paused" paused) `shouldBe` Just (String "a port lacks a method: BookingRepository.find_by_id")
+        offerLabels (field "paused" paused) `shouldSatisfy` notElem "add find_by_id to BookingRepository"
+        field "paused" paused `shouldSatisfy` \case
+          Just p -> case inner "diagnosis" (Just p) of
+            Just (Array ds) -> any (\case String d -> "The model gave no signature: add `def find_by_id(self\10216params\10217) -> \10216returns\10217: ...` to BookingRepository yourself." `T.isInfixOf` d; _ -> False) (toList ds)
+            _ -> False
+          Nothing -> False
+        inner "body" (inner "snippet" (field "paused" paused)) `shouldSatisfy` \case Just (String b) -> "${" `T.isInfixOf` b; _ -> False
+        logged <- T.lines <$> TIO.readFile (dir </> ".olifant/state/steps.log")
+        [T.unwords (T.words l) | l <- logged, "conjure-signature" `T.isInfixOf` l] `shouldSatisfy` \case
+          [l] -> "conjure-signature BookingRepository.find_by_id none" `T.isSuffixOf` l
+          _ -> False
+
   it "cancel_booking with the real checker and pytest: the steps compose (the wire, the test's fix, the port's method), round by round what is red after each" $ do
     let body = T.intercalate "\n" ["booking = self.bookings.find_by_id(input.id)", "if booking is None:", "    return NotFound(\"Booking not found\")", "return Ok(None)"]
     withSystemTempDirectory "olifant-conjure-real" $ \tmp -> do
       let fills = tmp </> "fills.toml"
           answers = tmp </> "answers.json"
-      TIO.writeFile fills ("[fills]\nbody = " <> T.pack (show (T.unpack body)) <> "\n")
+      -- the model's answer for the port method's signature line, beside the body's
+      TIO.writeFile fills ("[fills]\nbody = " <> T.pack (show (T.unpack body)) <> "\nsignature = \"def find_by_id(self, id: str) -> Booking | None: ...\"\n")
       TIO.writeFile answers "{\"answers\": {}}"
       withPythonChecked [(cbModule, morningModule), (cbTest, morningTest)] $ \ports0 dir -> do
         let ports = ports0 {pVerifier = (`processVerifierCancellable` 120), pTester = (`processRunner` 120), pTesterWithin = flip processRunner}
@@ -1523,6 +1559,8 @@ conjureSpec = describe "olifant/conjure" $ do
         inner "round" (field "paused" paused) `shouldBe` Just (Number 1)
         offerLabels (field "paused" paused) `shouldSatisfy` \ls -> "add find_by_id to BookingRepository" `elem` ls && "fix the test: not_found" `elem` ls
         offerDetails (field "paused" paused) `shouldSatisfy` elem "hand repository to command(bookings=repository); you see the diff"
+        -- the offer says the model's signature, read through the port-method snippet's shape
+        offerDetails (field "paused" paused) `shouldSatisfy` elem "find_by_id(self, id: str) -> Booking | None in the port and its adapters, then round 2"
         inner "diff" (inner "proposal" (field "paused" proposed)) `shouldSatisfy` \case Just (String d) -> changedLines d == ["-    cancel_booking = command()", "+    cancel_booking = command(bookings=repository)"]; _ -> False
         -- with not_found fixed, round 2 writes the same body: no repeat (a step came between),
         -- and the check refuses it for the same wall
@@ -1536,6 +1574,8 @@ conjureSpec = describe "olifant/conjure" $ do
           _ -> False
         offerLabels (field "paused" after) `shouldSatisfy` notElem "fix the test: not_found"
         offerLabels (field "paused" after) `shouldSatisfy` elem "add find_by_id to BookingRepository"
+        -- after a pause and a resume the signature is the one asked before: not asked again
+        offerDetails (field "paused" after) `shouldSatisfy` elem "find_by_id(self, id: str) -> Booking | None in the port and its adapters, then round 3"
         -- the failing section is round 2's real failure: the check's refusal, its line; the
         -- diagnosis says it, not the before-run's assertion
         inner "kind" (inner "failure" (field "paused" after)) `shouldBe` Just (String "check")
@@ -1574,9 +1614,24 @@ conjureSpec = describe "olifant/conjure" $ do
         [l | l <- logged, "conjure-sibling" `T.isInfixOf` l] `shouldSatisfy` \case
           [l] -> "create_booking__test.py" `T.isInfixOf` l && "owner=CreateBooking" `T.isInfixOf` l
           _ -> False
-  it "with no sibling and no tables, conjure says floor" $
+        [T.unwords (T.words l) | l <- logged, "conjure-signature" `T.isInfixOf` l] `shouldSatisfy` \case
+          [l] -> "conjure-signature BookingRepository.find_by_id find_by_id(self, id: str) -> Booking | None" `T.isSuffixOf` l
+          _ -> False
+  it "with no sibling in the radius, a test elsewhere in the project that builds a same-shaped owner teaches (ruling B)" $
     withPython [(cbModule, morningModule), (cbTest, morningTest)] $ \ports dir -> do
       mapM_ (removeFile . (dir </>)) ["src/bistro/booking/commands/create_booking__test.py", "src/bistro/booking/queries/get_day_schedule__test.py"]
+      _ <- inProcessWith ports dir $ do
+        doc <- openDoc cbModule "python"
+        text <- documentContents doc
+        let handleAt = length (takeWhile (not . ("    def handle(" `T.isPrefixOf`)) (T.lines text))
+        blockMove (Proxy :: Proxy "olifant/conjure") (object ["textDocument" .= object ["uri" .= (doc ^. L.uri)], "position" .= object ["line" .= (handleAt + 1 :: Int), "character" .= (0 :: Int)]])
+      logged <- T.lines <$> TIO.readFile (dir </> ".olifant/state/steps.log")
+      [T.unwords (T.words l) | l <- logged, "conjure-sibling" `T.isInfixOf` l] `shouldSatisfy` \case
+        [l] -> "routes__test.py" `T.isInfixOf` l && "owner=CreateBooking" `T.isInfixOf` l && "fakes=bookings:BookingRepository=InMemoryBookingRepository,ids:IdGenerator=InMemoryIdGenerator" `T.isInfixOf` l
+        _ -> False
+  it "with no sibling anywhere and no tables, conjure says floor" $
+    withPython [(cbModule, morningModule), (cbTest, morningTest)] $ \ports dir -> do
+      mapM_ (removeFile . (dir </>)) ["src/bistro/booking/commands/create_booking__test.py", "src/bistro/booking/queries/get_day_schedule__test.py", "src/bistro/web/bookings/routes__test.py"]
       _ <- inProcessWith ports dir $ do
         doc <- openDoc cbModule "python"
         text <- documentContents doc

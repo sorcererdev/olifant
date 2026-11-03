@@ -81,21 +81,18 @@ spec = describe "ConjureScan (Olifant.Server.ConjureScan)" $ do
     missingMemberIn (shippedLanguageNow "python") ["BookingRepository"] why `shouldBe` Just ("BookingRepository", "find_by_id")
     missingMemberIn (shippedLanguageNow "python") ["IdGenerator"] why `shouldBe` Nothing
     missingMemberIn (shippedLanguageNow "python") ["BookingRepository"] "src/x.py: \"y\" is not defined" `shouldBe` Nothing
-  it "(j) the missing method's signature: names from the test's fake, types from the call, the result from its use" $ do
-    let port = Port "BookingRepository" ["def table(self, table_id: str) -> Table | None: ...", "def booking_at(self, table_id: str, slot: Slot) -> Booking | None: ...", "def bookings_on(self, day: date) -> list[Booking]: ..."]
-        body = "booking = self.bookings.find_by_id(input.id)\nif booking is None:\n    return NotFound(\"Booking not found\")\nreturn Ok(None)"
-        moduleText = "@dataclass(frozen=True)\nclass CancelBookingInput:\n    id: str\n\n\nclass CancelBooking:\n    def handle(self, input: CancelBookingInput) -> CancelBookingOutput:\n        return Ok(None)\n"
-    methodSignature py "find_by_id" port body moduleText cancelTestText `shouldBe` Just (", id: str", "Booking | None")
-    -- the call as a statement returns nothing
-    methodSignature py "cancel" port "self.bookings.cancel(input.id)\nreturn Ok(None)" moduleText "" `shouldBe` Just (", id: str", "None")
-    -- an argument whose type is not known: none
-    methodSignature py "find_by_id" port "booking = self.bookings.find_by_id(thing)\nreturn Ok(None)" moduleText "" `shouldBe` Nothing
-    -- a fake with no parameters that returns nothing: optional
-    methodSignature py "latest" port "booking = self.bookings.latest()\nreturn Ok(booking)" moduleText "    repo.latest = lambda: None\n" `shouldBe` Just ("", "Booking | None")
-  it "(j2) a parameter typed on its own line of a multi-line def: not known" $ do
-    let port = Port "BookingRepository" ["def table(self, table_id: str) -> Table | None: ..."]
-        moduleText = "class CancelBooking:\n    def handle(\n        self,\n        input: CancelBookingInput,\n    ) -> CancelBookingOutput:\n        return Ok(None)\n"
-    methodSignature py "find_by_id" port "booking = self.bookings.find_by_id(input)\nreturn Ok(None)" moduleText "" `shouldBe` Nothing
+  it "(j) a model's signature line read through the snippet's marked line" $ do
+    let snippet = "def \10214olifant-hole name|ident|the method\10215(self\10214olifant-hole params|text|, name: type, \8230\10215) -> \10214olifant-hole returns|text|what it returns\10215: ..."
+    readSignature snippet "find_by_id" "def find_by_id(self, id: str) -> Booking | None: ..." `shouldBe` Just (", id: str", "Booking | None")
+    readSignature snippet "cancel" "def cancel(self, id: str) -> None" `shouldBe` Just (", id: str", "None")
+    -- another name, a fence, two lines, the snippet's prefix missing: none
+    readSignature snippet "find_by_id" "def find(self, id: str) -> Booking | None: ..." `shouldBe` Nothing
+    readSignature snippet "find_by_id" "```python\ndef find_by_id(self, id: str) -> Booking | None: ...\n```" `shouldBe` Nothing
+    readSignature snippet "find_by_id" "def find_by_id(self, id: str) -> Booking | None: ...\ndef other(self) -> None: ..." `shouldBe` Nothing
+    readSignature snippet "find_by_id" "find_by_id(self, id: str)" `shouldBe` Nothing
+    signatureTemplate snippet `shouldBe` "{= name =}(self{= params =}) -> {= returns =}"
+    snippetLine ("\n    " <> snippet <> "\n") `shouldBe` Just snippet
+    callLines "find_by_id" "x = self.bookings.find_by_id(input.id)\ny = 1" `shouldBe` ["x = self.bookings.find_by_id(input.id)"]
   it "(j3) the siblings: test files (an orphan's too) and the unit's own file left out" $ do
     let files = ["src/b/s/commands/x.py", "src/b/s/commands/x__test.py", "src/b/s/commands/y__test.py", "src/b/s/commands/z.py"]
     siblingsOf py "src/b/s/commands/z.py" files `shouldBe` ["src/b/s/commands/x.py"]
@@ -130,19 +127,8 @@ spec = describe "ConjureScan (Olifant.Server.ConjureScan)" $ do
       `shouldBe` [Port "InvoiceRepository" ["async fn get_invoice(&self, id: String) -> Result<Invoice, RepositoryFailure>;"]]
     fakeIn Nothing "def test_d():\n    m = MagicMock()\n" `shouldBe` Nothing
     ctorParamsIn Nothing "class C:\n    def __init__(self, a: A) -> None:\n" `shouldBe` []
-  it "(o) a signature's facts are the language's: a Rust call, an Option from is_none, a field's type through its struct" $ do
-    let rust = shippedLanguageNow "rust"
-        port = Port "TableRepository" ["fn get(&self, id: &str) -> Option<Table>;"]
-        moduleText = "pub struct Input {\n    pub table_id: String,\n}\n\nimpl CloseTable {\n    fn handle(&self, input: Input) -> Out {\n    }\n}\n"
-    methodSignature rust "table" port "let t = self.tables.table(input.table_id);\nif t.is_none() {\n    return NotFound;\n}" moduleText ""
-      `shouldBe` Just (", table_id: String", "Option<Table>")
-    methodSignature rust "table" port "self.tables.table(input.table_id);" moduleText "" `shouldBe` Just (", table_id: String", "()")
   it "(r) Rust's annotation reads Arc<dyn X>, Box<dyn X>, &dyn X and a plain type" $ do
     let Just ann = langUnitAnnotation (shippedLanguageNow "rust")
         ct = CtorShape [] "" "pub fn new\\(" ("^([[:alnum:]_]+)" <> T.replace "{= name =}" "" ann)
     forM_ ["Arc<dyn BookingRepository>", "Box<dyn BookingRepository>", "&dyn BookingRepository", "BookingRepository"] $ \ty ->
       ctorParams ct ("pub fn new(bookings: " <> ty <> ") -> Self {\n") `shouldBe` [("bookings", "BookingRepository")]
-  it "(p) an argument a.f whose T's field f has a default: the field's type alone" $ do
-    let port = Port "BookingRepository" ["def booking_at(self, table_id: str) -> Booking | None: ..."]
-        moduleText = "class Query:\n    seats: int = 0\n\n\nclass Count:\n    def handle(self, query: Query) -> int:\n        return 0\n"
-    methodSignature py "count_seats" port "self.bookings.count_seats(query.seats)\nreturn 0" moduleText "" `shouldBe` Just (", seats: int", "None")

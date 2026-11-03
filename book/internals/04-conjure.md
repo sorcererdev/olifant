@@ -30,7 +30,7 @@ book's [step log](../user/18-tdd-in-the-editor.md#the-step-log).
 |---|---|
 | `Server/Conjure.hs` (1,462 lines) | the command: `conjureAt` and `resumeConjure` both end in `conjureWith`; building the hole (`functionConjure`, `testConjure`); the fill (`fill`); the steering hook (`steer`); the wire (`wireFor`) and the port method (`portMethodPlan`) |
 | `Server/ConjureNext.hs` (1,042) | the **pure rules**: the policy (`policy`), Jev's question (`conjureNextQuestion`) and how to read its answer (`nextFrom`), the offers (`offersAt`), the diagnosis (`diagnosis`), the pause's wire shape (`PausedAnswer`, `pausedJson`), `PausedConjure`, the round records |
-| `Server/ConjureScan.hs` (402) | **pure reading of source** by the pack's shapes: the fakes a test builds and never passes in (`unpassedFake`, `fakeIn`), the service's ports (`portsIn`), a fake's port (`derivePort`), a constructor's parameters (`ctorParamsIn`), Jev's port question (`conjurePortQuestion`), a new method's signature (`methodSignature`) |
+| `Server/ConjureScan.hs` (402) | **pure reading of source** by the pack's shapes: the fakes a test builds and never passes in (`unpassedFake`, `fakeIn`), the service's ports (`portsIn`), a fake's port (`derivePort`), a constructor's parameters (`ctorParamsIn`), Jev's port question (`conjurePortQuestion`), a model's signature line read through the port-method snippet (`readSignature`, `snippetLine`, `signatureTemplate`, `callLines`) |
 | `Server/Sibling.hs` | **a sibling test, read** (spike D): the owner, constructor and fakes a nearby test already uses (`siblingShapes`, `findSibling`), the service's ports (`servicePorts`), the library doubles of the test being conjured (`conjuredFakes`); `serviceBase` and `filesUnder` live here |
 | `Generation/Steer.hs` | the contract between a fill loop and its steerer: `RoundState`, `Steer = Again | Climb filler | Pause why`, `Steering` |
 | `Generation/FillPhase.hs` | the fill loop that calls the hook (`stSteer`) |
@@ -184,15 +184,25 @@ Two behaviours go past writing a body. Both lean on the **pack's generators**, r
   conjure's, and land with it as one edit.
 - **A port method** (`portMethodPlan`): when the check says a port the unit takes lacks
   a method (`CauseMethod`), the pause offers `add <m> to <Port>`, but only when the language's
-  `[conjure.port] add` names a generator (`methodWall` gives no signature otherwise, so the pause
-  asks the person to add it). On `port`, that generator is placed on the line after the port's
+  `[conjure.port] add` names a generator and the model wrote a signature (`methodWall` gives
+  none otherwise, so the pause asks the person to add it). The signature is `askSignature`'s:
+  `portSnippet` places the `add` generator at the port's end as a snippet (`PortSnippet`: the
+  port's file and text, the line, the marked text), and one `signature` hole (kind `line`,
+  `FillStance`) goes to the rung's filler with `callLines` over the round's body and the test,
+  the port's first method as the house style, and the port's text with `⟦signature⟧` where the
+  method goes. `readSignature` reads the answer through the snippet's marked line
+  (`snippetLine`): one line of its shape naming the method gives (`params`, `returns`), anything
+  else (a fence, two lines, another name, a missing prefix) nothing; `signatureTemplate` turns
+  that line into the template the offer and the adapters write it by. It is asked once per
+  (port, method): `Counters.cSignature` keeps it, `steer` re-reads it after the wall, a pause
+  saves it in `pdSignature`, and a resume restores it; steps.log has `conjure-signature`. On `port`, that generator is placed on the line after the port's
   block (`portEnd`, `ConjureScan.hs`; `blankAt` makes that line blank, since a snippet
   replaces the line it is placed on), its holes `name`, `params`, `returns` filled from the
-  signature `methodSignature` made from `[types]` facts. Then the generator `[conjure.port]
+  model's signature. Then the generator `[conjure.port]
   adapters` names, if any, is planned over that, the rung's model writing the bodies it leaves.
   Its inputs are what it declares out of: the slots of its own `[applies_at] path` matched on the
   port's file (`matchPathSlots`), the service's sets, `name`, `params`, `returns` and
-  `signature` (`[types] method` rendered). The result is a `Proposal` to accept or reject like a
+  `signature` (`methodText` over the snippet's `signatureTemplate`). The result is a `Proposal` to accept or reject like a
   re-conjured test. In python-htmx, `add = "port-method"`, `adapters = "port-method-adapters"`.
 - **Advice for a test's body** (`advisedIn`, `ConjureScan.hs`): `testConjure` adds to the
   model's instruction the `say` of the first `[[conjure.advice]]` whose `when` matches a line of
@@ -219,9 +229,9 @@ cjAdvice}`, each optional, parsed by `conjureFrom` (`Adapter.hs`). Which functio
 | `[conjure.port]` `files`, `start`, `method` | `PortShape` | `portsIn`: the ports of a service, the methods of each; `portEnd` where a port's block ends |
 | `[conjure.port]` `add`, `adapters` | `AddMethod` | `portMethodPlan`: the generators that add a method a port lacks; `methodWall` offers the port row only with `add` |
 | `[[conjure.advice]]` `when`, `say` | `[Advice]` | `advisedIn`: a sentence for `testConjure`'s instruction |
-| `[conjure.fake]` `bound`, `classes`, `prefixes`, `keyword`, `stub` | `FakeShape` (learned from a sibling test, `Sibling.hs`; declared only as a first test's fallback) | `fakeIn`/`unpassedFake`: a test's fake; `derivePort` strips a prefix to name the port; `handFake` hands a fake to a helper |
+| `[conjure.fake]` `bound`, `classes`, `prefixes`, `keyword` (`stub` retired) | `FakeShape` (learned from a sibling test, `Sibling.hs`; declared only as a first test's fallback) | `fakeIn`/`unpassedFake`: a test's fake; `derivePort` strips a prefix to name the port; `handFake` hands a fake to a helper |
 | `[conjure.constructor]` `files`, `owner`, `start`, `param` | `CtorShape` (likewise) | `ctorParamsIn`: what siblings call a port's parameter (`deriveParam`); `takesPortIn`: whether the class takes it |
-| `[types]` | `TypesDef` | `methodSignature`, `methodText`: a new port method's signature from the call and the fake |
+| `[conjure.port] add` (for the signature) | `AddMethod` | `portSnippet`, `askSignature`: the model's line read through the generator's marked line; doctor's `signature` row. `[types]` is retired |
 | `[check] undefined`, `missing_member`; `[test] undefined`, `[test.failure]` | the toolchain's words | `undefinedLabelIn` (`ConjureNext.hs`), `missingMemberIn` (`ConjureScan.hs`), `failureLineWith`: a `NameError`, a missing member, the failing assertion's line |
 
 A language with **no** `[conjure]` conjures at the **floor**: a test's body, or a function's,
@@ -282,13 +292,19 @@ by `[test]`. It names no literal of any language (`ConjureNeutralSpec` reads it)
     `=` or `:` between them; `sbAct` is `plain`, `await` or `.await` from the line calling the unit.
 - **`siblingCandidates`** is the radius: the module itself, the other source files of its
   folder by name, then those of the folders beside it (under its parent) by distance, then by
-  name; test files and other extensions out. There is no project-wide ring: a service's first
-  test with no tables conjures at the floor.
+  name (`inRadius`: under the folder above the module's); then the **project ring** (user ruling
+  B), every other source file of the project by folder distance (`apart`), then by name; test
+  files and other extensions out.
 - **`findSibling ws lang ports (rel, module text, its test text) unit`** reads every candidate
   whose `tests_for` file has tests and reads, nearest first, and merges them: the nearest gives
   the owner, constructor, keyword and act; the fakes' classes and prefixes are all of theirs, the
   binding form the nearest that shows one. The constructor's `files` are the sibling's and the
-  unit's folders under the service base (`serviceBase`).
+  unit's folders under the service base (`serviceBase`). Only when no candidate in the radius
+  reads does it walk the project ring (`readRing`): a candidate counts only if it holds an owner
+  of the same shape (`holders`: a class-like definition whose span holds a definition named the
+  unit), and is tried with its own test, then with every test of the project that calls that
+  owner (`Owner(`), the owner checked again on the result. Only when that finds nothing either
+  do the declared tables (or the floor) apply.
 - **`servicePorts`** is the service's ports (`[conjure] service` and `[conjure.port]`), none
   without them; **`conjuredFakes bound ports test`** finds the test being conjured's library
   doubles (a `Mock()` bound to a variable named after a port's last word, or one whose attribute
@@ -335,7 +351,7 @@ Run one with `cabal test --test-options='--match "olifant/conjure"'`, in the mai
   `timeout`; each backend's `escalate`; `[conjure] wire` in the project config.
 - **Language/pack keys:** `[unit]`, `[test]` (`unit`, `above`, `assertion`, `name`, `stub`,
   `failure`, `undefined`), `[check] undefined`/`missing_member`, `stub_lines`, `opens_block`,
-  `empty_statement`, `[imports]`, `[types]`, `[conjure]`.
+  `empty_statement`, `[imports]`, `[conjure]`.
 - **Ports:** `pTester`/`pTesterWithin` (the runner), `pSyntax`, `pFiles`; `ssTestFiller`,
   `scFills`, `scDecideAnswers` for specs.
 - **Wire:** `olifant/conjure` request and answer; `$/progress` "conjuring" (`roundsProgress`,
@@ -349,8 +365,8 @@ Run one with `cabal test --test-options='--match "olifant/conjure"'`, in the mai
   `ConjureNext`; the sequence is not decomposed further.
 - **The wire's and the port method's input names are a contract.** The wire generator is given
   `param` and `port` (with its path's slots); the port method's generators `name`, `params`,
-  `returns`, `signature`. These are the engine's words (`[conjure.fake] keyword` and `[types]
-  method` use them too), so a pack's generators must use them; a generator that does not
+  `returns`, `signature`. These are the engine's words (`[conjure.fake] keyword` uses them too, and
+  `signatureTemplate` writes them from the add generator's holes), so a pack's generators must use them; a generator that does not
   declare one is simply not given it.
 - **`ResumePort` is accepted and undocumented on the wire.** `Lsp.resumeOf` parses `"port"`, the
   user book mentions `wire` but not `port` in the choice list, and the `InvalidParams` message

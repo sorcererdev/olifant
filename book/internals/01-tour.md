@@ -1913,7 +1913,7 @@ with `Status` one of `Ok`, `Warn`, `Bad`, in this order:
 - **One row per capability per language**, `LANGUAGE: CAPABILITY`, from
   `Olifant.Capabilities.capabilities` (thirteen: units, diagnostics, missing cases, tests, test
   units, test selection, mutation, stub, conjure shapes, messages, test messages, stub bodies,
-  signature facts). One the language has is `Ok` and says how, and from which layer its key came
+  signature). One the language has is `Ok` and says how, and from which layer its key came
   (`originOf`); one it lacks is `Warn` ("absent") with the key that would enable it as the fix.
   [Chapter 5](05-languages.md#doctors-capability-table) has the table and how to add a row.
 - **`plans runner NAME`**: `Ok` with where `[plans] runner` is on the `PATH`, or `Bad`.

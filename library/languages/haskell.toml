@@ -27,6 +27,13 @@ lone_arm_spaced = true
 line = "^import[[:space:]]+(qualified[[:space:]]+)?[A-Z][A-Za-z0-9_.']*"
 write = "import {= module =}"
 module_of = { strip = ["^src/", "^test/"], separator = "." }
+# A conjure sees the project modules its file imports, under the file's own
+# root (`{= base =}`: `src/` or `test/`), then `src/`.
+paths = ["{= base =}{= path =}.hs", "src/{= path =}.hs"]
+
+[[imports.resolve]]
+pattern = '^import[[:space:]]+(qualified[[:space:]]+)?([A-Z][A-Za-z0-9_.]*)'
+module = 2
 
 # `data NAME` (and `function NAME`, `class NAME`, `instance NAME`, `imports`)
 # are generic phrases, from olifant's queries (library/queries/haskell).
@@ -85,14 +92,3 @@ name = [
   "^[[:space:]]*(\\([^)]*\\))",
   "^[[:space:]]*([[:alpha:]_][[:alnum:]_']*)",
 ]
-
-# What a new method's signature is made of (conjure adding one a test
-# calls): literal types, declarations, a result that may be absent.
-[types]
-string = "Text"
-integer = "Int"
-nothing = "()"
-optional = "Maybe {= type =}"
-param = "{= name =} :: {= type =}"
-checks_none = ['{= name =} `shouldBe` Nothing', 'isNothing {= name =}']
-record = '^data {= name =}([^[:alnum:]_]|$)'

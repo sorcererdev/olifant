@@ -394,16 +394,16 @@ spec = describe "conjure-next (Olifant.Server.ConjureNext)" $ do
     map rwLine (roundRows "#" cancelPrefixes [r2, r3]) `shouldBe` ["return NotFound(reason=\"Booking not found\")", "return NotFound(reason=\"Booking not found\")"]
   it "(bb) a port missing a method pauses at once and offers it: p adds it, the diagnosis says where the check refused" $ do
     let base = PolicyFacts [] [] [] False True ["bookings: BookingRepository"] Nothing True False False (Just ("BookingRepository", "find_by_id"))
-        sig = Just (", id: str", "Booking | None")
+        sig = Right (", id: str", "Booking | None")
         cause = CauseMethod "BookingRepository" "find_by_id" sig
     -- before the repeat: the same body cannot pass while the port lacks it
-    policy base `shouldBe` PolicyPause (CauseMethod "BookingRepository" "find_by_id" Nothing)
+    policy base `shouldBe` PolicyPause (CauseMethod "BookingRepository" "find_by_id" (Left Nothing))
     policy base {pfFlagged = [(notFoundId, nf)], pfFailingNow = [notFoundId]} `shouldBe` PolicyPause (CauseTest notFoundId)
     causeWords cause `shouldBe` ["method", "BookingRepository.find_by_id"]
     trigger cause Nothing Nothing `shouldBe` "a port lacks a method: BookingRepository.find_by_id"
     let st = Standing 6 180 Nothing Nothing False
     offersAt st cause [notFoundId] [] 1 `shouldBe` [OfferContinue, OfferHint, OfferPort "BookingRepository" "find_by_id" ", id: str" "Booking | None", OfferReconjure notFoundId, OfferStop, OfferKeep 1]
-    offersAt st (CauseMethod "BookingRepository" "find_by_id" Nothing) [] [] 1 `shouldBe` [OfferContinue, OfferHint, OfferStop, OfferKeep 1]
+    offersAt st (CauseMethod "BookingRepository" "find_by_id" (Left Nothing)) [] [] 1 `shouldBe` [OfferContinue, OfferHint, OfferStop, OfferKeep 1]
     let row = offerRow (OfferFacts 6 "local" Nothing 1 "CancelBooking" Nothing True cancelPrefixes [] [] pyMethod) (OfferPort "BookingRepository" "find_by_id" ", id: str" "Booking | None")
     (orLabel row, orDetail row) `shouldBe` ("add find_by_id to BookingRepository", "find_by_id(self, id: str) -> Booking | None in the port and its adapters, then round 2")
     -- every detail under 90 cells (conjure-pause-ux-pass-2.md §5): the window wraps it, never cuts it
@@ -421,11 +421,24 @@ spec = describe "conjure-next (Olifant.Server.ConjureNext)" $ do
       `shouldBe` [ "BookingRepository has no find_by_id: pyright refuses round 1's body before the tests run (cancel_booking.py:30)."
                  , "No body can pass not_found: it builds repository = Mock() and never hands it to command(), so handle never sees it. CancelBooking() takes no ports."
                  ]
-    take 1 (diagnosis facts (CauseMethod "BookingRepository" "find_by_id" Nothing))
+    take 1 (diagnosis facts (CauseMethod "BookingRepository" "find_by_id" (Left Nothing)))
       `shouldBe` ["BookingRepository has no find_by_id: pyright refuses round 1's body before the tests run (cancel_booking.py:30). Its signature does not follow from the call and the test's fake: add it to BookingRepository yourself."]
     let v = pausedJson cancelPaused {paOffers = [row]}
     at ["offers", "0", "choice"] v `shouldBe` Just (String "port")
     at ["offers", "0", "arg"] v `shouldBe` Just (String "BookingRepository.find_by_id")
+  it "a method pause with no signature names the snippet's ghost line and carries the snippet" $ do
+    let marked = "    def \10214olifant-hole name|ident|the method\10215(self\10214olifant-hole params|text|, name: type, \8230\10215) -> \10214olifant-hole returns|text|what it returns\10215: ..."
+        sn = methodSnippet "src/bistro/booking/ports/booking_repository/booking_repository.py" 21 "find_by_id" marked
+        refusal = LatestCheck 1 "pyright" [("src/bistro/booking/commands/cancel_booking.py", Just 30, "Cannot access attribute \"find_by_id\" for class \"BookingRepository\"")]
+        checked = RoundRecord 1 "local" "x" Nothing (Just "pyright") Nothing 1
+        facts = cancelPausedFacts {dfHistory = [checked], dfFailure = Just refusal}
+    take 1 (diagnosis facts (CauseMethod "BookingRepository" "find_by_id" (Left (Just sn))))
+      `shouldSatisfy` \case
+        [d] -> "The model gave no signature: add `def find_by_id(self\10216params\10217) -> \10216returns\10217: ...` to BookingRepository yourself." `T.isInfixOf` d
+        _ -> False
+    let v = pausedJson cancelPaused {paSnippet = Just sn}
+    at ["snippet", "file"] v `shouldBe` Just (String "src/bistro/booking/ports/booking_repository/booking_repository.py")
+    at ["snippet", "body"] v `shouldSatisfy` \case Just (String b) -> "${" `T.isInfixOf` b; _ -> False
   where
     qOptions' q = case qShape q of
       Choice os -> os
@@ -548,6 +561,7 @@ cancelPaused =
     , paExpires = 600
     , paPrefixes = cancelPrefixes
     , paComment = "#"
+    , paSnippet = Nothing
     , paProposal = Nothing
     , paOutcome = Nothing
     , paRoundFiles = [(n, [(rel, unifiedDiff rel cancelModule l)]) | (n, l) <- [(1, cancelModule), (2, landing), (3, landing)]]
@@ -599,6 +613,7 @@ cancelWiredPaused =
     , paExpires = 600
     , paPrefixes = cancelPrefixes
     , paComment = "#"
+    , paSnippet = Nothing
     , paProposal = Nothing
     , paOutcome = Nothing
     , paRoundFiles = [(n, [(rel, unifiedDiff rel cancelModule landing), (T.unpack cb, unifiedDiff (T.unpack cb) cancelTestText wiredTest)]) | n <- [1, 2]]
@@ -714,13 +729,14 @@ pyHtmx :: Language
 pyHtmx = withShapes (unsafePerformIO (shippedLanguage "python" [("pack python-htmx", "packs/python-htmx")]))
   where
     withShapes l = l {langConjure = (\cj -> cj {cjFake = Just declaredFake, cjConstructor = Just declaredCtor}) <$> langConjure l}
-    declaredFake = FakeShape "^[[:space:]]+([[:alnum:]_]+)[[:space:]]*=[[:space:]]*([[:alnum:]_]+)\\(" ["Mock", "MagicMock"] ["Fake", "InMemory", "Stub"] (Just "{= param =}={= var =}") (Just "\\.{= method =} = lambda[[:space:]]*([^:]*):(.*)")
+    declaredFake = FakeShape "^[[:space:]]+([[:alnum:]_]+)[[:space:]]*=[[:space:]]*([[:alnum:]_]+)\\(" ["Mock", "MagicMock"] ["Fake", "InMemory", "Stub"] (Just "{= param =}={= var =}")
     declaredCtor = CtorShape ["commands/**/*.py", "queries/**/*.py"] "^class ([[:alnum:]_]+)" "def __init__\\(" "^([[:alnum:]_]+)[[:space:]]*:[[:space:]]*([^=]*[^=[:space:]])"
 {-# NOINLINE pyHtmx #-}
 
--- | Python's method signature template (`[types] method`).
+-- | Python's method signature template: the python-htmx port-method snippet's, by
+-- 'signatureTemplate'.
 pyMethod :: Maybe Text
-pyMethod = langTypes pyNow >>= tyMethod
+pyMethod = Just "{= name =}(self{= params =}) -> {= returns =}"
 
 -- | What cancel_booking's tests' names drop to be short (pytest's `test_cancel_booking`, `test_`).
 cancelPrefixes :: [Text]

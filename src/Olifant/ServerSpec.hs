@@ -18,6 +18,7 @@ import Data.Map.Strict qualified as M
 import Data.Text.Encoding qualified as TE
 import Data.Text.IO qualified as TIO
 import Olifant.Mutate (Mutant (..))
+import Olifant.TestName (stubNameFor)
 import Olifant.Language (Failure (..), Match (..), Rewrite (..), Runner (..), Syntax (..), TestRun (..))
 import System.Directory (canonicalizePath, doesDirectoryExist, doesFileExist, listDirectory)
 import System.Directory qualified as Dir
@@ -57,6 +58,17 @@ import Test.Hspec.Hedgehog (hedgehog)
 
 spec :: Spec
 spec = describe "Olifant.Server (projects across roots, open documents, jobs)" $ do
+  describe "TestName (Olifant.TestName)" $ do
+    let mutant op from text = Mutant 1 op from "\"\"" text False
+    it "a literal's letter prefix is dropped before its quote, any letters" $ do
+      stubNameFor (mutant "string" "rb\"hello world\"" "x = rb\"hello world\"") ("test_", "") "#" [] [] `shouldBe` "test_hello_world"
+      stubNameFor (mutant "string" "br'hello world'" "x = br'hello world'") ("test_", "") "#" [] [] `shouldBe` "test_hello_world"
+      stubNameFor (mutant "string" "\"hello world\"" "x = \"hello world\"") ("test_", "") "#" [] [] `shouldBe` "test_hello_world"
+      -- an identifier then a string reads as a prefix too: the rule cannot tell them apart (ruling)
+      stubNameFor (mutant "string" "x\"y\"" "z = x\"y\"") ("test_", "") "#" [] [] `shouldBe` "test_y"
+    it "self is a keyword, not a hard-coded word" $ do
+      stubNameFor (mutant "arith" "+" "total = self + 1") ("test_", "") "#" [] [] `shouldBe` "test_arith_total_self"
+      stubNameFor (mutant "arith" "+" "total = self + 1") ("test_", "") "#" [] ["self"] `shouldBe` "test_arith_total"
   it "an inline Rust test's conjure: the module is the file outside its test mod, once" $ do
     let file = T.unlines ["pub fn one() -> i32 {", "    1", "}", "", "#[cfg(test)]", "mod tests {", "    use super::*;", "", "    #[test]", "    fn is_one() {", "        todo!(\"write this test\");", "    }", "}"]
         rs = shippedLanguageNow "rust"
@@ -622,7 +634,7 @@ steeredSpecs = describe "a steered conjure (a [decide] model)" $ do
       M.member "conjure-1" . snd <$> readIORef (ssPaused s) `shouldReturn` False
   it "(j) pruned: by age, and by the file's version" $ do
     let v = RoundView 2 "qwen" "none" [] 0 Nothing Nothing False [] "" [] [] False []
-        pd = PausedConjure path (Just 1) 6 Nothing noSeed 0 ["qwen"] 2 1 v Nothing "" [] 0 M.empty M.empty M.empty [] "" [] (TestRun [] [] Nothing) [] Nothing Nothing Nothing (PausedAnswer "conjure-1" path "u" (6, 6) 2 "qwen" "" "" (Title "u" 2 2 "qwen" "q" 1) [] "" [] [] "" [] "" [] [] 600 ["u"] Nothing Nothing [] Nothing [] [] Nothing Nothing Nothing "#") [] [] [] M.empty
+        pd = PausedConjure path (Just 1) 6 Nothing noSeed 0 ["qwen"] 2 1 v Nothing "" [] 0 M.empty M.empty M.empty [] "" [] (TestRun [] [] Nothing) [] Nothing Nothing Nothing (PausedAnswer "conjure-1" path "u" (6, 6) 2 "qwen" "" "" (Title "u" 2 2 "qwen" "q" 1) [] "" [] [] "" [] "" [] [] 600 ["u"] Nothing Nothing [] Nothing [] [] Nothing Nothing Nothing "#" Nothing) [] [] [] M.empty Nothing
         held docs = M.member "conjure-1" (pruned 10 docs (M.singleton "conjure-1" pd))
     M.null (pruned 601 (M.singleton path (1, stubbed)) (M.singleton "conjure-1" pd)) `shouldBe` True
     held (M.singleton path (1, stubbed)) `shouldBe` True
@@ -1036,7 +1048,18 @@ siteSpecs = describe "a conjure's imported modules" $ do
             , "[imports]", "module_of = { strip = [\"^src/\"], separator = \".\" }", "paths = [\"src/{= path =}.hs\"]"
             , "[[imports.resolve]]", "pattern = \"^import +(qualified +)?([A-Z][A-Za-z0-9_.]*)\"", "module = 2" ]
     (ws, _) <- memoryWorkspace [("src/A.hs", "module A where\nimport qualified Data.Map as M\nimport B.C\n"), ("src/B/C.hs", "module B.C where\nc = 1\n")]
-    importedContext ws hs ["src/A.hs"] ["module A where\nimport qualified Data.Map as M\nimport B.C\n"] `shouldReturn` [("src/B/C.hs", "module B.C where\nc = 1\n")]
+    importedContext ws hs [("src/A.hs", "module A where\nimport qualified Data.Map as M\nimport B.C\n")] `shouldReturn` [("src/B/C.hs", "module B.C where\nc = 1\n")]
+  it "Rust: use crate:: names its crate's files" $ do
+    rust <- shippedLanguage "rust" []
+    let service = "use crate::ports::{Invoices, Clock};\nuse std::sync::Arc;\n\npub struct Billing;\n"
+        portsText = "pub trait Invoices {}\npub trait Clock {}\n"
+    (ws, _) <- memoryWorkspace [("billing/billing-service/src/service.rs", service), ("billing/billing-service/src/ports.rs", portsText), ("other/src/ports.rs", "pub trait Other {}\n")]
+    importedContext ws rust [("billing/billing-service/src/service.rs", service)] `shouldReturn` [("billing/billing-service/src/ports.rs", portsText)]
+  it "Haskell: import [qualified] M names src/M.hs" $ do
+    hs <- shippedLanguage "haskell" []
+    let app = "module Olifant.App where\nimport qualified Olifant.Language as L\nimport Data.Text (Text)\n"
+    (ws, _) <- memoryWorkspace [("src/Olifant/App.hs", app), ("src/Olifant/Language.hs", "module Olifant.Language where\nx = 1\n")]
+    importedContext ws hs [("src/Olifant/App.hs", app)] `shouldReturn` [("src/Olifant/Language.hs", "module Olifant.Language where\nx = 1\n")]
 
 root, moduleRel, testRel :: FilePath
 root = "/r"

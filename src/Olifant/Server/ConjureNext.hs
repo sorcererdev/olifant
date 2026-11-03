@@ -55,6 +55,7 @@ module Olifant.Server.ConjureNext
   , fixWords
   , methodWords
   , pausedJson
+  , methodSnippet
   , Proposal (..)
   , PausedConjure (..)
   , pausedLifetime
@@ -88,6 +89,8 @@ import Olifant.Generation.Steer
 import Olifant.Generation.Tools (ProgressEvent (..))
 import Olifant.Language
 import Olifant.Model (Escalate (..), Rung (..))
+import Olifant.Holes (Marker (..), splitMarkers)
+import Olifant.Snippet (Snippet (..), holeSource, snippetOf)
 import Data.Array (elems)
 import Text.Regex.TDFA (Regex, makeRegexM, matchAllText, matchTest, (=~))
 
@@ -391,8 +394,9 @@ data Offer = OfferContinue | OfferHint | OfferClimb Text | OfferWire Text Text |
 
 -- | Why a conjure paused: a test no body can pass, a port not derived, the same body twice,
 -- bodies trading tests, the grant spent, Jev asking, Jev climbing to an `ask` rung; a port the
--- unit takes lacking a method its body calls (the port, the method, its signature when known).
-data Cause = CauseTest Text | CausePort | CauseRepeat | CauseTrade | CauseBudget | CauseAsk | CauseClimb Text | CauseMethod Text Text (Maybe (Text, Text))
+-- unit takes lacking a method its body calls (the port, the method, and the model's
+-- signature; or, with none, the pack's snippet for it, none without `[conjure.port] add`).
+data Cause = CauseTest Text | CausePort | CauseRepeat | CauseTrade | CauseBudget | CauseAsk | CauseClimb Text | CauseMethod Text Text (Either (Maybe Snippet) (Text, Text))
   deriving stock (Eq, Show)
 
 -- | The cause as the step log has it.
@@ -442,7 +446,7 @@ offersAt st cause tests candidates lastRound =
   [OfferContinue, OfferHint]
     ++ [OfferClimb n | Just (Rung n _) <- [stNext st]]
     ++ [OfferWire p q | cause == CausePort, c <- candidates, Just (p, q) <- [paramPort c]]
-    ++ [OfferPort q m ps r | CauseMethod q m (Just (ps, r)) <- [cause]]
+    ++ [OfferPort q m ps r | CauseMethod q m (Right (ps, r)) <- [cause]]
     ++ map OfferReconjure tests
     ++ [OfferStop]
     ++ [OfferKeep lastRound | lastRound > 0]
@@ -497,7 +501,7 @@ policy pf
   | wireable, Just (p, q) <- pfDerived pf = PolicyWire p q
   | wireable = PolicyPause CausePort
   | t : _ <- [t | (t, _) <- pfFlagged pf, t `elem` pfFailingNow pf], not (pfWireApplies pf) || not (null (pfWired pf)) || not (pfLacksPort pf) = PolicyPause (CauseTest t)
-  | Just (q, m) <- pfMissing pf = PolicyPause (CauseMethod q m Nothing)
+  | Just (q, m) <- pfMissing pf = PolicyPause (CauseMethod q m (Left Nothing))
   | pfRepeat pf = PolicyPause CauseRepeat
   | pfTrade pf = PolicyPause CauseTrade
   | pfSpent pf = PolicyPause CauseBudget
@@ -573,7 +577,7 @@ diagnosis df cause = take 3 (nub (causeSentence ++ concat others))
       CauseBudget -> [spentSentence]
       CauseAsk -> [dfRung df <> " is not converging."]
       CauseClimb n -> [dfRung df <> " is stuck; " <> n <> " is offered."]
-      CauseMethod q m sig -> [methodSentence q m <> maybe (" Its signature does not follow from the call and the test's fake: add it to " <> q <> " yourself.") (const "") sig]
+      CauseMethod q m sig -> [methodSentence q m <> either (maybe (" Its signature does not follow from the call and the test's fake: add it to " <> q <> " yourself.") (\sn -> " The model gave no signature: add `" <> T.strip (T.intercalate "\n" (snGhost sn)) <> "` to " <> q <> " yourself.")) (const "") sig]
     tradeSentence = "Every body so far passes one test and fails the other."
     isMethod = \case
       CauseMethod {} -> True
@@ -720,8 +724,19 @@ data PausedAnswer = PausedAnswer
   -- ^ the runner's `[test.failure]`: how a failure names its assertion, got and expected
   , paComment :: Text
   -- ^ the language's comment: an attempt's line is its first that is no comment
+  , paSnippet :: Maybe Snippet
+  -- ^ a method pause the model gave no signature: the pack's snippet for the method, its
+  -- name filled, the rest tab stops (an editor may expand it)
   }
   deriving stock (Eq, Show)
+
+-- | The snippet for the method M a port lacks, from the pack's placed `[conjure.port] add`
+-- (MARKED, its marked line(s), at LINE of FILE): the @name@ hole filled with M, every other
+-- hole a tab stop whatever its source (the model gave no signature, so nothing is derived).
+methodSnippet :: FilePath -> Int -> Text -> Text -> Snippet
+methodSnippet file line m marked =
+  let plain = T.concat [either (\mk -> "\10214olifant-hole " <> markerName mk <> "|" <> fst (holeSource (markerKind mk)) <> "|" <> markerInstruction mk <> "\10215") id piece | piece <- splitMarkers marked]
+   in snippetOf file line plain (\n -> if n == "name" then Just m else Nothing)
 
 -- | The pause's title: the unit (@Class.method@ for a method), the round of the grant, the
 -- rung and its model, the seconds used.
@@ -872,6 +887,7 @@ pausedJson p =
     , "failure" .= fmap failureJson (paFailure p)
     , "checker" .= paChecker p
     ]
+      ++ ["snippet" .= object ["file" .= snFile sn, "line" .= snLine sn, "ghost" .= snGhost sn, "body" .= snBody sn] | Just sn <- [paSnippet p]]
       ++ ["proposal" .= object ["file" .= prFile r, "test" .= prTest r, "before" .= prBefore r, "after" .= prAfter r, "diff" .= prDiff r, "refused" .= prRefused r, "step" .= prStep r, "kind" .= prKind r, "files" .= (prFile r : [f | (f, _, _) <- prOthers r])] | Just r <- [paProposal p]]
   where
     t = paTitle p
@@ -992,6 +1008,8 @@ data PausedConjure = PausedConjure
   , pdRewritten :: [Text]
   , pdSteps :: [ConjureStep]
   , pdWireWrites :: Map FilePath Text
+  , pdSignature :: Maybe ((Text, Text), Maybe ((Text, Text), Text))
+  -- ^ the model's signature for a port's missing method, asked once (restored on resume)
   }
   deriving stock (Eq, Show)
 
