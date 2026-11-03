@@ -8,7 +8,7 @@ module Olifant.Capabilities
 import Data.Maybe (isJust, isNothing)
 import Data.Text (Text)
 import Data.Text qualified as T
-import Olifant.Language (ConjureDef (..), CheckDef (..), Language (..), Provider (..), StubDef (..), TestDef (..), TypesDef (..), defaultUnitNames, grammarLabel, hasLoadableGrammar, loadableGrammar, missingFormats, supportsMissing)
+import Olifant.Language (AddMethod (..), ConjureDef (..), CheckDef (..), Language (..), Provider (..), StubDef (..), TestDef (..), defaultUnitNames, grammarLabel, hasLoadableGrammar, loadableGrammar, missingFormats, supportsMissing)
 
 -- | A capability, how it is provided (Right) or the key that would enable
 -- it (Left), and the dotted key its presence depends on (whose layer
@@ -20,7 +20,7 @@ data Capability = Capability {capName :: Text, capHow :: Either Text Text, capKe
 
 -- | Units, diagnostics, missing cases, tests, test units, anchors, holes, test selection,
 -- mutation, stub, conjure shapes, the check's and the runner's messages,
--- stub bodies, signature facts.
+-- stub bodies, signature.
 capabilities :: Language -> [Capability]
 capabilities lang =
   [ Capability "units" units "unit.kinds" Nothing
@@ -37,7 +37,7 @@ capabilities lang =
   , Capability "messages" messages "check" Nothing
   , Capability "test messages" testMessages "test" Nothing
   , Capability "stub bodies" stubBodies "stub_lines" Nothing
-  , Capability "signature facts" signatureFacts "types" Nothing
+  , Capability "signature" signatureFacts "conjure.port.add" Nothing
   ]
   where
     check = langCheck lang
@@ -84,9 +84,9 @@ capabilities lang =
     stubBodies = case langStubLines lang of
       [] -> Left "stub_lines (a body is a stub only when it is empty, a comment or a hole)"
       ls -> Right ("stub_lines (" <> T.pack (show (length ls)) <> ")")
-    signatureFacts = case langTypes lang of
-      Nothing -> Left "[types] (no new port method's signature is derived)"
-      Just ty -> Right ("[types] " <> T.intercalate ", " ([k | (k, Just _) <- [("string", tyString ty), ("integer", tyInteger ty), ("nothing", tyNothing ty), ("optional", tyOptional ty), ("param", tyParam ty), ("returns", tyReturns ty), ("assigned", tyAssigned ty), ("record", tyRecord ty), ("method", tyMethod ty)]] ++ ["checks_none" | not (null (tyChecksNone ty))]))
+    signatureFacts = case langConjure lang >>= cjAddMethod of
+      Just am -> Right ("asked of the model, read by " <> amGenerator am <> "'s line")
+      Nothing -> Left "[conjure.port] add (a method a port lacks is yours to add)"
     keysOf table ks = case [k | (k, True) <- ks] of
       [] -> ""
       present -> table <> " " <> T.intercalate ", " present

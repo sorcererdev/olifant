@@ -146,7 +146,7 @@ siblingShapes lang ports unit0 (tp, tt, st) = do
           | "await " `T.isInfixOf` l -> "await"
           | ".await" `T.isInfixOf` l -> ".await"
         _ -> "plain"
-  pure (Sibling tp owner [(ty, c, p) | (ty, c, p, _, _) <- fakes] act (FakeShape bound' classes prefixes keyword Nothing) ctor)
+  pure (Sibling tp owner [(ty, c, p) | (ty, c, p, _, _) <- fakes] act (FakeShape bound' classes prefixes keyword) ctor)
   where
     lastSegment = last . ("" :) . T.splitOn "."
     -- a call of N in T (not a method of something): its top-level arguments

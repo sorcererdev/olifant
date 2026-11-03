@@ -45,14 +45,15 @@ import Olifant.Generation (HoleStatus (..), Plan (..), PlannedHole (..), Progres
 import Olifant.Generation.Steer (RoundHole (..), RoundState (..), Seed (..), Steer (..), Steering (..), noSeed)
 import Olifant.Generation.FillPhase (applyFills, assertionSpan, fillLines, projectFiles)
 import Olifant.Generator (AppliesAt (..), GeneratorWith (..), InputSpec (..), Verify (..), replaceGenerator)
-import Olifant.Holes (HoleSite (..), Marker (..), splitMarkers)
+import Olifant.Holes (HoleSite (..), Marker (..), hasMarkers, splitMarkers)
+import Olifant.Snippet (Snippet)
 import Olifant.Language (AddMethod (..), CheckDef (..), CheckReport (..), Checker (..), ConjureDef (..), CtorShape (..), Failure (..), Language (..), PortShape (..), TestDef (..), TestRun (..), failureLineIn, failureLineWith, failureOf, languageFor, runCheckIn, runTestsIn)
 import Olifant.Glob (matchesGlob)
 import Text.Regex.TDFA (AllTextSubmatches (..), Regex, makeRegexM, matchM, matchTest)
 import Olifant.Model (Backend (..), ModelConfig (..), Rung (..))
 import Olifant.Process (cancelled)
 import Olifant.Server.Actions (fillerFor, rungFiller)
-import Olifant.Server.ConjureNext (undefinedLabelIn, Cause (..), Decided (..), DiagnosisFacts (..), Next (..), Offer (..), OfferFacts (..), OfferRow (..), PausedAnswer (..), Title (..), addsReason, knownNote, offerRow, fixMoves, paramPort, reconjureWhy, roundWords, testFix, fixWords, methodWords, pausedJson, refusedSentence, shortName, testEntries, trigger, withoutKnown, PausedConjure (..), Policy (..), PolicyFacts (..), Proposal (..), RoundContext (..), RoundRecord (..), RoundView, Standing (..), causeWords, conjureNextQuestion, diagnosis, involved, isRepeat, isTrade, nextFrom, offersAt, pausedLifetime, policy, pruned, roundRecord, ConjureStep (..), StepKind (..), fixAgain, proposalStep, LatestFailure (..), rootFirst, roundSummary, roundView, spent, suspectFirst, undefinedNamesIn, undefinedIn, withHint)
+import Olifant.Server.ConjureNext (undefinedLabelIn, Cause (..), Decided (..), DiagnosisFacts (..), Next (..), Offer (..), OfferFacts (..), OfferRow (..), PausedAnswer (..), Title (..), addsReason, knownNote, offerRow, fixMoves, paramPort, reconjureWhy, roundWords, testFix, fixWords, methodWords, pausedJson, methodSnippet, refusedSentence, shortName, testEntries, trigger, withoutKnown, PausedConjure (..), Policy (..), PolicyFacts (..), Proposal (..), RoundContext (..), RoundRecord (..), RoundView, Standing (..), causeWords, conjureNextQuestion, diagnosis, involved, isRepeat, isTrade, nextFrom, offersAt, pausedLifetime, policy, pruned, roundRecord, ConjureStep (..), StepKind (..), fixAgain, proposalStep, LatestFailure (..), rootFirst, roundSummary, roundView, spent, suspectFirst, undefinedNamesIn, undefinedIn, withHint)
 import Olifant.Server.ConjureScan (Fake (..), Port (..), advisedIn, blankAt, conjurePortQuestion, ctorParamsIn, derivePortIn, deriveParam, fakeCalls, fakeIn, callLines, methodText, readSignature, signatureTemplate, snippetLine, missingMemberIn, portCandidates, portEnd, portFrom, portsIn, servicePaths, siblingsOf, takesPortIn)
 import Olifant.Server.Sibling (ConjureLanguage (..), conjureLanguage, filesUnder, scanDef, serviceBase, siblingLine)
 import Olifant.Server.Site (Site (..), appendStepLine, importedContext, runOver, siteAt, siteTestFile, tshow)
@@ -692,19 +693,29 @@ conjureWith progress path line selected resuming s0 = do
                 c <- readIORef counters
                 case missingMemberIn lang (map snd (ctorParamsIn (langConjure lang) (cHeader c))) why of
                   Nothing -> pure Nothing
-                  Just (q, m) -> case cSignature c of
-                    -- asked once a conjure, per method (a resume keeps it)
-                    Just ((q', m'), sig) | (q', m') == (q, m) -> pure (Just (q, m, fst <$> sig))
-                    _ -> do
-                      sf <- service
-                      let sets = maybe [] snd wire ++ servicePaths (langConjure lang) (siteModuleRel site)
-                      -- a signature only where the pack can add the method (`[conjure.port] add`)
-                      asked <- case (langConjure lang >>= cjAddMethod, listToMaybe [p | p <- sfPorts sf, ptName p == q]) of
-                        (Just _, Just p) -> askSignature s lang project filler (cWrites c) sets p m attempt (cTestText c)
-                        _ -> pure Nothing
-                      stepLine ["conjure-signature", q <> "." <> m, maybe "none" (\((ps, r), t) -> methodText (Just t) m ps r) asked]
-                      modifyIORef' counters (\c' -> c' {cSignature = Just ((q, m), asked)})
-                      pure (Just (q, m, fst <$> asked))
+                  Just (q, m) -> do
+                    let sets = maybe [] snd wire ++ servicePaths (langConjure lang) (siteModuleRel site)
+                        -- no signature: the pack's snippet for it, its tab stops the person's
+                        orSnippet = \case
+                          Just sig -> pure (Right (fst sig))
+                          Nothing -> case langConjure lang >>= cjAddMethod of
+                            Nothing -> pure (Left Nothing)
+                            Just _ ->
+                              portSnippet s lang project (cWrites c) sets q <&> \case
+                                Right ps | Just l <- listToMaybe [l | l <- T.lines (psMarked ps), hasMarkers l] -> Left (Just (methodSnippet (psRel ps) (psLine ps) m l))
+                                _ -> Left Nothing
+                    case cSignature c of
+                      -- asked once a conjure, per method (a resume keeps it)
+                      Just ((q', m'), sig) | (q', m') == (q, m) -> Just . (q,m,) <$> orSnippet sig
+                      _ -> do
+                        sf <- service
+                        -- a signature only where the pack can add the method (`[conjure.port] add`)
+                        asked <- case (langConjure lang >>= cjAddMethod, listToMaybe [p | p <- sfPorts sf, ptName p == q]) of
+                          (Just _, Just p) -> askSignature s lang project filler (cWrites c) sets p m attempt (cTestText c)
+                          _ -> pure Nothing
+                        stepLine ["conjure-signature", q <> "." <> m, maybe "none" (\((ps, r), t) -> methodText (Just t) m ps r) asked]
+                        modifyIORef' counters (\c' -> c' {cSignature = Just ((q, m), asked)})
+                        Just . (q,m,) <$> orSnippet asked
               decider = deciderUnder (ssCancel s) s project
               -- the service the wire's inputs come from (read once)
               service = do
@@ -939,6 +950,9 @@ conjureWith progress path line selected resuming s0 = do
                       , paExpires = round pausedLifetime
                       , paPrefixes = cPrefixes c
                       , paComment = langComment lang
+                      , paSnippet = case cCause c of
+                          Just (CauseMethod _ _ (Left sn)) -> sn
+                          _ -> Nothing
                       , paProposal = Nothing
                       , paOutcome = Nothing
                       , paRoundFiles = roundFiles
@@ -1195,7 +1209,7 @@ steeredFor s project = case (deciderUnder (ssCancel s) s project, mcLadder model
 -- climbed rung's filler as the first one is. A port answer, when a wire
 -- generator applies (WIRES) and none ran yet, pauses the loop for the
 -- wire (`cWire`).
-steer :: ServerState -> Language -> (Text -> Maybe ConjureDef) -> ([Text] -> IO ()) -> Double -> IORef Counters -> Steered -> Bool -> (Maybe (Decider IO) -> (Text, Fake) -> IO (Maybe (Text, Text), [Text])) -> (Text -> Text -> IO (Maybe (Text, Text, Maybe (Text, Text)))) -> (ModelFiller IO -> ModelFiller IO) -> RoundState -> IO (Steer IO)
+steer :: ServerState -> Language -> (Text -> Maybe ConjureDef) -> ([Text] -> IO ()) -> Double -> IORef Counters -> Steered -> Bool -> (Maybe (Decider IO) -> (Text, Fake) -> IO (Maybe (Text, Text), [Text])) -> (Text -> Text -> IO (Maybe (Text, Text, Either (Maybe Snippet) (Text, Text)))) -> (ModelFiller IO -> ModelFiller IO) -> RoundState -> IO (Steer IO)
 steer s lang scanD stepLine begun counters sd wires derive wall record rs =
   cancelled (ssCancel s) >>= \case
     True -> pure Again
@@ -1229,7 +1243,7 @@ steer s lang scanD stepLine begun counters sd wires derive wall record rs =
       asked <- cSignature <$> readIORef counters
       let facts0 = PolicyFacts flags failingNow failedEver lacks wireable (cWired c) derived (isRepeat history0) (isTrade (cBefore c) history0) (spent standing) ((\(q, m, _) -> (q, m)) <$> missing)
           withSignature = \case
-            PolicyPause (CauseMethod q m _) -> PolicyPause (CauseMethod q m (missing >>= \(_, _, sig) -> sig))
+            PolicyPause (CauseMethod q m _) -> PolicyPause (CauseMethod q m (maybe (Left Nothing) (\(_, _, sig) -> sig) missing))
             p -> p
       (next, decided) <- case withSignature (policy facts0) of
         PolicyWire p q -> pure (Left (p, q), Nothing)

@@ -251,16 +251,16 @@ uses, before `runChosenCheck` runs it. The doctor's `check tool` and `test runne
 "increment"`), `mutantsOf` finds the mutants in a unit's lines, and `Server/Mutate.hs`
 runs, caps (`capMutants 20`) and orders them. Only `python.toml` has any (17 operators).
 
-### `[types]`, `[conjure]`
+### `[conjure]`
 
-`langTypes` (`TypesDef`: `string, integer, nothing, optional, param, returns, assigned,
-checks_none, record, method`) and `langConjure` (`ConjureDef`: `service`, `port`
-with its `add` and `adapters`, `fake`, `constructor`, `advice`) belong to the pack and are read
-only by conjure, in `Server/Conjure.hs` and `Server/ConjureScan.hs`: [chapter 4](04-conjure.md#the-conjure-shapes-and-the-floor)
-has the table of which field feeds which function. A language without them conjures at the
-floor. A name's declared type is the language's, not the pack's: `[unit] annotation`
+`langConjure` (`ConjureDef`: `service`, `port` with its `add` and `adapters`, `fake`,
+`constructor`, `advice`) belongs to the pack and is read only by conjure, in `Server/Conjure.hs` and `Server/ConjureScan.hs`: [chapter 4](04-conjure.md#the-conjure-shapes-and-the-floor)
+has the table of which field feeds which function. A language without it conjures at the
+floor. `[types]` is retired (an unknown-key error that says so, `onlyKeysWith` in
+`parseLanguage`), and so is `[conjure.fake] stub`: the model writes a missing method's
+signature, read through the `add` generator's line. A name's declared type is the language's, not the pack's: `[unit] annotation`
 (`langUnitAnnotation`, beside `langUnitNames`; it was `[types] annotation`), an expression over
-`{= name =}` whose last non-empty group is the type. `methodSignature` reads it, and
+`{= name =}` whose last non-empty group is the type. A sibling test's constructor reads it, and
 `ConjureScan.ctorParams` takes a constructor parameter's type from its `param`'s last non-empty
 group the same way (Rust's `Arc<dyn X>` is `X`). What a pack *does* there is named here too: `[conjure.port] add` and `adapters` are the
 ids of the pack's generators that add a method a port lacks, so the engine names no generator
@@ -581,7 +581,7 @@ one type, so everything downstream is the same code.
 `Olifant.Capabilities.capabilities :: Language -> [Capability]` (`Capabilities.hs`) is a list
 of fifteen rows, one function of the `Language` each: `units`, `diagnostics`, `missing cases`,
 `tests`, `test units`, `anchors`, `holes`, `test selection`, `mutation`, `stub`, `conjure
-shapes`, `messages`, `test messages`, `stub bodies`, `signature facts`. A `Capability` is its
+shapes`, `messages`, `test messages`, `stub bodies`, `signature`. A `Capability` is its
 name, how it is provided (`Right how`) or the key that would enable it (`Left key`), `capKey`
 (the dotted key whose layer doctor names with `originOf`), and an optional `capFix` for a
 capability no single key enables.
@@ -716,7 +716,7 @@ the capability rows are the checklist. No Haskell is needed unless its report fo
   mentioned there for nested tables.
 - **Layer merge and preset fill are two merges with different rules.** Layers merge
   recursively (`mergeTables`); a preset is a flat union. So a nested table that the shipped
-  *language file* holds (`[imports]`, `[holes.expr]`, `[types]`) merges key by key with a
+  *language file* holds (`[imports]`, `[holes.expr]`, `[unit]`) merges key by key with a
   pack's, while one that only the *preset* holds (pytest's `[test.stub]` and `[test.failure]`,
   in `pytest.toml`) is replaced whole by a layer that writes any of its keys.
 - **Formats are named in code in three lists.** `knownFormats` (check), `knownTestFormats` (test)
@@ -733,8 +733,8 @@ the capability rows are the checklist. No Haskell is needed unless its report fo
 - **A capability's origin falls back to its parent table.** `originOf` tries the dotted key
   (`test.select`), then its parent (`test`). The fallback gives "messages · from shipped" for
   `[check] undefined`, which the pyright preset actually supplied.
-- **Keys exist in the language file that are about a pack, not a language.** `[conjure]` and
-  `[types]` are the pack's convention but live in the language table so they layer with it.
+- **Keys exist in the language file that are about a pack, not a language.** `[conjure]` is
+  the pack's convention but live in the language table so they layer with it.
   Doctor shows `conjure shapes` for every language, including Elm.
 - **`olifant doctor`'s fix text names `.olifant/languages/<name>.toml`.** That is the project
   layer; for a key a *pack* should own, the user has to know to put it in the pack.

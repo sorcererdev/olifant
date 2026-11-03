@@ -214,7 +214,7 @@ spec = do
       let Right l = lang ["[conjure]", "service = \"src/{= app =}/{= service =}\"", "[conjure.port]", "files = [\"ports/*.py\"]", "start = '^class ([a-z]+)'", "method = '^def '", "[conjure.fake]", "bound = '^ +([a-z]+) = ([A-Za-z]+)\\('", "prefixes = [\"Fake\"]"]
       fmap cjService (langConjure l) `shouldBe` Just (Just "src/{= app =}/{= service =}")
       (langConjure l >>= cjPort) `shouldBe` Just (PortShape ["ports/*.py"] "^class ([a-z]+)" "^def ")
-      (langConjure l >>= cjFake) `shouldBe` Just (FakeShape "^ +([a-z]+) = ([A-Za-z]+)\\(" [] ["Fake"] Nothing Nothing)
+      (langConjure l >>= cjFake) `shouldBe` Just (FakeShape "^ +([a-z]+) = ([A-Za-z]+)\\(" [] ["Fake"] Nothing)
       (langConjure l >>= cjConstructor) `shouldBe` Nothing
       fmap langConjure (lang []) `shouldBe` Right Nothing
     it "an unknown key, a port without its start, or a bad expression is an error" $ do
@@ -230,14 +230,12 @@ spec = do
   describe "[types] and undefined names: checked as they load" $ do
     let lang = parseLanguage "python" "/pack" . T.unlines . (["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-python\", rev = \"293fdc02038ee2bf0e2e206711b69c90ac0d413f\" }"] ++)
         bad = either (const True) (const False)
-    it "a [types] template's variables and a [types] expression are checked" $ do
-      bad (lang ["[types]", "param = \"{= nme =}: {= type =}\""]) `shouldBe` True
-      bad (lang ["[types]", "optional = \"{= typ =} | None\""]) `shouldBe` True
-      bad (lang ["[types]", "method = \"{= name =}({= args =})\""]) `shouldBe` True
+    it "[types] is retired" $
+      lang ["[types]", "param = \"{= name =}: {= type =}\""] `shouldSatisfy` either ("retired" `T.isInfixOf`) (const False)
+    it "[conjure.fake] stub is retired" $
+      lang ["[conjure.fake]", "bound = '^ +([a-z]+) = ([A-Za-z]+)\\('", "stub = 'x'"] `shouldSatisfy` either ("retired" `T.isInfixOf`) (const False)
+    it "an [unit] annotation expression is checked" $
       bad (lang ["[unit]", "annotation = '{= name =}:[[:space:]]*(['"]) `shouldBe` True
-      bad (lang ["[types]", "record = '^class {= nam =}'"]) `shouldBe` True
-      bad (lang ["[types]", "checks_none = ['{= name =} is (']"]) `shouldBe` True
-      bad (lang ["[types]", "param = \"{= name =}: {= type =}\"", "optional = \"{= type =} | None\"", "method = \"{= name =}(self{= params =}) -> {= returns =}\"", "record = '^class {= name =}[(:]'", "checks_none = ['{= name =} is None']"]) `shouldBe` False
     it "an undefined-name expression with no group is an error (the name is its last group)" $ do
       bad (lang ["[check]", "command = [\"c\"]", "format = \"pyright-json\"", "undefined = ['is not defined']"]) `shouldBe` True
       bad (lang ["[check]", "command = [\"c\"]", "format = \"pyright-json\"", "undefined = [{ pattern = 'is not defined' }]"]) `shouldBe` True
@@ -741,10 +739,10 @@ spec = do
       fmap langIgnore (parseLanguage "x" "/x" (with "[\"deps\", \".venv\"]")) `shouldBe` Right ["deps", ".venv"]
       either (\e -> "`ignore`" `T.isInfixOf` e && "build/out" `T.isInfixOf` e) (const False) (parseLanguage "x" "/x" (with "[\"build/out\"]")) `shouldBe` True
       either (T.isInfixOf "`ignore`") (const False) (parseLanguage "x" "/x" (with "[\"\"]")) `shouldBe` True
-    it "[unit] annotation is a template over name; [types] annotation is unknown" $ do
+    it "[unit] annotation is a template over name; [types] is retired" $ do
       langUnitAnnotation (shippedLanguageNow "python") `shouldBe` Just "{= name =}:[[:space:]]*([^,)=]+)"
       let base = "files = [\"**/*.x\"]\ncomment = \"#\"\ngrammar = \"x\"\n"
-      either (T.isInfixOf "annotation") (const False) (parseLanguage "x" "/x" (base <> "[types]\nannotation = \"x\"\n")) `shouldBe` True
+      either (T.isInfixOf "retired") (const False) (parseLanguage "x" "/x" (base <> "[types]\nannotation = \"x\"\n")) `shouldBe` True
       either (T.isInfixOf "[unit] annotation") (const False) (parseLanguage "x" "/x" (base <> "[unit]\nannotation = '{= name =}('\n")) `shouldBe` True
     it "[unit] name is a list of valid expressions and join a bool" $ do
       let base = "files = [\"**/*.x\"]\ncomment = \"#\"\ngrammar = \"x\"\n[unit]\nkinds = [\"f\"]\n"

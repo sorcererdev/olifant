@@ -1491,6 +1491,41 @@ conjureSpec = describe "olifant/conjure" $ do
     steps `shouldSatisfy` any (== ["conjure-proposal", notFound])
     steps `shouldSatisfy` any (== ["conjure-resume", "reject"])
 
+  it "cancel_booking with the real checker and pytest: a nonsense signature gives no p offer and the snippet's ghost line (Review focus 4)" $ do
+    let body = T.intercalate "\n" ["booking = self.bookings.find_by_id(input.id)", "if booking is None:", "    return NotFound(\"Booking not found\")", "return Ok(None)"]
+    withSystemTempDirectory "olifant-conjure-real" $ \tmp -> do
+      let fills = tmp </> "fills.toml"
+          answers = tmp </> "answers.json"
+      -- the model's answer for the port method's signature line, beside the body's
+      TIO.writeFile fills ("[fills]\nbody = " <> T.pack (show (T.unpack body)) <> "\nsignature = \"nonsense\"\n")
+      TIO.writeFile answers "{\"answers\": {}}"
+      withPythonChecked [(cbModule, morningModule), (cbTest, morningTest)] $ \ports0 dir -> do
+        let ports = ports0 {pVerifier = (`processVerifierCancellable` 120), pTester = (`processRunner` 120), pTesterWithin = flip processRunner}
+        old <- TIO.readFile (dir </> ".olifant/config.toml")
+        TIO.writeFile (dir </> ".olifant/config.toml") (old <> "\n[model]\ndefault = \"local\"\nrounds = 6\n[model.backends.local]\nkind = \"openai-compatible\"\nurl = \"http://127.0.0.1:9\"\nmodel = \"q\"\n[model.backends.jev]\nkind = \"jev\"\n[decide]\nmodel = \"jev\"\n[conjure]\nwire = \"wire\"\n")
+        let config = [("fills", String (T.pack fills)), ("decide_answers", String (T.pack answers))]
+        (paused, _) <- inProcessWithConfig config ports dir $ do
+          doc <- openDoc cbModule "python"
+          text <- documentContents doc
+          let handleAt = length (takeWhile (not . ("    def handle(" `T.isPrefixOf`)) (T.lines text))
+              base = ["textDocument" .= object ["uri" .= (doc ^. L.uri)], "position" .= object ["line" .= (handleAt + 1 :: Int), "character" .= (0 :: Int)]]
+              ask extra = blockMove (Proxy :: Proxy "olifant/conjure") (object (base <> extra))
+              resume tok choice = ask ["resume" .= object ["token" .= (tok :: Text), "choice" .= (choice :: Text)]]
+              tokenOf v = case inner "token" (field "paused" v) of Just (String t) -> t; _ -> ""
+          ask []
+        inner "trigger" (field "paused" paused) `shouldBe` Just (String "a port lacks a method: BookingRepository.find_by_id")
+        offerLabels (field "paused" paused) `shouldSatisfy` notElem "add find_by_id to BookingRepository"
+        field "paused" paused `shouldSatisfy` \case
+          Just p -> case inner "diagnosis" (Just p) of
+            Just (Array ds) -> any (\case String d -> "The model gave no signature: add `def find_by_id(self\10216params\10217) -> \10216returns\10217: ...` to BookingRepository yourself." `T.isInfixOf` d; _ -> False) (toList ds)
+            _ -> False
+          Nothing -> False
+        inner "body" (inner "snippet" (field "paused" paused)) `shouldSatisfy` \case Just (String b) -> "${" `T.isInfixOf` b; _ -> False
+        logged <- T.lines <$> TIO.readFile (dir </> ".olifant/state/steps.log")
+        [T.unwords (T.words l) | l <- logged, "conjure-signature" `T.isInfixOf` l] `shouldSatisfy` \case
+          [l] -> "conjure-signature BookingRepository.find_by_id none" `T.isSuffixOf` l
+          _ -> False
+
   it "cancel_booking with the real checker and pytest: the steps compose (the wire, the test's fix, the port's method), round by round what is red after each" $ do
     let body = T.intercalate "\n" ["booking = self.bookings.find_by_id(input.id)", "if booking is None:", "    return NotFound(\"Booking not found\")", "return Ok(None)"]
     withSystemTempDirectory "olifant-conjure-real" $ \tmp -> do

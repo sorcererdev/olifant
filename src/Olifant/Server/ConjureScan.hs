@@ -50,7 +50,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Decide (Answer (..), Question, choice, confident)
 import Olifant.Holes (Marker (..), hasMarkers, splitMarkers)
-import Olifant.Language (Advice (..), CheckDef (..), ConjureDef (..), CtorShape (..), MissingMember (..), FakeShape (..), Language (..), PortShape (..), TypesDef (..), isTestFile, regexName)
+import Olifant.Language (Advice (..), CheckDef (..), ConjureDef (..), CtorShape (..), MissingMember (..), FakeShape (..), Language (..), PortShape (..), isTestFile, regexName)
 import Data.Array qualified
 import System.FilePath (splitDirectories)
 import Text.Regex.TDFA (AllTextSubmatches (..), Regex, makeRegexM, matchAll, matchM, matchTest, (=~))
@@ -366,7 +366,7 @@ handFakeIn cj helper param var src = (cj >>= cjFake) >>= \fs -> handFake fs help
 
 -- | 'derivePort' by a pack's `[conjure.fake]`; by the variable or the only port without one.
 derivePortIn :: Maybe ConjureDef -> Fake -> [Port] -> Maybe Text
-derivePortIn cj = derivePort (fromMaybe (FakeShape "" [] [] Nothing Nothing) (cj >>= cjFake))
+derivePortIn cj = derivePort (fromMaybe (FakeShape "" [] [] Nothing) (cj >>= cjFake))
 
 -- | 'ctorParams' by a pack's `[conjure.constructor]`; none without one.
 ctorParamsIn :: Maybe ConjureDef -> Text -> [(Text, Text)]

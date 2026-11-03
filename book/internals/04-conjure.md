@@ -229,9 +229,9 @@ cjAdvice}`, each optional, parsed by `conjureFrom` (`Adapter.hs`). Which functio
 | `[conjure.port]` `files`, `start`, `method` | `PortShape` | `portsIn`: the ports of a service, the methods of each; `portEnd` where a port's block ends |
 | `[conjure.port]` `add`, `adapters` | `AddMethod` | `portMethodPlan`: the generators that add a method a port lacks; `methodWall` offers the port row only with `add` |
 | `[[conjure.advice]]` `when`, `say` | `[Advice]` | `advisedIn`: a sentence for `testConjure`'s instruction |
-| `[conjure.fake]` `bound`, `classes`, `prefixes`, `keyword`, `stub` | `FakeShape` (learned from a sibling test, `Sibling.hs`; declared only as a first test's fallback) | `fakeIn`/`unpassedFake`: a test's fake; `derivePort` strips a prefix to name the port; `handFake` hands a fake to a helper |
+| `[conjure.fake]` `bound`, `classes`, `prefixes`, `keyword` (`stub` retired) | `FakeShape` (learned from a sibling test, `Sibling.hs`; declared only as a first test's fallback) | `fakeIn`/`unpassedFake`: a test's fake; `derivePort` strips a prefix to name the port; `handFake` hands a fake to a helper |
 | `[conjure.constructor]` `files`, `owner`, `start`, `param` | `CtorShape` (likewise) | `ctorParamsIn`: what siblings call a port's parameter (`deriveParam`); `takesPortIn`: whether the class takes it |
-| `[types]` | `TypesDef` | read by nothing in conjure any more (the model writes a missing method's signature) |
+| `[conjure.port] add` (for the signature) | `AddMethod` | `portSnippet`, `askSignature`: the model's line read through the generator's marked line; doctor's `signature` row. `[types]` is retired |
 | `[check] undefined`, `missing_member`; `[test] undefined`, `[test.failure]` | the toolchain's words | `undefinedLabelIn` (`ConjureNext.hs`), `missingMemberIn` (`ConjureScan.hs`), `failureLineWith`: a `NameError`, a missing member, the failing assertion's line |
 
 A language with **no** `[conjure]` conjures at the **floor**: a test's body, or a function's,
@@ -351,7 +351,7 @@ Run one with `cabal test --test-options='--match "olifant/conjure"'`, in the mai
   `timeout`; each backend's `escalate`; `[conjure] wire` in the project config.
 - **Language/pack keys:** `[unit]`, `[test]` (`unit`, `above`, `assertion`, `name`, `stub`,
   `failure`, `undefined`), `[check] undefined`/`missing_member`, `stub_lines`, `opens_block`,
-  `empty_statement`, `[imports]`, `[types]`, `[conjure]`.
+  `empty_statement`, `[imports]`, `[conjure]`.
 - **Ports:** `pTester`/`pTesterWithin` (the runner), `pSyntax`, `pFiles`; `ssTestFiller`,
   `scFills`, `scDecideAnswers` for specs.
 - **Wire:** `olifant/conjure` request and answer; `$/progress` "conjuring" (`roundsProgress`,
@@ -365,8 +365,8 @@ Run one with `cabal test --test-options='--match "olifant/conjure"'`, in the mai
   `ConjureNext`; the sequence is not decomposed further.
 - **The wire's and the port method's input names are a contract.** The wire generator is given
   `param` and `port` (with its path's slots); the port method's generators `name`, `params`,
-  `returns`, `signature`. These are the engine's words (`[conjure.fake] keyword` and `[types]
-  method` use them too), so a pack's generators must use them; a generator that does not
+  `returns`, `signature`. These are the engine's words (`[conjure.fake] keyword` uses them too, and
+  `signatureTemplate` writes them from the add generator's holes), so a pack's generators must use them; a generator that does not
   declare one is simply not given it.
 - **`ResumePort` is accepted and undocumented on the wire.** `Lsp.resumeOf` parses `"port"`, the
   user book mentions `wire` but not `port` in the choice list, and the `InvalidParams` message
