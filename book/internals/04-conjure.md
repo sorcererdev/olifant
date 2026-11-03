@@ -31,6 +31,7 @@ book's [step log](../user/18-tdd-in-the-editor.md#the-step-log).
 | `Server/Conjure.hs` (1,462 lines) | the command: `conjureAt` and `resumeConjure` both end in `conjureWith`; building the hole (`functionConjure`, `testConjure`); the fill (`fill`); the steering hook (`steer`); the wire (`wireFor`) and the port method (`portMethodPlan`) |
 | `Server/ConjureNext.hs` (1,042) | the **pure rules**: the policy (`policy`), Jev's question (`conjureNextQuestion`) and how to read its answer (`nextFrom`), the offers (`offersAt`), the diagnosis (`diagnosis`), the pause's wire shape (`PausedAnswer`, `pausedJson`), `PausedConjure`, the round records |
 | `Server/ConjureScan.hs` (402) | **pure reading of source** by the pack's shapes: the fakes a test builds and never passes in (`unpassedFake`, `fakeIn`), the service's ports (`portsIn`), a fake's port (`derivePort`), a constructor's parameters (`ctorParamsIn`), Jev's port question (`conjurePortQuestion`), a new method's signature (`methodSignature`) |
+| `Server/Sibling.hs` | **a sibling test, read** (spike D): the owner, constructor and fakes a nearby test already uses (`siblingShapes`, `findSibling`), the service's ports (`servicePorts`), the library doubles of the test being conjured (`conjuredFakes`); `serviceBase` and `filesUnder` live here |
 | `Generation/Steer.hs` | the contract between a fill loop and its steerer: `RoundState`, `Steer = Again | Climb filler | Pause why`, `Steering` |
 | `Generation/FillPhase.hs` | the fill loop that calls the hook (`stSteer`) |
 | `Server/Site.hs`, `Unit.hs`, `Tests.hs`, `Stub.hs` | what conjure shares with the other commands: the cursor's project, language, module and test file; the unit; the test run; the stub |
@@ -214,7 +215,7 @@ cjAdvice}`, each optional, parsed by `conjureFrom` (`Adapter.hs`). Which functio
 
 | key | type | read by |
 |---|---|---|
-| `service` | path template over `app`, `service` | `servicePaths` (`ConjureScan.hs`): what binds `app`/`service`; `serviceBase` in `Conjure.hs` |
+| `service` | path template over `app`, `service` | `servicePaths` (`ConjureScan.hs`): what binds `app`/`service`; `serviceBase` in `Sibling.hs` |
 | `[conjure.port]` `files`, `start`, `method` | `PortShape` | `portsIn`: the ports of a service, the methods of each; `portEnd` where a port's block ends |
 | `[conjure.port]` `add`, `adapters` | `AddMethod` | `portMethodPlan`: the generators that add a method a port lacks; `methodWall` offers the port row only with `add` |
 | `[[conjure.advice]]` `when`, `say` | `[Advice]` | `advisedIn`: a sentence for `testConjure`'s instruction |
@@ -234,13 +235,13 @@ the one edit.
 
 ### No Python in conjure
 
-`ConjureNeutralSpec` (`src/Olifant/ConjureNeutralSpec.hs`) is the guard. It reads six source
-files (`Server/Conjure.hs`, `ConjureScan.hs`, `ConjureNext.hs`, `Site.hs`, `Unit.hs` and
-`Language/Test.hs`), drops comments, and fails if any line contains one of a list of literals:
+`ConjureNeutralSpec` (`src/Olifant/ConjureNeutralSpec.hs`) is the guard. It reads seven source
+files (`Server/Conjure.hs`, `ConjureScan.hs`, `ConjureNext.hs`, `Site.hs`, `Unit.hs`,
+`Sibling.hs` and `Language/Test.hs`), drops comments, and fails if any line contains one of a list of literals:
 `"def `, `"class `, `__init__`, `Protocol`, `".py"`, `__test.py`, `"assert `, `"test_"`,
 `lambda`, `"self`, `NameError`, `AssertionError`, `pyright`, `pytest`, `"#"`. Its `allowed` list
 is empty; adding to it is the admission that a language leaked back in. The list is of *strings
-that were once in the code*, not a proof: it catches a Python literal in those six files and
+that were once in the code*, not a proof: it catches a Python literal in those seven files and
 nothing else (a literal in `Stub.hs` is invisible to it). It also holds `"app"` and `"service"`,
 python-htmx's layout, which the port method once passed by name.
 
@@ -257,6 +258,46 @@ stub, fill-prompt, anticipation, recognition and doctor modules (`neutralModules
 conjure's Python literals and those that moved into python-strangler's `migrate.toml`, the
 python language file and the pytest toolchain (`neutralLiterals`). The broader rule, that the
 engine never branches on a language's name, is `NeutralSpec` ([chapter 5](05-languages.md#the-rule-and-the-specs-that-hold-it)).
+
+## Siblings
+
+`Server/Sibling.hs` reads the facts the `[conjure.fake]` and `[conjure.constructor]` tables used
+to declare from a test that already exists. Everything goes through the language: definitions
+by `definitionKinds` (the grammar's queries), a parameter's type by `[unit] annotation`, tests
+by `[test]`. It names no literal of any language (`ConjureNeutralSpec` reads it).
+
+- **`siblingShapes lang ports unit (test path, test text, subject text)`** gives a `Sibling`
+  (`sbTest`, `sbOwner`, `sbFakes`, `sbAct`, `sbFake`, `sbCtor`) or `Nothing`:
+  - the **owner** is a class-like definition (`definition.class`/`definition.impl`) whose own
+    span holds a definition named the unit (preferred) or one the test calls (`.n(`), and which
+    the test calls with arguments (`callArgs`, `splitTopArgs`);
+  - its **constructor** is a definition inside the owner whose parameters, read by
+    `ctorParams` with the learned `param` (`^([[:alnum:]_]+)` plus the annotation less
+    `{= name =}`), carry the call's keyword names, or as many as it passes by position.
+    `ctStart` is that line up to `(`, escaped (`escapeRe`); `ctOwner` the owner's line up to its
+    name, plus a name group;
+  - a **fake** is what an argument passes where the parameter's type is a port: the class it
+    calls, or the class a variable it names is bound to. The binding form (`fsBound`) is learned
+    from that line, the prefixes from the class less the port's name, the keyword form from the
+    `=` or `:` between them; `sbAct` is `plain`, `await` or `.await` from the line calling the unit.
+- **`siblingCandidates`** is the radius: the module itself, the other source files of its
+  folder by name, then those of the folders beside it (under its parent) by distance, then by
+  name; test files and other extensions out. There is no project-wide ring: a service's first
+  test with no tables conjures at the floor.
+- **`findSibling ws lang ports (rel, module text, its test text) unit`** reads every candidate
+  whose `tests_for` file has tests and reads, nearest first, and merges them: the nearest gives
+  the owner, constructor, keyword and act; the fakes' classes and prefixes are all of theirs, the
+  binding form the nearest that shows one. The constructor's `files` are the sibling's and the
+  unit's folders under the service base (`serviceBase`).
+- **`servicePorts`** is the service's ports (`[conjure] service` and `[conjure.port]`), none
+  without them; **`conjuredFakes bound ports test`** finds the test being conjured's library
+  doubles (a `Mock()` bound to a variable named after a port's last word, or one whose attribute
+  the test sets), so no declared `classes` list is needed.
+
+`SiblingSpec` holds it to the old tables on the python-htmx fixture, character for character
+(the owner, fakes, `def __init__\(`, the `bound` expression, `InMemory`, the keyword form). A
+Rust sibling (`Billing::new(…)`, a path call) does not read yet: the spec records it as pending
+(rust-htmx's shapes are deferred).
 
 ## Testing it
 

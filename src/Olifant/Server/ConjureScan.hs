@@ -32,6 +32,10 @@ module Olifant.Server.ConjureScan
   , blankAt
   , siblingsOf
   , servicePaths
+  , groups
+  , balanced
+  , occurrencesWith
+  , snake
   ) where
 
 import Data.Char (isAlphaNum, isSpace, isUpper, toLower)

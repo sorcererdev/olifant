@@ -53,6 +53,7 @@ import Olifant.Process (cancelled)
 import Olifant.Server.Actions (fillerFor, rungFiller)
 import Olifant.Server.ConjureNext (undefinedLabelIn, Cause (..), Decided (..), DiagnosisFacts (..), Next (..), Offer (..), OfferFacts (..), OfferRow (..), PausedAnswer (..), Title (..), addsReason, knownNote, offerRow, fixMoves, paramPort, reconjureWhy, roundWords, testFix, fixWords, methodWords, pausedJson, refusedSentence, shortName, testEntries, trigger, withoutKnown, PausedConjure (..), Policy (..), PolicyFacts (..), Proposal (..), RoundContext (..), RoundRecord (..), RoundView, Standing (..), causeWords, conjureNextQuestion, diagnosis, involved, isRepeat, isTrade, nextFrom, offersAt, pausedLifetime, policy, pruned, roundRecord, ConjureStep (..), StepKind (..), fixAgain, proposalStep, LatestFailure (..), rootFirst, roundSummary, roundView, spent, suspectFirst, undefinedNamesIn, undefinedIn, withHint)
 import Olifant.Server.ConjureScan (Fake (..), Port (..), advisedIn, blankAt, conjurePortQuestion, ctorParamsIn, derivePortIn, deriveParam, fakeCalls, fakeIn, methodSignature, methodText, missingMemberIn, portCandidates, portEnd, portFrom, portsIn, servicePaths, siblingsOf, takesPortIn)
+import Olifant.Server.Sibling (filesUnder, serviceBase)
 import Olifant.Server.Site (Site (..), appendStepLine, importedContext, runOver, siteAt, siteTestFile, tshow)
 import Olifant.Server.Edits (FileEdit (..), smallestChange, unifiedDiff)
 import Olifant.Server.State (ServerConfig (..), ServerState (..), deciderUnder)
@@ -1024,24 +1025,6 @@ serviceFacts ws lang rel sets = case serviceBase cj sets of
   where
     cj = langConjure lang
     portsIn' files ps = portsIn ps files
-
--- | The service's folder: the pack's `[conjure] service` with the wire's SETS in it; none
--- without one, or when a set it names is missing.
-serviceBase :: Maybe ConjureDef -> [(Text, Text)] -> Maybe FilePath
-serviceBase cj sets = do
-  t <- cj >>= cjService
-  segs <- traverse seg (T.splitOn "/" t)
-  pure (joinPath (map T.unpack segs))
-  where
-    seg x = case T.stripSuffix "=}" =<< T.stripPrefix "{=" x of
-      Just k -> lookup (T.strip k) sets
-      Nothing -> Just x
-
--- | The files under BASE (root-relative) that one of GLOBS (relative to BASE) matches.
-filesUnder :: Workspace IO -> FilePath -> [Text] -> IO [FilePath]
-filesUnder ws base globs = do
-  found <- listFiles ws base
-  pure [normalisePath (base </> f) | f <- found, any (`matchesGlob` f) globs]
 
 -- | The generator GID run in-process with SETS over the project with the
 -- conjure's WRITES on top (no model fills it): the files it writes
