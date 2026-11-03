@@ -3,7 +3,7 @@
 -- only which key provides it.
 --
 -- The sample is the first 'sampleSize' files, in path order, that match the
--- language's `files`. Units, test units, anchors and holes are proven on it;
+-- language's `files`. Units, test units, sibling tests, anchors and holes are proven on it;
 -- tests only when doctor is asked to run them ('epRun').
 module Olifant.Evidence
   ( Proof (..)
@@ -16,7 +16,8 @@ module Olifant.Evidence
 
 import Control.Concurrent.Async (mapConcurrently)
 import Control.Concurrent.QSem (newQSem, signalQSem, waitQSem)
-import Control.Exception (bracket_)
+import Control.Exception (bracket_, evaluate, try)
+import Olifant.Language.Grammar (GrammarUnavailable (..))
 import Data.Aeson (object, (.=))
 import Data.Either (lefts)
 import Data.List (nub, sort, sortOn)
@@ -31,6 +32,8 @@ import Olifant.Holes (Marker (..), placeholderFor)
 import Olifant.Language
 import Olifant.Language.TestUnits (TestUnit (..), testUnitsReport)
 import Olifant.Server.Unit (Named (..), unitsOf)
+import Olifant.Server.Sibling (Sibling (..), findSibling, servicePorts)
+import Olifant.Workspace (Workspace)
 
 -- | What a slot's run on the sample shows. 'Proven' carries the evidence;
 -- 'Unproven' is "not seen" or "not run"; 'Disproven' carries the line or
@@ -38,7 +41,7 @@ import Olifant.Server.Unit (Named (..), unitsOf)
 data Proof = Proven Text | Unproven Text | Disproven Text
   deriving stock (Eq, Show)
 
-data Evidence = Evidence {evUnits, evTestUnits, evTests, evAnchors, evHoles :: Proof}
+data Evidence = Evidence {evUnits, evTestUnits, evTests, evAnchors, evHoles, evSiblings :: Proof}
   deriving stock (Eq, Show)
 
 -- | What evidence reads: the project's files (relative to its root), one
@@ -48,6 +51,8 @@ data EvidencePorts = EvidencePorts
   , epRead :: FilePath -> IO (Maybe Text)
   , epSyntax :: Syntax IO
   , epRun :: Maybe (Language -> [TestId] -> IO (Either Text TestRun))
+  , -- | the project's files as conjure reads them (a sibling test, the service's ports)
+    epWorkspace :: Workspace IO
   }
 
 -- | How many files a sample holds.
@@ -59,9 +64,19 @@ sampleSize = 40
 sampleOf :: Language -> [FilePath] -> [FilePath]
 sampleOf lang files = take sampleSize (S.toAscList (S.fromList [f | f <- files, any (`matchesGlob` f) (langFiles lang)]))
 
--- | Each slot of LANG run on a sample of the project's files.
+-- | Each slot of LANG run on a sample of the project's files. Doctor never
+-- throws: a grammar that cannot load leaves every row of its language
+-- unread (the grammar row says why).
 evidenceFor :: EvidencePorts -> Language -> IO Evidence
-evidenceFor ports lang = do
+evidenceFor ports lang =
+  try (evidenceRun ports lang >>= \ev -> ev <$ evaluate (length (show ev))) >>= \case
+    Left (GrammarUnavailable _) -> pure (Evidence unread unread unread unread unread unread)
+    Right ev -> pure ev
+  where
+    unread = Unproven "not read: the grammar is not loaded"
+
+evidenceRun :: EvidencePorts -> Language -> IO Evidence
+evidenceRun ports lang = do
   files <- epFiles ports
   let sample = sampleOf lang files
       known = S.fromList files
@@ -92,7 +107,27 @@ evidenceFor ports lang = do
   holes <- holesProof ports lang
   tests <- testsProof ports lang (map fst testTexts)
   testUnits <- testUnitsProof ports lang testTexts
-  pure (Evidence (unitsProof lang texts units) testUnits tests anchors holes)
+  siblings <- siblingsProof ports lang known [(p, t, ns) | (p, t, Right ns) <- units]
+  pure (Evidence (unitsProof lang texts units) testUnits tests anchors holes siblings)
+
+-- | Sibling tests: the first sampled source (in path order) with a `tests_for` file whose
+-- test teaches conjure its fakes and constructor ('findSibling', for the file's first
+-- unit). Never an error: without an annotation or a port shape it says what is read instead.
+siblingsProof :: EvidencePorts -> Language -> S.Set FilePath -> [(FilePath, Text, [Named])] -> IO Proof
+siblingsProof ports lang known sources
+  | Nothing <- langUnitAnnotation lang = pure (Unproven "no [unit] annotation: only a declared [conjure.fake] and [conjure.constructor] are read")
+  | Nothing <- langConjure lang >>= cjPort = pure (Unproven "no [conjure.port]: conjure reads no fakes")
+  | Just td <- langTest lang = go td [(p, t, n) | (p, t, n : _) <- sortOn (\(p, _, _) -> p) sources, not (isTestFile td p), S.member (testsForFile td p) known]
+  | otherwise = pure notSeen
+  where
+    notSeen = Unproven "not seen (no sampled test builds an owner with a port's fake)"
+    ws = epWorkspace ports
+    go _ [] = pure notSeen
+    go td ((p, t, n) : rest) = do
+      ps <- servicePorts ws lang p
+      findSibling ws lang ps (p, t, Nothing) (namedName n) >>= \case
+        Just sb -> pure (Proven (T.pack p <> " \8594 " <> T.pack (takeFileName (sbTest sb)) <> " (" <> sbOwner sb <> "); constructor " <> ctStart (sbCtor sb) <> "; fakes " <> T.intercalate ", " [prm <> ":" <> ty <> "=" <> c | (ty, c, prm) <- sbFakes sb]))
+        Nothing -> go td rest
 
 -- | Units: how many in how many files, with one example; with none, the
 -- first line the rule did not take, or why the slot failed.

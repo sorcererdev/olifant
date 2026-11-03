@@ -82,6 +82,7 @@ doctor ports di = do
   where
     -- what each language can do; an absent capability names its key
     capabilityRows grammars lang =
+      siblingRow lang
       [ case capHow c of
           Right how ->
             let origin = maybe "" (" · from " <>) (originOf lang (capKey c))
@@ -116,6 +117,19 @@ doctor ports di = do
       Nothing
         | Just _ <- grSource (langGrammar lang) -> Check (langName lang <> ": queries") Warn ("no queries for the " <> grName (langGrammar lang) <> " grammar (anchors from [targets.*] only)") Nothing
         | otherwise -> Check (langName lang <> ": queries") Warn "no grammar (anchors from [targets.*] only)" Nothing
+    -- the sibling tests row, after test units: evidence only, never an error
+    siblingRow lang rows = case lookup (langName lang) (diEvidence di) of
+      Nothing -> rows
+      Just ev ->
+        let name = langName lang <> ": sibling tests"
+            row = case evSiblings ev of
+              Proven t -> Check name Ok t Nothing
+              Unproven t -> Check name Warn t Nothing
+              Disproven t -> Check name Warn t Nothing
+            (before, after) = break ((== langName lang <> ": test units") . checkName) rows
+         in case after of
+              tu : rest -> before ++ tu : row : rest
+              [] -> rows ++ [row]
     -- the evidence row a capability takes
     proofOf cap ev = lookup cap [("units", evUnits ev), ("test units", evTestUnits ev), ("tests", evTests ev), ("anchors", evAnchors ev), ("holes", evHoles ev)]
     plansRunner = do

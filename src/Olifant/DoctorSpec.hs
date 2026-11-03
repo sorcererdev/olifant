@@ -210,7 +210,7 @@ spec = describe "olifant doctor (spec §4.7)" $ do
     [checkDetail c | c <- cs, checkName c == "rust: queries"] `shouldBe` ["tree-sitter-rust @77a3747; imports (project), impls, tags, textobjects (shipped)"]
   it "evidence replaces how, origin kept; tests not run keep their text, ok" $ do
     rust <- shippedLanguage "rust" []
-    let ev = Evidence (Proven "3 found in 2 files (e.g. src/a.rs:1 add)") (Unproven "not seen (no test file in the 40 sampled)") (Unproven "not run (olifant doctor --run)") (Proven "end of struct X (src/a.rs:3)") (Proven "expr wrappers parse with their placeholders")
+    let ev = Evidence (Proven "3 found in 2 files (e.g. src/a.rs:1 add)") (Unproven "not seen (no test file in the 40 sampled)") (Unproven "not run (olifant doctor --run)") (Proven "end of struct X (src/a.rs:3)") (Proven "expr wrappers parse with their placeholders") (Unproven "no [conjure.port]: conjure reads no fakes")
         cs = runIdentity (doctor (ports ["ast-grep", "cargo"] (Right ()) []) ((input local) {diLanguages = [rust], diEvidence = [("rust", ev)]}))
         row n = head [(checkStatus c, checkDetail c, checkFix c) | c <- cs, checkName c == n]
     row "rust: units" `shouldBe` (Ok, "3 found in 2 files (e.g. src/a.rs:1 add) · from shipped", Nothing)
@@ -218,10 +218,11 @@ spec = describe "olifant doctor (spec §4.7)" $ do
     row "rust: tests" `shouldBe` (Ok, "[test] format lines, tests_for {= dir =}/{= stem =}.rs (not run: olifant doctor --run) · from toolchain cargo-test", Nothing)
     row "rust: anchors" `shouldBe` (Ok, "end of struct X (src/a.rs:3) · from shipped", Nothing)
     row "rust: holes" `shouldBe` (Ok, "expr wrappers parse with their placeholders · from shipped", Nothing)
-    map checkName [c | c <- cs, "rust: " `T.isPrefixOf` checkName c] `shouldSatisfy` (\ns -> take 3 (drop (length (takeWhile (/= "rust: test units") ns)) ns) == ["rust: test units", "rust: anchors", "rust: holes"])
+    map checkName [c | c <- cs, "rust: " `T.isPrefixOf` checkName c] `shouldSatisfy` (\ns -> take 4 (drop (length (takeWhile (/= "rust: test units") ns)) ns) == ["rust: test units", "rust: sibling tests", "rust: anchors", "rust: holes"])
+    row "rust: sibling tests" `shouldBe` (Warn, "no [conjure.port]: conjure reads no fakes", Nothing)
   it "a Disproven row is a warning with the regenerate-or-provider fix; with --run, a run's evidence shows" $ do
     rust <- shippedLanguage "rust" []
-    let ev = Evidence (Disproven "0 found in 2 files; src/a.rs:1 is `fn add() {}`") (Proven "1 found in 1 test files (e.g. src/a.rs:5 adds)") (Proven "ran cargo on src/a.rs, 1 results parsed (lines)") (Unproven "no [targets.*]") (Proven "x")
+    let ev = Evidence (Disproven "0 found in 2 files; src/a.rs:1 is `fn add() {}`") (Proven "1 found in 1 test files (e.g. src/a.rs:5 adds)") (Proven "ran cargo on src/a.rs, 1 results parsed (lines)") (Unproven "no [targets.*]") (Proven "x") (Unproven "no [conjure.port]: conjure reads no fakes")
         cs = runIdentity (doctor (ports ["ast-grep", "cargo"] (Right ()) []) ((input local) {diLanguages = [rust], diEvidence = [("rust", ev)], diRan = True}))
         row n = head [(checkStatus c, checkDetail c, checkFix c) | c <- cs, checkName c == n]
     row "rust: units" `shouldBe` (Warn, "0 found in 2 files; src/a.rs:1 is `fn add() {}` · from shipped", Just "regenerate the key or supply a provider (see chapter 9, Providers)")

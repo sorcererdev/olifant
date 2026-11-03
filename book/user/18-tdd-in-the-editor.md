@@ -210,8 +210,15 @@ pauses. A `climb` to a rung whose `escalate` is `ask` (the default) pauses too a
 
 Some pauses need no question either; the engine decides them in code, in this order, after the
 run before round 1 and after every red round. The **scan** reads each failing test for a fake it
-builds (`Mock()`, `MagicMock()`, a `Fake…`, `InMemory…` or `Stub…` class) and never hands to any
-call. A flagged test whose class lacks the fake's port is **wired** (below), silently, when a wire
+builds and never hands to any call. What a fake is comes from a **sibling test**: the module's own
+test file, else the tests of the modules beside it (its folder first, then the folders next to
+it), the nearest one that already builds the command with a port's fake. Its fakes' classes
+(`InMemoryBookingRepository`), its prefixes (`InMemory`), how it binds and hands them in, and the
+command's constructor are what conjure reads; a library double the test binds (`repository =
+Mock()`) counts when its variable names a port or the test sets one of its methods. A service's
+first test has no sibling: it conjures at the floor (no scan, no wire), unless the language
+declares `[conjure.fake]` and `[conjure.constructor]` ([chapter 9](09-packs-and-language-adapters.md#conjures-shapes-conjure)
+has them to copy). A flagged test whose class lacks the fake's port is **wired** (below), silently, when a wire
 generator applies and the port and its parameter can be named; when they cannot, it pauses
 (`port`) and offers a `wire` row for each of the two likeliest ports. A flagged test still failing
 when no wire can help (none applies, one ran, or the class takes the port already) is a test no
@@ -423,6 +430,11 @@ it was on, and its outcome, tab-separated.
 2026-10-18T04:06:45Z	conjure	person	src/bistro/booking/commands/close_table.py::handle	conjured by qwen3-coder:30b · green
 2026-10-18T04:06:47Z	mutate	person	src/bistro/booking/commands/close_table.py::handle	1 survivor · 5/6 killed
 ```
+
+Every conjure (not a resume) logs which shapes it reads: `conjure-sibling <test file>
+owner=<class> start=… files=… fakes=<param>:<port>=<class>,… classes=… prefixes=… keyword=…
+bound=… act=…` for a sibling test, `conjure-sibling none declared shapes` when it falls back to
+the language's tables, or `conjure-sibling none floor`.
 
 A steered conjure (one with `[decide] model`) adds a line for each of Jev's choices (the choice,
 its confidence or `-`, the round and the rung), one for a pause (its cause: `test <id>`, `port`,

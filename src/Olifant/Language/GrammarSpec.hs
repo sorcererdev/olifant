@@ -14,7 +14,8 @@ import Olifant.Language.AstGrep (astGrepSyntax)
 import Olifant.Language.Syntax (Syntax (..))
 import Olifant.Language.Grammar
 import System.Directory (findExecutable, copyFile, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getModificationTime, getTemporaryDirectory, listDirectory, removePathForcibly, setModificationTime)
-import System.FilePath (takeBaseName, (</>))
+import System.FilePath (takeBaseName, takeFileName, (</>))
+import System.Info (os)
 import System.Process (readProcess)
 import GHC.Clock (getMonotonicTime)
 import Test.Hspec
@@ -201,6 +202,32 @@ spec = do
     loadGrammarWith s (Grammar "nope" (Just (SourceDir pythonDir))) >>= \case
       Left (LoadFailed t) -> T.unpack t `shouldSatisfy` ("tree_sitter_nope" `isInfixOf`)
       other -> expectationFailure (show (fmap ldLibrary other))
+  it "with no cc and no library, nothing is fetched and the load needs a compiler" $ do
+    s <- fresh "nocc-nofetch"
+    let repo = gsCache s </> "repo"
+    sha <- fixtureRepo repo "."
+    let noCc p = if p == "cc" then pure Nothing else findExecutable p
+    r <- loadGrammarWith s {gsFind = noCc} (Grammar "elm" (Just (SourceGit ("file://" <> T.pack repo) sha Nothing)))
+    case r of
+      Left (NeedsCompiler _) -> pure ()
+      other -> expectationFailure (show (fmap ldLibrary other))
+    doesDirectoryExist (gsCache s </> "grammars" </> "src") `shouldReturn` False
+  it "a cached library loads with no cc" $ do
+    built <- fresh "cached-build"
+    Right l <- loadGrammarWith built python
+    -- the same library in a second cache (another path: not this process's memo)
+    s <- fresh "cached-nocc"
+    createDirectoryIfMissing True (gsCache s </> "grammars")
+    copyFile (ldLibrary l) (gsCache s </> "grammars" </> takeFileName (ldLibrary l))
+    r <- loadGrammarWith s {gsFind = \_ -> pure Nothing} python
+    fmap ldAbi r `shouldBe` Right 15
+  it "the stop's text" $ do
+    let s = defaultSettings "/Users/x/.cache/olifant" []
+        hint = if os == "darwin" then "xcode-select --install" else "apt install gcc"
+    grammarStopText s "/Users/x" "python" (NeedsCompiler "cc is not on PATH")
+      `shouldBe` ("needs a C compiler to build the python grammar: install it (" <> hint <> "), or restore ~/.cache/olifant/grammars")
+    grammarStopText s "/Users/x" "python" (FetchFailed "boom")
+      `shouldSatisfy` (\t -> "the `python` grammar is not loaded" `T.isInfixOf` t && "boom" `T.isInfixOf` t)
   it "a bare name is NoSource" $ do
     s <- fresh "bare"
     fmap (either Just (const Nothing)) (loadGrammarWith s (Grammar "go" Nothing)) `shouldReturn` Just NoSource

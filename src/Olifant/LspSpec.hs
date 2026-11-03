@@ -1083,6 +1083,23 @@ conjureSpec = describe "olifant/conjure" $ do
       wiredPorts = \case
         Just (Object p) | Just (Array ws) <- KM.lookup "wired" p -> [(a, b) | Object w <- toList ws, Just (String a) <- [KM.lookup "param" w], Just (String b) <- [KM.lookup "port" w]]
         _ -> []
+  it "a request on a file whose grammar cannot load answers the stop, and the server lives" $
+    withProject
+      [ (".olifant/config.toml", "languages = [\"snake\"]\n")
+      , (".olifant/languages/snake.toml", "files = [\"**/*.py\"]\ncomment = \"#\"\ngrammar = { name = \"python\", source = \"nogrammar\" }\n[test]\npreset = \"pytest\"\n")
+      , ("src/a.py", "def f():\n    return 1\n")
+      ]
+      $ \dir -> do
+        ((first, second), code) <- inProcess dir $ do
+          doc <- openDoc "src/a.py" "python"
+          let ask = blockMove (Proxy :: Proxy "olifant/conjure") (object ["textDocument" .= object ["uri" .= (doc ^. L.uri)], "position" .= object ["line" .= (1 :: Int), "character" .= (0 :: Int)]])
+          a <- ask
+          b <- ask
+          pure (a, b)
+        let stop = either (T.isPrefixOf "the `python` grammar is not loaded") (const False)
+        first `shouldSatisfy` stop
+        second `shouldSatisfy` stop
+        code `shouldBe` Just 0
   it "in a method: the edit, the summary and the after-run; outside any unit, why" $
     withSystemTempDirectory "olifant-conjure" $ \tmp -> do
       let script = tmp </> "tests.json"
@@ -1552,6 +1569,23 @@ conjureSpec = describe "olifant/conjure" $ do
         inner "round" (field "paused" afterPort) `shouldBe` Just (Number 3)
         inner "kind" (inner "failure" (field "paused" afterPort)) `shouldBe` Just (String "tests")
         offerLabels (field "paused" afterPort) `shouldSatisfy` notElem "add find_by_id to BookingRepository"
+        -- the conjure language: the sibling test's fakes and constructor, said once
+        logged <- T.lines <$> TIO.readFile (dir </> ".olifant/state/steps.log")
+        [l | l <- logged, "conjure-sibling" `T.isInfixOf` l] `shouldSatisfy` \case
+          [l] -> "create_booking__test.py" `T.isInfixOf` l && "owner=CreateBooking" `T.isInfixOf` l
+          _ -> False
+  it "with no sibling and no tables, conjure says floor" $
+    withPython [(cbModule, morningModule), (cbTest, morningTest)] $ \ports dir -> do
+      mapM_ (removeFile . (dir </>)) ["src/bistro/booking/commands/create_booking__test.py", "src/bistro/booking/queries/get_day_schedule__test.py"]
+      _ <- inProcessWith ports dir $ do
+        doc <- openDoc cbModule "python"
+        text <- documentContents doc
+        let handleAt = length (takeWhile (not . ("    def handle(" `T.isPrefixOf`)) (T.lines text))
+        blockMove (Proxy :: Proxy "olifant/conjure") (object ["textDocument" .= object ["uri" .= (doc ^. L.uri)], "position" .= object ["line" .= (handleAt + 1 :: Int), "character" .= (0 :: Int)]])
+      logged <- T.lines <$> TIO.readFile (dir </> ".olifant/state/steps.log")
+      [T.unwords (T.words l) | l <- logged, "conjure-sibling" `T.isInfixOf` l] `shouldSatisfy` \case
+        [l] -> "conjure-sibling none floor" `T.isSuffixOf` l
+        _ -> False
   it "a re-conjure is refused only for what it adds: the lambda's error the test already had does not refuse it" $ do
     (proposed, steps, _) <- cancelChecked $ \script ask resume -> do
       _ <- ask []

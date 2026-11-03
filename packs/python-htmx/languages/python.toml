@@ -5,8 +5,10 @@ tests_for = "{= dir =}/{= stem =}__test.py"
 
 # How conjure reads this pack's architecture (book chapter 09, `[conjure]`):
 # a service is `src/<app>/<service>`; its ports are Protocol classes under
-# `ports/`; a test's fake is a Mock or a Fake…/InMemory…/Stub… class, handed
-# to a command by keyword; a command's ports are its `__init__` parameters.
+# `ports/`. A test's fakes and a command's constructor are read from a sibling
+# test (one that already builds a command with a port's fake), so there is no
+# `[conjure.fake]` or `[conjure.constructor]` here: chapter 9 has them as a
+# recipe for a service's first test, to delete once a sibling test exists.
 [conjure]
 service = "src/{= app =}/{= service =}"
 
@@ -19,19 +21,6 @@ method = '^def '
 # to every adapter beside it, with a red contract test.
 add = "port-method"
 adapters = "port-method-adapters"
-
-[conjure.fake]
-bound = '^[[:space:]]+([[:alnum:]_]+)[[:space:]]*=[[:space:]]*([[:alnum:]_]+)\('
-classes = ["Mock", "MagicMock"]
-prefixes = ["Fake", "InMemory", "Stub"]
-keyword = "{= param =}={= var =}"
-stub = '\.{= method =} = lambda[[:space:]]*([^:]*):(.*)'
-
-[conjure.constructor]
-files = ["commands/**/*.py", "queries/**/*.py"]
-owner = '^class ([[:alnum:]_]+)'
-start = 'def __init__\('
-param = '^([[:alnum:]_]+)[[:space:]]*:[[:space:]]*([^=]*[^=[:space:]])'
 
 # A test file whose stub has the `command()` (or `query()`) helper: the
 # model writing a test's body is told to build it through the helper.

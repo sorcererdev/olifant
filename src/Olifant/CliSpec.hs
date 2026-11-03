@@ -30,6 +30,8 @@ import Olifant.Server.Errand (Status (..))
 import Olifant.Server.Telemetry (ErrandRecord (..), OutcomeRecord (..), ReconcileRecord (..), Record (..), recordJson)
 import System.Exit (ExitCode (..))
 import Olifant.Language.AstGrep (astGrepSyntax)
+import Olifant.Language.TreeSitter (treeSitterAnchors)
+import Olifant.Language.Syntax qualified as Syn
 import Control.Monad (forM)
 import Data.Text.IO qualified as TIO
 import Data.List (isPrefixOf)
@@ -208,7 +210,7 @@ newCodeCheckSpec = describe "check: rules on new code" $ do
     let elm = T.unlines ["module Views exposing (close, open)", "", "close : Int -> Int", "close x =", "    let", "        helper y =", "            y + 1", "    in", "    helper x", "", "open : Int", "open =", "    1"]
     n <- elmLegacyCount tmp [] [("Views.elm", elm)]
     n `shouldBe` Just 2
-  it "says why the count is 0 for a language whose grammar is not loaded and no `count` key" $ do
+  it "a language whose grammar cannot load stops check's count (ruling 8: no count that depends on the machine)" $ do
     tmp <- getTemporaryDirectory
     let files =
           [ ("/w/.olifant/config.toml", "[packs]\np = { path = \"/packs/p\" }\n\n[migrate]\nlegacy = [\"legacy/**\"]\n")
@@ -217,11 +219,9 @@ newCodeCheckSpec = describe "check: rules on new code" $ do
           , ("/w/legacy/Main.elm", "main = 1\n")
           ]
         baseOf _ _ _ = pure (Right ("c0ffee", Nothing))
-    (_, out, _, _) <- runInBase (astGrepSyntax (tmp </> "olifant-test-cache")) baseOf "/w" "" files False ["check"]
-    let Just v = Aeson.decodeStrict (TE.encodeUtf8 out) :: Maybe Aeson.Value
-        line = lookupKey "migration" v >>= lookupKey "line"
-    (lookupKey "migration" v >>= lookupKey "legacy_now") `shouldBe` Just (Aeson.Number 0)
-    line `shouldSatisfy` maybe False (\(Aeson.String t) -> "set `count`" `T.isInfixOf` t)
+    (code, _, err, _) <- runInBase (astGrepSyntax (tmp </> "olifant-test-cache")) baseOf "/w" "" files False ["check"]
+    code `shouldBe` ExitFailure 1
+    err `shouldSatisfy` T.isPrefixOf "olifant: the `elm` grammar is not loaded"
   it "the hint names doctor's grammar row when a language's grammar does not load" $ do
     tmp <- getTemporaryDirectory
     let files =
@@ -445,6 +445,19 @@ planOutputSpec = describe "planHuman" $ do
 
 runCliSpec :: Spec
 runCliSpec = describe "runCli" $ do
+  it "a grammar that cannot load stops the command, not an internal error" $ do
+    let files =
+          -- a project language over the python grammar's name (and its shipped
+          -- queries), built from an empty folder: a project layer cannot swap
+          -- the shipped python's git source for a folder (the tables merge)
+          [ ("/proj/.olifant/config.toml", "languages = [\"snake\"]\n")
+          , ("/proj/.olifant/languages/snake.toml", "files = [\"**/*.py\"]\ncomment = \"#\"\ngrammar = { name = \"python\", source = \"nogrammar\" }\n")
+          , ("/proj/src/a.py", "def f():\n    return 1\n")
+          ]
+    (code, _, err, _) <- runInWith ((noSyntax :: Syntax IO) {Syn.anchorSyntax = treeSitterAnchors}) "/proj" "" files False ["where", "src/a.py", "end of function f"]
+    code `shouldBe` ExitFailure 1
+    err `shouldSatisfy` T.isPrefixOf "olifant: the `python` grammar is not loaded"
+    err `shouldNotSatisfy` T.isInfixOf "internal error"
   it "sync --check fails when a regions.toml is broken, and gen warns (review #2)" $ do
     let broken = ("/proj/.olifant/regions.toml", "[regions.mods]\nbogus = 1\n") : [(p, t) | (p, t) <- regionProject "  exposed-modules:\n", p /= "/proj/.olifant/regions.toml"]
     (code, out, _, _) <- runWith "" broken False ["sync", "--check"]

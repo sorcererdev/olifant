@@ -297,7 +297,7 @@ example   = "end of struct BillingService"
 | `[[mutate]]` | mutation operators, for `mutate` ([chapter 18](18-tdd-in-the-editor.md)): each a `name`, a `pattern` or ast-grep `rule`, and a `fix` or `transform = "increment"`. Python ships seventeen |
 | `ignore` | folder names (not paths: a name with a `/`, or an empty one, is a load error) a project's listings never enter (dependencies, build output, caches): Rust's `["target"]`, Python's `[".venv", "__pycache__", ".pytest_cache", "node_modules"]`, Haskell's `["dist-newstyle"]`, Elm's `["elm-stuff", "node_modules"]`. The project's languages' lists are joined; olifant itself keeps out only `.git` and, in a walk outside git, dot-folders |
 | `unit_words` | what a unit is in this language, as the plan prompts say it: "<Unit> is <unit_words> defined in that file". Python's is "a top-level class or function name (Name) or a method (Class.method)"; a project whose languages disagree, or one without the key, gets "a top-level function or type name (Name), or a method (Type.method)" |
-| `[unit]` | `kinds`: the tree-sitter node kinds of a definition (a function, method or class) in this language, for `:Durandal conjure` ([chapter 18](18-tdd-in-the-editor.md#conjuring)): the innermost node of these kinds around the cursor is the unit conjured. A language whose grammar loads (Rust, Python, Haskell, and Elm with its pack) needs none: its units are every function and class-like definition the grammar's queries capture, named by its `@name` there (`[unit] name` then only finds a unit's definition line), a decorated definition with its decorators, a Haskell signature with its equations. A Rust trait impl is a unit named by its type (its methods are `Type.method`, as before), and a Haskell instance by its head (`C Int`, its methods `C Int.m`). A plan anchor naming a type and its inherent impl (both `A`) is the type, as before; any other name several units share is reported as ambiguous, never resolved to the first. Without `kinds`, a provider or a grammar that loads, `conjure` says the language has no unit kinds. A test's span, where its line starts a definition, is that definition's too (a string's outdented line, a Rust test's closing brace and a multi-line signature are the test's). `name` (optional): a list of POSIX expressions over a unit's line; the first that matches names the unit by its **last group** (the whole match when it has none). A unit is named by the first line of its span that has a name (Python's decorated def by its `def` line). Without it, a unit is named by its line's first identifier. `join = true` (default false): units of one name, at one indentation, separated only by blank lines (or touching), are one unit — a Haskell signature and its equations. See [the Haskell example](#a-second-example-haskell). `kinds = { provider = [...] }` in place of the list: a program names the units instead ([providers](#providers-answering-a-slot-with-a-program)); its answers are qualified (`Outer.Inner`) by containment, and a unit's definition line is still the first of its lines that `name` names (else its first) |
+| `[unit]` | `kinds`: the tree-sitter node kinds of a definition (a function, method or class) in this language, for `:Durandal conjure` ([chapter 18](18-tdd-in-the-editor.md#conjuring)): the innermost node of these kinds around the cursor is the unit conjured. A language whose grammar loads (Rust, Python, Haskell, and Elm with its pack) needs none: its units are every function and class-like definition the grammar's queries capture, named by its `@name` there (`[unit] name` then only finds a unit's definition line), a decorated definition with its decorators, a Haskell signature with its equations. A Rust trait impl is a unit named by its type (its methods are `Type.method`, as before), and a Haskell instance by its head (`C Int`, its methods `C Int.m`). A plan anchor naming a type and its inherent impl (both `A`) is the type, as before; any other name several units share is reported as ambiguous, never resolved to the first. Without `kinds`, a provider or a grammar that loads, `conjure` says the language has no unit kinds. A test's span, where its line starts a definition, is that definition's too (a string's outdented line, a Rust test's closing brace and a multi-line signature are the test's). `name` (optional): a list of POSIX expressions over a unit's line; the first that matches names the unit by its **last group** (the whole match when it has none). A unit is named by the first line of its span that has a name (Python's decorated def by its `def` line). Without it, a unit is named by its line's first identifier. `join = true` (default false): units of one name, at one indentation, separated only by blank lines (or touching), are one unit — a Haskell signature and its equations. `annotation` (optional): an expression over `{= name =}` matching that name's declared type, the type its **last non-empty group**, read on a unit's header line for a parameter, on a `record`'s lines for a field, and by conjure on a sibling test's constructor (Python's `'{= name =}:[[:space:]]*([^,)=]+)'`; Haskell's `'{= name =}[[:space:]]*::[[:space:]]*([^,}]+)'`; Rust's reads `Arc<dyn X>`, `Box<dyn X>`, `&dyn X`, `impl X` and a plain `X` as `X`). See [the Haskell example](#a-second-example-haskell). `kinds = { provider = [...] }` in place of the list: a program names the units instead ([providers](#providers-answering-a-slot-with-a-program)); its answers are qualified (`Outer.Inner`) by containment, and a unit's definition line is still the first of its lines that `name` names (else its first) |
 | `[holes.KIND]` | the kinds of typed hole this language has: what an unfilled one is written as (`placeholder`) and where a fill must parse (`wrap`). See [hole kinds](#hole-kinds-holeskind), below |
 | `keywords` | the language's reserved words (optional). Recognition keeps them as they are when it reads code by shape; every other name becomes its case shape ([chapter 16](16-the-language-server.md#recognition-this-looks-like-a-command)). The words in the pack's templates count too |
 | `separator`, `line_length` | what follows each item in brackets (`","`), and the longest line (default 88). With a separator an item can join a one-line container: inline when it fits, else the container goes one item per line ([chapter 3](03-anchors.md#rules-worth-knowing)). Python: `,`/88; Rust: `,`/100; Elm has none (its commas lead), so a one-line Elm list still refuses |
@@ -307,7 +307,7 @@ example   = "end of struct BillingService"
 | `opens_block` | an expression over a line (its comment cut) that opens a block: Python's `':[[:space:]]*(#.*)?$'`, Rust's `'[{][[:space:]]*$'`, Haskell's a line ending in `do`, `=` or `$`. A model that answers a hole of lines with the whole file is cut back to the hole's lines, from the block that opens above it . Without it, such a fill is not cut |
 | `empty_statement` | a statement that does nothing (Python's `pass`, Haskell's `pure ()`): what a test's arrangement becomes when the model put nothing before the assertion. Without it (Rust), that side is left empty |
 | `stub_lines` | expressions over a stripped line of a body that is still a stub, so conjure treats it as unwritten rather than as a body the person rejected: Python's `...`, `pass`, `assert ...`, `raise NotImplementedError`; Haskell's `expectationFailure "write this test"`, `error "`, `pure ()`; Rust's `todo!(`, `unimplemented!(`. A comment (the language's `comment`) and a hole's line (`olifant:`) count in every language |
-| `[types]` | what a new method's signature is made of, when conjure adds a method a test calls to a port: `string` and `integer` (a literal argument's type: Python `str`, `int`; Rust `&str`, `i64`), `nothing` (a call whose result is unused: `None`, `()`), `optional` (a template over `{= type =}` for a result the code tests for absence: `{= type =} \| None`, `Option<{= type =}>`), `checks_none` (expressions over `{= name =}` that test it: `{= name =} is None`, `{= name =}\.is_none\(\)`), `annotation` (an expression over `{= name =}`, its last group that name's declared type, read on a unit's header line for a parameter and on a `record`'s lines for a field), `record` (an expression over `{= name =}` starting a type with fields), `returns` (an expression over a port's method line, group 1 what it returns: the port's entity is a type there whose name starts the port's), `assigned` (an expression over a line assigning a call's result, its last group the variable), `param` (a template over `{= name =}` and `{= type =}` writing one parameter) and `method` (a template over `{= name =}`, `{= params =}` and `{= returns =}` writing the signature: Python `{= name =}(self{= params =}) -> {= returns =}`). The method itself is written by the generator `[conjure.port] add` names (python-htmx's `port-method`). When a fact is missing, conjure does not guess the signature: the pause asks the person to add the method |
+| `[types]` | what a new method's signature is made of, when conjure adds a method a test calls to a port: `string` and `integer` (a literal argument's type: Python `str`, `int`; Rust `&str`, `i64`), `nothing` (a call whose result is unused: `None`, `()`), `optional` (a template over `{= type =}` for a result the code tests for absence: `{= type =} \| None`, `Option<{= type =}>`), `checks_none` (expressions over `{= name =}` that test it: `{= name =} is None`, `{= name =}\.is_none\(\)`), `record` (an expression over `{= name =}` starting a type with fields), `returns` (an expression over a port's method line, group 1 what it returns: the port's entity is a type there whose name starts the port's), `assigned` (an expression over a line assigning a call's result, its last group the variable), `param` (a template over `{= name =}` and `{= type =}` writing one parameter) and `method` (a template over `{= name =}`, `{= params =}` and `{= returns =}` writing the signature: Python `{= name =}(self{= params =}) -> {= returns =}`). A declared type is read by `[unit] annotation`. The method itself is written by the generator `[conjure.port] add` names (python-htmx's `port-method`). When a fact is missing, conjure does not guess the signature: the pause asks the person to add the method |
 | `[import_merge]` | with `[imports] line`: `pattern` (an expression whose first group is the module and second the comma-separated names) and `write` (a template of `module` and `names`). An import of names from a module the file already imports from adds the new names to that line instead of writing a second one: `from datetime import date` + a fill's `from datetime import date, time` → `from datetime import date, time`. Python's: `pattern = "^from ([A-Za-z0-9_.]+) import ([A-Za-z0-9_, ]+)$"`, `write = "from {= module =} import {= names =}"` |
 | `[targets.*]` | the `at` targets (below) |
 
@@ -1143,8 +1143,23 @@ compiler once (on macOS, `xcode-select --install`) and either the network or a l
 the sources: `OLIFANT_GRAMMAR_SOURCES` is a colon-separated list of folders, each holding
 `<name>/parser.c`, looked in before fetching (olifant's repository has the shipped three in
 `library/grammars/`). Run `olifant doctor` once to do it ahead of time: its `grammar` row says
-`built now in N s`, or what failed and how to fix it. Without a grammar a language keeps
-everything that needs none ([[mutate]], declared targets, its line rules).
+`built now in N s`, or what failed and how to fix it.
+
+**A grammar that cannot load stops the command.** A grammar needs `cc` or its library already
+in the cache. With neither (or when its fetch, build or load fails), any command that parses
+that language stops with the reason instead of falling back to ast-grep or the line rules,
+because the answer would then depend on the machine:
+
+```
+olifant: needs a C compiler to build the python grammar: install it (xcode-select --install), or restore ~/.cache/olifant/grammars
+```
+
+(`apt install gcc` off macOS). With no compiler nothing is fetched either. A command that never
+parses the language (`olifant check` with a `[check]` command, `[[mutate]]` on ast-grep's own
+Python) runs as before, and `olifant doctor` still runs and shows why in its `grammar` row; the
+language server answers the request with the same sentence and shows it once. A bare
+`grammar = "NAME"` (no source) is configuration, the same on every machine, and is the one case
+that keeps ast-grep and the line rules.
 
 **Trust.** A language file, a project's or a pack's included, can name a grammar to fetch, and
 olifant then compiles that C code and loads it into its own process, the language server
@@ -1244,19 +1259,54 @@ its start that are blank or indented deeper.
 | `[conjure.port] method` | `'^def '` | a stripped line of the port's block that is one of its methods |
 | `[conjure.port] add` | `"port-method"` | a generator id: the snippet that adds a method a port lacks. Conjure places it on the line after the port's block (made blank if it is not) and fills its holes `name`, `params` and `returns` with the signature `[types]` gives. Without it, conjure never offers to add a method: the pause asks you to add it |
 | `[conjure.port] adapters` | `"port-method-adapters"` | a generator id (optional, needs `add`): run after `add`, to put the method in the port's adapters. It is given, of the inputs it declares: the slots of its `[applies_at] path` matched on the port's file (`app`, `service`, `port` for python-htmx's `src/{app}/{service}/ports/{port}/{port}.py`), the service's `app`/`service`, `name`, `params`, `returns` and `signature` (`[types] method` written out). The model fills the bodies it leaves |
-| `[conjure.fake] bound` | `'^[[:space:]]+([[:alnum:]_]+)[[:space:]]*=[[:space:]]*([[:alnum:]_]+)\('` | a test's line binding a fake: group 1 the variable, group 2 the class |
-| `[conjure.fake] classes` | `["Mock", "MagicMock"]` | classes that are fakes |
-| `[conjure.fake] prefixes` | `["Fake", "InMemory", "Stub"]` | a class starting with one (and longer) is a fake; less the prefix, it names a port |
-| `[conjure.fake] keyword` | `"{= param =}={= var =}"` | how a fake is handed to a call by name. Without it, only positional arguments count as handing it in, and conjure cannot hand a fake to a helper |
-| `[conjure.fake] stub` | `'\.{= method =} = lambda[[:space:]]*([^:]*):(.*)'` | a fake's stand-in for a method: group 1 its parameters, group 2 what it returns |
-| `[conjure.constructor] files` | `["commands/**/*.py", "queries/**/*.py"]` | globs under the service for the siblings whose constructors show what a port's parameter is called (test files left out) |
-| `[conjure.constructor] owner` | `'^class ([[:alnum:]_]+)'` | a line starting what holds a constructor, group 1 its name |
-| `[conjure.constructor] start` | `'def __init__\('` | where a constructor's parameters start, up to the bracket closing the one it opens |
-| `[conjure.constructor] param` | `'^([[:alnum:]_]+)[[:space:]]*:[[:space:]]*([^=]*[^=[:space:]])'` | one parameter: group 1 its name, group 2 its type. One that does not match (`self`, an untyped one) is left out |
 | `[[conjure.advice]] when`, `say` | `'^def command\('` and "build the command with the helper, passing the adapters you arranged (…)"; the same for `query` | when a line of the test file matches `when`, `say` is added to the model's instruction for a test's body (the first advice that matches, by line, then by order). python-htmx's tell the model to build a command or query through the stub's helper |
 
+**Fakes and the constructor come from a sibling test.** A test that already builds a command
+with a port's fake teaches conjure everything the tables below used to declare: which class
+owns the unit and how its constructor starts, what each of its parameters is called and which
+port it takes (by `[unit] annotation`), the fake handed for it (`InMemoryBookingRepository`
+for `bookings`), how a fake is bound (`bookings = InMemoryBookingRepository(…)`) and handed in
+(`bookings=bookings`). Conjure looks in the module's own test file, then the test files of the
+other modules in its folder, then those of the folders beside it, nearest first. A library
+double the test being conjured binds (`repository = Mock()`) is a fake when its variable
+names a port (`repository`) or the test sets one of its methods. python-htmx declares neither
+table any more. Conjure's steps log says which it used, in a `conjure-sibling` line
+([chapter 18](18-tdd-in-the-editor.md#conjuring)).
+
+**A service's first test** has no sibling. It conjures at the floor (the test's body or the
+function's, no ports), unless the language declares the two tables, which are then the
+fallback. To have conjure wire ports in a new service before its first test exists, copy them
+into the project's `.olifant/languages/python.toml` and delete them once a sibling test exists:
+
+```toml
+[conjure.fake]
+bound = '^[[:space:]]+([[:alnum:]_]+)[[:space:]]*=[[:space:]]*([[:alnum:]_]+)\('
+classes = ["Mock", "MagicMock"]
+prefixes = ["Fake", "InMemory", "Stub"]
+keyword = "{= param =}={= var =}"
+stub = '\.{= method =} = lambda[[:space:]]*([^:]*):(.*)'
+
+[conjure.constructor]
+files = ["commands/**/*.py", "queries/**/*.py"]
+owner = '^class ([[:alnum:]_]+)'
+start = 'def __init__\('
+param = '^([[:alnum:]_]+)[[:space:]]*:[[:space:]]*([^=]*[^=[:space:]])'
+```
+
+| Key | What it says |
+|---|---|
+| `[conjure.fake] bound` | a test's line binding a fake: group 1 the variable, group 2 the class |
+| `[conjure.fake] classes` | classes that are fakes |
+| `[conjure.fake] prefixes` | a class starting with one (and longer) is a fake; less the prefix, it names a port |
+| `[conjure.fake] keyword` | how a fake is handed to a call by name. Without it, only positional arguments count as handing it in, and conjure cannot hand a fake to a helper |
+| `[conjure.fake] stub` | a fake's stand-in for a method: group 1 its parameters, group 2 what it returns |
+| `[conjure.constructor] files` | globs under the service for the siblings whose constructors show what a port's parameter is called (test files left out) |
+| `[conjure.constructor] owner` | a line starting what holds a constructor, group 1 its name |
+| `[conjure.constructor] start` | where a constructor's parameters start, up to the bracket closing the one it opens |
+| `[conjure.constructor] param` | one parameter: group 1 its name, the last non-empty group its type. One that does not match (`self`, an untyped one) is left out |
+
 `olifant doctor` shows a row "conjure shapes" per language: the parts a pack
-declares (`port, port.add, fake, constructor, advice` for python-htmx), or the
+declares (`port, port.add, advice` for python-htmx), or the
 floor. A port without `add` is marked "(no [conjure.port] add: a method a port
 lacks is yours to add)".
 

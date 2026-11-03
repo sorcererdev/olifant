@@ -53,6 +53,7 @@ import Olifant.Process (cancelled)
 import Olifant.Server.Actions (fillerFor, rungFiller)
 import Olifant.Server.ConjureNext (undefinedLabelIn, Cause (..), Decided (..), DiagnosisFacts (..), Next (..), Offer (..), OfferFacts (..), OfferRow (..), PausedAnswer (..), Title (..), addsReason, knownNote, offerRow, fixMoves, paramPort, reconjureWhy, roundWords, testFix, fixWords, methodWords, pausedJson, refusedSentence, shortName, testEntries, trigger, withoutKnown, PausedConjure (..), Policy (..), PolicyFacts (..), Proposal (..), RoundContext (..), RoundRecord (..), RoundView, Standing (..), causeWords, conjureNextQuestion, diagnosis, involved, isRepeat, isTrade, nextFrom, offersAt, pausedLifetime, policy, pruned, roundRecord, ConjureStep (..), StepKind (..), fixAgain, proposalStep, LatestFailure (..), rootFirst, roundSummary, roundView, spent, suspectFirst, undefinedNamesIn, undefinedIn, withHint)
 import Olifant.Server.ConjureScan (Fake (..), Port (..), advisedIn, blankAt, conjurePortQuestion, ctorParamsIn, derivePortIn, deriveParam, fakeCalls, fakeIn, methodSignature, methodText, missingMemberIn, portCandidates, portEnd, portFrom, portsIn, servicePaths, siblingsOf, takesPortIn)
+import Olifant.Server.Sibling (ConjureLanguage (..), conjureLanguage, filesUnder, scanDef, serviceBase, siblingLine)
 import Olifant.Server.Site (Site (..), appendStepLine, importedContext, runOver, siteAt, siteTestFile, tshow)
 import Olifant.Server.Edits (FileEdit (..), smallestChange, unifiedDiff)
 import Olifant.Server.State (ServerConfig (..), ServerState (..), deciderUnder)
@@ -364,11 +365,11 @@ conjureWith progress path line selected resuming s0 = do
   siteAt path line s0 >>= \case
     (s, Left why) -> pure (s, Left why)
     (s, Right site) -> fmap (s,) . runExceptT $ do
-      let lang = siteLang site
+      let lang0 = siteLang site
           project = siteProject site
           ws = prWorkspace project
           -- on a test: in a test file, or in a module that holds its own tests (Rust's)
-          onTest = siteOnTest site || (isNothing selected && siteTestRel site == siteModuleRel site && isJust (testCaseAtIn lang (Just (siteModuleRel site)) (siteModuleText site) line))
+          onTest = siteOnTest site || (isNothing selected && siteTestRel site == siteModuleRel site && isJust (testCaseAtIn lang0 (Just (siteModuleRel site)) (siteModuleText site) line))
           rel = if onTest then siteTestRel site else siteModuleRel site
           testRel = siteTestRel site
           file = normalisePath (siteRoot site </> rel)
@@ -378,20 +379,24 @@ conjureWith progress path line selected resuming s0 = do
       text <- if onTest then maybe (throwE ("cannot read " <> T.pack rel)) pure (siteTestText site) else pure (siteModuleText site)
       -- on a test (in a test file, or a module that holds its own tests: Rust's), its
       -- `[test] unit` (hspec's `it` is no `[unit]`; Rust's brace is not in its body)
-      found0 <- lift (unitAt (pSyntax (ssPorts s)) lang (Just rel) text line)
-      let testy = (onTest || siteTestRel site == siteModuleRel site) && isNothing selected && isJust (testUnitAt lang (Just rel) text line)
-          found = if testy then maybe found0 Right (testUnitAt lang (Just rel) text line) else found0
-          unitIn working i = if testy then pure (maybe (Left ("no test at line " <> tshow i)) Right (testUnitAt lang (Just rel) working i)) else unitAt (pSyntax (ssPorts s)) lang (Just rel) working i
+      found0 <- lift (unitAt (pSyntax (ssPorts s)) lang0 (Just rel) text line)
+      let testy = (onTest || siteTestRel site == siteModuleRel site) && isNothing selected && isJust (testUnitAt lang0 (Just rel) text line)
+          found = if testy then maybe found0 Right (testUnitAt lang0 (Just rel) text line) else found0
+          unitIn working i = if testy then pure (maybe (Left ("no test at line " <> tshow i)) Right (testUnitAt lang0 (Just rel) working i)) else unitAt (pSyntax (ssPorts s)) lang0 (Just rel) working i
       (unit, span') <- case (selected, found) of
         (Just sp, _) -> pure (either (const "selection") unitName found, sp)
         (Nothing, Left why) -> throwE (why <> ": put the cursor in one to conjure it")
         (Nothing, Right u) -> maybe (throwE (unitName u <> " is on one line: select the lines to conjure")) (pure . (unitName u,)) (unitBody u)
       when (fst span' < 1 || snd span' < fst span' || snd span' > length (T.splitOn "\n" text)) (throwE "the selection is not in the file")
-      when (onTest && isNothing selected && isNothing (testCaseAtIn lang (Just rel) text line)) (throwE (unit <> " is no test: conjure a test here, or a function from its module"))
+      when (onTest && isNothing selected && isNothing (testCaseAtIn lang0 (Just rel) text line)) (throwE (unit <> " is no test: conjure a test here, or a function from its module"))
+      -- the conjure language: the sibling test's fakes and constructor over the declared ones
+      cl <- lift (conjureLanguage ws lang0 (siteModuleRel site, siteModuleText site, siteTestText site) unit)
+      let lang = clLanguage cl
       -- a module needs its test file (on a test, the file is the test file)
       testText0 <- case siteTestText site of
         Just t -> pure t
         Nothing -> throwE ("no test file for this module yet: " <> T.pack testRel <> "; stub one first (:Durandal stub)")
+      when (isNothing resuming) (lift (stepLine (siblingLine cl)))
       steered <- lift (steeredFor s project) >>= except
       -- a resume takes its token (a climb with no stronger rung keeps it; a
       -- re-conjure or a reject puts it back)
@@ -674,7 +679,7 @@ conjureWith progress path line selected resuming s0 = do
           let seed0 = case resuming of
                 Just (re, pd) -> maybe id withHint (reHint re) (pdSeed pd)
                 Nothing -> noSeed
-              steering seed record = (\sd -> Steering seed (steer s lang stepLine begun counters sd (isJust wire) derive methodWall record)) <$> steered
+              steering seed record = (\sd -> Steering seed (steer s lang (scanDef cl) stepLine begun counters sd (isJust wire) derive methodWall record)) <$> steered
               -- the method a round's check says a port the unit takes lacks, and its signature
               -- when the call and the test's fake give it
               methodWall attempt why = do
@@ -772,7 +777,7 @@ conjureWith progress path line selected resuming s0 = do
               -- before-run; a flagged test the class cannot take its fake for is wired, silently
               beforeRound1 = do
                 c <- lift (readIORef counters)
-                let flags = scanFlags lang (wkTestText first) (wkBefore first)
+                let flags = scanFlags lang (scanDef cl (wkTestText first)) (wkTestText first) (wkBefore first)
                     failing = map fst (trFailed (wkBefore first))
                 lift (logFlags stepLine [] flags)
                 lift (modifyIORef' counters (\c' -> c' {cFlagged = flags}))
@@ -818,7 +823,7 @@ conjureWith progress path line selected resuming s0 = do
                       tid = T.pack testRel <> "::" <> name
                       moduleText = M.findWithDefault (siteModuleText site) (siteModuleRel site) (cWrites c)
                       still = "; the test still builds its own fake, re-conjure it"
-                  case testSourceIn lang (Just rel) (testName name) written0 >>= fakeIn (langConjure lang) of
+                  case testSourceIn lang (Just rel) (testName name) written0 >>= fakeIn (scanDef cl written0) of
                     Nothing -> (outcome0, wk0, "") <$ lift (stepLine ["conjure-test", "ok", "-"])
                     Just f -> do
                       lift (logFlags stepLine [] [(tid, f)])
@@ -837,7 +842,7 @@ conjureWith progress path line selected resuming s0 = do
                               when cancelled' (throwE "cancelled")
                               case refilled of
                                 Right o@(Written Nothing w _)
-                                  | isNothing (testSourceIn lang (Just rel) (testName (fromMaybe name (testCaseAtIn lang (Just rel) w (fst (wkSpan wk'))))) w >>= fakeIn (langConjure lang)) -> pure (o, wk', "")
+                                  | isNothing (testSourceIn lang (Just rel) (testName (fromMaybe name (testCaseAtIn lang (Just rel) w (fst (wkSpan wk'))))) w >>= fakeIn (scanDef cl w)) -> pure (o, wk', "")
                                   | otherwise -> pure (o, wk', still)
                                 -- the wire and the test as first written land together
                                 _ -> pure (Written Nothing (wkText wk') [], wk', still)
@@ -1025,24 +1030,6 @@ serviceFacts ws lang rel sets = case serviceBase cj sets of
     cj = langConjure lang
     portsIn' files ps = portsIn ps files
 
--- | The service's folder: the pack's `[conjure] service` with the wire's SETS in it; none
--- without one, or when a set it names is missing.
-serviceBase :: Maybe ConjureDef -> [(Text, Text)] -> Maybe FilePath
-serviceBase cj sets = do
-  t <- cj >>= cjService
-  segs <- traverse seg (T.splitOn "/" t)
-  pure (joinPath (map T.unpack segs))
-  where
-    seg x = case T.stripSuffix "=}" =<< T.stripPrefix "{=" x of
-      Just k -> lookup (T.strip k) sets
-      Nothing -> Just x
-
--- | The files under BASE (root-relative) that one of GLOBS (relative to BASE) matches.
-filesUnder :: Workspace IO -> FilePath -> [Text] -> IO [FilePath]
-filesUnder ws base globs = do
-  found <- listFiles ws base
-  pure [normalisePath (base </> f) | f <- found, any (`matchesGlob` f) globs]
-
 -- | The generator GID run in-process with SETS over the project with the
 -- conjure's WRITES on top (no model fills it): the files it writes
 -- (root-relative), those it leaves as they were left out. Left on a
@@ -1142,8 +1129,8 @@ steeredFor s project = case (deciderUnder (ssCancel s) s project, mcLadder model
 -- climbed rung's filler as the first one is. A port answer, when a wire
 -- generator applies (WIRES) and none ran yet, pauses the loop for the
 -- wire (`cWire`).
-steer :: ServerState -> Language -> ([Text] -> IO ()) -> Double -> IORef Counters -> Steered -> Bool -> (Maybe (Decider IO) -> (Text, Fake) -> IO (Maybe (Text, Text), [Text])) -> (Text -> Text -> IO (Maybe (Text, Text, Maybe (Text, Text)))) -> (ModelFiller IO -> ModelFiller IO) -> RoundState -> IO (Steer IO)
-steer s lang stepLine begun counters sd wires derive wall record rs =
+steer :: ServerState -> Language -> (Text -> Maybe ConjureDef) -> ([Text] -> IO ()) -> Double -> IORef Counters -> Steered -> Bool -> (Maybe (Decider IO) -> (Text, Fake) -> IO (Maybe (Text, Text), [Text])) -> (Text -> Text -> IO (Maybe (Text, Text, Maybe (Text, Text)))) -> (ModelFiller IO -> ModelFiller IO) -> RoundState -> IO (Steer IO)
+steer s lang scanD stepLine begun counters sd wires derive wall record rs =
   cancelled (ssCancel s) >>= \case
     True -> pure Again
     False -> do
@@ -1152,7 +1139,7 @@ steer s lang stepLine begun counters sd wires derive wall record rs =
       let record0 = (roundRecord (failureOf lang) rs) {rrSteps = length (cSteps c0)}
           history0 = cHistory c0 ++ [record0]
           runs = cBefore c0 : [r | Just r <- map rrRun history0]
-          flags = nubOn fst (concatMap (scanFlags lang (cTestText c0)) runs)
+          flags = nubOn fst (concatMap (scanFlags lang (scanD (cTestText c0)) (cTestText c0)) runs)
       logFlags stepLine (cFlagged c0) flags
       (derived, candidates) <- case flags of
         flagged : _ -> derive (Just (sdDecider sd)) flagged
@@ -1197,8 +1184,8 @@ steer s lang stepLine begun counters sd wires derive wall record rs =
 
 -- | The scan over a run: each failing test of RUN whose source in the test file's TEXT builds a
 -- fake it never passes in.
-scanFlags :: Language -> Text -> TestRun -> [(Text, Fake)]
-scanFlags lang text run = [(t, f) | (t, _) <- trFailed run, Just f <- [testSourceIn lang (Just (fileOfId t)) (testName t) text >>= fakeIn (langConjure lang)]]
+scanFlags :: Language -> Maybe ConjureDef -> Text -> TestRun -> [(Text, Fake)]
+scanFlags lang cj text run = [(t, f) | (t, _) <- trFailed run, Just f <- [testSourceIn lang (Just (fileOfId t)) (testName t) text >>= fakeIn cj]]
   where
     fileOfId = T.unpack . fst . T.breakOn "::"
 

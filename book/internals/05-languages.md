@@ -22,7 +22,7 @@ olifant doctor
 ✓ python: tests — [test] format junit-xml, tests_for {= dir =}/{= stem =}__test.py · from toolchain pytest
 ✓ python: test selection — [test] select · from toolchain pytest
 ✓ python: mutation — [[mutate]] (17 operators) · from shipped
-✓ python: conjure shapes — [conjure] port, port.add, fake, constructor, advice · from pack python-htmx
+✓ python: conjure shapes — [conjure] port, port.add, advice · from pack python-htmx
 …
 ```
 
@@ -253,12 +253,16 @@ runs, caps (`capMutants 20`) and orders them. Only `python.toml` has any (17 ope
 
 ### `[types]`, `[conjure]`
 
-`langTypes` (`TypesDef`: `string, integer, nothing, optional, param, annotation, returns,
-assigned, checks_none, record, method`) and `langConjure` (`ConjureDef`: `service`, `port`
+`langTypes` (`TypesDef`: `string, integer, nothing, optional, param, returns, assigned,
+checks_none, record, method`) and `langConjure` (`ConjureDef`: `service`, `port`
 with its `add` and `adapters`, `fake`, `constructor`, `advice`) belong to the pack and are read
 only by conjure, in `Server/Conjure.hs` and `Server/ConjureScan.hs`: [chapter 4](04-conjure.md#the-conjure-shapes-and-the-floor)
 has the table of which field feeds which function. A language without them conjures at the
-floor. What a pack *does* there is named here too: `[conjure.port] add` and `adapters` are the
+floor. A name's declared type is the language's, not the pack's: `[unit] annotation`
+(`langUnitAnnotation`, beside `langUnitNames`; it was `[types] annotation`), an expression over
+`{= name =}` whose last non-empty group is the type. `methodSignature` reads it, and
+`ConjureScan.ctorParams` takes a constructor parameter's type from its `param`'s last non-empty
+group the same way (Rust's `Arc<dyn X>` is `X`). What a pack *does* there is named here too: `[conjure.port] add` and `adapters` are the
 ids of the pack's generators that add a method a port lacks, so the engine names no generator
 of its own. The `conjure shapes` row lists `port.add` and `advice` when present, and says
 "(no [conjure.port] add: a method a port lacks is yours to add)" for a port without `add`.
@@ -315,9 +319,24 @@ anchor phrases from community queries (design 4b §A).
     library built under its own lock (`building`, `once`): a request that needs an absent
     grammar pays one failed fetch per process, and a remembered answer never waits on another
     grammar's build. A library is never `dlclose`d.
+  - `loadTimed`'s `buildAndLoad` asks `gsFind s "cc"` before it fetches: with no library and
+    no compiler it is `NeedsCompiler` at once, and nothing is fetched. A cached library opens
+    with no `cc` and no network.
   - The failures (`GrammarFailure`: `NoSource`, `NeedsCompiler`, `FetchFailed`, `BuildFailed`,
     `LoadFailed`, `AbiMismatch`) read as doctor's row says them (`failureDetail`) and, named,
-    as a reader's `Left` (`grammarFailureText`). `grammarLabel` names a grammar to a person
+    as a reader's `Left` (`grammarFailureText`).
+  - **The stop.** Every failure but `NoSource` depends on the machine, so a reader does not fall
+    back: `stopping` throws `GrammarUnavailable` with `grammarStopText` (the ruling's sentence
+    for `NeedsCompiler`, with the OS's install hint and the cache folder under `~`; else
+    `grammarFailureText`). It is thrown where a grammar is loaded for a read: `capturesIO`
+    (under `capturesOf`'s `unsafePerformIO`, so when a pure reader's answer is forced, and never
+    cached), `grammarNodeTypes`, and `AstGrep.prepare` for a registered grammar. It is caught at
+    the edges: `Cli.runCli` (`olifant: <text>`, exit 1), `Lsp.guarded` and `inBackground`
+    (`RequestFailed` with the text, and one `window/showMessage` per text per session,
+    `grammarStopped`, `envStops`), and `Evidence.evidenceFor` (that language's rows become
+    `Unproven "not read: the grammar is not loaded"`). `Plans.safely` rethrows it, so the
+    plans path never turns it into empty units. A `NoSource` (a bare name) still comes back as a
+    `Left`, and the readers' fallbacks read it. `grammarLabel` names a grammar to a person
     (`tree-sitter-python @293fdc0`, a folder's name, or the bare name).
   - Reading config never fetches or builds: `loadIfBuilt` loads only a library already on disk,
     and `TreeSitter.queryError` (the catalog's check of a project's queries) uses it, so a
@@ -607,7 +626,7 @@ the rows, so it changes too.
 `Olifant.Evidence` (`Evidence.hs`) proves the slots on the project's own code.
 `evidenceFor :: EvidencePorts -> Language -> IO Evidence` reads through `EvidencePorts`
 (`epFiles`, the project's files; `epRead`; `epSyntax`; `epRun`, a test runner only with `doctor
---run`) and gives one `Proof` per slot: `Proven` (with the evidence), `Unproven` ("not seen",
+--run`; `epWorkspace`, the project's workspace as conjure reads it) and gives one `Proof` per slot: `Proven` (with the evidence), `Unproven` ("not seen",
 "not run") or `Disproven` (the line or reason that failed).
 
 - **The sample** (`sampleOf`): the first 40 files (`sampleSize`), in path order, that match the
@@ -634,6 +653,13 @@ the rows, so it changes too.
   row is `Unproven` "not seen (no unit in the 40 sampled)", not `Disproven`.
 - **holes:** each `[holes.KIND]` placeholder (`Holes.placeholderFor`) put in its `wrap`, then the
   Syntax port's `ERROR` query, as `FillPhase.parses` does.
+- **sibling tests** (`evSiblings`, `siblingsProof`): the sample's sources that have an existing
+  `tests_for` file, in path order; for each, `Sibling.findSibling` (with `servicePorts`) on its
+  first unit, stopping at the first that reads: "src/…/create_booking.py → create_booking__test.py
+  (CreateBooking); constructor def __init__\(; fakes bookings:BookingRepository=…". Without
+  `[unit] annotation` or `[conjure.port]` it says what is read instead; none read is "not seen";
+  it is never `Disproven`. Doctor puts its row after `test units` (`Doctor.siblingRow`): an
+  evidence row with no capability key, `Ok` when proven, else a warning.
 - **tests:** with `epRun`, the first test file runs: "ran uv on src/a__test.py, 3 results parsed
   (junit-xml)", or the run's broken reason.
 

@@ -86,7 +86,7 @@ capabilities lang =
       ls -> Right ("stub_lines (" <> T.pack (show (length ls)) <> ")")
     signatureFacts = case langTypes lang of
       Nothing -> Left "[types] (no new port method's signature is derived)"
-      Just ty -> Right ("[types] " <> T.intercalate ", " ([k | (k, Just _) <- [("string", tyString ty), ("integer", tyInteger ty), ("nothing", tyNothing ty), ("optional", tyOptional ty), ("param", tyParam ty), ("annotation", tyAnnotation ty), ("returns", tyReturns ty), ("assigned", tyAssigned ty), ("record", tyRecord ty), ("method", tyMethod ty)]] ++ ["checks_none" | not (null (tyChecksNone ty))]))
+      Just ty -> Right ("[types] " <> T.intercalate ", " ([k | (k, Just _) <- [("string", tyString ty), ("integer", tyInteger ty), ("nothing", tyNothing ty), ("optional", tyOptional ty), ("param", tyParam ty), ("returns", tyReturns ty), ("assigned", tyAssigned ty), ("record", tyRecord ty), ("method", tyMethod ty)]] ++ ["checks_none" | not (null (tyChecksNone ty))]))
     keysOf table ks = case [k | (k, True) <- ks] of
       [] -> ""
       present -> table <> " " <> T.intercalate ", " present

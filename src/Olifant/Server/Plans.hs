@@ -28,6 +28,7 @@ module Olifant.Server.Plans
   , safely
   ) where
 
+import Olifant.Language.Grammar (GrammarUnavailable)
 import Control.Lens ((&), (?~))
 import Control.Monad (filterM, when)
 import Language.LSP.Protocol.Lens qualified as L
@@ -109,13 +110,15 @@ confined path
   where
     rel = normalisePath path
 
--- | IO that cannot fail the caller: an exception (not an async one) is the default.
+-- | IO that cannot fail the caller: an exception (not an async one, nor a
+-- grammar that cannot load: that stops the request) is the default.
 safely :: a -> IO a -> IO a
 safely def io =
   try io >>= \case
     Right v -> pure v
     Left (e :: SomeException)
       | Just (_ :: SomeAsyncException) <- fromException e -> throwIO e
+      | Just (_ :: GrammarUnavailable) <- fromException e -> throwIO e
       | otherwise -> pure def
 
 -- | Each anchor resolved once, by its path and unit.

@@ -110,6 +110,8 @@ wrap = "const _: &str = \"{= fill =}\";"
 # The unit: the innermost definition at the cursor (from the grammar's
 # queries) is what `conjure` conjures and `stub` stubs a test for.
 [unit]
+# A name's declared type (a parameter's, a field's): the last non-empty group.
+annotation = '{= name =}:[[:space:]]*((Arc|Box)<dyn[[:space:]]+|&(mut[[:space:]]+)?dyn[[:space:]]+|impl[[:space:]]+)?([[:alnum:]_]+)'
 # `name` finds a unit's definition line (units are named by the queries'
 # @name: an impl by its type, a trait impl too, an item by its name).
 name = [
@@ -126,7 +128,6 @@ integer = "i64"
 nothing = "()"
 optional = "Option<{= type =}>"
 param = "{= name =}: {= type =}"
-annotation = '{= name =}:[[:space:]]*([^,)=]+)'
 returns = '->(.*)$'
 assigned = '^[[:space:]]*let[[:space:]]+(mut[[:space:]]+)?([[:alnum:]_]+)[[:space:]]*=[^=]'
 checks_none = ['{= name =}\.is_none\(\)', '{= name =}\.is_some\(\)']

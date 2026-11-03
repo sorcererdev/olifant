@@ -23,7 +23,7 @@ import Test.Hspec
 
 -- | The modules conjure runs through.
 modules :: [FilePath]
-modules = ["src/Olifant/Server/Conjure.hs", "src/Olifant/Server/ConjureScan.hs", "src/Olifant/Server/ConjureNext.hs", "src/Olifant/Server/Site.hs", "src/Olifant/Server/Unit.hs", "src/Olifant/Language/Test.hs"]
+modules = ["src/Olifant/Server/Conjure.hs", "src/Olifant/Server/ConjureScan.hs", "src/Olifant/Server/ConjureNext.hs", "src/Olifant/Server/Site.hs", "src/Olifant/Server/Unit.hs", "src/Olifant/Language/Test.hs", "src/Olifant/Server/Sibling.hs"]
 
 literals :: [Text]
 literals = ["\"def ", "\"class ", "__init__", "Protocol", "\".py\"", "__test.py", "\"assert ", "\"assert\"", "\"test_\"", "lambda", "\"self", "NameError", "AssertionError", "pyright", "pytest", "\"#\""]

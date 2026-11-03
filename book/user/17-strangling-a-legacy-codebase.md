@@ -260,9 +260,11 @@ An answer outside the options, or none, changes nothing. A `jev` backend ([chapt
 - **`rule-failed: … names {legacy}, but the project has no [migrate] legacy`.** A pack's rule
   uses `{legacy}` in a project that isn't migrating: `olifant init --migrate PATH`.
 - **The report counts 0 legacy functions, with `(counted 0: …'s grammar is not loaded (see \`olifant doctor\`'s grammar row), so set \`count\`…)`.**
-  A language whose grammar does not load (a bare `grammar` name, or a build or fetch that
-  failed: doctor's `grammar` row says which) has no queries to count by, so without
-  `[migrate] count` it counts nothing: fix the grammar, or list the node kinds of its functions in `count`.
+  A language with a bare `grammar` name has no queries to count by, so without
+  `[migrate] count` it counts nothing: give the grammar a source, or list the node kinds of its
+  functions in `count`. A grammar whose build or fetch fails is no reason to count 0: the command
+  stops with why (`olifant: needs a C compiler to build the elm grammar: …`; doctor's `grammar` row
+  says it too).
 - **The report counts 0 switches.** The registry is not where it is looked for: set
   `[migrate] switches`. Or no configured pack has a `migrate.toml` with `[switches]`, so no
   registry line reads as a switch.

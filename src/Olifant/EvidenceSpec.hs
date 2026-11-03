@@ -8,8 +8,13 @@ import Data.Text.IO qualified as TIO
 import Olifant.Evidence
 import Olifant.Language
 import Olifant.Language.AstGrep (astGrepSyntax)
+import Olifant.Language.Adapter (Grammar (..), GrammarSource (..))
+import Olifant.Language.TreeSitter (queriesFor)
+import System.Directory (createDirectoryIfMissing)
 import System.Directory (findExecutable, getTemporaryDirectory)
-import System.FilePath ((</>))
+import System.FilePath (takeExtension, (</>))
+import Olifant.Workspace (Workspace (..), diskWorkspace, memoryWorkspace)
+import Control.Monad (forM)
 import Test.Hspec
 
 -- | A pack's real language file, over the shipped one.
@@ -23,7 +28,8 @@ withPorts files run k =
     Nothing -> pendingWith "ast-grep is not installed (brew install ast-grep)"
     Just _ -> do
       tmp <- getTemporaryDirectory
-      k (EvidencePorts (pure (map fst files)) (pure . (`lookup` files)) (astGrepSyntax (tmp </> "olifant-test-cache")) run)
+      (ws, _) <- memoryWorkspace files
+      k (EvidencePorts (pure (map fst files)) (pure . (`lookup` files)) (astGrepSyntax (tmp </> "olifant-test-cache")) run ws)
 
 source, test :: Text
 source = "def add(a: int, b: int) -> int:\n    return a + b\n"
@@ -48,6 +54,29 @@ spec = describe "Olifant.Evidence" $ do
       evTestUnits ev `shouldBe` Proven "1 found in 1 test files (e.g. src/a__test.py:4 test_add)"
       evHoles ev `shouldSatisfy` isProven
       proofText (evHoles ev) `shouldSatisfy` T.isSuffixOf "wrappers parse with their placeholders"
+  it "a grammar that cannot load leaves its rows unread" $
+    withPorts pair Nothing $ \ports -> do
+      tmp <- getTemporaryDirectory
+      let empty = tmp </> "olifant-test-cache" </> "evidence-nogrammar"
+      createDirectoryIfMissing True empty
+      let broken = py {langGrammar = Grammar "nogrammar" (Just (SourceDir empty)), langQueries = [(f, q, "project") | (f, q) <- queriesFor "python"]}
+      ev <- evidenceFor ports broken
+      evUnits ev `shouldBe` Unproven "not read: the grammar is not loaded"
+  it "sibling tests: proven on the python-htmx fixture, naming the test, owner, constructor and fakes" $ do
+    let app = "packs/python-htmx/fixtures/app"
+    paths <- filter ((== ".py") . takeExtension) <$> listFiles (diskWorkspace app) "src"
+    files <- forM paths $ \p -> ("src" </> p,) <$> TIO.readFile (app </> "src" </> p)
+    withPorts files Nothing $ \ports -> do
+      ev <- evidenceFor ports py
+      evSiblings ev `shouldBe` Proven "src/bistro/booking/commands/create_booking.py \8594 create_booking__test.py (CreateBooking); constructor def __init__\\(; fakes bookings:BookingRepository=InMemoryBookingRepository, ids:IdGenerator=InMemoryIdGenerator"
+  it "sibling tests: no [unit] annotation, no port shape, nothing read" $
+    withPorts pair Nothing $ \ports -> do
+      noAnn <- evidenceFor ports py {langUnitAnnotation = Nothing}
+      evSiblings noAnn `shouldBe` Unproven "no [unit] annotation: only a declared [conjure.fake] and [conjure.constructor] are read"
+      noPort <- evidenceFor ports py {langConjure = Nothing}
+      evSiblings noPort `shouldBe` Unproven "no [conjure.port]: conjure reads no fakes"
+      none <- evidenceFor ports py
+      evSiblings none `shouldBe` Unproven "not seen (no sampled test builds an owner with a port's fake)"
   it "a sample is the first 40 files in path order; no test file is not seen, a warning, not a failure (Review Focus 4)" $ do
     let many = [("src/m" <> (if i < 10 then "0" else "") <> show i <> ".py", "def f" <> T.pack (show i) <> "() -> None:\n    pass\n") | i <- [0 :: Int .. 99]]
     sampleOf py (reverse (map fst many) ++ ["README.md"]) `shouldBe` take 40 (map fst many)

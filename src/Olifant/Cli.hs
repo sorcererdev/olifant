@@ -12,6 +12,8 @@ import Olifant.Server.Errand qualified as Errand
 import Olifant.Server.Telemetry (ErrandRecord (..), OutcomeRecord (..), ReconcileRecord (..), Record (..), readRecords, recordJson, recordsPath)
 import Olifant.Transcripts (Message (..), messageCost, readTranscripts, slugOf)
 import Control.Applicative ((<|>))
+import Control.Exception qualified as E
+import Olifant.Language.Grammar (GrammarUnavailable (..))
 import Olifant.Fill (ModelFiller (..), Stance (..), parseFills, replayFiller)
 import Olifant.Migration (MigrationReport (..), Switch (..), migrationJson, reportLine)
 import Olifant.Rules (Exception (..), FixOffer (..), Finding (..), RuleDef (..), RulesConfig (..), checkFiles, markBaselined, ruleCovers)
@@ -97,8 +99,14 @@ data Runtime = Runtime
     rtGit :: FilePath -> [String] -> IO (Either Text Text)
   }
 
+-- | A grammar that cannot load stops the command with its text (exit 1),
+-- not an internal error.
 runCli :: Runtime -> [String] -> IO ExitCode
-runCli rt args = case parseOptions args of
+runCli rt args =
+  runOptions rt args `E.catch` \(GrammarUnavailable t) -> rtErr rt ("olifant: " <> t <> "\n") >> pure (ExitFailure 1)
+
+runOptions :: Runtime -> [String] -> IO ExitCode
+runOptions rt args = case parseOptions args of
   Left (text, ExitSuccess) -> rtOut rt text >> pure ExitSuccess
   Left (text, _)
     | wantsJson -> rtOut rt (encodeJson (errorJson "usage" (T.strip text) []) <> "\n") >> pure (ExitFailure 2)
