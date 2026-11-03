@@ -1143,8 +1143,23 @@ compiler once (on macOS, `xcode-select --install`) and either the network or a l
 the sources: `OLIFANT_GRAMMAR_SOURCES` is a colon-separated list of folders, each holding
 `<name>/parser.c`, looked in before fetching (olifant's repository has the shipped three in
 `library/grammars/`). Run `olifant doctor` once to do it ahead of time: its `grammar` row says
-`built now in N s`, or what failed and how to fix it. Without a grammar a language keeps
-everything that needs none ([[mutate]], declared targets, its line rules).
+`built now in N s`, or what failed and how to fix it.
+
+**A grammar that cannot load stops the command.** A grammar needs `cc` or its library already
+in the cache. With neither (or when its fetch, build or load fails), any command that parses
+that language stops with the reason instead of falling back to ast-grep or the line rules,
+because the answer would then depend on the machine:
+
+```
+olifant: needs a C compiler to build the python grammar: install it (xcode-select --install), or restore ~/.cache/olifant/grammars
+```
+
+(`apt install gcc` off macOS). With no compiler nothing is fetched either. A command that never
+parses the language (`olifant check` with a `[check]` command, `[[mutate]]` on ast-grep's own
+Python) runs as before, and `olifant doctor` still runs and shows why in its `grammar` row; the
+language server answers the request with the same sentence and shows it once. A bare
+`grammar = "NAME"` (no source) is configuration, the same on every machine, and is the one case
+that keeps ast-grep and the line rules.
 
 **Trust.** A language file, a project's or a pack's included, can name a grammar to fetch, and
 olifant then compiles that C code and loads it into its own process, the language server

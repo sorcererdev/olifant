@@ -16,6 +16,9 @@ module Olifant.Language.Grammar
   , grammarSettings
   , GrammarFailure (..)
   , grammarFailureText
+  , GrammarUnavailable (..)
+  , grammarStopText
+  , stopping
   , failureDetail
   , TSLanguage
   , Loaded (..)
@@ -33,7 +36,7 @@ module Olifant.Language.Grammar
 
 import Control.Concurrent (myThreadId)
 import Control.Concurrent.MVar (MVar, modifyMVar, newMVar, withMVar)
-import Control.Exception (SomeException, try)
+import Control.Exception (Exception, SomeException, throwIO, try)
 import Control.Monad (forM)
 import Data.Bits (xor)
 import Data.ByteString qualified as BS
@@ -54,10 +57,10 @@ import GHC.Clock (getMonotonicTime)
 import Numeric (showHex)
 import Olifant.Language.Adapter (Grammar (..), GrammarSource (..))
 import Olifant.Process (runBytes, runBytesWithin)
-import System.Directory (XdgDirectory (XdgCache), createDirectoryIfMissing, doesDirectoryExist, doesFileExist, findExecutable, getFileSize, getModificationTime, getXdgDirectory, makeAbsolute, removePathForcibly, renameDirectory, renameFile)
+import System.Directory (XdgDirectory (XdgCache), createDirectoryIfMissing, doesDirectoryExist, doesFileExist, findExecutable, getFileSize, getHomeDirectory, getModificationTime, getXdgDirectory, makeAbsolute, removePathForcibly, renameDirectory, renameFile)
 import System.Environment (lookupEnv)
 import System.Exit (ExitCode (..))
-import System.FilePath (takeDirectory, takeFileName, (</>))
+import System.FilePath (addTrailingPathSeparator, takeDirectory, takeFileName, (</>))
 import System.IO.Unsafe (unsafePerformIO)
 import System.Info (arch, os)
 import System.Posix.DynamicLinker (RTLDFlags (..), dlopen, dlsym)
@@ -131,6 +134,40 @@ failureDetail g = \case
 -- | A failure as a reader's Left says it: the grammar named first.
 grammarFailureText :: Text -> GrammarFailure -> Text
 grammarFailureText g f = "the `" <> g <> "` grammar is not loaded: " <> failureDetail g f
+
+-- | A grammar that cannot load on this machine: the command that needed it
+-- stops with this text (no silent fallback to ast-grep or the line rules).
+-- Thrown by the readers ('stopping'), caught at the edges: `runCli`, the
+-- language server's handlers, doctor's evidence.
+newtype GrammarUnavailable = GrammarUnavailable Text
+  deriving stock (Show)
+
+instance Exception GrammarUnavailable
+
+-- | The stop's text: a missing compiler gives the one sentence a person acts
+-- on (the OS's install hint, the cache folder with the home as @~@); any
+-- other failure, 'grammarFailureText'. FilePath is the home directory.
+grammarStopText :: GrammarSettings -> FilePath -> Text -> GrammarFailure -> Text
+grammarStopText s home g = \case
+  NeedsCompiler _ ->
+    "needs a C compiler to build the " <> g <> " grammar: install it (" <> hint <> "), or restore " <> tilde (gsCache s </> "grammars")
+  f -> grammarFailureText g f
+  where
+    hint = if os == "darwin" then "xcode-select --install" else "apt install gcc"
+    tilde p = case T.stripPrefix (T.pack (addTrailingPathSeparator home)) (T.pack p) of
+      Just rest | not (null home) -> "~/" <> rest
+      _ -> T.pack p
+
+-- | A reader's load failure: every failure but 'NoSource' throws
+-- 'GrammarUnavailable' (they depend on the machine); a bare name is
+-- configuration, the same everywhere, and returns for the caller's fallback.
+stopping :: Text -> GrammarFailure -> IO ()
+stopping g = \case
+  NoSource -> pure ()
+  f -> do
+    s <- grammarSettings
+    home <- either (\(_ :: SomeException) -> "") id <$> try getHomeDirectory
+    throwIO (GrammarUnavailable (grammarStopText s home g f))
 
 -- | A loaded grammar: the language, its ABI, its symbol names (named and
 -- anonymous) and named node types, read once at load, and the library.
@@ -345,7 +382,10 @@ loadTimed s g =
       if built
         then (,Nothing) <$> open lib
         else
-          getMonotonicTime >>= \t0 -> located s g True >>= \case
+          -- no compiler, no library: nothing to fetch for
+          gsFind s "cc" >>= \case
+           Nothing -> pure (Left (NeedsCompiler "cc is not on PATH"), Nothing)
+           Just _ -> getMonotonicTime >>= \t0 -> located s g True >>= \case
             Left f -> pure (Left f, Nothing)
             Right _ -> do
               compileLibrary s dir lib >>= \case

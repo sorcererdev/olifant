@@ -16,7 +16,8 @@ module Olifant.Evidence
 
 import Control.Concurrent.Async (mapConcurrently)
 import Control.Concurrent.QSem (newQSem, signalQSem, waitQSem)
-import Control.Exception (bracket_)
+import Control.Exception (bracket_, evaluate, try)
+import Olifant.Language.Grammar (GrammarUnavailable (..))
 import Data.Aeson (object, (.=))
 import Data.Either (lefts)
 import Data.List (nub, sort, sortOn)
@@ -59,9 +60,19 @@ sampleSize = 40
 sampleOf :: Language -> [FilePath] -> [FilePath]
 sampleOf lang files = take sampleSize (S.toAscList (S.fromList [f | f <- files, any (`matchesGlob` f) (langFiles lang)]))
 
--- | Each slot of LANG run on a sample of the project's files.
+-- | Each slot of LANG run on a sample of the project's files. Doctor never
+-- throws: a grammar that cannot load leaves every row of its language
+-- unread (the grammar row says why).
 evidenceFor :: EvidencePorts -> Language -> IO Evidence
-evidenceFor ports lang = do
+evidenceFor ports lang =
+  try (evidenceRun ports lang >>= \ev -> ev <$ evaluate (length (show ev))) >>= \case
+    Left (GrammarUnavailable _) -> pure (Evidence unread unread unread unread unread)
+    Right ev -> pure ev
+  where
+    unread = Unproven "not read: the grammar is not loaded"
+
+evidenceRun :: EvidencePorts -> Language -> IO Evidence
+evidenceRun ports lang = do
   files <- epFiles ports
   let sample = sampleOf lang files
       known = S.fromList files

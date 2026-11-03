@@ -8,6 +8,9 @@ import Data.Text.IO qualified as TIO
 import Olifant.Evidence
 import Olifant.Language
 import Olifant.Language.AstGrep (astGrepSyntax)
+import Olifant.Language.Adapter (Grammar (..), GrammarSource (..))
+import Olifant.Language.TreeSitter (queriesFor)
+import System.Directory (createDirectoryIfMissing)
 import System.Directory (findExecutable, getTemporaryDirectory)
 import System.FilePath ((</>))
 import Test.Hspec
@@ -48,6 +51,14 @@ spec = describe "Olifant.Evidence" $ do
       evTestUnits ev `shouldBe` Proven "1 found in 1 test files (e.g. src/a__test.py:4 test_add)"
       evHoles ev `shouldSatisfy` isProven
       proofText (evHoles ev) `shouldSatisfy` T.isSuffixOf "wrappers parse with their placeholders"
+  it "a grammar that cannot load leaves its rows unread" $
+    withPorts pair Nothing $ \ports -> do
+      tmp <- getTemporaryDirectory
+      let empty = tmp </> "olifant-test-cache" </> "evidence-nogrammar"
+      createDirectoryIfMissing True empty
+      let broken = py {langGrammar = Grammar "nogrammar" (Just (SourceDir empty)), langQueries = [(f, q, "project") | (f, q) <- queriesFor "python"]}
+      ev <- evidenceFor ports broken
+      evUnits ev `shouldBe` Unproven "not read: the grammar is not loaded"
   it "a sample is the first 40 files in path order; no test file is not seen, a warning, not a failure (Review Focus 4)" $ do
     let many = [("src/m" <> (if i < 10 then "0" else "") <> show i <> ".py", "def f" <> T.pack (show i) <> "() -> None:\n    pass\n") | i <- [0 :: Int .. 99]]
     sampleOf py (reverse (map fst many) ++ ["README.md"]) `shouldBe` take 40 (map fst many)

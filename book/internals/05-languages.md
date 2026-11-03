@@ -315,9 +315,24 @@ anchor phrases from community queries (design 4b §A).
     library built under its own lock (`building`, `once`): a request that needs an absent
     grammar pays one failed fetch per process, and a remembered answer never waits on another
     grammar's build. A library is never `dlclose`d.
+  - `loadTimed`'s `buildAndLoad` asks `gsFind s "cc"` before it fetches: with no library and
+    no compiler it is `NeedsCompiler` at once, and nothing is fetched. A cached library opens
+    with no `cc` and no network.
   - The failures (`GrammarFailure`: `NoSource`, `NeedsCompiler`, `FetchFailed`, `BuildFailed`,
     `LoadFailed`, `AbiMismatch`) read as doctor's row says them (`failureDetail`) and, named,
-    as a reader's `Left` (`grammarFailureText`). `grammarLabel` names a grammar to a person
+    as a reader's `Left` (`grammarFailureText`).
+  - **The stop.** Every failure but `NoSource` depends on the machine, so a reader does not fall
+    back: `stopping` throws `GrammarUnavailable` with `grammarStopText` (the ruling's sentence
+    for `NeedsCompiler`, with the OS's install hint and the cache folder under `~`; else
+    `grammarFailureText`). It is thrown where a grammar is loaded for a read: `capturesIO`
+    (under `capturesOf`'s `unsafePerformIO`, so when a pure reader's answer is forced, and never
+    cached), `grammarNodeTypes`, and `AstGrep.prepare` for a registered grammar. It is caught at
+    the edges: `Cli.runCli` (`olifant: <text>`, exit 1), `Lsp.guarded` and `inBackground`
+    (`RequestFailed` with the text, and one `window/showMessage` per text per session,
+    `grammarStopped`, `envStops`), and `Evidence.evidenceFor` (that language's rows become
+    `Unproven "not read: the grammar is not loaded"`). `Plans.safely` rethrows it, so the
+    plans path never turns it into empty units. A `NoSource` (a bare name) still comes back as a
+    `Left`, and the readers' fallbacks read it. `grammarLabel` names a grammar to a person
     (`tree-sitter-python @293fdc0`, a folder's name, or the bare name).
   - Reading config never fetches or builds: `loadIfBuilt` loads only a library already on disk,
     and `TreeSitter.queryError` (the catalog's check of a project's queries) uses it, so a

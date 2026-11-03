@@ -21,8 +21,11 @@ import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
 import Olifant.Language.Captures (Cap (..), PNode (..), anchorFromCaptures)
 import Olifant.Language.Syntax (Match (..))
-import Olifant.Language.TreeSitter (cacheHolds, cacheSize, compiledSize, capturesOf, definitionKinds, loadableGrammar, queriesFor)
-import Olifant.Language.Adapter (Grammar (..))
+import Olifant.Language.TreeSitter (cacheHolds, cacheSize, compiledSize, capturesOf, definitionKinds, definitionLines, loadableGrammar, queriesFor)
+import Olifant.Language.Adapter (Grammar (..), GrammarSource (..))
+import Olifant.Language.Grammar (GrammarUnavailable (..))
+import Control.Exception (try)
+import System.Directory (createDirectoryIfMissing)
 import Olifant.Language (shippedLanguageNow)
 import Test.Hspec
 
@@ -230,6 +233,18 @@ captureSpec = describe "tree-sitter captures" $ do
     at (rust crlf) `shouldBe` at (rust lf)
   it "a broken file still captures" $
     [n | (_, n) <- defs (rust "struct A { a: u8 }\nfn f( {\n")] `shouldContain` ["A"]
+  it "a grammar that fails to load stops the reader" $ do
+    tmp <- getTemporaryDirectory
+    let empty = tmp </> "olifant-test-cache" </> "treesitter-nogrammar"
+    createDirectoryIfMissing True empty
+    let py = shippedLanguageNow "python"
+        lang = py {langGrammar = Grammar "nogrammar" (Just (SourceDir empty)), langQueries = [(f, q, "project") | (f, q) <- queriesFor "python"]}
+    try (evaluate (definitionLines lang "x = 1\n")) >>= \case
+      Left (GrammarUnavailable t) -> t `shouldSatisfy` T.isInfixOf "nogrammar"
+      Right r -> expectationFailure ("read: " <> show r)
+  it "a bare name keeps the readers' fallback" $ do
+    let py = shippedLanguageNow "python"
+    definitionLines py {langGrammar = Grammar "python" Nothing} "x = 1\n" `shouldBe` Nothing
   it "a grammar with no source is a Left naming it" $
     either (\e -> "go" `T.isInfixOf` e && "no source" `T.isInfixOf` e) (const False) (capturesOf (Grammar "go" Nothing) [] "package main\n") `shouldBe` True
   it "a query that does not compile is a Left naming the file and byte" $ do

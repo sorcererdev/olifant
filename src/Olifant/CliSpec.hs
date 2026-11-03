@@ -30,6 +30,8 @@ import Olifant.Server.Errand (Status (..))
 import Olifant.Server.Telemetry (ErrandRecord (..), OutcomeRecord (..), ReconcileRecord (..), Record (..), recordJson)
 import System.Exit (ExitCode (..))
 import Olifant.Language.AstGrep (astGrepSyntax)
+import Olifant.Language.TreeSitter (treeSitterAnchors)
+import Olifant.Language.Syntax qualified as Syn
 import Control.Monad (forM)
 import Data.Text.IO qualified as TIO
 import Data.List (isPrefixOf)
@@ -445,6 +447,19 @@ planOutputSpec = describe "planHuman" $ do
 
 runCliSpec :: Spec
 runCliSpec = describe "runCli" $ do
+  it "a grammar that cannot load stops the command, not an internal error" $ do
+    let files =
+          -- a project language over the python grammar's name (and its shipped
+          -- queries), built from an empty folder: a project layer cannot swap
+          -- the shipped python's git source for a folder (the tables merge)
+          [ ("/proj/.olifant/config.toml", "languages = [\"snake\"]\n")
+          , ("/proj/.olifant/languages/snake.toml", "files = [\"**/*.py\"]\ncomment = \"#\"\ngrammar = { name = \"python\", source = \"nogrammar\" }\n")
+          , ("/proj/src/a.py", "def f():\n    return 1\n")
+          ]
+    (code, _, err, _) <- runInWith ((noSyntax :: Syntax IO) {Syn.anchorSyntax = treeSitterAnchors}) "/proj" "" files False ["where", "src/a.py", "end of function f"]
+    code `shouldBe` ExitFailure 1
+    err `shouldSatisfy` T.isPrefixOf "olifant: the `python` grammar is not loaded"
+    err `shouldNotSatisfy` T.isInfixOf "internal error"
   it "sync --check fails when a regions.toml is broken, and gen warns (review #2)" $ do
     let broken = ("/proj/.olifant/regions.toml", "[regions.mods]\nbogus = 1\n") : [(p, t) | (p, t) <- regionProject "  exposed-modules:\n", p /= "/proj/.olifant/regions.toml"]
     (code, out, _, _) <- runWith "" broken False ["sync", "--check"]

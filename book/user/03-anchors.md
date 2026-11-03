@@ -163,8 +163,10 @@ Use this when a structural target needs a tool (below) that might not be install
 - **Tools.** Declared language targets need `ast-grep`. Every grammar needs a C compiler once
   per machine and revision, the first time it is used, to build it (and the network, or
   `OLIFANT_GRAMMAR_SOURCES`, to fetch its source; [chapter 9](09-packs-and-language-adapters.md#grammars-built-once-loaded-at-run-time));
-  after that the generic phrases need nothing more, the parser runs inside olifant. Without them the edit misses with "ast-grep is not installed (brew
-  install ast-grep)" and the next fallback is tried. Line and marker targets need nothing.
+  after that the generic phrases need nothing more, the parser runs inside olifant. Without
+  ast-grep the edit misses with "ast-grep is not installed (brew install ast-grep)" and the next
+  fallback is tried. A grammar that cannot be built (no compiler and no cached library) stops the
+  edit with the reason; no fallback is tried. Line and marker targets need nothing.
 
 ## Opening an empty container
 

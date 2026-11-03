@@ -11,6 +11,7 @@ import Data.Char (isSpace)
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar, readMVar, tryPutMVar, tryTakeMVar)
 import Control.Exception (SomeAsyncException, SomeException, catch, displayException, finally, fromException, throwIO)
+import Olifant.Language.Grammar (GrammarUnavailable (..))
 import Olifant.Process (Cancel, cancelled, neverCancel, newCancel)
 import Olifant.Recognize qualified as Recognize
 import Olifant.Decide qualified as De
@@ -101,6 +102,8 @@ data Env = Env
   , -- | each plan's anchor fingerprints as the diagnostics pass last read
     -- them: what its semantic tokens mark stale
     envPlanPrints :: IORef (M.Map FilePath AnchorPrints)
+  , -- | the grammar stops already shown in a message: once per text per session
+    envStops :: IORef (S.Set T.Text)
   }
 
 -- | A suggestion's plan, for the document version it was planned against.
@@ -154,7 +157,7 @@ serverDefinition ports = do
   -- a conjure asks the document's version as the editor has it now, not as
   -- its snapshot saw it, before its edits land
   modifyMVar_ state (\s -> pure s {ssLiveDoc = Just (\path -> M.lookup path . ssDocs <$> readMVar state)})
-  env <- Env ports state <$> newJobs <*> newIORef (0, M.empty) <*> newIORef False <*> newIORef S.empty <*> newIORef M.empty <*> newIORef M.empty <*> pure neverCancel <*> newMVar () <*> newIORef M.empty
+  env <- Env ports state <$> newJobs <*> newIORef (0, M.empty) <*> newIORef False <*> newIORef S.empty <*> newIORef M.empty <*> newIORef M.empty <*> pure neverCancel <*> newMVar () <*> newIORef M.empty <*> newIORef S.empty
   pure
     ServerDefinition
       { parseConfig = \_ _ -> Right ()
@@ -162,7 +165,7 @@ serverDefinition ports = do
       , defaultConfig = ()
       , configSection = "olifant"
       , doInitialize = \lspEnv req -> configure env (req ^. L.params . L.initializationOptions) >> pure (Right lspEnv)
-      , staticHandlers = \_ -> guarded (handlers env)
+      , staticHandlers = \_ -> guarded env (handlers env)
       , interpretHandler = \lspEnv -> Iso (runLspT lspEnv) liftIO
       , options = defaultOptions {optTextDocumentSync = Just sync, optServerInfo = Just (ServerInfo "olifant" Nothing), optCompletionTriggerCharacters = Just ['@', ':'], optExecuteCommandCommands = Just ["olifant.doctor"]}
       }
@@ -204,19 +207,32 @@ configure env = \case
 -- | Every handler, kept from killing the server: lsp runs them on its
 -- message loop without catching, so an IO exception (a file deleted while
 -- read, an unreadable folder) would end the process (review I4). A
--- request answers an internal error instead; a notification is logged.
-guarded :: Handlers (LspM ()) -> Handlers (LspM ())
-guarded = mapHandlers onRequest onNotification
+-- request answers an internal error instead; a notification is logged. A
+-- grammar that cannot load ('GrammarUnavailable') answers its stop text as
+-- a failed request, and is shown once ('grammarStopped').
+guarded :: Env -> Handlers (LspM ()) -> Handlers (LspM ())
+guarded env = mapHandlers onRequest onNotification
   where
-    onRequest h req respond = rescue (h req respond) (\why -> respond (Left (TResponseError (InR ErrorCodes_InternalError) why Nothing)))
-    onNotification h msg = rescue (h msg) (\why -> liftIO (hPutStrLn stderr ("olifant lsp: " <> T.unpack why)))
-    rescue :: LspM () () -> (T.Text -> LspM () ()) -> LspM () ()
+    onRequest h req respond =
+      rescue (h req respond) $ \case
+        Left stop -> grammarStopped env stop >> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) stop Nothing))
+        Right why -> respond (Left (TResponseError (InR ErrorCodes_InternalError) why Nothing))
+    onNotification h msg = rescue (h msg) (\why -> liftIO (hPutStrLn stderr ("olifant lsp: " <> T.unpack (either id id why))))
+    rescue :: LspM () () -> (Either T.Text T.Text -> LspM () ()) -> LspM () ()
     rescue work recover = do
       lspEnv <- getLspEnv
       liftIO $
-        runLspT lspEnv work `catch` \(e :: SomeException) -> case fromException e :: Maybe SomeAsyncException of
-          Just _ -> throwIO e
-          Nothing -> runLspT lspEnv (recover (T.pack (displayException e)))
+        runLspT lspEnv work `catch` \(e :: SomeException) -> case (fromException e :: Maybe SomeAsyncException, fromException e) of
+          (Just _, _) -> throwIO e
+          (_, Just (GrammarUnavailable t)) -> runLspT lspEnv (recover (Left t))
+          _ -> runLspT lspEnv (recover (Right (T.pack (displayException e))))
+
+-- | A grammar stop shown to the person: a `window/showMessage` (Error) the
+-- first time this session meets its text.
+grammarStopped :: Env -> T.Text -> LspM () ()
+grammarStopped env stop = do
+  new <- liftIO (atomicModifyIORef' (envStops env) (\seen -> (S.insert stop seen, not (S.member stop seen))))
+  when new (sendNotification SMethod_WindowShowMessage (ShowMessageParams MessageType_Error ("olifant: " <> stop)))
 
 handlers :: Env -> Handlers (LspM ())
 handlers env =
@@ -1681,7 +1697,10 @@ inBackground env req respond work = do
     ( runLspT lspEnv (work env {envCancel = token}) `catch` \(e :: SomeException) -> case fromException e :: Maybe Lsp.ProgressCancelledException of
         -- the client cancelled it from its progress: stopped, not failed
         Just _ -> trip >> runLspT lspEnv (respond (Left (TResponseError (InL LSPErrorCodes_RequestCancelled) "cancelled" Nothing)))
-        Nothing -> runLspT lspEnv (respond (Left (TResponseError (InR ErrorCodes_InternalError) ("olifant lsp: " <> T.pack (displayException e)) Nothing)))
+        Nothing -> case fromException e of
+          -- a grammar that cannot load: its stop, not an internal error
+          Just (GrammarUnavailable t) -> runLspT lspEnv (grammarStopped env t >> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) t Nothing)))
+          Nothing -> runLspT lspEnv (respond (Left (TResponseError (InR ErrorCodes_InternalError) ("olifant lsp: " <> T.pack (displayException e)) Nothing)))
     )
       `finally` atomicModifyIORef' (envRunning env) (\m -> (M.delete key m, ()))
 

@@ -1083,6 +1083,23 @@ conjureSpec = describe "olifant/conjure" $ do
       wiredPorts = \case
         Just (Object p) | Just (Array ws) <- KM.lookup "wired" p -> [(a, b) | Object w <- toList ws, Just (String a) <- [KM.lookup "param" w], Just (String b) <- [KM.lookup "port" w]]
         _ -> []
+  it "a request on a file whose grammar cannot load answers the stop, and the server lives" $
+    withProject
+      [ (".olifant/config.toml", "languages = [\"snake\"]\n")
+      , (".olifant/languages/snake.toml", "files = [\"**/*.py\"]\ncomment = \"#\"\ngrammar = { name = \"python\", source = \"nogrammar\" }\n[test]\npreset = \"pytest\"\n")
+      , ("src/a.py", "def f():\n    return 1\n")
+      ]
+      $ \dir -> do
+        ((first, second), code) <- inProcess dir $ do
+          doc <- openDoc "src/a.py" "python"
+          let ask = blockMove (Proxy :: Proxy "olifant/conjure") (object ["textDocument" .= object ["uri" .= (doc ^. L.uri)], "position" .= object ["line" .= (1 :: Int), "character" .= (0 :: Int)]])
+          a <- ask
+          b <- ask
+          pure (a, b)
+        let stop = either (T.isPrefixOf "the `python` grammar is not loaded") (const False)
+        first `shouldSatisfy` stop
+        second `shouldSatisfy` stop
+        code `shouldBe` Just 0
   it "in a method: the edit, the summary and the after-run; outside any unit, why" $
     withSystemTempDirectory "olifant-conjure" $ \tmp -> do
       let script = tmp </> "tests.json"

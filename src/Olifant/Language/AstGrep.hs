@@ -14,7 +14,7 @@ import Olifant.Language.Adapter
 import Olifant.Process (runBytes)
 import Olifant.Language.Syntax
 import Olifant.Language.TreeSitter (treeSitterAnchors)
-import Olifant.Language.Grammar (GrammarFailure (..), grammarFailureText, grammarLibrary)
+import Olifant.Language.Grammar (grammarFailureText, grammarLibrary, stopping)
 import Control.Concurrent (myThreadId)
 import System.Directory (createDirectoryIfMissing, doesFileExist, findExecutable, renameFile)
 import System.Posix.Process (getProcessID)
@@ -79,8 +79,8 @@ prepare cache lang = case langGrammar lang of
   g@(Grammar name (Just _))
     | name `notElem` astGrepBuiltIn ->
         grammarLibrary g >>= \case
-          Left f@(NeedsCompiler _) -> pure (Left (SyntaxToolMissing (grammarFailureText name f)))
-          Left f -> pure (Left (SyntaxFailed (grammarFailureText name f)))
+          -- no fallback: a grammar that cannot load stops the command
+          Left f -> stopping name f >> pure (Left (SyntaxFailed (grammarFailureText name f)))
           Right lib -> do
             let dir = cache </> "sg" </> takeBaseName lib
                 config = dir </> "sgconfig.yml"

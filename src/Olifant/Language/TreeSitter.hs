@@ -60,7 +60,7 @@ import Foreign.Marshal.Utils (copyBytes, with)
 import Foreign.Ptr (FunPtr, Ptr, castPtr, nullPtr, plusPtr)
 import Foreign.Storable (peek, peekElemOff)
 import Olifant.Language.Adapter (Grammar (..), Language (..))
-import Olifant.Language.Grammar (Loaded (..), TSLanguage, grammarFailureText, grammarLabel, loadGrammar, loadIfBuilt)
+import Olifant.Language.Grammar (GrammarFailure (..), Loaded (..), TSLanguage, grammarFailureText, grammarLabel, loadGrammar, loadIfBuilt, stopping)
 import Olifant.Language.Captures (Cap (..), DefSpan (..), PNode (..), anchorFromCaptures, definitionSpans, definitionsWith, functionCaps, genericPhrase, phraseKind)
 import Olifant.Language.Syntax (Match (..), SyntaxFailure (..))
 import System.FilePath (splitDirectories, takeExtension)
@@ -111,9 +111,12 @@ loadableGrammar lang = case langGrammar lang of
 hasLoadableGrammar :: Language -> Bool
 hasLoadableGrammar = maybe False (const True) . loadableGrammar
 
--- | A grammar's named node types (none when it does not load).
+-- | A grammar's named node types (none for a bare name; a grammar that
+-- cannot load stops, 'stopping').
 grammarNodeTypes :: Grammar -> [Text]
-grammarNodeTypes g = unsafePerformIO (either (const []) ldNodeTypes <$> loadGrammar g)
+grammarNodeTypes g = unsafePerformIO $ loadGrammar g >>= \case
+  Left f -> stopping (grName g) f >> pure []
+  Right l -> pure (ldNodeTypes l)
 {-# NOINLINE grammarNodeTypes #-}
 
 -- | The generic anchor rule for a language whose grammar is linked in (the
@@ -436,8 +439,10 @@ cacheHolds :: Text -> IO Bool
 cacheHolds t = any (\((_, _, t'), _) -> t' == t) <$> readIORef answers
 
 -- | Every capture of a query set over a text, with the node facts the anchor
--- rule reads, and the root node. Left: the grammar does not load (its
--- failure, 'grammarFailureText'), or a query does not compile. Pure: see
+-- rule reads, and the root node. Left: the grammar has no source (a bare
+-- name, 'grammarFailureText'), or a query does not compile. A grammar that
+-- cannot load throws 'Olifant.Language.Grammar.GrammarUnavailable' when the
+-- answer is forced. Pure: see
 -- the module header; the first call for a grammar may fetch and build it.
 capturesOf :: Grammar -> [(FilePath, Text)] -> Text -> Either Text (PNode, [Cap])
 capturesOf g qs content = unsafePerformIO $ do
@@ -457,7 +462,10 @@ capturesOf g qs content = unsafePerformIO $ do
 
 capturesIO :: Grammar -> [(FilePath, Text)] -> Text -> IO (Either Text (PNode, [Cap]))
 capturesIO g qs content = loadGrammar g >>= \case
-  Left f -> pure (Left (grammarFailureText (grName g) f))
+  -- a bare name is configuration: the caller's fallback reads it; any other
+  -- failure depends on the machine and stops (nothing is cached: it throws)
+  Left NoSource -> pure (Left (grammarFailureText (grName g) NoSource))
+  Left f -> stopping (grName g) f >> pure (Left (grammarFailureText (grName g) f))
   Right ld -> do
     let lang = ldLanguage ld
     compileQueries lang (ldLibrary ld) qs >>= \case
