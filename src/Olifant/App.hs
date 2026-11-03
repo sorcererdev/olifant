@@ -273,6 +273,7 @@ evidencePorts ports project run =
             (_, files) <- projectFiles ws M.empty lang [T.unpack (T.takeWhile (/= ':') i) | i <- ids]
             runTestsIn (pTester ports neverCancel) lang ids files
           else Nothing
+    , epWorkspace = ws
     }
   where
     ws = prWorkspace project

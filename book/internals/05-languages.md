@@ -626,7 +626,7 @@ the rows, so it changes too.
 `Olifant.Evidence` (`Evidence.hs`) proves the slots on the project's own code.
 `evidenceFor :: EvidencePorts -> Language -> IO Evidence` reads through `EvidencePorts`
 (`epFiles`, the project's files; `epRead`; `epSyntax`; `epRun`, a test runner only with `doctor
---run`) and gives one `Proof` per slot: `Proven` (with the evidence), `Unproven` ("not seen",
+--run`; `epWorkspace`, the project's workspace as conjure reads it) and gives one `Proof` per slot: `Proven` (with the evidence), `Unproven` ("not seen",
 "not run") or `Disproven` (the line or reason that failed).
 
 - **The sample** (`sampleOf`): the first 40 files (`sampleSize`), in path order, that match the
@@ -653,6 +653,13 @@ the rows, so it changes too.
   row is `Unproven` "not seen (no unit in the 40 sampled)", not `Disproven`.
 - **holes:** each `[holes.KIND]` placeholder (`Holes.placeholderFor`) put in its `wrap`, then the
   Syntax port's `ERROR` query, as `FillPhase.parses` does.
+- **sibling tests** (`evSiblings`, `siblingsProof`): the sample's sources that have an existing
+  `tests_for` file, in path order; for each, `Sibling.findSibling` (with `servicePorts`) on its
+  first unit, stopping at the first that reads: "src/…/create_booking.py → create_booking__test.py
+  (CreateBooking); constructor def __init__\(; fakes bookings:BookingRepository=…". Without
+  `[unit] annotation` or `[conjure.port]` it says what is read instead; none read is "not seen";
+  it is never `Disproven`. Doctor puts its row after `test units` (`Doctor.siblingRow`): an
+  evidence row with no capability key, `Ok` when proven, else a warning.
 - **tests:** with `epRun`, the first test file runs: "ran uv on src/a__test.py, 3 results parsed
   (junit-xml)", or the run's broken reason.
 
