@@ -137,6 +137,35 @@ spec = do
     either (\case FetchFailed _ -> True; _ -> False) (const False) r `shouldBe` True
     leftovers <- listDirectory (gsCache s </> "grammars" </> "src")
     leftovers `shouldBe` []
+ describe "remoteHead" $ do
+  it "names the remote HEAD's full SHA" $ do
+    s <- fresh "remote-head"
+    let repo = gsCache s </> "repo"
+    _ <- fixtureRepo repo "."
+    second' <- T.strip . T.pack <$> readProcess "git" ["-C", repo, "rev-parse", "HEAD"] ""
+    remoteHead s ("file://" <> T.pack repo) `shouldReturn` Right second'
+  it "a remote that is not there is git's fatal line" $ do
+    s <- fresh "remote-head-none"
+    remoteHead s "file:///nonexistent" >>= \case
+      Left t -> T.unpack t `shouldSatisfy` ("fatal:" `isPrefixOf`)
+      Right h -> expectationFailure (T.unpack h)
+  it "a remote helper's URL is refused without running git" $ do
+    s <- fresh "remote-head-ext"
+    let noGit p = if p == "git" then expectationFailure "git was looked for" >> pure Nothing else findExecutable p
+    remoteHead s {gsFind = noGit} "ext::sh -c touch% /tmp/pwned" >>= \case
+      Left t -> T.unpack t `shouldSatisfy` ("refused" `isInfixOf`)
+      Right h -> expectationFailure (T.unpack h)
+  it "checkoutOf is the loader's checkout under the cache" $ do
+    s <- fresh "checkout-of"
+    let repo = gsCache s </> "repo"
+    _ <- fixtureRepo repo "."
+    Right sha <- remoteHead s ("file://" <> T.pack repo)
+    let g = Grammar "elm" (Just (SourceGit ("file://" <> T.pack repo) sha Nothing))
+        Just dir = checkoutOf s g
+    dir `shouldSatisfy` (gsCache s `isPrefixOf`)
+    Right _ <- loadGrammarWith s g
+    doesFileExist (dir </> "README") `shouldReturn` True
+    checkoutOf s (Grammar "elm" (Just (SourceDir "x"))) `shouldBe` Nothing
  describe "loadGrammar" $ do
   it "builds a pack's sources once and loads them" $ do
     s <- fresh "once"

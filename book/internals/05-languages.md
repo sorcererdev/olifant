@@ -307,7 +307,12 @@ anchor phrases from community queries (design 4b §A).
     (`/<path>/src`), which `fetch` makes when absent: `git init`, `git fetch --depth 1 URL REV`,
     `git checkout FETCH_HEAD` and a `rev-parse` check, in an aside folder renamed on success.
     Git runs with its own transports only (`protocol.allow=never` but https, ssh, git and file),
-    `http.followRedirects=false`, no hooks, `core.symlinks=false` and no credential prompt.
+    `http.followRedirects=false`, no hooks, `core.symlinks=false` and no credential prompt
+    (`runGit`), and `refusedUrl` turns away a remote helper's URL (`ext::…`) or an
+    option-looking one before git runs. `remoteHead` (`git ls-remote URL HEAD`, the same
+    checks) gives a remote's HEAD as a full 40-hex SHA, and `checkoutOf` names a git source's
+    checkout folder: `init --language` pins a model's proposed repository with the first and
+    reads upstream `queries/` through the second.
   - `grammarKey` is the library's name, `<name>-<8 hex>`: an fnv64 of the source's identity (a
     checkout's `rev`; a folder's path and its `parser.c` and `scanner.c` sizes and times), the
     runtime's ABI, the os and the arch. A changed key is a new file; the old one stays.
