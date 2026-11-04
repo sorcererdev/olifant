@@ -729,6 +729,16 @@ The flow, each step's failure printing one line and the row it came from (exit 1
    passing files overwrite theirs, and doctor runs again. A first round whose answers do not load
    goes to the same repair before any write. There is exactly one repair round.
 
+**The queries.** `queriesToWrite grammarName shipped upstream` asks for none when olifant ships
+a set for the grammar (`shippedFor`, which is `queriesFor`; the errand takes it as
+`eiShipped` so a spec can pass `const []` and drive `errandCore` with a grammar that has
+shipped queries). Otherwise upstream's `tags.scm` is copied under a `; from URL @SHA7
+(LICENSE: …)` header (`Upstream`'s `upLabel` and `upLicence`, read by `readUpstream` from the
+checkout's `queries/` and `LICENSE*`) and the rest are holes: `imports`, `textobjects`, and
+`tags` when upstream has none. `checkAnswers` compiles each answered query alone with
+`queryError` and writes it to `.olifant/queries/<grammar>/<hole>.scm`; `sourcesFile` writes the
+`SOURCES` beside them, one line per file, copied or written by the model.
+
 `providersSection` cuts user chapter 9 from its `### Providers` heading to the next heading: a
 rename of that heading breaks `LanguageInitSpec`. The specs (`CliSpec`'s "init --language") use
 the elm pack's grammar in a local git repository by `file://` (`GrammarSpec.fixtureRepo`) under the

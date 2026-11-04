@@ -37,9 +37,15 @@ module Olifant.LanguageInit
   , languageRows
   , repairRequest
   , repairHoles
+  , readUpstream
   ) where
 
 import Control.Applicative ((<|>))
+import Control.Monad (filterM)
+import Data.ByteString qualified as BS
+import Data.Text.Encoding qualified as TE
+import Data.Text.Encoding.Error (lenientDecode)
+import System.Directory (doesDirectoryExist, listDirectory)
 import Data.Char (isAlphaNum)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
@@ -55,7 +61,7 @@ import Olifant.Glob (matchesGlob)
 import Olifant.Language.TreeSitter (readCaptures)
 import Olifant.Library (providersSection, shippedLanguages, shippedToolchains)
 import Olifant.Toml qualified as Toml
-import System.FilePath (splitDirectories, (</>))
+import System.FilePath (splitDirectories, takeExtension, (</>))
 
 -- | The survey's answer: the grammar's repository (and, in a monorepo, the
 -- folder and the name the loader reads), the globs of source and test files,
@@ -409,3 +415,24 @@ repairRequest req written rows =
     }
   where
     asked = repairHoles req rows
+
+-- | The grammar checkout's @queries/*.scm@ (beside the grammar's folder in a
+-- monorepo, else at the checkout's root) and its licence, read from disk,
+-- under LABEL (URL @SHA7). No checkout: none.
+readUpstream :: Text -> Maybe FilePath -> Maybe FilePath -> IO Upstream
+readUpstream label checkout path = case checkout of
+  Nothing -> pure (Upstream label [] Nothing)
+  Just dir -> do
+    found <- filterM doesDirectoryExist ([dir </> p </> "queries" | Just p <- [path]] ++ [dir </> "queries"])
+    queries <- case found of
+      q : _ -> do
+        names <- sort . filter ((== ".scm") . takeExtension) <$> listDirectory q
+        mapM (\n -> (n,) <$> readUtf8 (q </> n)) names
+      [] -> pure []
+    tops <- sort <$> listDirectory dir
+    licence <- case [f | f <- tops, "LICENSE" `T.isPrefixOf` T.toUpper (T.pack f)] of
+      f : _ -> Just . (f,) <$> readUtf8 (dir </> f)
+      [] -> pure Nothing
+    pure (Upstream label queries licence)
+  where
+    readUtf8 f = TE.decodeUtf8With lenientDecode <$> BS.readFile f

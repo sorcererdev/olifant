@@ -1307,6 +1307,14 @@ reads. `olifant doctor`'s `queries` row names each file's origin:
 ✓ rust: queries — tree-sitter-rust @77a3747; imports (project), impls, tags, textobjects (shipped)
 ```
 
+This is also where `init --language` ([above](#adding-a-language-init---language)) puts the
+queries of a grammar olifant ships none for. The grammar repository's own `queries/tags.scm` is
+copied when it has one, with a first line `; from URL @SHA7 (LICENSE: …)`; the model writes
+`textobjects.scm`, `imports.scm` and, when upstream has none, `tags.scm`, from the grammar's node
+kinds and the captures above. Each must compile against the grammar before anything is written (a
+file that does not is a `queries` row the repair round answers), and a `SOURCES` file beside them
+says which file was copied and which the model wrote.
+
 ### Conjure's shapes: `[conjure]`
 
 A pack tells conjure how its architecture looks, in its own

@@ -17,9 +17,6 @@ import Olifant.Language.Grammar (GrammarFailure (..), GrammarInfo (..), GrammarU
 import Olifant.Language.Adapter (Grammar (..), GrammarSource (..))
 import Olifant.LanguageInit qualified as LI
 import Olifant.Library (shippedLanguages)
-import Data.ByteString qualified as BS
-import Data.Text.Encoding.Error (lenientDecode)
-import System.Directory (doesDirectoryExist, listDirectory)
 import Olifant.Fill (FillHole (..), FillRequest (..), Filler (..), ModelFiller (..), Stance (..), parseFills, replayFiller)
 import Olifant.Migration (MigrationReport (..), Switch (..), migrationJson, reportLine)
 import Olifant.Rules (Exception (..), FixOffer (..), Finding (..), RuleDef (..), RulesConfig (..), checkFiles, markBaselined, ruleCovers)
@@ -1043,7 +1040,7 @@ runInitLanguage rt cwd fmt cat l modelArg grammarArg yes plan fillsArg = do
                           stop ("the grammar does not load: " <> failureLine f) (Just (rowLine row)) [row]
                         Right ld -> do
                           let info = GrammarInfo (grammarLabel g) (ldAbi ld) (ldLibrary ld) Nothing
-                          upstream <- upstreamOf url sha (checkoutOf s g) (LI.svPath sv)
+                          upstream <- LI.readUpstream (url <> " @" <> T.take 7 sha) (checkoutOf s g) (LI.svPath sv)
                           tools <- mapM (\r -> dpFind (rtDoctor rt) (T.unpack r) <&> \found -> r <> ": " <> maybe "not on PATH" T.pack found) (LI.svRunners sv)
                           sample <- fmap concat . mapM (\p -> readText ws p <&> maybe [] (\t -> [(p, LI.cutTo 120 t)])) $ sources ++ tests ++ maybe [] pure manifest
                           let ei = LI.ErrandInput l g (ldNodeTypes ld) upstream LI.shippedFor tools sample (rtProjectDir rt)
@@ -1106,28 +1103,6 @@ runInitLanguage rt cwd fmt cat l modelArg grammarArg yes plan fillsArg = do
       AbiMismatch n _ -> "ABI " <> T.pack (show n) <> " is not one this olifant reads"
       NoSource -> "no source"
     secs t = T.pack (showFFloat (Just 1) t "") <> " s"
-
--- | The grammar checkout's @queries/*.scm@ (beside the grammar's folder in a
--- monorepo, else at the checkout's root) and its licence, read from disk.
-upstreamOf :: Text -> Text -> Maybe FilePath -> Maybe FilePath -> IO LI.Upstream
-upstreamOf url sha checkout path = case checkout of
-  Nothing -> pure (LI.Upstream label [] Nothing)
-  Just dir -> do
-    let candidates = [dir </> p </> "queries" | Just p <- [path]] ++ [dir </> "queries"]
-    found <- filterM doesDirectoryExist candidates
-    queries <- case found of
-      q : _ -> do
-        names <- sort . filter ((== ".scm") . reverse . take 4 . reverse) <$> listDirectory q
-        mapM (\n -> (n,) <$> readUtf8 (q </> n)) names
-      [] -> pure []
-    tops <- sort <$> listDirectory dir
-    licence <- case [f | f <- tops, "LICENSE" `T.isPrefixOf` T.toUpper (T.pack f)] of
-      f : _ -> Just . (f,) <$> readUtf8 (dir </> f)
-      [] -> pure Nothing
-    pure (LI.Upstream label queries licence)
-  where
-    label = url <> " @" <> T.take 7 sha
-    readUtf8 f = TE.decodeUtf8With lenientDecode <$> BS.readFile f
 
 -- | The model that fills holes in a `gen` (spec §6.4): `--model`, else
 -- the config's `default`; none with `--no-fill`.

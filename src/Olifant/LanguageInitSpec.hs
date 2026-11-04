@@ -4,6 +4,15 @@ module Olifant.LanguageInitSpec (spec) where
 
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
+import Data.Map.Strict qualified as M
+import Olifant.Fill (replayFiller)
+import Olifant.Language (Grammar (..), GrammarSource (..))
+import Olifant.Language.Grammar (Loaded (..), loadGrammar)
+import Olifant.Language.GrammarSpec (fixtureRepo)
+import System.Directory (createDirectoryIfMissing, getTemporaryDirectory)
+import System.FilePath ((</>))
+import System.IO.Temp (withSystemTempDirectory)
+import System.Process (readProcess)
 import Olifant.Language.TreeSitter (queriesFor)
 import Olifant.Library (shippedLanguages, shippedToolchains)
 import Olifant.Doctor (Check (..), Status (..))
@@ -15,7 +24,7 @@ survey :: Survey
 survey = Survey "https://example.invalid/tree-sitter-x" Nothing Nothing ["**/*.go"] ["**/*_test.go"] (Just "go.mod") ["go"]
 
 spec :: Spec
-spec = describe "Olifant.LanguageInit" $ do
+spec = do
   describe "parseSurvey" $ do
     it "reads the keys" $
       parseSurvey (T.unlines ["grammar = \"https://example.invalid/tree-sitter-x\"", "files = [\"**/*.go\"]", "tests = [\"**/*_test.go\"]", "manifest = \"go.mod\"", "runners = [\"go\"]"])
@@ -109,3 +118,53 @@ spec = describe "Olifant.LanguageInit" $ do
       lookup "failing rows" (frContext r) `shouldSatisfy` maybe False ("go: test units — 0 found" `T.isInfixOf`)
     it "a test runner row points at the toolchain" $
       map fhName (frHoles (repairRequest req written [Check "test runner gotestsum (go)" Bad "absent" Nothing])) `shouldBe` ["toolchain_repair"]
+  describe "the errand's queries (errandCore, no shipped set)" $ do
+    let elmGrammar name = do
+          tmp <- getTemporaryDirectory
+          let repo = tmp </> "olifant-test-cache" </> ("language-init-queries-" <> name)
+          _ <- fixtureRepo repo "."
+          sha <- T.strip . T.pack <$> readProcess "git" ["-C", repo, "rev-parse", "HEAD"] ""
+          let g = Grammar "elm" (Just (SourceGit ("file://" <> T.pack repo) sha Nothing))
+          Right ld <- loadGrammar g
+          up <- withSystemTempDirectory "olifant-upstream" $ \d -> do
+            createDirectoryIfMissing True (d </> "queries")
+            TIO.readFile "library/queries/elm/tags.scm" >>= TIO.writeFile (d </> "queries" </> "tags.scm")
+            TIO.writeFile (d </> "LICENSE") "MIT License\n"
+            readUpstream "file://x @abc1234" (Just d) Nothing
+          pure (g, ld, up)
+        fixtures = do
+          let dir = "src/Olifant/testdata/init-language"
+          language <- TIO.readFile (dir </> "language.toml")
+          toolchain <- TIO.readFile (dir </> "toolchain.toml")
+          textobjects <- TIO.readFile "library/queries/elm/textobjects.scm"
+          imports <- TIO.readFile "library/queries/elm/imports.scm"
+          pure (M.fromList [("language", language), ("toolchain", toolchain), ("textobjects", textobjects), ("imports", imports)])
+        input g ld up = ErrandInput "elmish" g (ldNodeTypes ld) up (const []) [] [] "/w"
+    it "(m) upstream tags.scm is copied with its header" $ do
+      (g, ld, up) <- elmGrammar "m"
+      fills <- fixtures
+      Right (_, a) <- errandCore (replayFiller fills) (input g ld up)
+      anFailing a `shouldBe` []
+      lookup ".olifant/queries/elm/tags.scm" (anFiles a) `shouldSatisfy` maybe False (T.isPrefixOf "; from file://x @abc1234 (LICENSE: MIT License)\n")
+    it "(n) the model's textobjects and imports are written, and SOURCES says where each came from" $ do
+      (g, ld, up) <- elmGrammar "n"
+      fills <- fixtures
+      Right (req, a) <- errandCore (replayFiller fills) (input g ld up)
+      map fhName (frHoles req) `shouldBe` ["language", "toolchain", "imports", "textobjects"]
+      lookup ".olifant/queries/elm/textobjects.scm" (anFiles a) `shouldBe` M.lookup "textobjects" fills
+      lookup ".olifant/queries/elm/imports.scm" (anFiles a) `shouldBe` M.lookup "imports" fills
+      let Just sources = lookup ".olifant/queries/elm/SOURCES" (anFiles a)
+      sources `shouldSatisfy` T.isInfixOf "tags.scm  copied from file://x @abc1234"
+      sources `shouldSatisfy` T.isInfixOf "imports.scm  written by the model"
+      sources `shouldSatisfy` T.isInfixOf "textobjects.scm  written by the model"
+    it "(o) a query that does not compile is a failing row, and textobjects_repair replaces it" $ do
+      (g, ld, up) <- elmGrammar "o"
+      fills0 <- fixtures
+      let fills = M.insert "textobjects" "(nonexistent_node) @x\n" fills0
+      Right (req, a) <- errandCore (replayFiller fills) (input g ld up)
+      map (\c -> (checkName c, T.take 16 (checkDetail c))) (anFailing a) `shouldBe` [("elmish: queries", "textobjects.scm:")]
+      let rreq = repairRequest req (anFiles a) (anFailing a)
+      map fhName (frHoles rreq) `shouldBe` ["textobjects_repair"]
+      let repaired = checkAnswers (input g ld up) (anFiles a) ["textobjects"] "_repair" (M.insert "textobjects_repair" (fills0 M.! "textobjects") fills)
+      anFailing repaired `shouldBe` []
+      map fst (anFiles repaired) `shouldBe` [".olifant/queries/elm/textobjects.scm"]
