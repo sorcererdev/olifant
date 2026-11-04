@@ -254,6 +254,64 @@ Adding a language to Olifant itself is a file in `library/languages/` (touch
 `src/Olifant/Library.hs` so the embed sees it); adding one to a project is a file in
 `.olifant/languages/`.
 
+### Adding a language: `init --language`
+
+A language olifant does not ship can be written for you. In the project, with a `[model]`
+configured ([chapter 12](12-holes-and-models.md)):
+
+```
+$ olifant init --language go --yes --human
+grammar: https://github.com/tree-sitter/tree-sitter-go @2346a3a (proposed by the model)
+wrote .olifant/languages/go.toml
+wrote .olifant/toolchains/go-test.toml
+wrote .olifant/queries/go/tags.scm
+…
+```
+
+It writes three things from one model errand:
+
+- `.olifant/languages/<name>.toml`, the language file (the [keys below](#the-keys));
+- `.olifant/toolchains/<name>-test.toml`, its test preset, which the language names with
+  `[test] preset = "<name>-test"`;
+- `.olifant/queries/<grammar>/`, the tree-sitter queries the grammar needs when olifant ships none
+  for it ([Overriding a language's queries](#overriding-a-languages-queries)).
+
+How it gets there:
+
+1. **The survey.** The model is shown the language's name and the project's tracked paths (the
+   first 200), and answers which tree-sitter grammar repository parses it, which globs are its
+   source and test files, its manifest, and which test runners the project could use. `--grammar
+   URL` gives the repository yourself.
+2. **The pin.** Olifant asks the repository for its `HEAD` (`git ls-remote`) and pins that full
+   commit SHA. The revision is olifant's, never the model's.
+3. **The question.** The repository is the model's proposal, and olifant is about to compile its
+   C code and load it into its own process. So it shows `grammar: URL @SHA7 (proposed by the
+   model)` and asks `fetch and build it? [y/N]` on a terminal. `--yes` answers yes; with no
+   terminal and no `--yes` it stops there, having fetched nothing. A repository given with
+   `--grammar` is not asked about.
+4. **The gate.** The grammar is fetched, built and loaded as any grammar is ([Grammars](#grammars-built-once-loaded-at-run-time)).
+   If it does not load, init prints the `<name>: grammar` row doctor would and writes nothing:
+   there is no fallback, and the model is never asked to describe a grammar olifant could not read.
+5. **The errand.** The model is shown what olifant knows rather than what it remembers: the
+   grammar's node kinds (read from the loaded grammar), the capture names the grammar's own
+   queries use and the ones olifant reads, which of the survey's runners are on this PATH, two
+   source files, two test files and the manifest from the project (120 lines each), the shipped
+   `rust.toml` and `cargo-test.toml` as worked examples, and the [provider
+   protocol](#providers-answering-a-slot-with-a-program). It writes each file whole.
+6. **The checks.** Before anything is written, the language file must load as a project layer
+   over the toolchain it wrote, the toolchain must read as a preset, and each query must compile
+   against the grammar. Whatever `grammar` line the model wrote is replaced by olifant's pin.
+   Nothing is written until every file passes.
+
+`--plan` shows the survey's answer, the pin and the files it would write, and writes nothing (the
+model is still asked for the survey). `--model NAME` picks a backend, as for `gen`; with no model
+it stops: "init --language needs a model: add [model] (olifant doctor shows how)". A language that
+already has `.olifant/languages/<name>.toml` (or its toolchain file) is not overwritten: delete the
+file to generate again. A language olifant ships is not regenerated.
+
+The files are ordinary layers: edit them as you would one you wrote, and `olifant doctor` reads
+them like any other.
+
 ### The keys
 
 From `library/languages/rust.toml` and `library/languages/elm.toml`:
@@ -1164,7 +1222,8 @@ that keeps ast-grep and the line rules.
 **Trust.** A language file, a project's or a pack's included, can name a grammar to fetch, and
 olifant then compiles that C code and loads it into its own process, the language server
 included when a file opens: a project's grammar source is trusted like its `[check]` command,
-which olifant also runs as you. Olifant fetches only a full commit SHA (never a branch or tag),
+which olifant also runs as you. With `init --language`, the repository is the model's proposal,
+which is why olifant asks before it fetches and builds it. Olifant fetches only a full commit SHA (never a branch or tag),
 with git's own transports, no redirects and no hooks, into its cache folder; it never fetches
 or compiles while it only lists or reads configuration.
 

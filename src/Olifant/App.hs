@@ -22,6 +22,7 @@ module Olifant.App
   , ShowFailure (..)
   , showGenerator
   , doctorChecks
+  , projectListing
   , projectModel
   , projectTools
   , projectQueries
@@ -261,10 +262,7 @@ doctorChecks ports project run = do
 evidencePorts :: Ports -> Project -> Bool -> EvidencePorts
 evidencePorts ports project run =
   EvidencePorts
-    { epFiles =
-        pTracked ports (prRoot project) >>= \case
-          Just tracked -> pure (S.toList tracked)
-          Nothing -> filter (not . any (\c -> "." `isPrefixOf` c && c /= ".") . splitDirectories) <$> listFiles ws "."
+    { epFiles = projectListing ports project
     , epRead = readText ws
     , epSyntax = pSyntax ports
     , epRun =
@@ -277,6 +275,14 @@ evidencePorts ports project run =
     }
   where
     ws = prWorkspace project
+
+-- | The project's files: those version control tracks, else a walk below
+-- the root past dot-folders and the folders no walk enters.
+projectListing :: Ports -> Project -> IO [FilePath]
+projectListing ports project =
+  pTracked ports (prRoot project) >>= \case
+    Just tracked -> pure (S.toList tracked)
+    Nothing -> filter (not . any (\c -> "." `isPrefixOf` c && c /= ".") . splitDirectories) <$> listFiles (prWorkspace project) "."
 
 -- | The tools a command in this project uses: the ports' syntax, checker
 -- and verifier, the catalog's languages and regions, and the project's

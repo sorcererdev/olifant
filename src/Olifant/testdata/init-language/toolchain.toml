@@ -1,0 +1,11 @@
+# elm-test over the given files (the init --language specs).
+[test]
+command = ["elm-test", "{= tests =}"]
+format = "lines"
+root = ["elm.json"]
+tests_for = "tests/{= stem =}Test.elm"
+install = "npm install -g elm-test"
+
+[test.lines]
+pass = "^✓ (.*)$"
+fail = "^✗ (.*)$"

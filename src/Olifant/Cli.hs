@@ -13,13 +13,19 @@ import Olifant.Server.Telemetry (ErrandRecord (..), OutcomeRecord (..), Reconcil
 import Olifant.Transcripts (Message (..), messageCost, readTranscripts, slugOf)
 import Control.Applicative ((<|>))
 import Control.Exception qualified as E
-import Olifant.Language.Grammar (GrammarUnavailable (..))
-import Olifant.Fill (ModelFiller (..), Stance (..), parseFills, replayFiller)
+import Olifant.Language.Grammar (GrammarFailure (..), GrammarInfo (..), GrammarUnavailable (..), Loaded (..), checkoutOf, grammarLabel, grammarSettings, loadGrammarWith, remoteHead)
+import Olifant.Language.Adapter (Grammar (..), GrammarSource (..))
+import Olifant.LanguageInit qualified as LI
+import Olifant.Library (shippedLanguages)
+import Data.ByteString qualified as BS
+import Data.Text.Encoding.Error (lenientDecode)
+import System.Directory (doesDirectoryExist, listDirectory)
+import Olifant.Fill (Filler (..), ModelFiller (..), Stance (..), parseFills, replayFiller)
 import Olifant.Migration (MigrationReport (..), Switch (..), migrationJson, reportLine)
 import Olifant.Rules (Exception (..), FixOffer (..), Finding (..), RuleDef (..), RulesConfig (..), checkFiles, markBaselined, ruleCovers)
 import Olifant.Rules qualified as R
 import Olifant.Toml qualified as Toml
-import Olifant.Doctor (Check (..), DoctorPorts (..), Status (..))
+import Olifant.Doctor (Check (..), DoctorPorts (..), Status (..), grammarCheck)
 import Olifant.Actions (Action (..), Completion (..), FileAction (..), Nearby (..), Range (..))
 import Control.Monad (filterM, forM_, join, unless, when)
 import Data.Aeson (Value (..), decodeStrict, eitherDecodeStrict, encode, object, toJSON)
@@ -348,6 +354,7 @@ runCommand rt cwd fmt cat = \case
   -- handled before a project is opened (runCli); here for completeness
   InitCmd pack name dir plan -> runInit rt fmt pack name dir plan
   InitMigrateCmd paths pack strangler -> runInitMigrate rt fmt paths pack strangler
+  InitLanguageCmd name model grammar yes plan fills -> runInitLanguage rt cwd fmt cat name model grammar yes plan fills
   LspCmd -> (\code -> if code == 0 then ExitSuccess else ExitFailure code) <$> runLsp (portsOf rt)
   AnticipateCmd file line overlayFile answers -> runAnticipate rt (normalise (cwd </> file)) line ((cwd </>) <$> overlayFile) ((cwd </>) <$> answers)
   ListCmd detail -> do
@@ -960,6 +967,135 @@ initFences ws tools def
   where
     file = regionFile def
     lang = languageFor (toolLanguages tools) file
+
+-- | `init --language NAME` (m5): survey, pin, gate, errand, check, write.
+-- The model proposes the grammar's repository and writes the files; olifant
+-- pins the revision ('remoteHead'), asks before it fetches and builds a
+-- proposed repository (`--yes`, or y on a terminal), reads node kinds only
+-- from a grammar that loaded, and checks every answer before anything is
+-- written ('LI.checkAnswers').
+runInitLanguage :: Runtime -> FilePath -> Format -> Catalog -> Text -> Maybe Text -> Maybe Text -> Bool -> Bool -> Maybe FilePath -> IO ExitCode
+runInitLanguage rt cwd fmt cat l modelArg grammarArg yes plan fillsArg = do
+  let ws = within (rtProjectDir rt) (rtRoot rt)
+      project = projectOf rt cat
+      stop msg hint rows = failWith rt fmt 1 "init_language" msg hint ["rows" .= rowsJson rows]
+  layerThere <- fileExists ws (LI.languageFile l)
+  toolchainThere <- fileExists ws (LI.toolchainFile l)
+  chosen <- case fillsArg of
+    Nothing -> pure (modelFiller cat modelArg)
+    Just f -> readText (rtRoot rt) (normalise (cwd </> f)) <&> \case
+      Nothing -> Left ("--fills " <> T.pack f <> ": no such file")
+      Just src -> (\fills -> Just (ModelFiller "recorded" 0 (replayFiller fills))) <$> parseFills src
+  case chosen of
+    _ | isJust (lookup l shippedLanguages) -> stop (l <> " ships with olifant (init --language for shipped languages comes in m5b)") Nothing []
+    _ | layerThere -> stop (T.pack (LI.languageFile l) <> " exists: olifant doctor shows its rows; delete it to generate again") Nothing []
+    _ | toolchainThere -> stop (T.pack (LI.toolchainFile l) <> " exists: olifant doctor shows its rows; delete it to generate again") Nothing []
+    Left why -> failWith rt fmt 2 "usage" why Nothing []
+    Right Nothing -> stop "init --language needs a model: add [model] (olifant doctor shows how)" Nothing []
+    Right (Just mf) -> do
+      t0 <- getMonotonicTime
+      tracked <- sort <$> projectListing (portsOf rt) project
+      survey <- runFill (mfFiller mf) (LI.surveyRequest l tracked) <&> \case
+        Left why -> Left ("the model did not answer the survey: " <> why)
+        Right fills -> maybe (Left "the model gave no `survey`") LI.parseSurvey (M.lookup "survey" fills)
+      t1 <- getMonotonicTime
+      case survey of
+        Left why -> stop why Nothing []
+        Right sv0 -> do
+          let sv = maybe sv0 (\u -> sv0 {LI.svGrammar = u}) grammarArg
+              url = LI.svGrammar sv
+              gname = fromMaybe l (LI.svName sv)
+          s <- grammarSettings
+          remoteHead s url >>= \case
+            Left why -> do
+              let row = grammarCheck l gname (Left (FetchFailed ("pinning " <> url <> " failed: " <> why)))
+              stop ("the grammar's repository has no revision to pin: " <> url) (Just (rowLine row)) [row]
+            Right sha -> do
+              let g = Grammar gname (Just (SourceGit url sha (LI.svPath sv)))
+                  label = url <> " @" <> T.take 7 sha
+                  proposal = "grammar: " <> label <> (if isJust grammarArg then " (given with --grammar)" else " (proposed by the model)")
+                  (sources, tests, manifest) = LI.sampleFor sv tracked
+                  queries = if null (LI.shippedFor gname) then [".olifant/queries/" <> gname <> "/"] else []
+                  files = [T.pack (LI.languageFile l), T.pack (LI.toolchainFile l)] ++ queries
+              if plan
+                then do
+                  emit rt fmt
+                    (object ["survey" .= object ["grammar" .= url, "files" .= LI.svFiles sv, "tests" .= LI.svTests sv, "runners" .= LI.svRunners sv], "grammar" .= object ["git" .= url, "rev" .= sha], "files" .= files, "sample" .= (sources ++ tests ++ maybe [] pure manifest)])
+                    (T.unlines ([proposal] ++ ["would write " <> f | f <- files] ++ ["sample: " <> T.intercalate ", " (map T.pack (sources ++ tests ++ maybe [] pure manifest))]))
+                  pure ExitSuccess
+                else do
+                  go <-
+                    if yes || isJust grammarArg
+                      then pure True
+                      else
+                        if rtStdoutIsTty rt
+                          then do
+                            rtErr rt (proposal <> "\nfetch and build it? [y/N] ")
+                            answer <- T.toLower . T.strip . T.takeWhile (/= '\n') <$> rtReadStdin rt
+                            pure (answer `elem` ["y", "yes"])
+                          else pure False
+                  if not go
+                    then stop proposal (Just "pass --yes to fetch and build it") []
+                    else
+                      loadGrammarWith s g >>= \case
+                        Left f -> do
+                          let row = grammarCheck l gname (Left f)
+                          stop ("the grammar does not load: " <> failureLine f) (Just (rowLine row)) [row]
+                        Right ld -> do
+                          let info = GrammarInfo (grammarLabel g) (ldAbi ld) (ldLibrary ld) Nothing
+                          upstream <- upstreamOf url sha (checkoutOf s g) (LI.svPath sv)
+                          tools <- mapM (\r -> dpFind (rtDoctor rt) (T.unpack r) <&> \found -> r <> ": " <> maybe "not on PATH" T.pack found) (LI.svRunners sv)
+                          sample <- fmap concat . mapM (\p -> readText ws p <&> maybe [] (\t -> [(p, LI.cutTo 120 t)])) $ sources ++ tests ++ maybe [] pure manifest
+                          let ei = LI.ErrandInput l g (ldNodeTypes ld) upstream LI.shippedFor tools sample (rtProjectDir rt)
+                          LI.errandCore (mfFiller mf) ei >>= \case
+                            Left why -> stop ("the model did not answer the errand: " <> why) Nothing [grammarCheck l gname (Right info)]
+                            Right (_, answered)
+                              | not (null (LI.anFailing answered)) -> stop "the model's files do not load; nothing was written" Nothing (LI.anFailing answered)
+                              | otherwise -> do
+                                  forM_ (LI.anFiles answered) $ \(p, t) -> writeText ws p t
+                                  t2 <- getMonotonicTime
+                                  rtErr rt ("init-language: survey " <> secs (t1 - t0) <> ", errand " <> secs (t2 - t1) <> ", repair no\n")
+                                  let written = map (T.pack . fst) (LI.anFiles answered)
+                                  emit rt fmt
+                                    (object ["written" .= written, "grammar" .= object ["git" .= url, "rev" .= sha], "rows" .= ([] :: [Value]), "repaired" .= False])
+                                    (T.unlines ([proposal] ++ ["wrote " <> w | w <- written]))
+                                  pure ExitSuccess
+  where
+    rowsJson rows = case doctorJson rows of
+      Object o | Just v <- KM.lookup "checks" o -> v
+      v -> v
+    rowLine c = markOf (checkStatus c) <> " " <> checkName c <> " — " <> checkDetail c <> maybe "" ("\n  fix: " <>) (checkFix c)
+    markOf = \case Ok -> "✓" :: Text; Warn -> "!"; Bad -> "✗"
+    failureLine = \case
+      FetchFailed why -> why
+      NeedsCompiler why -> "needs a C compiler: " <> why
+      BuildFailed why -> "building failed: " <> why
+      LoadFailed why -> "loading failed: " <> why
+      AbiMismatch n _ -> "ABI " <> T.pack (show n) <> " is not one this olifant reads"
+      NoSource -> "no source"
+    secs t = T.pack (showFFloat (Just 1) t "") <> " s"
+
+-- | The grammar checkout's @queries/*.scm@ (beside the grammar's folder in a
+-- monorepo, else at the checkout's root) and its licence, read from disk.
+upstreamOf :: Text -> Text -> Maybe FilePath -> Maybe FilePath -> IO LI.Upstream
+upstreamOf url sha checkout path = case checkout of
+  Nothing -> pure (LI.Upstream label [] Nothing)
+  Just dir -> do
+    let candidates = [dir </> p </> "queries" | Just p <- [path]] ++ [dir </> "queries"]
+    found <- filterM doesDirectoryExist candidates
+    queries <- case found of
+      q : _ -> do
+        names <- sort . filter ((== ".scm") . reverse . take 4 . reverse) <$> listDirectory q
+        mapM (\n -> (n,) <$> readUtf8 (q </> n)) names
+      [] -> pure []
+    tops <- sort <$> listDirectory dir
+    licence <- case [f | f <- tops, "LICENSE" `T.isPrefixOf` T.toUpper (T.pack f)] of
+      f : _ -> Just . (f,) <$> readUtf8 (dir </> f)
+      [] -> pure Nothing
+    pure (LI.Upstream label queries licence)
+  where
+    label = url <> " @" <> T.take 7 sha
+    readUtf8 f = TE.decodeUtf8With lenientDecode <$> BS.readFile f
 
 -- | The model that fills holes in a `gen` (spec §6.4): `--model`, else
 -- the config's `default`; none with `--no-fill`.

@@ -99,6 +99,14 @@ is today passes. A project already migrating is refused: `error: already migrati
 [migrate] in .olifant/config.toml`. `olifant init` with neither `--pack PACK NAME` nor
 `--migrate` is a usage error.
 
+### A language olifant does not ship: `olifant init --language`
+
+`olifant init --language NAME [--yes] [--grammar URL] [--model NAME] [--plan]`, in an existing
+project, writes `.olifant/languages/NAME.toml`, its test toolchain and the grammar's missing
+queries from one model errand, after asking before it fetches and builds the grammar repository
+the model proposes. [Chapter 9](09-packs-and-language-adapters.md#adding-a-language-init---language)
+has the steps.
+
 ## What does it need? `olifant show`
 
 ```

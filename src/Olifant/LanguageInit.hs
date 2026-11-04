@@ -22,19 +22,32 @@ module Olifant.LanguageInit
   , toolchainFile
   , toolchainName
   , sourcesFile
+  , pinText
+  , withPin
+  , initHeader
+  , ErrandInput (..)
+  , Answered (..)
+  , checkAnswers
+  , errandCore
+  , shippedFor
   ) where
 
 import Data.Char (isAlphaNum)
+import Data.Map.Strict (Map)
+import Data.Map.Strict qualified as M
 import Data.List (nub, sort, sortOn)
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
-import Olifant.Fill (FillHole (..), FillRequest (..), Stance (..))
+import Olifant.Doctor (Check (..), Status (..))
+import Olifant.Fill (FillHole (..), FillRequest (..), Filler (..), Stance (..))
+import Olifant.Language (Grammar (..), GrammarSource (..), Language (..), Layer (..), languageFromLayers, queriesFor, queryError)
+import Olifant.Language.Presets (overPresets, presetsFrom, shippedPresets)
 import Olifant.Glob (matchesGlob)
 import Olifant.Language.TreeSitter (readCaptures)
 import Olifant.Library (providersSection, shippedLanguages, shippedToolchains)
 import Olifant.Toml qualified as Toml
-import System.FilePath (splitDirectories)
+import System.FilePath (splitDirectories, (</>))
 
 -- | The survey's answer: the grammar's repository (and, in a monorepo, the
 -- folder and the name the loader reads), the globs of source and test files,
@@ -214,3 +227,118 @@ sourcesFile g grammar copied holes =
   T.unlines $
     ["# Tree-sitter queries for the " <> g <> " grammar (" <> grammar <> "), written by olifant init --language."]
       ++ sort ([T.pack f <> "  copied from " <> grammar <> " queries/" <> T.pack f | (f, _) <- copied] ++ [h <> ".scm  written by the model, compiled against the grammar" | h <- holes])
+
+-- | The first line of every file @init --language@ writes.
+initHeader :: Text
+initHeader = "# written by olifant init --language"
+
+-- | The pinned grammar as a language file's @grammar@ line: olifant's URL
+-- and revision, never the model's text.
+pinText :: Grammar -> Text
+pinText g = case grSource g of
+  Just (SourceGit url rev path) ->
+    "grammar = { git = " <> quoted url <> ", rev = " <> quoted rev <> maybe "" (\p -> ", path = " <> quoted (T.pack p)) path <> ", name = " <> quoted (grName g) <> " }"
+  _ -> "grammar = " <> quoted (grName g)
+  where
+    quoted t = "\"" <> T.concatMap (\c -> if c `elem` ['"', '\\'] then T.pack ['\\', c] else T.singleton c) t <> "\""
+
+-- | A language file's text with its top-level @grammar@ lines (before the
+-- first table header) dropped and the pin and 'initHeader' put first.
+withPin :: Text -> Text -> Text
+withPin pin text =
+  T.unlines ([initHeader, pin] ++ filter (not . grammarLine) top ++ rest)
+  where
+    (top, rest) = break isHeader (T.lines (unfence text))
+    isHeader l = "[" `T.isPrefixOf` T.stripStart l
+    grammarLine l = case T.stripPrefix "grammar" (T.stripStart l) of
+      Just after -> "=" `T.isPrefixOf` T.stripStart after
+      Nothing -> l == initHeader
+
+-- | What the errand needs once the grammar is loaded: the language, its
+-- pinned grammar and label, the grammar's node kinds, the checkout's
+-- queries and licence, the shipped query set by grammar name (production:
+-- 'shippedFor'), the test runners found on PATH, the sample's files, and
+-- the project folder (a layer's own folder).
+data ErrandInput = ErrandInput
+  { eiLanguage :: Text
+  , eiGrammar :: Grammar
+  , eiKinds :: [Text]
+  , eiUpstream :: Upstream
+  , eiShipped :: Text -> [(FilePath, Text)]
+  , eiTools :: [Text]
+  , eiSample :: [(FilePath, Text)]
+  , eiProjectDir :: FilePath
+  }
+
+-- | The query set olifant ships for a grammar.
+shippedFor :: Text -> [(FilePath, Text)]
+shippedFor = queriesFor
+
+-- | A round's checked answers: the files to write (path under the project,
+-- text) and the rows that failed (a file that does not load, a query that
+-- does not compile, a hole with no answer).
+data Answered = Answered {anFiles :: [(FilePath, Text)], anFailing :: [Check]}
+  deriving stock (Eq, Show)
+
+-- | The answers checked before anything is written (by hole name, with
+-- the round's suffix: "" or "_repair"): the language must load as a project
+-- layer over the toolchain answered (its @grammar@ replaced by the pin), the
+-- toolchain must read as a preset, each query must compile against the
+-- grammar. Only the holes asked are read.
+checkAnswers :: ErrandInput -> [Text] -> Text -> Map Text Text -> Answered
+checkAnswers ei asked suffix answers =
+  Answered (concat [fs | Right fs <- results]) [c | Left c <- results]
+  where
+    l = eiLanguage ei
+    g = eiGrammar ei
+    answer h = M.lookup (h <> suffix) answers
+    results = map one asked
+    noAnswer h = Left (Check (l <> ": " <> h) Bad ("the model gave no `" <> h <> suffix <> "`") Nothing)
+    doesNotLoad h why = Left (Check (l <> ": " <> h) Bad ("does not load: " <> why) (Just "regenerate the key or supply a provider (see chapter 9, Providers)"))
+    toolchainText = fmap (\t -> T.unlines [initHeader] <> unfence t) (answer "toolchain")
+    presets = case toolchainText of
+      Just t | Right p <- presetsFrom "project" [(toolchainName l, t)] -> overPresets shippedPresets p
+      _ -> shippedPresets
+    one = \case
+      "language" -> case answer "language" of
+        Nothing -> noAnswer "language"
+        Just t ->
+          let text = withPin (pinText g) t
+           in case Toml.parseToml text >>= \top -> languageFromLayers presets l [Layer "project" (Just (eiProjectDir ei)) top] of
+                Left why -> doesNotLoad "language" why
+                Right lang
+                  | langGrammar lang /= g -> doesNotLoad "language" "its grammar is not the pinned one"
+                  | otherwise -> Right [(languageFile l, text)]
+      "toolchain" -> case toolchainText of
+        Nothing -> noAnswer "toolchain"
+        Just t -> case presetsFrom "project" [(toolchainName l, t)] of
+          Left why -> doesNotLoad "toolchain" why
+          Right _ -> Right [(toolchainFile l, t)]
+      h -> case answer h of
+        Nothing -> noAnswer h
+        Just t ->
+          let file = T.unpack h <> ".scm"
+              text = unfence t
+           in case queryError g [(file, text)] of
+                Just why -> Left (Check (l <> ": queries") Bad (T.pack file <> ": " <> why) Nothing)
+                Nothing -> Right [(".olifant" </> "queries" </> T.unpack (grName g) </> file, text)]
+
+-- | The errand after the gate: the query files to write (copied or asked),
+-- one request for the language, its toolchain and the asked queries, and
+-- the answers checked. The request comes back for a repair round.
+errandCore :: Monad m => Filler m -> ErrandInput -> m (Either Text (FillRequest, Answered))
+errandCore filler ei = do
+  let g = eiGrammar ei
+      up = eiUpstream ei
+      (copied, queryHoles) = queriesToWrite (grName g) (eiShipped ei (grName g)) up
+      captures = nub (concatMap (captureNamesIn . snd) (upQueries up))
+      req = errandRequest (eiLanguage ei) (upLabel up) (eiKinds ei) captures (eiTools ei) (eiSample ei) queryHoles
+      dir = ".olifant" </> "queries" </> T.unpack (grName g)
+      queryFiles =
+        [(dir </> f, t) | (f, t) <- copied]
+          ++ [(dir </> "SOURCES", sourcesFile (grName g) (upLabel up) copied queryHoles) | not (null copied && null queryHoles)]
+  runFill filler req >>= \case
+    Left why -> pure (Left why)
+    Right answers -> do
+      let checked = checkAnswers ei (map fhName (frHoles req)) "" answers
+      pure (Right (req, checked {anFiles = anFiles checked ++ queryFiles}))

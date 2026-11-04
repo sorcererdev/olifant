@@ -1,4 +1,4 @@
-module Olifant.Language.GrammarSpec (spec) where
+module Olifant.Language.GrammarSpec (spec, fixtureRepo) where
 
 import Control.Concurrent.Async (mapConcurrently)
 import Control.Monad (forM_)

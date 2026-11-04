@@ -10,6 +10,7 @@ module Olifant.Doctor
   , DoctorPorts (..)
   , doctor
   , grammarRow
+  , grammarCheck
   ) where
 
 import Data.Maybe (fromMaybe)
@@ -216,16 +217,20 @@ modelSnippet =
 -- | `LANGUAGE: grammar`: the grammar loaded (its label, ABI and library;
 -- the build's seconds when this run built it), or why not and the fix.
 grammarRow :: Language -> Either GrammarFailure GrammarInfo -> Check
-grammarRow lang = \case
+grammarRow lang = grammarCheck (langName lang) (grName (langGrammar lang))
+
+-- | 'grammarRow' for a language by name and its grammar's name: @init
+-- --language@'s gate shows it before any language file exists.
+grammarCheck :: Text -> Text -> Either GrammarFailure GrammarInfo -> Check
+grammarCheck lname g = \case
   Right gi -> Check name Ok (giLabel gi <> ", ABI " <> tshow (giAbi gi) <> "; " <> T.pack (giLibrary gi) <> maybe "" (\t -> "; built now in " <> T.pack (showFFloat (Just 1) t "") <> " s") (giBuiltNow gi)) Nothing
   Left f -> Check name (if f == NoSource then Warn else Bad) (failureDetail g f) (fixFor f)
   where
-    name = langName lang <> ": grammar"
-    g = grName (langGrammar lang)
+    name = lname <> ": grammar"
     tshow :: Show a => a -> Text
     tshow = T.pack . show
     fixFor = \case
-      NoSource -> Just ("add grammar = { git = URL, rev = SHA } (or { source = \"dir\" }) to .olifant/languages/" <> langName lang <> ".toml")
+      NoSource -> Just ("add grammar = { git = URL, rev = SHA } (or { source = \"dir\" }) to .olifant/languages/" <> lname <> ".toml")
       NeedsCompiler _ -> Just (if os == "darwin" then "xcode-select --install" else "install a C compiler (cc)")
       FetchFailed _ -> Just ("check the network, or put the sources under $OLIFANT_GRAMMAR_SOURCES/" <> g <> "/")
       AbiMismatch _ _ -> Just "pin a rev generated with tree-sitter ≤ 0.27, or update olifant"

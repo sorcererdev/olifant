@@ -1,0 +1,6 @@
+grammar = "@REMOTE@"
+name = "elm"
+files = ["**/*.elm"]
+tests = ["tests/**/*.elm"]
+manifest = "elm.json"
+runners = ["elm-test"]

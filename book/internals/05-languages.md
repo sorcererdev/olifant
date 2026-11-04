@@ -674,6 +674,54 @@ the rows, so it changes too.
 - **tests:** with `epRun`, the first test file runs: "ran uv on src/a__test.py, 3 results parsed
   (junit-xml)", or the run's broken reason.
 
+## `init --language`: the errand
+
+`olifant init --language NAME` writes a language the project's own way, from one model errand,
+and checks it before anything lands. The pure parts live in `Olifant.LanguageInit`
+(`src/Olifant/LanguageInit.hs`); the IO edge is `runInitLanguage` in `Cli.hs`, reached through
+`runCommand` (unlike `init --pack`, it needs the project's catalog). `Cli/Options.hs`'s `initP`
+parses the third form into `InitLanguageCmd name model grammar yes plan fills`.
+
+The flow, each step's failure printing one line and the row it came from (exit 1):
+
+1. **Refusals.** A shipped language (`Library.shippedLanguages`) is not regenerated; an existing
+   `LanguageInit.languageFile`/`toolchainFile` is not overwritten; no model (`App.modelFiller`,
+   or `--fills` through `Fill.replayFiller`, the specs' stub) stops with the ruling's sentence.
+2. **Survey.** `surveyRequest` asks one hole, `survey`, with `FileStance` (the third `Stance`;
+   `Model.fileSystemPrompt` says each hole is a whole file). Its inputs are the language, the
+   top-level listing and the first 200 paths of `App.projectListing` (git's tracked files, else
+   the walk doctor's evidence uses). `parseSurvey` reads the TOML (one markdown fence is
+   stripped by `unfence`; any other text is an error) into `Survey`.
+3. **Pin.** `Grammar.remoteHead` gives the repository's `HEAD` as a full SHA. The proposal line
+   is printed and, unless `--yes` or `--grammar`, asked about on a terminal (`rtReadStdin`'s
+   first line); with no terminal it stops before any fetch.
+4. **Gate.** `loadGrammarWith` on `Grammar name (SourceGit url sha path)`. A `Left` prints
+   `Doctor.grammarCheck` (the `grammarRow` of a language by name, before any language file
+   exists) and stops: no node kinds or captures are read from a grammar that did not load.
+5. **Errand.** `upstreamOf` (`Cli.hs`) reads the checkout (`Grammar.checkoutOf`)'s
+   `queries/*.scm` and `LICENSE*` into `Upstream`. The survey's runners are probed with
+   `dpFind`; `sampleFor` picks two sources, two tests and the manifest (shallowest first), each
+   cut to 120 lines (`cutTo`). `errandCore` takes an `ErrandInput` (the loaded grammar's
+   `ldNodeTypes`, the upstream files, `shippedFor`, the tools, the sample) and a `Filler`:
+   `queriesToWrite` decides which query files are copied and which are holes, `errandRequest`
+   builds the request (holes `language`, `toolchain` and the query holes; the shipped
+   `rust.toml`/`cargo-test.toml` as exemplars in `frContext`; `providersSection`, the user
+   chapter's providers section embedded by `Library`, as the `protocol` input), and
+   `checkAnswers` checks the reply.
+6. **Check.** `checkAnswers` replaces the language's top-level `grammar` lines with `pinText`
+   (`withPin`, which also puts `initHeader` first), loads it with `languageFromLayers` over the
+   shipped presets and the toolchain answered (`presetsFrom`), and compiles each query with
+   `queryError`. A file that fails is a `Check` row (`<l>: language` "does not load: …",
+   `<l>: queries` "<file>: …"), never a write.
+7. **Write.** Only when every answer passes, each file goes through the project's workspace
+   (`within rtProjectDir`). A project file is enough for the catalog to load the language
+   (chapter 9's "A language is the project's when…"), so `config.toml` is not touched.
+
+`providersSection` cuts user chapter 9 from its `### Providers` heading to the next heading: a
+rename of that heading breaks `LanguageInitSpec`. The specs (`CliSpec`'s "init --language") use
+the elm pack's grammar in a local git repository by `file://` (`GrammarSpec.fixtureRepo`) under the
+name `elmish`, so no spec reaches the network.
+
 ## The rule, and the specs that hold it
 
 The design rule is **no language branches in the engine**: a language's name appears in messages,

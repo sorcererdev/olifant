@@ -1,0 +1,14 @@
+# Elm, by another name (the init --language specs).
+files = ["**/*.elm"]
+comment = "--"
+grammar = { git = "https://example.invalid/tree-sitter-elm", rev = "main" }
+unit_words = "a top-level function or type name (Name)"
+ignore = ["elm-stuff"]
+
+[unit]
+name = ["^type[[:space:]]+alias[[:space:]]+([[:alnum:]_]+)", "^type[[:space:]]+([[:alnum:]_]+)", "^[[:space:]]*([[:alpha:]_][[:alnum:]_']*)"]
+
+[test]
+preset = "elmish-test"
+tests_for = "tests/{= stem =}Test.elm"
+unit = ['^[[:space:]]*,?[[:space:]]*test[[:space:]]+"([^"]*)"']

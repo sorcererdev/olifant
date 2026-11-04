@@ -8,7 +8,7 @@
 6. [Queries, `one_of` and `unless`](06-queries-and-choices.md)
 7. [Writing your own generator](07-writing-a-generator.md)
 8. [Composing generators: `+`, `--steps` and `[[uses]]`](08-composing-generators.md)
-9. [Packs and language adapters (Elm, Haskell, Rust and Python), presets, `[test]`](09-packs-and-language-adapters.md)
+9. [Packs and language adapters (Elm, Haskell, Rust and Python), presets, `[test]`, adding a language with `init --language`](09-packs-and-language-adapters.md)
 10. [Testing generators: snapshots and blessing](10-testing-generators.md)
 11. [Olifant and AI agents](11-olifant-and-agents.md)
 12. [Holes and models](12-holes-and-models.md)
