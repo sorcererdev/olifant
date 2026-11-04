@@ -260,12 +260,16 @@ remoteHead s url = case refusedUrl url of
             other -> Left ("not a full commit SHA: " <> T.intercalate ", " other)
 
 -- | Why a grammar URL is refused before git runs: a remote helper
--- (@ext::@, @fd::@, any @<helper>::@) or an option-looking argument.
+-- (@ext::@, @fd::@, any @<helper>::@), an option-looking argument, or any
+-- form a language file's @git@ key does not take (the same four schemes and
+-- @user\@host:path@).
 refusedUrl :: Text -> Maybe Text
 refusedUrl url
   | "-" `T.isPrefixOf` url = Just ("refused: " <> url <> " looks like an option")
   | "::" `T.isInfixOf` T.takeWhile (/= '/') url = Just ("refused: " <> url <> " names a git remote helper")
-  | otherwise = Nothing
+  | any (`T.isPrefixOf` url) ["https://", "ssh://", "git://", "file://"] = Nothing
+  | "@" `T.isInfixOf` T.takeWhile (/= ':') url, ":" `T.isInfixOf` url = Nothing
+  | otherwise = Just ("refused: " <> url <> " is not an https://, ssh://, git:// or file:// URL (or user@host:path)")
 
 -- | git with the loader's safety: its own transports only (no remote
 -- helpers), no redirects, no hooks, symlinks as plain files, no prompt for

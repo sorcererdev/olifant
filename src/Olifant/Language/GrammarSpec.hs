@@ -155,6 +155,12 @@ spec = do
     remoteHead s {gsFind = noGit} "ext::sh -c touch% /tmp/pwned" >>= \case
       Left t -> T.unpack t `shouldSatisfy` ("refused" `isInfixOf`)
       Right h -> expectationFailure (T.unpack h)
+  it "a URL a language file could not name (http://, a bare path) is refused" $ do
+    s <- fresh "remote-head-http"
+    forM_ ["http://example.invalid/x", "/tmp/x"] $ \u ->
+      remoteHead s u >>= \case
+        Left t -> T.unpack t `shouldSatisfy` ("refused" `isInfixOf`)
+        Right h -> expectationFailure (T.unpack h)
   it "checkoutOf is the loader's checkout under the cache" $ do
     s <- fresh "checkout-of"
     let repo = gsCache s </> "repo"

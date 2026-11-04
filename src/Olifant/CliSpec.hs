@@ -9,7 +9,7 @@ import Data.Aeson (Value (..), decodeStrict)
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KM
 import Data.Foldable (toList)
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, isJust)
 import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
@@ -171,9 +171,10 @@ elmishFills remote = do
 
 -- | `olifant` in /w over FILES with the real grammar loader (doctor's
 -- grammar row too), git's tracked files being the project's, and a test
--- runner where every test passes.
-runInitLanguageIn :: [(FilePath, Text)] -> Bool -> [String] -> IO (ExitCode, Text, Text, Map FilePath Text)
-runInitLanguageIn files tty args = do
+-- runner where every test passes. A terminal answers its questions with
+-- the given line; Nothing is no terminal.
+runInitLanguageIn :: [(FilePath, Text)] -> Maybe Text -> [String] -> IO (ExitCode, Text, Text, Map FilePath Text)
+runInitLanguageIn files terminal args = do
   (root, snapshot) <- memoryWorkspace files
   out <- newIORef ""
   err <- newIORef ""
@@ -183,7 +184,7 @@ runInitLanguageIn files tty args = do
     runCli
       Runtime
         { rtRoot = root, rtProjectDir = "/w", rtUserConfigDir = Nothing, rtHomeDir = Nothing
-        , rtReadStdin = pure "", rtNow = pure fixedNow, rtStdoutIsTty = tty
+        , rtReadStdin = pure "", rtReadLine = pure (fromMaybe "" terminal), rtNow = pure fixedNow, rtStdoutIsTty = isJust terminal
         , rtOut = \t -> modifyIORef' out (<> t), rtErr = \t -> modifyIORef' err (<> t)
         , rtSyntax = astGrepSyntax (tmp </> "olifant-test-cache"), rtChecker = const noChecker
         , rtGitChanged = \_ _ -> pure (Right ([], []))
@@ -199,7 +200,7 @@ runInitLanguageIn files tty args = do
 -- apply), the model a fills.toml.
 initLanguageSpec :: Spec
 initLanguageSpec = describe "init --language" $ do
-  let run files = runInitLanguageIn files False
+  let run files = runInitLanguageIn files Nothing
       args extra = ["init", "--language", "elmish", "--fills", "fills.toml", "--human"] ++ extra
   it "(a) writes the language and its toolchain, the grammar pinned by olifant" $ do
     (remote, sha) <- elmRemote "a"
@@ -228,6 +229,17 @@ initLanguageSpec = describe "init --language" $ do
     M.keys written `shouldBe` M.keys (M.fromList files)
     tmp <- getTemporaryDirectory
     doesDirectoryExist (tmp </> "olifant-test-cache" </> "grammars" </> "src" </> ("elm-" <> T.unpack (T.take 7 sha))) `shouldReturn` False
+  it "(c) on a terminal, y fetches and builds; any other answer stops" $ do
+    (remote, sha) <- elmRemote "c-tty"
+    files <- elmishProject =<< elmishFills remote
+    (no, _, errNo, writtenNo) <- runInitLanguageIn files (Just "") (args [])
+    no `shouldBe` ExitFailure 1
+    errNo `shouldSatisfy` T.isInfixOf "fetch and build it? [y/N]"
+    M.keys writtenNo `shouldBe` M.keys (M.fromList files)
+    (yes, out, err, written) <- runInitLanguageIn files (Just "y") (args [])
+    (yes, out <> err) `shouldBe` (ExitSuccess, out <> err)
+    M.member "/w/.olifant/languages/elmish.toml" written `shouldBe` True
+    T.length sha `shouldBe` 40
   it "(d) an existing project layer is not overwritten" $ do
     files <- elmishProject =<< elmishFills "file:///nonexistent"
     (code, out, err, _) <- run (("/w/.olifant/languages/elmish.toml", "files = []\n") : files) (args ["--yes"])
@@ -489,7 +501,7 @@ runInBaseFilesGit git syntax base baseFiles dir stdinText files tty args = do
         , rtProjectDir = dir
         , rtUserConfigDir = Nothing
         , rtHomeDir = Nothing
-        , rtReadStdin = pure stdinText
+        , rtReadStdin = pure stdinText, rtReadLine = pure ""
         , rtNow = pure fixedNow
         , rtStdoutIsTty = tty
         , rtOut = \t -> modifyIORef' out (<> t)
@@ -518,7 +530,7 @@ runInitWith committed files args = do
     runCli
       Runtime
         { rtRoot = root, rtProjectDir = "/w", rtUserConfigDir = Just "/u", rtHomeDir = Nothing
-        , rtReadStdin = pure "", rtNow = pure fixedNow, rtStdoutIsTty = False
+        , rtReadStdin = pure "", rtReadLine = pure "", rtNow = pure fixedNow, rtStdoutIsTty = False
         , rtOut = \t -> modifyIORef' out (<> t), rtErr = \t -> modifyIORef' err (<> t)
         , rtSyntax = noSyntax, rtChecker = const noChecker
         , rtGitChanged = \_ _ -> pure (Right ([], []))

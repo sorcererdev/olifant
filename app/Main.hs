@@ -1,7 +1,7 @@
 module Main (main) where
 
 import Olifant.Process (gitIn, gitBaseFiles, gitBaseText, gitStateStamp, gitTracked)
-import Control.Exception (SomeException, displayException, try)
+import Control.Exception (IOException, SomeException, displayException, try)
 import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
@@ -48,6 +48,7 @@ main = do
         , rtUserConfigDir = Just userConfigDir
         , rtHomeDir = Just home
         , rtReadStdin = readStdin
+        , rtReadLine = either (\(_ :: IOException) -> "") id <$> try TIO.getLine
         , rtNow = getCurrentTime
         , rtStdoutIsTty = tty
         , rtGitInit = gitInit

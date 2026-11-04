@@ -308,8 +308,8 @@ anchor phrases from community queries (design 4b §A).
     `git checkout FETCH_HEAD` and a `rev-parse` check, in an aside folder renamed on success.
     Git runs with its own transports only (`protocol.allow=never` but https, ssh, git and file),
     `http.followRedirects=false`, no hooks, `core.symlinks=false` and no credential prompt
-    (`runGit`), and `refusedUrl` turns away a remote helper's URL (`ext::…`) or an
-    option-looking one before git runs. `remoteHead` (`git ls-remote URL HEAD`, the same
+    (`runGit`), and `refusedUrl` turns away a remote helper's URL (`ext::…`), an
+    option-looking one, or any form a language file's `git` key does not take, before git runs. `remoteHead` (`git ls-remote URL HEAD`, the same
     checks) gives a remote's HEAD as a full 40-hex SHA, and `checkoutOf` names a git source's
     checkout folder: `init --language` pins a model's proposed repository with the first and
     reads upstream `queries/` through the second.
@@ -693,8 +693,8 @@ The flow, each step's failure printing one line and the row it came from (exit 1
    the walk doctor's evidence uses). `parseSurvey` reads the TOML (one markdown fence is
    stripped by `unfence`; any other text is an error) into `Survey`.
 3. **Pin.** `Grammar.remoteHead` gives the repository's `HEAD` as a full SHA. The proposal line
-   is printed and, unless `--yes` or `--grammar`, asked about on a terminal (`rtReadStdin`'s
-   first line); with no terminal it stops before any fetch.
+   is printed and, unless `--yes` or `--grammar`, asked about on a terminal (`rtReadLine`, one
+   line of stdin; `Main` reads it with `getLine`); with no terminal it stops before any fetch.
 4. **Gate.** `loadGrammarWith` on `Grammar name (SourceGit url sha path)`. A `Left` prints
    `Doctor.grammarCheck` (the `grammarRow` of a language by name, before any language file
    exists) and stops: no node kinds or captures are read from a grammar that did not load.

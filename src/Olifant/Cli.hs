@@ -72,6 +72,8 @@ data Runtime = Runtime
   , rtUserConfigDir :: Maybe FilePath
   , rtHomeDir :: Maybe FilePath
   , rtReadStdin :: IO Text
+  , -- | one line of stdin, for a yes/no question on a terminal ("" at its end)
+    rtReadLine :: IO Text
   , rtNow :: IO UTCTime
   , rtStdoutIsTty :: Bool
   , rtOut :: Text -> IO ()
@@ -1028,7 +1030,7 @@ runInitLanguage rt cwd fmt cat l modelArg grammarArg yes plan fillsArg = do
                         if rtStdoutIsTty rt
                           then do
                             rtErr rt (proposal <> "\nfetch and build it? [y/N] ")
-                            answer <- T.toLower . T.strip . T.takeWhile (/= '\n') <$> rtReadStdin rt
+                            answer <- T.toLower . T.strip <$> rtReadLine rt
                             pure (answer `elem` ["y", "yes"])
                           else pure False
                   if not go
