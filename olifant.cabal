@@ -107,6 +107,7 @@ library
     Olifant.Language.TestFormats
     Olifant.Language.TestUnits
     Olifant.Language.TreeSitter
+    Olifant.LanguageInit
     Olifant.Library
     Olifant.Lsp
     Olifant.Migration
@@ -292,6 +293,8 @@ test-suite spec
     Olifant.Language.TestUnitsSpec
     Olifant.Language.TreeSitter
     Olifant.Language.TreeSitterSpec
+    Olifant.LanguageInit
+    Olifant.LanguageInitSpec
     Olifant.LanguageSpec
     Olifant.Library
     Olifant.Lsp

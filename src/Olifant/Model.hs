@@ -15,6 +15,7 @@ module Olifant.Model
   , backendModel
   , systemPrompt
   , conjureSystemPrompt
+  , fileSystemPrompt
   , userPrompt
   , requestBody
   , decodeFills
@@ -154,6 +155,18 @@ conjureSystemPrompt =
       , "do not handle cases no test names. If the simplest passing code is a constant, write the constant."
       ]
 
+-- | The prompt for @init --language@: each hole is a whole file.
+fileSystemPrompt :: Text
+fileSystemPrompt =
+  T.unlines
+    [ "You write the configuration files olifant reads for a language. Each hole is a whole file, marked \10214name\10215."
+    , "Reply with one block per hole, nothing else:"
+    , "<fill name=\"NAME\">"
+    , "TEXT"
+    , "</fill>"
+    , "TEXT is the file's text only (no escaping): no explanations, no markdown, no fences."
+    ]
+
 userPrompt :: FillRequest -> Text
 userPrompt req =
   T.unlines $
@@ -189,7 +202,7 @@ userPrompt req =
             ++ ["Fix it." <> (if fhImports h then " If it failed on a name that is not defined, add that name's import line first." else "")]
 
 requestBody :: Backend -> FillRequest -> Value
-requestBody b req = chatBody b (case frStance req of ConjureStance -> conjureSystemPrompt; FillStance -> systemPrompt) (userPrompt req)
+requestBody b req = chatBody b (case frStance req of ConjureStance -> conjureSystemPrompt; FillStance -> systemPrompt; FileStance -> fileSystemPrompt) (userPrompt req)
 
 -- | A chat request: a system prompt and one user message.
 chatBody :: Backend -> Text -> Text -> Value
