@@ -5,10 +5,10 @@
 -- @library/toolchains@, one TOML file each.
 -- `embedDir` sees a newly added file only once this module recompiles:
 -- touch it after adding one.
-module Olifant.Library (shippedLanguages, shippedToolchains) where
+module Olifant.Library (shippedLanguages, shippedToolchains, providersSection) where
 
 import Data.ByteString (ByteString)
-import Data.FileEmbed (embedDir)
+import Data.FileEmbed (embedDir, embedFile)
 import Data.List (sortOn)
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -26,3 +26,17 @@ shippedToolchains = tomlFiles $(embedDir "library/toolchains")
 -- | The shipped languages: (language name, TOML source).
 shippedLanguages :: [(Text, Text)]
 shippedLanguages = tomlFiles $(embedDir "library/languages")
+
+-- | User chapter 9's @### Providers…@ section, up to the next heading of its
+-- level or above: the protocol @init --language@ shows the model. Renaming
+-- that heading breaks 'Olifant.LanguageInitSpec'.
+providersSection :: Text
+providersSection =
+  T.unlines (takeWhile (not . heading) (drop 1 from) `withFirst` from)
+  where
+    chapter = T.lines (TE.decodeUtf8 $(embedFile "book/user/09-packs-and-language-adapters.md"))
+    from = dropWhile (not . ("### Providers" `T.isPrefixOf`)) chapter
+    heading l = "### " `T.isPrefixOf` l || "## " `T.isPrefixOf` l
+    withFirst rest = \case
+      first : _ -> first : rest
+      [] -> []

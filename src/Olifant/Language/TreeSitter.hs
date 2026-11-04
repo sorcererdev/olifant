@@ -30,6 +30,7 @@ module Olifant.Language.TreeSitter
   , queriesFor
   , queriesOf
   , querySet
+  , readCaptures
   , shippedQueries
   , treeSitterAnchors
   ) where

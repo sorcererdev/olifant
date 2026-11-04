@@ -13,14 +13,26 @@ module Olifant.LanguageInit
   , sampleFor
   , cutTo
   , unfence
+  , providersSection
+  , captureNamesIn
+  , Upstream (..)
+  , queriesToWrite
+  , errandRequest
+  , languageFile
+  , toolchainFile
+  , toolchainName
+  , sourcesFile
   ) where
 
-import Data.List (nub, sortOn)
+import Data.Char (isAlphaNum)
+import Data.List (nub, sort, sortOn)
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Fill (FillHole (..), FillRequest (..), Stance (..))
 import Olifant.Glob (matchesGlob)
+import Olifant.Language.TreeSitter (readCaptures)
+import Olifant.Library (providersSection, shippedLanguages, shippedToolchains)
 import Olifant.Toml qualified as Toml
 import System.FilePath (splitDirectories)
 
@@ -112,3 +124,93 @@ sampleFor sv tracked = (take 2 sources, take 2 tests, manifest)
 -- | The first N lines.
 cutTo :: Int -> Text -> Text
 cutTo n = T.unlines . take n . T.lines
+
+-- | The capture names a query uses (@\@definition.function@ gives
+-- @definition.function@), in order, each once.
+captureNamesIn :: Text -> [Text]
+captureNamesIn q = nub [T.takeWhile capChar rest | chunk <- drop 1 (T.splitOn "@" (stripComments q)), let rest = chunk, not (T.null (T.takeWhile capChar rest))]
+  where
+    capChar c = isAlphaNum c || c `elem` ("._-" :: String)
+    stripComments = T.unlines . map (fst . T.breakOn ";") . T.lines
+
+-- | What the grammar's checkout holds for the errand: its label (URL @SHA),
+-- its @queries/*.scm@, and its licence (file name, text).
+data Upstream = Upstream {upLabel :: Text, upQueries :: [(FilePath, Text)], upLicence :: Maybe (FilePath, Text)}
+  deriving stock (Eq, Show)
+
+-- | The query files a grammar needs, given its shipped set: none when olifant
+-- ships some; else upstream's @tags.scm@ copied (a header line naming where
+-- it is from and its licence) or a @tags@ hole, and @imports@ and
+-- @textobjects@ holes, sorted.
+queriesToWrite :: Text -> [(FilePath, Text)] -> Upstream -> ([(FilePath, Text)], [Text])
+queriesToWrite _ shipped up
+  | not (null shipped) = ([], [])
+  | otherwise = case lookup "tags.scm" (upQueries up) of
+      Just tags -> ([("tags.scm", header <> "\n" <> tags)], ["imports", "textobjects"])
+      Nothing -> ([], ["imports", "tags", "textobjects"])
+  where
+    header = "; from " <> upLabel up <> maybe "" licence (upLicence up)
+    licence (f, t) = " (" <> T.pack f <> case filter (not . T.null) (map T.strip (T.lines t)) of
+      l : _ -> ": " <> l <> ")"
+      [] -> ")"
+
+-- | The toolchain preset a new language's tests run with: @<language>-test@.
+toolchainName :: Text -> Text
+toolchainName l = l <> "-test"
+
+-- | Where the errand's files go, under the project.
+languageFile, toolchainFile :: Text -> FilePath
+languageFile l = ".olifant/languages/" <> T.unpack l <> ".toml"
+toolchainFile l = ".olifant/toolchains/" <> T.unpack (toolchainName l) <> ".toml"
+
+-- | The errand: one hole per file (@language@, @toolchain@, and each query
+-- file to write), the shipped Rust pair as exemplars, the sample's files,
+-- and the grammar's facts (its node kinds, the captures upstream uses and
+-- the ones olifant reads), the test runners found on PATH and the
+-- providers' protocol.
+errandRequest :: Text -> Text -> [Text] -> [Text] -> [Text] -> [(FilePath, Text)] -> [Text] -> FillRequest
+errandRequest language grammar kinds captures tools sample queryHoles =
+  FillRequest
+    ([fileHole "language" (languageFile language) languageInstruction, fileHole "toolchain" (toolchainFile language) toolchainInstruction] ++ map queryHole queryHoles)
+    [ ("language", language)
+    , ("grammar", grammar)
+    , ("node kinds", T.intercalate ", " kinds)
+    , ("captures", T.intercalate ", " captures)
+    , ("captures olifant reads", T.intercalate ", " (readCaptures ++ ["definition.<kind>"]))
+    , ("tools on PATH", T.intercalate "\n" tools)
+    , ("protocol", providersSection)
+    ]
+    ( [("exemplar: rust.toml", t) | Just t <- [lookup "rust" shippedLanguages]]
+        ++ [("exemplar: cargo-test.toml", t) | Just t <- [lookup "cargo-test" shippedToolchains]]
+        ++ sample
+    )
+    FileStance
+  where
+    fileHole name file instruction = FillHole name "file" instruction file ("\10214" <> name <> "\10215") [] False Nothing
+    queryHole h = fileHole h (".olifant/queries/" <> T.unpack h <> ".scm") (queryInstruction h)
+    languageInstruction =
+      T.unlines
+        [ "The language file for " <> language <> ", in the exemplar rust.toml's form: its keys, read from the sample files."
+        , "Its tests: [test] preset = \"" <> toolchainName language <> "\" (the toolchain hole), tests_for, unit and assertion regexes (POSIX classes, as the exemplar)."
+        , "Write grammar = { git = \"URL\", rev = \"REV\" } as given; olifant replaces it with its pin."
+        , "Leave out a key the sample does not show you how to answer."
+        ]
+    toolchainInstruction =
+      T.unlines
+        [ "The test preset " <> toolchainName language <> ", in the exemplar cargo-test.toml's form: [test] command, format, root, tests_for, install."
+        , "Run tests only with a tool listed on PATH; a format the protocol names (junit reads {= report =})."
+        ]
+    queryInstruction = \case
+      "tags" -> "tree-sitter queries (tags.scm) over the node kinds given: each definition @definition.<kind> (function, method, class, …) with its name @name."
+      "imports" -> "tree-sitter queries (imports.scm) over the node kinds given: each import declaration @import."
+      "textobjects" -> "tree-sitter queries (textobjects.scm) over the node kinds given: @function.outer, @function.inner, @class.outer, @class.inner, @parameter.inner and @call.outer."
+      h -> "tree-sitter queries (" <> h <> ".scm) over the node kinds given."
+
+-- | The @SOURCES@ file beside a project's generated queries: each file and
+-- where it came from (copied from the grammar's repository, or written by
+-- the model), as @library/queries/<g>/SOURCES@ does.
+sourcesFile :: Text -> Text -> [(FilePath, Text)] -> [Text] -> Text
+sourcesFile g grammar copied holes =
+  T.unlines $
+    ["# Tree-sitter queries for the " <> g <> " grammar (" <> grammar <> "), written by olifant init --language."]
+      ++ sort ([T.pack f <> "  copied from " <> grammar <> " queries/" <> T.pack f | (f, _) <- copied] ++ [h <> ".scm  written by the model, compiled against the grammar" | h <- holes])

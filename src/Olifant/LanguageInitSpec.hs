@@ -3,6 +3,9 @@
 module Olifant.LanguageInitSpec (spec) where
 
 import Data.Text qualified as T
+import Data.Text.IO qualified as TIO
+import Olifant.Language.TreeSitter (queriesFor)
+import Olifant.Library (shippedLanguages, shippedToolchains)
 import Olifant.Fill (FillHole (..), FillRequest (..), Stance (..))
 import Olifant.LanguageInit
 import Test.Hspec
@@ -43,3 +46,37 @@ spec = describe "Olifant.LanguageInit" $ do
     let req = surveyRequest "go" [show n <> ".go" | n <- [1 :: Int .. 300]]
         Just paths = lookup "tracked files" (frInputs req)
     length (T.lines paths) `shouldBe` 200
+  describe "the errand" $ do
+    let upstream = Upstream "https://example.invalid/tree-sitter-x @0123456" [("tags.scm", "(function_declaration name: (identifier) @name) @definition.function\n")] (Just ("LICENSE", "The MIT License (MIT)\n\nCopyright\n"))
+    it "providersSection is user 09's providers section, alone" $ do
+      providersSection `shouldSatisfy` T.isPrefixOf "### Providers"
+      providersSection `shouldNotSatisfy` T.isInfixOf "### Hole kinds"
+    it "captureNamesIn lists a query's capture names, in order, once each" $ do
+      tags <- TIO.readFile "library/queries/rust/tags.scm"
+      captureNamesIn tags `shouldSatisfy` (\cs -> "definition.function" `elem` cs && "name" `elem` cs)
+      captureNamesIn "(a) @x (b) @y.z (c) @x" `shouldBe` ["x", "y.z"]
+    it "queriesToWrite: a grammar with shipped queries needs none" $
+      queriesToWrite "elm" (queriesFor "elm") upstream `shouldBe` ([], [])
+    it "queriesToWrite: upstream tags.scm is copied with its header; the rest are holes" $ do
+      let (copied, holes) = queriesToWrite "x" [] upstream
+      map fst copied `shouldBe` ["tags.scm"]
+      concatMap (take 1 . T.lines . snd) copied `shouldBe` ["; from https://example.invalid/tree-sitter-x @0123456 (LICENSE: The MIT License (MIT))"]
+      holes `shouldBe` ["imports", "textobjects"]
+    it "queriesToWrite: with no upstream queries, all three are holes" $
+      snd (queriesToWrite "x" [] upstream {upQueries = []}) `shouldBe` ["imports", "tags", "textobjects"]
+    it "errandRequest: the files as holes, the exemplar pair and the protocol" $ do
+      let req = errandRequest "go" "tree-sitter-go @2346a3a" ["function_declaration"] ["definition.function"] ["go: /usr/bin/go"] [("cmd/main.go", "package main\n")] ["imports", "textobjects"]
+      map fhName (frHoles req) `shouldBe` ["language", "toolchain", "imports", "textobjects"]
+      frStance req `shouldBe` FileStance
+      lookup "exemplar: rust.toml" (frContext req) `shouldBe` lookup "rust" shippedLanguages
+      lookup "exemplar: cargo-test.toml" (frContext req) `shouldBe` lookup "cargo-test" shippedToolchains
+      lookup "cmd/main.go" (frContext req) `shouldBe` Just "package main\n"
+      lookup "protocol" (frInputs req) `shouldBe` Just providersSection
+      lookup "node kinds" (frInputs req) `shouldBe` Just "function_declaration"
+      lookup "captures olifant reads" (frInputs req) `shouldSatisfy` maybe False ("function.outer" `T.isInfixOf`)
+    it "sourcesFile says which file was copied and which the model wrote" $ do
+      let (copied, holes) = queriesToWrite "x" [] upstream
+          t = sourcesFile "x" "https://example.invalid/tree-sitter-x @0123456" copied holes
+      t `shouldSatisfy` T.isInfixOf "tags.scm"
+      t `shouldSatisfy` T.isInfixOf "imports.scm"
+      t `shouldSatisfy` T.isInfixOf "written by the model"
