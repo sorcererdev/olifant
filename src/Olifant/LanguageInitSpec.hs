@@ -6,6 +6,7 @@ import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
 import Olifant.Language.TreeSitter (queriesFor)
 import Olifant.Library (shippedLanguages, shippedToolchains)
+import Olifant.Doctor (Check (..), Status (..))
 import Olifant.Fill (FillHole (..), FillRequest (..), Stance (..))
 import Olifant.LanguageInit
 import Test.Hspec
@@ -80,3 +81,31 @@ spec = describe "Olifant.LanguageInit" $ do
       t `shouldSatisfy` T.isInfixOf "tags.scm"
       t `shouldSatisfy` T.isInfixOf "imports.scm"
       t `shouldSatisfy` T.isInfixOf "written by the model"
+  describe "failingRows" $ do
+    let regenerate = Just "regenerate the key or supply a provider (see chapter 9, Providers)"
+        rows =
+          [ Check "go: units" Ok "3 found" Nothing
+          , Check "go: test units" Warn "0 found" regenerate
+          , Check "go: sibling tests" Warn "no [unit] annotation: only a declared [conjure.fake] and [conjure.constructor] are read" Nothing
+          , Check "go: conjure shapes" Warn "absent" (Just "add [conjure] to .olifant/languages/go.toml")
+          , Check "go: signature" Warn "absent" (Just "add [conjure.port] add")
+          , Check "go: grammar" Bad "fetch failed" Nothing
+          , Check "go: queries" Warn "no queries for the go grammar" Nothing
+          , Check "test runner gotestsum (go)" Bad "`gotestsum` is not on this PATH" Nothing
+          , Check "rust: test units" Warn "0 found" regenerate
+          , Check "model" Bad "no default" Nothing
+          ]
+    it "keeps the language's errors and disproven rows, and a queries or grammar warn" $
+      map checkName (failingRows "go" rows) `shouldBe` ["go: test units", "go: grammar", "go: queries", "test runner gotestsum (go)"]
+    it "languageRows are the language's rows, all of them" $
+      map checkName (languageRows "go" rows) `shouldBe` ["go: units", "go: test units", "go: sibling tests", "go: conjure shapes", "go: signature", "go: grammar", "go: queries", "test runner gotestsum (go)"]
+  describe "repairRequest" $ do
+    let req = errandRequest "go" "g @1" [] [] [] [] ["imports", "textobjects"]
+        written = [(".olifant/languages/go.toml", "files = []\n")]
+    it "asks again only the holes the failing rows point at, renamed _repair, with the files and rows" $ do
+      let r = repairRequest req written [Check "go: test units" Warn "0 found" Nothing, Check "go: queries" Bad "textobjects.scm: bad node" Nothing]
+      map fhName (frHoles r) `shouldBe` ["language_repair", "textobjects_repair"]
+      lookup ".olifant/languages/go.toml" (frContext r) `shouldBe` Just "files = []\n"
+      lookup "failing rows" (frContext r) `shouldSatisfy` maybe False ("go: test units — 0 found" `T.isInfixOf`)
+    it "a test runner row points at the toolchain" $
+      map fhName (frHoles (repairRequest req written [Check "test runner gotestsum (go)" Bad "absent" Nothing])) `shouldBe` ["toolchain_repair"]

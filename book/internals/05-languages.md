@@ -717,6 +717,18 @@ The flow, each step's failure printing one line and the row it came from (exit 1
    (`within rtProjectDir`). A project file is enough for the catalog to load the language
    (chapter 9's "A language is the project's when…"), so `config.toml` is not touched.
 
+8. **Doctor and one repair.** The catalog is opened again over the written files and
+   `App.doctorChecks` runs with `run = True`. `failingRows` keeps the language's rows
+   (`languageRows`: `<l>: …`, `… (<l>)`, `language <l>`) that are `Bad`, a `Warn` with the
+   "regenerate the key" fix (disproven evidence), or a queries or grammar `Warn`. If any,
+   `repairRequest` re-asks only the holes those rows point at (`repairHoles`: a row named after a
+   hole, a queries row's file, a test runner or `tests` row the toolchain, a grammar row nothing,
+   anything else the language), renamed `<h>_repair` because `replayFiller` answers each name
+   with one text, so a fills file scripts both rounds. `checkAnswers` reads the `_repair` names
+   (a repair that does not re-ask the toolchain loads the language over the one written), the
+   passing files overwrite theirs, and doctor runs again. A first round whose answers do not load
+   goes to the same repair before any write. There is exactly one repair round.
+
 `providersSection` cuts user chapter 9 from its `### Providers` heading to the next heading: a
 rename of that heading breaks `LanguageInitSpec`. The specs (`CliSpec`'s "init --language") use
 the elm pack's grammar in a local git repository by `file://` (`GrammarSpec.fixtureRepo`) under the

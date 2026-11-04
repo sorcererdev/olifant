@@ -303,6 +303,22 @@ How it gets there:
    against the grammar. Whatever `grammar` line the model wrote is replaced by olifant's pin.
    Nothing is written until every file passes.
 
+7. **Doctor, and one repair.** With the files written, init runs doctor on them, with `--run` (so
+   the sample's test file runs). The rows that count as failing are the language's errors, any
+   evidence that disproved a key ("regenerate the key or supply a provider"), and a `queries` or
+   `grammar` warn; an absent optional capability (conjure shapes, signature, mutation, stub) and
+   an unproven sibling row do not, since a new language starts at the floor. If any fail, the model
+   is asked once more, for only the files those rows point at, shown the files as written and the
+   rows; the answers are checked again and overwrite only the files they replace. A file that did
+   not load in the first round goes to the same repair before anything is written.
+
+You then see what was written and doctor's rows for the language, in doctor's own form. A row
+still failing after the repair keeps doctor's fix line; you are not expected to fix a generated
+file by hand (regenerate it, or answer the slot with a provider). If the repair's own answers do
+not load, the first round's files stay and init says so. The exit code is doctor's: 1 if a row is
+an error. `--json` prints `{"written": [...], "grammar": {...}, "rows": [...], "repaired": bool}`,
+and a line on stderr gives the survey's and the errand's seconds and whether a repair ran.
+
 `--plan` shows the survey's answer, the pin and the files it would write, and writes nothing (the
 model is still asked for the survey). `--model NAME` picks a backend, as for `gen`; with no model
 it stops: "init --language needs a model: add [model] (olifant doctor shows how)". A language that

@@ -11,4 +11,4 @@ name = ["^type[[:space:]]+alias[[:space:]]+([[:alnum:]_]+)", "^type[[:space:]]+(
 [test]
 preset = "elmish-test"
 tests_for = "tests/{= stem =}Test.elm"
-unit = ['^[[:space:]]*,?[[:space:]]*test[[:space:]]+"([^"]*)"']
+unit = ['^[[:space:]]*[[,]?[[:space:]]*test[[:space:]]+"([^"]*)"']

@@ -251,6 +251,49 @@ initLanguageSpec = describe "init --language" $ do
     out `shouldSatisfy` T.isInfixOf "would write .olifant/languages/elmish.toml"
     out `shouldSatisfy` T.isInfixOf "would write .olifant/toolchains/elmish-test.toml"
     M.keys written `shouldBe` M.keys (M.fromList files)
+  it "(h) a row failing after the first round is repaired once, and the final rows show it passing" $ do
+    (remote, _) <- elmRemote "h"
+    good <- elmishFills remote
+    let Just language = lookup "language" good
+        broken = T.replace "test[[:space:]]+" "nevermatches[[:space:]]+" language
+        fills = [(k, if k == "language" then broken else v) | (k, v) <- good] ++ [("language_repair", language)]
+    files <- elmishProject fills
+    (code, out, err, written) <- run files ["init", "--language", "elmish", "--fills", "fills.toml", "--yes", "--json"]
+    (code, err) `shouldBe` (ExitSuccess, err)
+    err `shouldSatisfy` T.isInfixOf "round 1: elmish: test units"
+    let Just v = Aeson.decodeStrict (TE.encodeUtf8 out) :: Maybe Aeson.Value
+    lookupKey "repaired" v `shouldBe` Just (Aeson.Bool True)
+    out `shouldSatisfy` T.isInfixOf "\"name\":\"elmish: test units\",\"status\":\"ok\""
+    M.findWithDefault "" "/w/.olifant/languages/elmish.toml" written `shouldSatisfy` T.isInfixOf "[[,]?[[:space:]]*test"
+  it "(i) a repair still failing leaves the warn and its fix in the final rows (exit 0: no error)" $ do
+    (remote, _) <- elmRemote "i"
+    good <- elmishFills remote
+    let Just language = lookup "language" good
+        broken = T.replace "test[[:space:]]+" "nevermatches[[:space:]]+" language
+        fills = [(k, if k == "language" then broken else v) | (k, v) <- good] ++ [("language_repair", broken)]
+    files <- elmishProject fills
+    (code, out, err, _) <- run files (args ["--yes"])
+    (code, out <> err) `shouldBe` (ExitSuccess, out <> err)
+    out `shouldSatisfy` T.isInfixOf "! elmish: test units — 0 found"
+    out `shouldSatisfy` T.isInfixOf "fix: regenerate the key or supply a provider"
+  it "(j) a good first round asks for no repair" $ do
+    (remote, _) <- elmRemote "j"
+    files <- elmishProject =<< elmishFills remote
+    (code, out, err, _) <- run files ["init", "--language", "elmish", "--fills", "fills.toml", "--yes", "--json"]
+    (code, err) `shouldBe` (ExitSuccess, err)
+    let Just v = Aeson.decodeStrict (TE.encodeUtf8 out) :: Maybe Aeson.Value
+    lookupKey "repaired" v `shouldBe` Just (Aeson.Bool False)
+    out `shouldSatisfy` T.isInfixOf "\"name\":\"elmish: grammar\",\"status\":\"ok\""
+  it "(l) a language that does not load is a failing row, repaired before anything is written" $ do
+    (remote, _) <- elmRemote "l"
+    good <- elmishFills remote
+    let Just language = lookup "language" good
+        fills = [(k, if k == "language" then "files = [\"**/*.elm\"\ncomment = \n" else v) | (k, v) <- good] ++ [("language_repair", language)]
+    files <- elmishProject fills
+    (code, out, err, written) <- run files (args ["--yes"])
+    (code, out <> err) `shouldBe` (ExitSuccess, out <> err)
+    err `shouldSatisfy` T.isInfixOf "round 1: elmish: language"
+    M.findWithDefault "" "/w/.olifant/languages/elmish.toml" written `shouldSatisfy` T.isInfixOf "tests_for"
 
 -- | check on new code (only = "new"), with a base given.
 newCodeCheckSpec :: Spec

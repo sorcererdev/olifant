@@ -1,3 +1,6 @@
+{-# LANGUAGE MultiWayIf #-}
+
+
 -- | @olifant init --language NAME@, the pure parts (the IO edge is
 -- 'Olifant.Cli.runInitLanguage'): the model's survey of the project, the
 -- sample of its files, the errand's inputs and holes, which query files to
@@ -30,8 +33,13 @@ module Olifant.LanguageInit
   , checkAnswers
   , errandCore
   , shippedFor
+  , failingRows
+  , languageRows
+  , repairRequest
+  , repairHoles
   ) where
 
+import Control.Applicative ((<|>))
 import Data.Char (isAlphaNum)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
@@ -284,9 +292,10 @@ data Answered = Answered {anFiles :: [(FilePath, Text)], anFailing :: [Check]}
 -- the round's suffix: "" or "_repair"): the language must load as a project
 -- layer over the toolchain answered (its @grammar@ replaced by the pin), the
 -- toolchain must read as a preset, each query must compile against the
--- grammar. Only the holes asked are read.
-checkAnswers :: ErrandInput -> [Text] -> Text -> Map Text Text -> Answered
-checkAnswers ei asked suffix answers =
+-- grammar. Only the holes asked are read; a repair round that does not ask
+-- for the toolchain loads the language over the one written (WRITTEN).
+checkAnswers :: ErrandInput -> [(FilePath, Text)] -> [Text] -> Text -> Map Text Text -> Answered
+checkAnswers ei written asked suffix answers =
   Answered (concat [fs | Right fs <- results]) [c | Left c <- results]
   where
     l = eiLanguage ei
@@ -296,7 +305,7 @@ checkAnswers ei asked suffix answers =
     noAnswer h = Left (Check (l <> ": " <> h) Bad ("the model gave no `" <> h <> suffix <> "`") Nothing)
     doesNotLoad h why = Left (Check (l <> ": " <> h) Bad ("does not load: " <> why) (Just "regenerate the key or supply a provider (see chapter 9, Providers)"))
     toolchainText = fmap (\t -> T.unlines [initHeader] <> unfence t) (answer "toolchain")
-    presets = case toolchainText of
+    presets = case toolchainText <|> lookup (toolchainFile l) written of
       Just t | Right p <- presetsFrom "project" [(toolchainName l, t)] -> overPresets shippedPresets p
       _ -> shippedPresets
     one = \case
@@ -340,5 +349,63 @@ errandCore filler ei = do
   runFill filler req >>= \case
     Left why -> pure (Left why)
     Right answers -> do
-      let checked = checkAnswers ei (map fhName (frHoles req)) "" answers
+      let checked = checkAnswers ei [] (map fhName (frHoles req)) "" answers
       pure (Right (req, checked {anFiles = anFiles checked ++ queryFiles}))
+
+-- | Doctor's rows about a language: its capability, grammar, queries and
+-- sibling rows (@<l>: …@), its tool rows (@… (<l>)@) and its own
+-- @language <l>@ line.
+languageRows :: Text -> [Check] -> [Check]
+languageRows l = filter ours
+  where
+    ours c =
+      let n = checkName c
+       in (l <> ": ") `T.isPrefixOf` n || (" (" <> l <> ")") `T.isSuffixOf` n || n == "language " <> l || ("languages/" <> l <> ".toml") `T.isInfixOf` n
+
+-- | The rows a repair round answers: the language's errors, its evidence
+-- that disproved a key (the @regenerate the key@ fix), and a queries or
+-- grammar warn. Not an unproven sibling row, an absent optional capability
+-- (conjure shapes, signature, mutation, stub: a new language starts at the
+-- floor), nor another language's rows.
+failingRows :: Text -> [Check] -> [Check]
+failingRows l = filter failing . languageRows l
+  where
+    failing c =
+      checkStatus c == Bad
+        || (checkStatus c == Warn && maybe False ("regenerate the key" `T.isInfixOf`) (checkFix c))
+        || (checkStatus c == Warn && checkName c `elem` [l <> ": queries", l <> ": grammar"])
+
+-- | The holes of REQ the rows point at: a row named after a hole (a file that
+-- did not load), a queries row's file (or every query hole), a test runner
+-- or tests row the toolchain, a grammar row none, anything else the
+-- language file.
+repairHoles :: FillRequest -> [Check] -> [Text]
+repairHoles req rows = [h | h <- names, h `elem` wanted]
+  where
+    names = map fhName (frHoles req)
+    queryHoles = filter (`notElem` ["language", "toolchain"]) names
+    wanted = concatMap pointsAt rows
+    pointsAt c =
+      let n = checkName c
+          suffix = T.drop 2 (snd (T.breakOn ": " n))
+       in if
+            | suffix `elem` names -> [suffix]
+            | suffix == "queries" -> case [h | h <- queryHoles, (h <> ".scm") `T.isPrefixOf` checkDetail c] of
+                [] -> queryHoles
+                hs -> hs
+            | suffix == "grammar" -> []
+            | "test runner " `T.isPrefixOf` n || suffix == "tests" -> ["toolchain"]
+            | otherwise -> ["language"]
+
+-- | The repair round: the holes the failing rows point at, renamed
+-- @<h>_repair@ (a recorded model answers each name with one text, so the
+-- second round needs its own names), with the files as written and the
+-- rows (name, detail, fix) in its context.
+repairRequest :: FillRequest -> [(FilePath, Text)] -> [Check] -> FillRequest
+repairRequest req written rows =
+  req
+    { frHoles = [h {fhName = fhName h <> "_repair", fhInstruction = fhInstruction h <> "\nThe file below as written fails the rows under \"failing rows\": write it again, whole, so they pass."} | h <- frHoles req, fhName h `elem` asked]
+    , frContext = frContext req ++ written ++ [("failing rows", T.unlines [checkName c <> " — " <> checkDetail c <> maybe "" ("; fix: " <>) (checkFix c) | c <- rows])]
+    }
+  where
+    asked = repairHoles req rows

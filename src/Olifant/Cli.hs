@@ -20,7 +20,7 @@ import Olifant.Library (shippedLanguages)
 import Data.ByteString qualified as BS
 import Data.Text.Encoding.Error (lenientDecode)
 import System.Directory (doesDirectoryExist, listDirectory)
-import Olifant.Fill (Filler (..), ModelFiller (..), Stance (..), parseFills, replayFiller)
+import Olifant.Fill (FillHole (..), FillRequest (..), Filler (..), ModelFiller (..), Stance (..), parseFills, replayFiller)
 import Olifant.Migration (MigrationReport (..), Switch (..), migrationJson, reportLine)
 import Olifant.Rules (Exception (..), FixOffer (..), Finding (..), RuleDef (..), RulesConfig (..), checkFiles, markBaselined, ruleCovers)
 import Olifant.Rules qualified as R
@@ -1049,17 +1049,49 @@ runInitLanguage rt cwd fmt cat l modelArg grammarArg yes plan fillsArg = do
                           let ei = LI.ErrandInput l g (ldNodeTypes ld) upstream LI.shippedFor tools sample (rtProjectDir rt)
                           LI.errandCore (mfFiller mf) ei >>= \case
                             Left why -> stop ("the model did not answer the errand: " <> why) Nothing [grammarCheck l gname (Right info)]
-                            Right (_, answered)
-                              | not (null (LI.anFailing answered)) -> stop "the model's files do not load; nothing was written" Nothing (LI.anFailing answered)
-                              | otherwise -> do
-                                  forM_ (LI.anFiles answered) $ \(p, t) -> writeText ws p t
-                                  t2 <- getMonotonicTime
-                                  rtErr rt ("init-language: survey " <> secs (t1 - t0) <> ", errand " <> secs (t2 - t1) <> ", repair no\n")
-                                  let written = map (T.pack . fst) (LI.anFiles answered)
-                                  emit rt fmt
-                                    (object ["written" .= written, "grammar" .= object ["git" .= url, "rev" .= sha], "rows" .= ([] :: [Value]), "repaired" .= False])
-                                    (T.unlines ([proposal] ++ ["wrote " <> w | w <- written]))
-                                  pure ExitSuccess
+                            Right (req, first') -> do
+                              let repairWith written rows = do
+                                    rtErr rt (T.unlines ["init-language: round 1: " <> checkName c <> " — " <> checkDetail c | c <- rows])
+                                    let rreq = LI.repairRequest req written rows
+                                    runFill (mfFiller mf) rreq <&> \case
+                                      Left why -> LI.Answered [] [Check (l <> ": repair") Bad ("the model did not answer the repair: " <> why) Nothing]
+                                      Right answers -> LI.checkAnswers ei written (map (T.dropEnd (T.length "_repair") . fhName) (frHoles rreq)) "_repair" answers
+                                  merge old new' = [(p, t) | (p, t) <- old, p `notElem` map fst new'] ++ new'
+                                  doctorRows = do
+                                    reopened <- openProjectCatalog (rtRoot rt) (CatalogPaths (rtProjectDir rt) (rtUserConfigDir rt) (rtHomeDir rt))
+                                    case reopened of
+                                      Left e -> pure [Check ("language " <> l) Bad (T.pack (show e)) Nothing]
+                                      Right cat' -> doctorChecks (portsOf rt) (projectOf rt cat') True
+                                  finish written repaired rows note = do
+                                    t2 <- getMonotonicTime
+                                    rtErr rt ("init-language: survey " <> secs (t1 - t0) <> ", errand " <> secs (t2 - t1) <> ", repair " <> (if repaired then "yes" else "no") <> "\n")
+                                    let paths = map (T.pack . fst) written
+                                    emit rt fmt
+                                      (object ["written" .= paths, "grammar" .= object ["git" .= url, "rev" .= sha], "rows" .= rowsJson rows, "repaired" .= repaired])
+                                      (T.unlines ([proposal] ++ ["wrote " <> w | w <- paths] ++ [n | Just n <- [note]] ++ map rowLine rows))
+                                    pure (if any ((== Bad) . checkStatus) rows then ExitFailure 1 else ExitSuccess)
+                              if not (null (LI.anFailing first'))
+                                then do
+                                  -- nothing is written until every file loads
+                                  second <- repairWith (LI.anFiles first') (LI.anFailing first')
+                                  if not (null (LI.anFailing second))
+                                    then stop "the model's files do not load after one repair; nothing was written" Nothing (LI.anFailing second)
+                                    else do
+                                      let written = merge (LI.anFiles first') (LI.anFiles second)
+                                      forM_ written $ \(p, t) -> writeText ws p t
+                                      rows <- LI.languageRows l <$> doctorRows
+                                      finish written True rows Nothing
+                                else do
+                                  forM_ (LI.anFiles first') $ \(p, t) -> writeText ws p t
+                                  rows1 <- doctorRows
+                                  case LI.failingRows l rows1 of
+                                    [] -> finish (LI.anFiles first') False (LI.languageRows l rows1) Nothing
+                                    failing -> do
+                                      second <- repairWith (LI.anFiles first') failing
+                                      forM_ (LI.anFiles second) $ \(p, t) -> writeText ws p t
+                                      rows2 <- LI.languageRows l <$> doctorRows
+                                      let note = if null (LI.anFailing second) then Nothing else Just "the repair's files did not load: the first round's files are kept"
+                                      finish (merge (LI.anFiles first') (LI.anFiles second)) True (rows2 ++ LI.anFailing second) note
   where
     rowsJson rows = case doctorJson rows of
       Object o | Just v <- KM.lookup "checks" o -> v
