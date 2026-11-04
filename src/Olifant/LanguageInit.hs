@@ -58,8 +58,9 @@ import Olifant.Fill (FillHole (..), FillRequest (..), Filler (..), Stance (..))
 import Olifant.Language (Grammar (..), GrammarSource (..), Language (..), Layer (..), languageFromLayers, queriesFor, queryError)
 import Olifant.Language.Presets (overPresets, presetsFrom, shippedPresets)
 import Olifant.Glob (matchesGlob)
-import Olifant.Language.TreeSitter (readCaptures)
+import Olifant.Language.TreeSitter (knownPredicates, readCaptures)
 import Olifant.Library (providersSection, shippedLanguages, shippedToolchains)
+import Olifant.Template.Parse (knownFilters)
 import Olifant.Toml qualified as Toml
 import System.FilePath (splitDirectories, takeExtension, (</>))
 
@@ -193,8 +194,9 @@ toolchainFile l = ".olifant/toolchains/" <> T.unpack (toolchainName l) <> ".toml
 -- | The errand: one hole per file (@language@, @toolchain@, and each query
 -- file to write), the shipped Rust pair as exemplars, the sample's files,
 -- and the grammar's facts (its node kinds, the captures upstream uses and
--- the ones olifant reads), the test runners found on PATH and the
--- providers' protocol.
+-- the ones olifant reads), the test runners found on PATH, the template
+-- filters and query predicates olifant knows (closed sets: a model invents
+-- @go_string@ or @#strip!@ without them) and the providers' protocol.
 errandRequest :: Text -> Text -> [Text] -> [Text] -> [Text] -> [(FilePath, Text)] -> [Text] -> FillRequest
 errandRequest language grammar kinds captures tools sample queryHoles =
   FillRequest
@@ -205,6 +207,8 @@ errandRequest language grammar kinds captures tools sample queryHoles =
     , ("captures", T.intercalate ", " captures)
     , ("captures olifant reads", T.intercalate ", " (readCaptures ++ ["definition.<kind>"]))
     , ("tools on PATH", T.intercalate "\n" tools)
+    , ("template filters", "only these, after a bar ({= message|escaped =}): " <> T.intercalate ", " knownFilters)
+    , ("query predicates", "only these; no directives (#set!, #strip!, …): " <> T.intercalate ", " (map ("#" <>) knownPredicates))
     , ("protocol", providersSection)
     ]
     ( [("exemplar: rust.toml", t) | Just t <- [lookup "rust" shippedLanguages]]
@@ -221,6 +225,7 @@ errandRequest language grammar kinds captures tools sample queryHoles =
         , "Its tests: [test] preset = \"" <> toolchainName language <> "\" (the toolchain hole), tests_for, unit and assertion regexes (POSIX classes, as the exemplar)."
         , "Write grammar = { git = \"URL\", rev = \"REV\" } as given; olifant replaces it with its pin."
         , "Leave out a key the sample does not show you how to answer."
+        , "Leave out [check]: the user writes the check command, not the model (the exemplar's [check] names a preset this language does not have)."
         ]
     toolchainInstruction =
       T.unlines

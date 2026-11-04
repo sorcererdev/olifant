@@ -84,6 +84,13 @@ spec = do
       lookup "protocol" (frInputs req) `shouldBe` Just providersSection
       lookup "node kinds" (frInputs req) `shouldBe` Just "function_declaration"
       lookup "captures olifant reads" (frInputs req) `shouldSatisfy` maybe False ("function.outer" `T.isInfixOf`)
+    it "errandRequest: the language hole leaves [check] to the user" $ do
+      let req = errandRequest "go" "g @1" [] [] [] [] []
+      map fhInstruction (take 1 (frHoles req)) `shouldSatisfy` any ("Leave out [check]" `T.isInfixOf`)
+    it "errandRequest: the closed sets, the template filters and the query predicates" $ do
+      let req = errandRequest "go" "g @1" [] [] [] [] []
+      lookup "template filters" (frInputs req) `shouldSatisfy` maybe False (\t -> all (`T.isInfixOf` t) ["escaped", "python_string", "only these"])
+      lookup "query predicates" (frInputs req) `shouldSatisfy` maybe False (\t -> all (`T.isInfixOf` t) ["#match?", "#any-of?", "no directives"])
     it "sourcesFile says which file was copied and which the model wrote" $ do
       let (copied, holes) = queriesToWrite "x" [] upstream
           t = sourcesFile "x" "https://example.invalid/tree-sitter-x @0123456" copied holes

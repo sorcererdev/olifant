@@ -706,8 +706,11 @@ The flow, each step's failure printing one line and the row it came from (exit 1
    `queriesToWrite` decides which query files are copied and which are holes, `errandRequest`
    builds the request (holes `language`, `toolchain` and the query holes; the shipped
    `rust.toml`/`cargo-test.toml` as exemplars in `frContext`; `providersSection`, the user
-   chapter's providers section embedded by `Library`, as the `protocol` input), and
-   `checkAnswers` checks the reply.
+   chapter's providers section embedded by `Library`, as the `protocol` input; the closed sets
+   as inputs, `template filters` from `Template.Parse.knownFilters` and `query predicates` from
+   `TreeSitter.knownPredicates`, since a model shown `rust_string` writes `go_string`; the
+   `language` hole's instruction leaves `[check]` to the user), and `checkAnswers` checks the
+   reply.
 6. **Check.** `checkAnswers` replaces the language's top-level `grammar` lines with `pinText`
    (`withPin`, which also puts `initHeader` first), loads it with `languageFromLayers` over the
    shipped presets and the toolchain answered (`presetsFrom`), and compiles each query with
