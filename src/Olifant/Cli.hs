@@ -17,7 +17,7 @@ import Olifant.Language.Grammar (GrammarFailure (..), GrammarInfo (..), GrammarU
 import Olifant.Language.Adapter (Grammar (..), GrammarSource (..))
 import Olifant.LanguageInit qualified as LI
 import Olifant.Library (shippedLanguages)
-import Olifant.Fill (FillHole (..), FillRequest (..), Filler (..), ModelFiller (..), Stance (..), parseFills, replayFiller)
+import Olifant.Fill (Filler (..), ModelFiller (..), Stance (..), parseFills, replayFiller)
 import Olifant.Migration (MigrationReport (..), Switch (..), migrationJson, reportLine)
 import Olifant.Rules (Exception (..), FixOffer (..), Finding (..), RuleDef (..), RulesConfig (..), checkFiles, markBaselined, ruleCovers)
 import Olifant.Rules qualified as R
@@ -1045,7 +1045,7 @@ runInitLanguage rt cwd fmt cat l modelArg grammarArg yes plan fillsArg = do
                           upstream <- LI.readUpstream (url <> " @" <> T.take 7 sha) (checkoutOf s g) (LI.svPath sv)
                           tools <- mapM (\r -> dpFind (rtDoctor rt) (T.unpack r) <&> \found -> r <> ": " <> maybe "not on PATH" T.pack found) (LI.svRunners sv)
                           sample <- fmap concat . mapM (\p -> readText ws p <&> maybe [] (\t -> [(p, LI.cutTo 120 t)])) $ sources ++ tests ++ maybe [] pure manifest
-                          let ei = LI.ErrandInput l g (ldNodeTypes ld) upstream LI.shippedFor tools sample (rtProjectDir rt)
+                          let ei = LI.ErrandInput l g (ldNodeTypes ld) upstream LI.shippedFor tools sample (rtProjectDir rt) sv tracked
                           LI.errandCore (mfFiller mf) ei >>= \case
                             Left why -> stop ("the model did not answer the errand: " <> why) Nothing [grammarCheck l gname (Right info)]
                             Right (req, first') -> do
@@ -1053,8 +1053,9 @@ runInitLanguage rt cwd fmt cat l modelArg grammarArg yes plan fillsArg = do
                                     rtErr rt (T.unlines ["init-language: round 1: " <> checkName c <> " — " <> checkDetail c | c <- rows])
                                     let rreq = LI.repairRequest req written rows
                                     runFill (mfFiller mf) rreq <&> \case
-                                      Left why -> LI.Answered [] [Check (l <> ": repair") Bad ("the model did not answer the repair: " <> why) Nothing]
-                                      Right answers -> LI.checkAnswers ei written (map (T.dropEnd (T.length "_repair") . fhName) (frHoles rreq)) "_repair" answers
+                                      Left why -> LI.Answered [] [Check (l <> ": repair") Bad ("the model did not answer the repair: " <> why) Nothing] (LI.anAnswers first')
+                                      -- the repair's values over the first round's, the files assembled again
+                                      Right answers -> LI.checkAnswers ei (M.union (LI.repairAnswers answers) (LI.anAnswers first'))
                                   merge old new' = [(p, t) | (p, t) <- old, p `notElem` map fst new'] ++ new'
                                   doctorRows = do
                                     reopened <- openProjectCatalog (rtRoot rt) (CatalogPaths (rtProjectDir rt) (rtUserConfigDir rt) (rtHomeDir rt))

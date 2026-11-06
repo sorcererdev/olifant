@@ -2,6 +2,7 @@ module Olifant.CliSpec (spec) where
 
 import Olifant.Language.Grammar (GrammarFailure (NoSource), probeGrammar)
 import Olifant.Language.GrammarSpec (fixtureRepo)
+import Olifant.LanguageInitSpec (formAnswers)
 import Olifant.Language.Test (scriptedRunner)
 import Data.Set qualified as S
 import System.Process (readProcess)
@@ -159,15 +160,12 @@ elmishProject fills = do
       fillsToml = "[fills]\n" <> T.concat [k <> " = '''\n" <> v <> "'''\n" | (k, v) <- fills]
   pure (srcs ++ [("/w/tests/RouteTest.elm", test), ("/w/fills.toml", fillsToml)])
 
--- | The fixture answers (src/Olifant/testdata/init-language), the survey
--- naming REMOTE.
+-- | The fixture answers (src/Olifant/testdata/init-language: the survey
+-- naming REMOTE, and the form's values, one per field).
 elmishFills :: Text -> IO [(Text, Text)]
 elmishFills remote = do
-  let dir = "src/Olifant/testdata/init-language"
-  survey <- T.replace "@REMOTE@" remote <$> TIO.readFile (dir </> "survey.toml")
-  language <- TIO.readFile (dir </> "language.toml")
-  toolchain <- TIO.readFile (dir </> "toolchain.toml")
-  pure [("survey", survey), ("language", language), ("toolchain", toolchain)]
+  survey <- T.replace "@REMOTE@" remote <$> TIO.readFile "src/Olifant/testdata/init-language/survey.toml"
+  (("survey", survey) :) <$> formAnswers
 
 -- | `olifant` in /w over FILES with the real grammar loader (doctor's
 -- grammar row too), git's tracked files being the project's, and a test
@@ -266,9 +264,9 @@ initLanguageSpec = describe "init --language" $ do
   it "(h) a row failing after the first round is repaired once, and the final rows show it passing" $ do
     (remote, _) <- elmRemote "h"
     good <- elmishFills remote
-    let Just language = lookup "language" good
-        broken = T.replace "test[[:space:]]+" "nevermatches[[:space:]]+" language
-        fills = [(k, if k == "language" then broken else v) | (k, v) <- good] ++ [("language_repair", language)]
+    let Just unit = lookup "test_unit" good
+        broken = T.replace "test[[:space:]]+" "nevermatches[[:space:]]+" unit
+        fills = [(k, if k == "test_unit" then broken else v) | (k, v) <- good] ++ [("test_unit_repair", unit), ("tests_for_repair", fromMaybe "none" (lookup "tests_for" good))]
     files <- elmishProject fills
     (code, out, err, written) <- run files ["init", "--language", "elmish", "--fills", "fills.toml", "--yes", "--json"]
     (code, err) `shouldBe` (ExitSuccess, err)
@@ -280,9 +278,9 @@ initLanguageSpec = describe "init --language" $ do
   it "(i) a repair still failing leaves the warn and its fix in the final rows (exit 0: no error)" $ do
     (remote, _) <- elmRemote "i"
     good <- elmishFills remote
-    let Just language = lookup "language" good
-        broken = T.replace "test[[:space:]]+" "nevermatches[[:space:]]+" language
-        fills = [(k, if k == "language" then broken else v) | (k, v) <- good] ++ [("language_repair", broken)]
+    let Just unit = lookup "test_unit" good
+        broken = T.replace "test[[:space:]]+" "nevermatches[[:space:]]+" unit
+        fills = [(k, if k == "test_unit" then broken else v) | (k, v) <- good] ++ [("test_unit_repair", broken), ("tests_for_repair", fromMaybe "none" (lookup "tests_for" good))]
     files <- elmishProject fills
     (code, out, err, _) <- run files (args ["--yes"])
     (code, out <> err) `shouldBe` (ExitSuccess, out <> err)
@@ -296,16 +294,17 @@ initLanguageSpec = describe "init --language" $ do
     let Just v = Aeson.decodeStrict (TE.encodeUtf8 out) :: Maybe Aeson.Value
     lookupKey "repaired" v `shouldBe` Just (Aeson.Bool False)
     out `shouldSatisfy` T.isInfixOf "\"name\":\"elmish: grammar\",\"status\":\"ok\""
-  it "(l) a language that does not load is a failing row, repaired before anything is written" $ do
+  it "(l) a language that does not load is a row naming the key, repaired before anything is written" $ do
     (remote, _) <- elmRemote "l"
     good <- elmishFills remote
-    let Just language = lookup "language" good
-        fills = [(k, if k == "language" then "files = [\"**/*.elm\"\ncomment = \n" else v) | (k, v) <- good] ++ [("language_repair", language)]
+    let fills = [(k, if k == "test_above" then "[1, 2]" else v) | (k, v) <- good] ++ [("test_above_repair", "none")]
     files <- elmishProject fills
     (code, out, err, written) <- run files (args ["--yes"])
     (code, out <> err) `shouldBe` (ExitSuccess, out <> err)
-    err `shouldSatisfy` T.isInfixOf "round 1: elmish: language"
-    M.findWithDefault "" "/w/.olifant/languages/elmish.toml" written `shouldSatisfy` T.isInfixOf "tests_for"
+    err `shouldSatisfy` T.isInfixOf "round 1: elmish: test_above — does not load: `above`: expected a string"
+    let language = M.findWithDefault "" "/w/.olifant/languages/elmish.toml" written
+    language `shouldSatisfy` T.isInfixOf "tests_for"
+    language `shouldNotSatisfy` T.isInfixOf "above"
 
 -- | check on new code (only = "new"), with a base given.
 newCodeCheckSpec :: Spec

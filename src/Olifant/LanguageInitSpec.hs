@@ -1,11 +1,12 @@
 {-# OPTIONS_GHC -Wno-incomplete-uni-patterns #-}
 
-module Olifant.LanguageInitSpec (spec) where
+module Olifant.LanguageInitSpec (spec, formAnswers) where
 
+import Data.List (isPrefixOf)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
 import Data.Map.Strict qualified as M
-import Olifant.Fill (replayFiller)
+import Olifant.Fill (parseFills, replayFiller)
 import Olifant.Language (Grammar (..), GrammarSource (..))
 import Olifant.Language.Grammar (Loaded (..), loadGrammar)
 import Olifant.Language.GrammarSpec (fixtureRepo)
@@ -14,7 +15,7 @@ import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
 import System.Process (readProcess)
 import Olifant.Language.TreeSitter (queriesFor)
-import Olifant.Library (shippedLanguages, shippedToolchains)
+import Olifant.Library (providersSection, queryExemplar)
 import Olifant.Doctor (Check (..), Status (..))
 import Olifant.Fill (FillHole (..), FillRequest (..), Stance (..))
 import Olifant.LanguageInit
@@ -22,6 +23,20 @@ import Test.Hspec
 
 survey :: Survey
 survey = Survey "https://example.invalid/tree-sitter-x" Nothing Nothing ["**/*.go"] ["**/*_test.go"] (Just "go.mod") ["go"]
+
+-- | The elmish form's answers (testdata/init-language/form.toml), every
+-- other field of both forms answered none.
+formAnswers :: IO [(T.Text, T.Text)]
+formAnswers = do
+  Right fills <- parseFills <$> TIO.readFile "src/Olifant/testdata/init-language/form.toml"
+  pure [(fdName f, M.findWithDefault "none" (fdName f) fills) | f <- languageForm "elmish" ++ toolchainForm "elmish"]
+
+upstream :: Upstream
+upstream = Upstream "https://example.invalid/tree-sitter-x @0123456" [("tags.scm", "(function_declaration name: (identifier) @name) @definition.function\n")] (Just ("LICENSE", "The MIT License (MIT)\n\nCopyright\n")) Nothing Nothing
+
+-- | An errand's input over no loaded grammar (the form needs none).
+bareInput :: Upstream -> [FilePath] -> ErrandInput
+bareInput up tracked = ErrandInput "go" (Grammar "x" Nothing) ["function_declaration"] up (const []) ["go: /usr/bin/go"] [("cmd/main.go", "package main\n")] "/w" survey tracked
 
 spec :: Spec
 spec = do
@@ -98,7 +113,6 @@ spec = do
         Just paths = lookup "tracked files" (frInputs req)
     length (T.lines paths) `shouldBe` 200
   describe "the errand" $ do
-    let upstream = Upstream "https://example.invalid/tree-sitter-x @0123456" [("tags.scm", "(function_declaration name: (identifier) @name) @definition.function\n")] (Just ("LICENSE", "The MIT License (MIT)\n\nCopyright\n"))
     it "providersSection is user 09's providers section, alone" $ do
       providersSection `shouldSatisfy` T.isPrefixOf "### Providers"
       providersSection `shouldNotSatisfy` T.isInfixOf "### Hole kinds"
@@ -108,6 +122,10 @@ spec = do
       captureNamesIn "(a) @x (b) @y.z (c) @x" `shouldBe` ["x", "y.z"]
     it "queriesToWrite: a grammar with shipped queries needs none" $
       queriesToWrite "elm" (queriesFor "elm") upstream `shouldBe` ([], [])
+    it "queriesToWrite: nvim's textobjects are copied when found, else a hole" $ do
+      let (copied, holes) = queriesToWrite "x" [] upstream {upNvim = Just ("nvim @1 queries/x/textobjects.scm", "(a) @function.outer\n")}
+      map fst copied `shouldBe` ["tags.scm", "textobjects.scm"]
+      holes `shouldBe` ["imports"]
     it "queriesToWrite: upstream tags.scm is copied with its header; the rest are holes" $ do
       let (copied, holes) = queriesToWrite "x" [] upstream
       map fst copied `shouldBe` ["tags.scm"]
@@ -128,21 +146,28 @@ spec = do
       sourcesFile "x" "u @1" copied [] `shouldSatisfy` T.isInfixOf "tags.scm  copied from u @1 queries/tags.scm, directives removed (#strip!)"
     it "queriesToWrite: with no upstream queries, all three are holes" $
       snd (queriesToWrite "x" [] upstream {upQueries = []}) `shouldBe` ["imports", "tags", "textobjects"]
-    it "errandRequest: the files as holes, the exemplar pair and the protocol" $ do
-      let req = errandRequest "go" "tree-sitter-go @2346a3a" ["function_declaration"] ["definition.function"] ["go: /usr/bin/go"] [("cmd/main.go", "package main\n")] ["imports", "textobjects"]
-      map fhName (frHoles req) `shouldBe` ["language", "toolchain", "imports", "textobjects"]
-      frStance req `shouldBe` FileStance
-      lookup "exemplar: rust.toml" (frContext req) `shouldBe` lookup "rust" shippedLanguages
-      lookup "exemplar: cargo-test.toml" (frContext req) `shouldBe` lookup "cargo-test" shippedToolchains
+    it "formRequest: one hole per field, the value stance, the sample, no protocol" $ do
+      let req = formRequest (bareInput upstream ["cmd/main.go"])
+          names = map fhName (frHoles req)
+      take 2 names `shouldBe` ["comment", "keywords"]
+      ["tests_for", "test_unit", "command", "root", "imports", "textobjects"] `shouldSatisfy` all (`elem` names)
+      frStance req `shouldBe` ValueStance
       lookup "cmd/main.go" (frContext req) `shouldBe` Just "package main\n"
-      lookup "protocol" (frInputs req) `shouldBe` Just providersSection
+      lookup "protocol" (frInputs req) `shouldBe` Nothing
+      lookup "source globs" (frInputs req) `shouldBe` Just "**/*.go"
       lookup "node kinds" (frInputs req) `shouldBe` Just "function_declaration"
-      lookup "captures olifant reads" (frInputs req) `shouldSatisfy` maybe False ("function.outer" `T.isInfixOf`)
-    it "errandRequest: the language hole leaves [check] to the user" $ do
-      let req = errandRequest "go" "g @1" [] [] [] [] []
-      map fhInstruction (take 1 (frHoles req)) `shouldSatisfy` any ("Leave out [check]" `T.isInfixOf`)
-    it "errandRequest: the closed sets, the template filters and the query predicates" $ do
-      let req = errandRequest "go" "g @1" [] [] [] [] []
+      [fhContext h | h <- frHoles req, fhName h == "test_unit"] `shouldBe` ["[test]\nunit = \10214test_unit\10215"]
+      [fhFile h | h <- frHoles req, fhName h == "command"] `shouldBe` [".olifant/toolchains/go-test.toml"]
+    it "formRequest: a textobjects hole has the exemplar query; none without it" $ do
+      let withHole = formRequest (bareInput upstream [])
+          without = formRequest (bareInput upstream {upNvim = Just ("textobjects.scm", "(x) @function.outer\n")} [])
+      lookup "exemplar query (another grammar's): textobjects.scm" (frContext withHole) `shouldBe` Just (snd queryExemplar)
+      map fst (frContext without) `shouldNotSatisfy` any (isPrefixOf "exemplar")
+    it "formRequest: a tests_for the sample's names show is not asked" $ do
+      map fhName (frHoles (formRequest (bareInput upstream ["a/x.go", "a/x_test.go"]))) `shouldNotSatisfy` elem "tests_for"
+      map fhName (frHoles (formRequest (bareInput upstream ["a/x.go"]))) `shouldSatisfy` elem "tests_for"
+    it "formRequest: the closed sets, the template filters and the query predicates" $ do
+      let req = formRequest (bareInput upstream [])
       lookup "template filters" (frInputs req) `shouldSatisfy` maybe False (\t -> all (`T.isInfixOf` t) ["escaped", "python_string", "only these"])
       lookup "query predicates" (frInputs req) `shouldSatisfy` maybe False (\t -> all (`T.isInfixOf` t) ["#match?", "#any-of?", "no directives"])
     it "sourcesFile says which file was copied and which the model wrote" $ do
@@ -176,19 +201,29 @@ spec = do
       map checkName (failingRows "go" written [refused, other]) `shouldBe` [checkName refused]
       map checkName (languageRows "go" written [refused, other]) `shouldBe` [checkName refused]
   describe "repairRequest" $ do
-    let req = errandRequest "go" "g @1" [] [] [] [] ["imports", "textobjects"]
+    let req = formRequest (bareInput upstream ["a/x.go"])
         written = [(".olifant/languages/go.toml", "files = []\n")]
-    it "asks again only the holes the failing rows point at, renamed _repair, with the files and rows" $ do
+        holes rows = map fhName (frHoles (repairRequest req written rows))
+    it "asks again only the fields the failing rows point at, renamed _repair, with the files, rows and protocol" $ do
       let r = repairRequest req written [Check "go: test units" Warn "0 found" Nothing, Check "go: queries" Bad "textobjects.scm: bad node" Nothing]
-      map fhName (frHoles r) `shouldBe` ["language_repair", "textobjects_repair"]
+      map fhName (frHoles r) `shouldBe` ["tests_for_repair", "test_unit_repair", "textobjects_repair"]
       lookup ".olifant/languages/go.toml" (frContext r) `shouldBe` Just "files = []\n"
       lookup "failing rows" (frContext r) `shouldSatisfy` maybe False ("go: test units — 0 found" `T.isInfixOf`)
+      lookup "protocol" (frInputs r) `shouldBe` Just providersSection
+    it "a row named after a field asks that field; a tests row the command and its kin" $ do
+      holes [Check "go: test_above" Bad "does not load" Nothing] `shouldBe` ["test_above_repair"]
+      holes [Check "go: tests" Bad "broken" Nothing] `shouldSatisfy` (\hs -> all (`elem` hs) ["tests_for_repair", "command_repair", "root_repair", "lines_pass_repair"])
+      holes [Check "go: holes" Warn "[holes.expr]: x does not parse" Nothing] `shouldSatisfy` (\hs -> not (null hs) && all ("holes_" `T.isPrefixOf`) hs)
+      holes [Check "go: anchors" Warn "x" Nothing] `shouldBe` ["textobjects_repair"]
     it "a load error naming a query file points at that query's hole" $
-      map fhName (frHoles (repairRequest req written [Check "language /p/.olifant/queries/go/imports.scm" Bad "bad node" Nothing])) `shouldBe` ["imports_repair"]
+      holes [Check "language /p/.olifant/queries/go/imports.scm" Bad "bad node" Nothing] `shouldBe` ["imports_repair"]
     it "a repair hole's marker carries its new name, so the model answers under it" $
-      map fhContext (frHoles (repairRequest req written [Check "go: test units" Warn "0 found" Nothing])) `shouldBe` ["\10214language_repair\10215"]
-    it "a test runner row points at the toolchain" $
-      map fhName (frHoles (repairRequest req written [Check "test runner gotestsum (go)" Bad "absent" Nothing])) `shouldBe` ["toolchain_repair"]
+      map fhContext (frHoles (repairRequest req written [Check "go: comment" Bad "x" Nothing])) `shouldBe` ["comment = \10214comment_repair\10215"]
+    it "a test runner row points at the command; a whole-file row at the file's fields" $ do
+      holes [Check "test runner gotestsum (go)" Bad "absent" Nothing] `shouldBe` ["command_repair"]
+      holes [Check "go: toolchain" Bad "does not load" Nothing] `shouldSatisfy` (\hs -> "command_repair" `elem` hs && "comment_repair" `notElem` hs)
+    it "repairAnswers keeps a repair's answers under their fields' names" $
+      repairAnswers (M.fromList [("comment_repair", "x"), ("comment", "y")]) `shouldBe` M.fromList [("comment", "x")]
   describe "the errand's queries (errandCore, no shipped set)" $ do
     let elmGrammar name = do
           tmp <- getTemporaryDirectory
@@ -204,13 +239,14 @@ spec = do
             readUpstream "file://x @abc1234" (Just d) Nothing
           pure (g, ld, up)
         fixtures = do
-          let dir = "src/Olifant/testdata/init-language"
-          language <- TIO.readFile (dir </> "language.toml")
-          toolchain <- TIO.readFile (dir </> "toolchain.toml")
+          answers <- formAnswers
           textobjects <- TIO.readFile "library/queries/elm/textobjects.scm"
           imports <- TIO.readFile "library/queries/elm/imports.scm"
-          pure (M.fromList [("language", language), ("toolchain", toolchain), ("textobjects", textobjects), ("imports", imports)])
-        input g ld up = ErrandInput "elmish" g (ldNodeTypes ld) up (const []) [] [] "/w"
+          pure (M.fromList (answers ++ [("textobjects", textobjects), ("imports", imports)]))
+        elmSurvey = Survey "x" Nothing (Just "elm") ["**/*.elm"] ["tests/**/*.elm"] (Just "elm.json") []
+        input g ld up = inputOver g ld up []
+        inputOver g ld up tracked = ErrandInput "elmish" g (ldNodeTypes ld) up (const []) [] [] "/w" elmSurvey tracked
+        rowsOf a = [(checkName c, checkDetail c) | c <- anFailing a]
     it "(m) upstream tags.scm is copied with its header" $ do
       (g, ld, up) <- elmGrammar "m"
       fills <- fixtures
@@ -221,7 +257,7 @@ spec = do
       (g, ld, up) <- elmGrammar "n"
       fills <- fixtures
       Right (req, a) <- errandCore (replayFiller fills) (input g ld up)
-      map fhName (frHoles req) `shouldBe` ["language", "toolchain", "imports", "textobjects"]
+      drop (length (frHoles req) - 2) (map fhName (frHoles req)) `shouldBe` ["imports", "textobjects"]
       lookup ".olifant/queries/elm/textobjects.scm" (anFiles a) `shouldBe` M.lookup "textobjects" fills
       lookup ".olifant/queries/elm/imports.scm" (anFiles a) `shouldBe` M.lookup "imports" fills
       let Just sources = lookup ".olifant/queries/elm/SOURCES" (anFiles a)
@@ -236,6 +272,48 @@ spec = do
       map (\c -> (checkName c, T.take 16 (checkDetail c))) (anFailing a) `shouldBe` [("elmish: queries", "textobjects.scm:")]
       let rreq = repairRequest req (anFiles a) (anFailing a)
       map fhName (frHoles rreq) `shouldBe` ["textobjects_repair"]
-      let repaired = checkAnswers (input g ld up) (anFiles a) ["textobjects"] "_repair" (M.insert "textobjects_repair" (fills0 M.! "textobjects") fills)
+      let repaired = checkAnswers (input g ld up) (M.union (repairAnswers (M.fromList [("textobjects_repair", fills0 M.! "textobjects")])) (anAnswers a))
       anFailing repaired `shouldBe` []
-      map fst (anFiles repaired) `shouldBe` [".olifant/queries/elm/textobjects.scm"]
+      lookup ".olifant/queries/elm/textobjects.scm" (anFiles repaired) `shouldBe` M.lookup "textobjects" fills0
+    it "(o2) the form assembles both files: the engine's keys, the answered ones, junit or lines by the command" $ do
+      (g, ld, up) <- elmGrammar "o2"
+      fills <- fixtures
+      Right (_, a) <- errandCore (replayFiller fills) (input g ld up)
+      let Just language = lookup ".olifant/languages/elmish.toml" (anFiles a)
+          Just toolchain = lookup ".olifant/toolchains/elmish-test.toml" (anFiles a)
+      take 3 (T.lines language) `shouldBe` ["# written by olifant init --language", pinText g, "files = [\"**/*.elm\"]"]
+      language `shouldSatisfy` T.isInfixOf "[test]\npreset = \"elmish-test\"\ntests_for = \"tests/{= stem =}Test.elm\""
+      language `shouldNotSatisfy` T.isInfixOf "keywords"
+      toolchain `shouldSatisfy` T.isInfixOf "format = \"lines\""
+      toolchain `shouldSatisfy` T.isInfixOf "[test.lines]\npass = "
+      let junit = checkAnswers (input g ld up) (M.insert "command" "['elm-test', '--report', '{= report =}', '{= tests =}']" (anAnswers a))
+      rowsOf junit `shouldBe` []
+      lookup ".olifant/toolchains/elmish-test.toml" (anFiles junit) `shouldSatisfy` maybe False (\t -> "format = \"junit-xml\"" `T.isInfixOf` t && not ("[test.lines]" `T.isInfixOf` t))
+    it "(o3) a wrong value is a row naming its field: smuggled keys, a required none, a reader's error, a command's missing facts" $ do
+      (g, ld, up) <- elmGrammar "o3"
+      fills <- fixtures
+      Right (_, a) <- errandCore (replayFiller fills) (input g ld up)
+      let with k v = map fst (rowsOf (checkAnswers (input g ld up) (M.insert k v (anAnswers a))))
+      with "comment" "\"--\"\n[check]\npreset = \"x\"" `shouldBe` ["elmish: comment"]
+      with "comment" "none" `shouldBe` ["elmish: comment"]
+      with "test_above" "[1, 2]" `shouldBe` ["elmish: test_above"]
+      with "command" "[\"elm-test\"]" `shouldBe` ["elmish: command"]
+      with "command" "['elm-test', '{= tests =}']" `shouldBe` []
+      with "lines_fail" "none" `shouldBe` ["elmish: command"]
+    it "(o4) tests_for mapping a sampled source to itself, or to no test file, is a row with the mapping" $ do
+      (g, ld, up) <- elmGrammar "o4"
+      fills <- fixtures
+      let tracked = ["src/Route.elm", "tests/RouteTest.elm"]
+          answered v = rowsOf (checkAnswers (inputOver g ld up tracked) (M.insert "tests_for" v fills))
+      answered "\"{= dir =}/{= stem =}.elm\"" `shouldBe` [("elmish: tests_for", "maps src/Route.elm to src/Route.elm (itself)")]
+      answered "\"{{dir}}/{{stem}}Test.elm\"" `shouldBe` [("elmish: tests_for", "maps src/Route.elm to src/RouteTest.elm (not a test file by the globs tests/**/*.elm)")]
+      answered "\"tests/{= stem =}Test.elm\"" `shouldBe` []
+    it "(o5) nvim's textobjects are copied with their header and licence, and SOURCES names them" $ do
+      (g, ld, up0) <- elmGrammar "o5"
+      fills <- fixtures
+      let up = up0 {upNvim = Just ("nvim-treesitter-textobjects @5c7b026 queries/elm/textobjects.scm", "((function_declaration) @function.outer (#set! x y))\n"), upNvimLicence = Just ("LICENSE", "Apache License\n")}
+      Right (req, a) <- errandCore (replayFiller fills) (input g ld up)
+      map fhName (frHoles req) `shouldNotSatisfy` elem "textobjects"
+      lookup ".olifant/queries/elm/textobjects.scm" (anFiles a) `shouldBe` Just "; from nvim-treesitter-textobjects @5c7b026 queries/elm/textobjects.scm (LICENSE: Apache License)\n; directives removed: #set!\n((function_declaration) @function.outer )\n"
+      lookup ".olifant/queries/elm/LICENSE-nvim-treesitter" (anFiles a) `shouldBe` Just "Apache License\n"
+      lookup ".olifant/queries/elm/SOURCES" (anFiles a) `shouldSatisfy` maybe False (T.isInfixOf "textobjects.scm  copied from nvim-treesitter-textobjects @5c7b026 queries/elm/textobjects.scm, directives removed (#set!)")

@@ -21,7 +21,8 @@ module Olifant.LanguageInit
   , Upstream (..)
   , queriesToWrite
   , withoutDirectives
-  , errandRequest
+  , formRequest
+  , errandQueries
   , Field (..)
   , languageForm
   , toolchainForm
@@ -37,7 +38,6 @@ module Olifant.LanguageInit
   , toolchainName
   , sourcesFile
   , pinText
-  , withPin
   , initHeader
   , ErrandInput (..)
   , Answered (..)
@@ -48,10 +48,10 @@ module Olifant.LanguageInit
   , languageRows
   , repairRequest
   , repairHoles
+  , repairAnswers
   , readUpstream
   ) where
 
-import Control.Applicative ((<|>))
 import Control.Monad (filterM)
 import Data.ByteString qualified as BS
 import Data.Text.Encoding qualified as TE
@@ -61,8 +61,8 @@ import Data.Bifunctor (bimap, first)
 import Data.Char (isAlphaNum, isSpace)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
-import Data.List (nub, sort, sortOn)
-import Data.Maybe (fromMaybe)
+import Data.List (nub, nubBy, sort, sortOn)
+import Data.Maybe (fromMaybe, isJust, isNothing)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Doctor (Check (..), Status (..))
@@ -71,10 +71,10 @@ import Olifant.Language (Grammar (..), GrammarSource (..), Language (..), Layer 
 import Olifant.Language.Presets (overPresets, presetsFrom, shippedPresets)
 import Olifant.Glob (matchesGlob)
 import Olifant.Language.TreeSitter (knownPredicates, readCaptures)
-import Olifant.Library (providersSection, shippedLanguages, shippedToolchains)
+import Olifant.Library (providersSection, queryExemplar)
 import Olifant.Template.Parse (knownFilters)
 import Olifant.Toml qualified as Toml
-import System.FilePath (splitDirectories, takeBaseName, takeDirectory, takeExtension, (</>))
+import System.FilePath (normalise, splitDirectories, takeBaseName, takeDirectory, takeExtension, (</>))
 
 -- | The survey's answer: the grammar's repository (and, in a monorepo, the
 -- folder and the name the loader reads), the globs of source and test files,
@@ -173,26 +173,37 @@ captureNamesIn q = nub [T.takeWhile capChar rest | chunk <- drop 1 (T.splitOn "@
     capChar c = isAlphaNum c || c `elem` ("._-" :: String)
     stripComments = T.unlines . map (fst . T.breakOn ";") . T.lines
 
--- | What the grammar's checkout holds for the errand: its label (URL @SHA),
--- its @queries/*.scm@, and its licence (file name, text).
-data Upstream = Upstream {upLabel :: Text, upQueries :: [(FilePath, Text)], upLicence :: Maybe (FilePath, Text)}
+-- | What the grammar's checkout holds for the errand: its label (URL @SHA7),
+-- its @queries/*.scm@, and its licence (file name, text); and the grammar's
+-- @textobjects.scm@ from nvim-treesitter-textobjects (where it is from, as
+-- @<repository> \@SHA7 queries/<g>/textobjects.scm@, and its text) with that
+-- repository's licence ('Olifant.Library.textobjectsSource').
+data Upstream = Upstream
+  { upLabel :: Text
+  , upQueries :: [(FilePath, Text)]
+  , upLicence :: Maybe (FilePath, Text)
+  , upNvim :: Maybe (Text, Text)
+  , upNvimLicence :: Maybe (FilePath, Text)
+  }
   deriving stock (Eq, Show)
 
 -- | The query files a grammar needs, given its shipped set: none when olifant
--- ships some; else upstream's @tags.scm@ copied (a header line naming where
--- it is from and its licence, and one naming the directives removed) or a
--- @tags@ hole, and @imports@ and @textobjects@ holes, sorted.
+-- ships some; else upstream's @tags.scm@ and nvim's @textobjects.scm@ copied
+-- (a header line naming where each is from and its licence, and one naming
+-- the directives removed) or a hole each, and an @imports@ hole, sorted.
 queriesToWrite :: Text -> [(FilePath, Text)] -> Upstream -> ([(FilePath, Text)], [Text])
 queriesToWrite _ shipped up
   | not (null shipped) = ([], [])
-  | otherwise = case lookup "tags.scm" (upQueries up) of
-      Just tags ->
-        let (kept, removed) = withoutDirectives tags
-            note = ["; directives removed: " <> T.unwords removed | not (null removed)]
-         in ([("tags.scm", T.unlines (header : note) <> kept)], ["imports", "textobjects"])
-      Nothing -> ([], ["imports", "tags", "textobjects"])
+  | otherwise =
+      ( [("tags.scm", copy (upLabel up) (upLicence up) t) | Just t <- [lookup "tags.scm" (upQueries up)]]
+          ++ [("textobjects.scm", copy from (upNvimLicence up) t) | Just (from, t) <- [upNvim up]]
+      , sort (["imports"] ++ ["tags" | Nothing <- [lookup "tags.scm" (upQueries up)]] ++ ["textobjects" | Nothing <- [upNvim up]])
+      )
   where
-    header = "; from " <> upLabel up <> maybe "" licence (upLicence up)
+    copy from lic text =
+      let (kept, removed) = withoutDirectives text
+          note = ["; directives removed: " <> T.unwords removed | not (null removed)]
+       in T.unlines (("; from " <> from <> maybe "" licence lic) : note) <> kept
     licence (f, t) = " (" <> T.pack f <> case filter (not . T.null) (map T.strip (T.lines t)) of
       l : _ -> ": " <> l <> ")"
       [] -> ")"
@@ -272,7 +283,7 @@ languageForm l =
   , f "keywords" ["keywords"] "array of strings" (l <> "'s reserved words, all of them") False [] []
   , f "ignore" ["ignore"] "array of strings" ("folder names a project listing never enters: " <> l <> "'s build output and downloaded dependencies ([] when none)") False [] []
   , f "unit_words" ["unit_words"] "string" ("what a unit is in " <> l <> ", as a prompt says it: \"a top-level function or type name (Name), or a method (Type.Method)\" in " <> l <> "'s own words") False [] []
-  , f "placeholder" ["placeholder"] "code over {= message =}" ("an expression that compiles in " <> l <> " and fails when run, its text {= message =}: " <> l <> "'s own not-implemented idiom (a string filter only from the template filters given)") False ["holes"] ["message"]
+  , f "placeholder" ["placeholder"] "code over {= message =}" ("an expression that compiles in " <> l <> " and fails when run, its text {= message =}: " <> l <> "'s own not-implemented idiom (a string filter only from the template filters given)") False [] ["message"]
   , f "branch" ["branch"] "template over {= pattern =}, {= body =}" ("one arm of " <> l <> "'s multi-way branch (a case of a switch or a match), on one line: {= pattern =} the case's value, {= body =} its statement") False [] ["pattern", "body"]
   , f "separator" ["separator"] "string" ("what follows each item in a bracketed list in " <> l <> " (none when nothing does)") False [] []
   , f "line_length" ["line_length"] "integer" ("the line width " <> l <> "'s usual formatter keeps to (none when it has none)") False [] []
@@ -281,8 +292,8 @@ languageForm l =
   , f "empty_statement" ["empty_statement"] "string" ("a statement that does nothing, when " <> l <> " needs one in an empty body (none when an empty body is fine)") False [] []
   , f "tests_for" ["test", "tests_for"] "template over {= dir =}, {= stem =}" "the test file of a source file, as a path over {= dir =} (the source's folder) and {= stem =} (its name less extension), read from the sample's test file names; never the source file itself" False ["test units", "tests"] ["dir", "stem"]
   , f "test_unit" ["test", "unit"] "array of regexes" "POSIX extended regexes (no \\s, \\d, \\w or lazy +?: use [[:space:]], [0-9], [[:alnum:]_]), each matching the line that starts one test in the sample's test files, the test's whole name its last group" False ["test units"] []
-  , f "test_assertion" ["test", "assertion"] "array of regexes" "POSIX extended regexes for the line where a test's first check (its assertion) starts" False ["test units"] []
-  , f "test_above" ["test", "above"] "regex" "a POSIX extended regex for a line above a test that belongs to it (an attribute or a decorator); none when tests have none" False ["test units"] []
+  , f "test_assertion" ["test", "assertion"] "array of regexes" "POSIX extended regexes for the line where a test's first check (its assertion) starts" False [] []
+  , f "test_above" ["test", "above"] "regex" "a POSIX extended regex for a line above a test that belongs to it (an attribute or a decorator); none when tests have none" False [] []
   , f "unit_name" ["unit", "name"] "array of regexes" "POSIX extended regexes, each matching the line that defines a unit (a function, a type, a method), the unit's name its last group" False ["units"] []
   , f "unit_annotation" ["unit", "annotation"] "regex over {= name =}" "a POSIX extended regex for a name's declared type (a parameter's or a field's): {= name =} where the name goes, the type its last group" False ["sibling tests"] ["name"]
   , f "module_of" ["imports", "module_of"] "inline table { strip = [regexes], drop = [strings], separator = string }" "how a file's path becomes the module name an import names: strip removes a prefix of the path, drop the last parts that name their folder, separator joins the parts; none when imports name folders or files" False [] []
@@ -464,52 +475,62 @@ derivedTestsFor sv tracked =
     sources = [p | p <- ordered, any (`matchesGlob` p) (svFiles sv), not (isTest p)]
     tests = filter isTest ordered
 
--- | The errand: one hole per file (@language@, @toolchain@, and each query
--- file to write), the shipped Rust pair as exemplars, the sample's files,
--- and the grammar's facts (its node kinds, the captures upstream uses and
--- the ones olifant reads), the test runners found on PATH, the template
+-- | Round 1 of the errand, a form: one hole per key of the language file and
+-- of its test preset ('languageForm', 'toolchainForm'; a derived
+-- @tests_for@ is not asked), each answered with its value, and one per
+-- query file still to write. Its inputs are the facts: the language, the
+-- grammar, the survey's globs, the test runners on PATH, the template
 -- filters and query predicates olifant knows (closed sets: a model invents
--- @go_string@ or @#strip!@ without them) and the providers' protocol.
-errandRequest :: Text -> Text -> [Text] -> [Text] -> [Text] -> [(FilePath, Text)] -> [Text] -> FillRequest
-errandRequest language grammar kinds captures tools sample queryHoles =
+-- @go_string@ or @#strip!@ without them), and, for the query holes, the
+-- grammar's node kinds and the captures upstream and olifant use. Its
+-- context is the sample's files, and for a textobjects hole the one query
+-- exemplar ('queryExemplar': the shape is what to copy there).
+formRequest :: ErrandInput -> FillRequest
+formRequest ei =
   FillRequest
-    ([fileHole "language" (languageFile language) languageInstruction, fileHole "toolchain" (toolchainFile language) toolchainInstruction] ++ map queryHole queryHoles)
-    [ ("language", language)
-    , ("grammar", grammar)
-    , ("node kinds", T.intercalate ", " kinds)
-    , ("captures", T.intercalate ", " captures)
-    , ("captures olifant reads", T.intercalate ", " (readCaptures ++ ["definition.<kind>"]))
-    , ("tools on PATH", T.intercalate "\n" tools)
-    , ("template filters", "only these, after a bar ({= message|escaped =}): " <> T.intercalate ", " knownFilters)
-    , ("query predicates", "only these; no directives (#set!, #strip!, …): " <> T.intercalate ", " (map ("#" <>) knownPredicates))
-    , ("protocol", providersSection)
-    ]
-    ( [("exemplar: rust.toml", t) | Just t <- [lookup "rust" shippedLanguages]]
-        ++ [("exemplar: cargo-test.toml", t) | Just t <- [lookup "cargo-test" shippedToolchains]]
-        ++ sample
+    ( [fieldHole (languageFile l) fd | fd <- languageForm l, not (derived && fdName fd == "tests_for")]
+        ++ [fieldHole (toolchainFile l) fd | fd <- toolchainForm l]
+        ++ map queryHole queryHoles
     )
-    FileStance
+    ( [ ("language", l)
+      , ("grammar", upLabel up)
+      , ("source globs", T.intercalate ", " (svFiles sv))
+      , ("test globs", T.intercalate ", " (svTests sv))
+      , ("tools on PATH", T.intercalate "\n" (eiTools ei))
+      , ("template filters", "only these, after a bar ({= message|escaped =}): " <> T.intercalate ", " knownFilters)
+      ]
+        ++ ( if null queryHoles
+               then []
+               else
+                 [ ("node kinds", T.intercalate ", " (eiKinds ei))
+                 , ("captures", T.intercalate ", " (nub (concatMap (captureNamesIn . snd) (upQueries up))))
+                 , ("captures olifant reads", T.intercalate ", " (readCaptures ++ ["definition.<kind>"]))
+                 , ("query predicates", "only these; no directives (#set!, #strip!, …): " <> T.intercalate ", " (map ("#" <>) knownPredicates))
+                 ]
+           )
+    )
+    (eiSample ei ++ [("exemplar query (another grammar's): textobjects.scm", snd queryExemplar) | "textobjects" `elem` queryHoles])
+    ValueStance
   where
-    fileHole name file instruction = FillHole name "file" instruction file ("\10214" <> name <> "\10215") [] False Nothing
-    queryHole h = fileHole h (".olifant/queries/" <> T.unpack h <> ".scm") (queryInstruction h)
-    languageInstruction =
-      T.unlines
-        [ "The language file for " <> language <> ", in the exemplar rust.toml's form: its keys, read from the sample files."
-        , "Its tests: [test] preset = \"" <> toolchainName language <> "\" (the toolchain hole), tests_for, unit and assertion regexes (POSIX classes, as the exemplar)."
-        , "Write grammar = { git = \"URL\", rev = \"REV\" } as given; olifant replaces it with its pin."
-        , "Leave out a key the sample does not show you how to answer."
-        , "Leave out [check]: the user writes the check command, not the model (the exemplar's [check] names a preset this language does not have)."
-        ]
-    toolchainInstruction =
-      T.unlines
-        [ "The test preset " <> toolchainName language <> ", in the exemplar cargo-test.toml's form: [test] command, format, root, tests_for, install."
-        , "Run tests only with a tool listed on PATH; a format the protocol names (junit reads {= report =})."
-        ]
+    l = eiLanguage ei
+    sv = eiSurvey ei
+    up = eiUpstream ei
+    derived = isJust (derivedTestsFor sv (eiTracked ei))
+    queryHoles = snd (errandQueries ei)
+    fieldHole file fd =
+      FillHole (fdName fd) (fdKind fd) (fdInstruction fd) file (keyContext fd) [] False Nothing
+    keyContext fd = T.intercalate "\n" (["[" <> T.intercalate "." (init (fdPath fd)) <> "]" | length (fdPath fd) > 1] ++ [last (fdPath fd) <> " = \10214" <> fdName fd <> "\10215"])
+    queryHole h = FillHole h "file" (queryInstruction h) (".olifant/queries/" <> T.unpack h <> ".scm") ("\10214" <> h <> "\10215") [] False Nothing
     queryInstruction = \case
       "tags" -> "tree-sitter queries (tags.scm) over the node kinds given: each definition @definition.<kind> (function, method, class, …) with its name @name."
       "imports" -> "tree-sitter queries (imports.scm) over the node kinds given: each import declaration @import."
-      "textobjects" -> "tree-sitter queries (textobjects.scm) over the node kinds given: @function.outer, @function.inner, @class.outer, @class.inner, @parameter.inner and @call.outer."
+      "textobjects" -> "tree-sitter queries (textobjects.scm) over the node kinds given, in the exemplar's shape: @function.outer, @function.inner (the body's contents), @class.outer, @class.inner, @parameter.inner and @call.outer."
       h -> "tree-sitter queries (" <> h <> ".scm) over the node kinds given."
+
+-- | The query files the errand writes: those copied from upstream (path
+-- under the grammar's query folder, text) and the holes asked.
+errandQueries :: ErrandInput -> ([(FilePath, Text)], [Text])
+errandQueries ei = queriesToWrite (grName (eiGrammar ei)) (eiShipped ei (grName (eiGrammar ei))) (eiUpstream ei)
 
 -- | The @SOURCES@ file beside a project's generated queries: each file and
 -- where it came from (copied from the grammar's repository, or written by
@@ -518,9 +539,14 @@ sourcesFile :: Text -> Text -> [(FilePath, Text)] -> [Text] -> Text
 sourcesFile g grammar copied holes =
   T.unlines $
     ["# Tree-sitter queries for the " <> g <> " grammar (" <> grammar <> "), written by olifant init --language."]
-      ++ sort ([T.pack f <> "  copied from " <> grammar <> " queries/" <> T.pack f <> removed t | (f, t) <- copied] ++ [h <> ".scm  written by the model, compiled against the grammar" | h <- holes])
+      ++ sort ([T.pack f <> "  copied from " <> origin f t <> removed t | (f, t) <- copied] ++ [h <> ".scm  written by the model, compiled against the grammar" | h <- holes])
 
   where
+    -- a file copied from elsewhere than the grammar's repository names its
+    -- path in its header (nvim's textobjects)
+    origin f t = case T.lines t of
+      l : _ | Just from <- T.stripPrefix "; from " l, let o = fst (T.breakOn " (" from), " queries/" `T.isInfixOf` o -> o
+      _ -> grammar <> " queries/" <> T.pack f
     -- the copied file's own header line says which directives went
     removed t = case [r | l <- T.lines t, Just r <- [T.stripPrefix "; directives removed: " l]] of
       r : _ -> ", directives removed (" <> T.intercalate ", " (T.words r) <> ")"
@@ -540,23 +566,13 @@ pinText g = case grSource g of
   where
     quoted t = "\"" <> T.concatMap (\c -> if c `elem` ['"', '\\'] then T.pack ['\\', c] else T.singleton c) t <> "\""
 
--- | A language file's text with its top-level @grammar@ lines (before the
--- first table header) dropped and the pin and 'initHeader' put first.
-withPin :: Text -> Text -> Text
-withPin pin text =
-  T.unlines ([initHeader, pin] ++ filter (not . grammarLine) top ++ rest)
-  where
-    (top, rest) = break isHeader (T.lines (unfence text))
-    isHeader l = "[" `T.isPrefixOf` T.stripStart l
-    grammarLine l = case T.stripPrefix "grammar" (T.stripStart l) of
-      Just after -> "=" `T.isPrefixOf` T.stripStart after
-      Nothing -> l == initHeader
-
 -- | What the errand needs once the grammar is loaded: the language, its
--- pinned grammar and label, the grammar's node kinds, the checkout's
--- queries and licence, the shipped query set by grammar name (production:
--- 'shippedFor'), the test runners found on PATH, the sample's files, and
--- the project folder (a layer's own folder).
+-- pinned grammar, the grammar's node kinds, the checkout's queries and
+-- licence (and nvim's textobjects, 'Upstream'), the shipped query set by
+-- grammar name (production: 'shippedFor'), the test runners found on PATH,
+-- the sample's files, the project folder (a layer's own folder), the
+-- survey and the project's tracked paths (what 'derivedTestsFor' and the
+-- @tests_for@ check read).
 data ErrandInput = ErrandInput
   { eiLanguage :: Text
   , eiGrammar :: Grammar
@@ -566,6 +582,8 @@ data ErrandInput = ErrandInput
   , eiTools :: [Text]
   , eiSample :: [(FilePath, Text)]
   , eiProjectDir :: FilePath
+  , eiSurvey :: Survey
+  , eiTracked :: [FilePath]
   }
 
 -- | The query set olifant ships for a grammar.
@@ -573,73 +591,130 @@ shippedFor :: Text -> [(FilePath, Text)]
 shippedFor = queriesFor
 
 -- | A round's checked answers: the files to write (path under the project,
--- text) and the rows that failed (a file that does not load, a query that
--- does not compile, a hole with no answer).
-data Answered = Answered {anFiles :: [(FilePath, Text)], anFailing :: [Check]}
+-- text), the rows that failed (a key the model answered wrong, a file that
+-- does not load, a query that does not compile), and the answers they were
+-- made from (a repair's are put over them).
+data Answered = Answered {anFiles :: [(FilePath, Text)], anFailing :: [Check], anAnswers :: Map Text Text}
   deriving stock (Eq, Show)
 
--- | The answers checked before anything is written (by hole name, with
--- the round's suffix: "" or "_repair"): the language must load as a project
--- layer over the toolchain answered (its @grammar@ replaced by the pin), the
--- toolchain must read as a preset, each query must compile against the
--- grammar. Only the holes asked are read; a repair round that does not ask
--- for the toolchain loads the language over the one written (WRITTEN).
-checkAnswers :: ErrandInput -> [(FilePath, Text)] -> [Text] -> Text -> Map Text Text -> Answered
-checkAnswers ei written asked suffix answers =
-  Answered (concat [fs | Right fs <- results]) [c | Left c <- results]
+-- | The answers (by hole name) checked before anything is written. Each
+-- field's value is read by 'valueOf' (a value that is not one TOML value,
+-- or uses another key's variables, is a row naming its field; a required
+-- one answered @none@ too); the files are assembled ('assemble') over the
+-- engine's keys; the facts the engine can check are checked (the command's
+-- @{= tests =}@, @tests_for@ on a sampled source); the toolchain must read
+-- as a preset and the language load over it as a project layer, a reader's
+-- error naming its field ('errorField', else the whole file's row); each
+-- query must compile against the grammar. Rows are named @<l>: <field>@.
+checkAnswers :: ErrandInput -> Map Text Text -> Answered
+checkAnswers ei answers =
+  Answered
+    ([(languageFile l, languageText) | null languageErrors] ++ [(toolchainFile l, toolchainText) | null toolchainErrors] ++ [f | Right f <- queries])
+    -- one row per field: a value's own row before the load error it causes
+    (nubBy (\a b -> checkName a == checkName b) (valueRows ++ factRows ++ toolchainErrors ++ languageErrors) ++ [c | Left c <- queries])
+    answers
   where
     l = eiLanguage ei
     g = eiGrammar ei
-    answer h = M.lookup (h <> suffix) answers
-    results = map one asked
-    noAnswer h = Left (Check (l <> ": " <> h) Bad ("the model gave no `" <> h <> suffix <> "`") Nothing)
-    doesNotLoad h why = Left (Check (l <> ": " <> h) Bad ("does not load: " <> why) (Just "regenerate the key or supply a provider (see chapter 9, Providers)"))
-    toolchainText = fmap (\t -> T.unlines [initHeader] <> unfence t) (answer "toolchain")
-    presets = case toolchainText <|> lookup (toolchainFile l) written of
-      Just t | Right p <- presetsFrom "project" [(toolchainName l, t)] -> overPresets shippedPresets p
-      _ -> shippedPresets
-    one = \case
-      "language" -> case answer "language" of
-        Nothing -> noAnswer "language"
-        Just t ->
-          let text = withPin (pinText g) t
-           in case Toml.parseToml text >>= \top -> languageFromLayers presets l [Layer "project" (Just (eiProjectDir ei)) top] of
-                Left why -> doesNotLoad "language" why
-                Right lang
-                  | langGrammar lang /= g -> doesNotLoad "language" "its grammar is not the pinned one"
-                  | otherwise -> Right [(languageFile l, text)]
-      "toolchain" -> case toolchainText of
-        Nothing -> noAnswer "toolchain"
-        Just t -> case presetsFrom "project" [(toolchainName l, t)] of
-          Left why -> doesNotLoad "toolchain" why
-          Right _ -> Right [(toolchainFile l, t)]
-      h -> case answer h of
-        Nothing -> noAnswer h
-        Just t ->
-          let file = T.unpack h <> ".scm"
-              text = unfence t
-           in case queryError g [(file, text)] of
-                Just why -> Left (Check (l <> ": queries") Bad (T.pack file <> ": " <> why) Nothing)
-                Nothing -> Right [(".olifant" </> "queries" </> T.unpack (grName g) </> file, text)]
+    sv = eiSurvey ei
+    derived = derivedTestsFor sv (eiTracked ei)
+    langFields = [fd | fd <- languageForm l, not (isJust derived && fdName fd == "tests_for")]
+    toolFields = toolchainForm l
+    row name detail = Check (l <> ": " <> name) Bad detail (Just "regenerate the key or supply a provider (see chapter 9, Providers)")
+    read' fd = (fd, maybe (Right Nothing) (valueOf fd) (M.lookup (fdName fd) answers))
+    readings = map read' (langFields ++ toolFields)
+    valueRows =
+      [row (fdName fd) why | (fd, Left why) <- readings]
+        ++ [row (fdName fd) ("`" <> fdName fd <> "` is required; the model answered none") | (fd, Right Nothing) <- readings, fdRequired fd]
+    values = M.fromList [(fdName fd, v) | (fd, Right (Just v)) <- readings]
+    testsFor = maybe (M.lookup "tests_for" values) (Just . quote) derived
+    command = M.lookup "command" values
+    junit = maybe False ("{= report =}" `T.isInfixOf`) command
+    linesAnswered = all (`M.member` values) ["lines_pass", "lines_fail"]
+    format
+      | junit = Just "junit-xml"
+      | linesAnswered = Just "lines"
+      | otherwise = Nothing
+    toolValues = if junit then M.filterWithKey (\k _ -> not ("lines_" `T.isPrefixOf` k)) values else values
+    engineLanguage =
+      [(["grammar"], T.drop (T.length "grammar = ") (pinText g)), (["files"], array (svFiles sv)), (["test", "preset"], quote (toolchainName l))]
+        ++ [(["test", "tests_for"], quote d <> "  # from the sample's names") | Just d <- [derived]]
+        ++ [(["holes", k, "placeholder"], "\"{= hole =}\"") | k <- ["ident", "text"]]
+    engineToolchain = [(["test", "tests_for"], t) | Just t <- [testsFor]] ++ [(["test", "format"], quote f) | Just f <- [format]]
+    languageText = T.unlines [initHeader] <> assemble langFields engineLanguage values
+    toolchainText = T.unlines [initHeader] <> assemble toolFields engineToolchain toolValues
+    factRows =
+      [ row "command" "the command has no {= tests =} element: the selected tests' arguments go there, one element"
+      | Just c <- [command], not ("{= tests =}" `T.isInfixOf` c)
+      ]
+        ++ [ row "command" "`format`: the command names no {= report =} and no [test.lines] pass and fail were answered: a runner that writes JUnit XML to {= report =}, or the console's lines"
+           | isJust command, isNothing format
+           ]
+        ++ [r | Nothing <- [derived], Just t <- [testsFor], r <- testsForRows t]
+    -- tests_for on the first sampled source: another file, and a test file by the survey's globs
+    testsForRows t = case sampleFor sv (eiTracked ei) of
+      (src : _, _, _)
+        | Right raw <- Toml.parseToml ("v = " <> t <> "\n") >>= Toml.required "v" Toml.text ->
+            let mapped = normalise (T.unpack (T.replace "{= stem =}" (T.pack (takeBaseName src)) (T.replace "{= dir =}" (T.pack (takeDirectory src)) raw)))
+                beside = case [p | p <- eiTracked ei, any (`matchesGlob` p) (svTests sv), takeDirectory p == takeDirectory src] of
+                  p : _ -> "; the sample's test file beside it is " <> T.pack p
+                  [] -> ""
+                says why = [row "tests_for" ("maps " <> T.pack src <> " to " <> T.pack mapped <> why <> beside)]
+             in if
+                  | mapped == normalise src -> says " (itself)"
+                  | not (null (svTests sv)), not (any (`matchesGlob` mapped) (svTests sv)) -> says (" (not a test file by the globs " <> T.intercalate ", " (svTests sv) <> ")")
+                  | otherwise -> []
+      _ -> []
+    presets = case presetsFrom "project" [(toolchainName l, toolchainText)] of
+      Right p -> overPresets shippedPresets p
+      Left _ -> shippedPresets
+    loadError file why = case errorField (langFields ++ toolFields) why of
+      Just fd -> [row (fdName fd) ("does not load: " <> why)]
+      -- the engine writes `format` by the command
+      Nothing | "`format`" `T.isInfixOf` why -> [row "command" ("does not load: " <> why)]
+      Nothing -> [row file ("does not load: " <> why)]
+    toolchainErrors = case presetsFrom "project" [(toolchainName l, toolchainText)] of
+      Left why -> loadError "toolchain" why
+      Right _ -> []
+    languageErrors = case Toml.parseToml languageText >>= \top -> languageFromLayers presets l [Layer "project" (Just (eiProjectDir ei)) top] of
+      Left why -> loadError "language" why
+      Right lang
+        | langGrammar lang /= g -> [row "language" "does not load: its grammar is not the pinned one"]
+        | otherwise -> []
+    queries =
+      [ case M.lookup h answers of
+          Nothing -> Left (Check (l <> ": " <> h) Bad ("the model gave no `" <> h <> "`") Nothing)
+          Just t ->
+            let file = T.unpack h <> ".scm"
+                text = unfence t
+             in case queryError g [(file, text)] of
+                  Just why -> Left (Check (l <> ": queries") Bad (T.pack file <> ": " <> why) Nothing)
+                  Nothing -> Right (".olifant" </> "queries" </> T.unpack (grName g) </> file, text)
+      | h <- snd (errandQueries ei)
+      ]
+    quote t = "\"" <> T.concatMap (\case '"' -> "\\\""; '\\' -> "\\\\"; c -> T.singleton c) t <> "\""
+    array ts = "[" <> T.intercalate ", " (map quote ts) <> "]"
 
 -- | The errand after the gate: the query files to write (copied or asked),
--- one request for the language, its toolchain and the asked queries, and
--- the answers checked. The request comes back for a repair round.
+-- the form ('formRequest'), and the answers checked. The request comes back
+-- for a repair round.
 errandCore :: Monad m => Filler m -> ErrandInput -> m (Either Text (FillRequest, Answered))
 errandCore filler ei = do
   let g = eiGrammar ei
       up = eiUpstream ei
-      (copied, queryHoles) = queriesToWrite (grName g) (eiShipped ei (grName g)) up
-      captures = nub (concatMap (captureNamesIn . snd) (upQueries up))
-      req = errandRequest (eiLanguage ei) (upLabel up) (eiKinds ei) captures (eiTools ei) (eiSample ei) queryHoles
+      (copied, queryHoles) = errandQueries ei
+      req = formRequest ei
       dir = ".olifant" </> "queries" </> T.unpack (grName g)
+      -- nvim's licence beside its file (Apache-2.0 asks for the notice)
+      licences = [(dir </> "LICENSE-nvim-treesitter", t) | Just (_, t) <- [upNvimLicence up], isJust (lookup "textobjects.scm" copied)]
       queryFiles =
         [(dir </> f, t) | (f, t) <- copied]
+          ++ licences
           ++ [(dir </> "SOURCES", sourcesFile (grName g) (upLabel up) copied queryHoles) | not (null copied && null queryHoles)]
   runFill filler req >>= \case
     Left why -> pure (Left why)
     Right answers -> do
-      let checked = checkAnswers ei [] (map fhName (frHoles req)) "" answers
+      let checked = checkAnswers ei answers
       pure (Right (req, checked {anFiles = anFiles checked ++ queryFiles}))
 
 -- | Doctor's rows about a language: its capability, grammar, queries and
@@ -670,15 +745,21 @@ failingRows l written = filter failing . languageRows l written
         || (checkStatus c == Warn && maybe False ("regenerate the key" `T.isInfixOf`) (checkFix c))
         || (checkStatus c == Warn && checkName c `elem` [l <> ": queries", l <> ": grammar"])
 
--- | The holes of REQ the rows point at: a row named after a hole (a file that
--- did not load), a queries row's file (or every query hole), a test runner
--- or tests row the toolchain, a grammar row none, anything else the
--- language file.
+-- | The holes of REQ the rows point at, by the fields' 'fdRows': a row named
+-- after a field (an init-time row) that field; @test units@, @tests@,
+-- @holes@, @units@, @sibling tests@ the fields they prove; a test runner
+-- row the command; @anchors@ the textobjects hole and @units@ the tags hole
+-- when asked; a queries row its file's hole (or every query hole); a row
+-- of the whole language or toolchain file (a load error no field names)
+-- that file's every field; a grammar row none.
 repairHoles :: FillRequest -> [Check] -> [Text]
 repairHoles req rows = [h | h <- names, h `elem` wanted]
   where
     names = map fhName (frHoles req)
-    queryHoles = filter (`notElem` ["language", "toolchain"]) names
+    fields = languageForm "" ++ toolchainForm ""
+    fieldNames = map fdName fields
+    queryHoles = filter (`notElem` fieldNames) names
+    inFile f = [fhName h | h <- frHoles req, fhName h `elem` fieldNames, f (fhFile h)]
     wanted = concatMap pointsAt rows
     pointsAt c =
       let n = checkName c
@@ -690,29 +771,50 @@ repairHoles req rows = [h | h <- names, h `elem` wanted]
                 [] -> queryHoles
                 hs -> hs
             | suffix == "grammar" -> []
-            | "test runner " `T.isPrefixOf` n || suffix == "tests" -> ["toolchain"]
-            | otherwise -> ["language"]
+            | suffix == "language" || ("language " `T.isPrefixOf` n && "/languages/" `T.isInfixOf` n) -> inFile ("languages/" `isInfixOf'`)
+            | suffix == "toolchain" || ("language " `T.isPrefixOf` n && "/toolchains/" `T.isInfixOf` n) -> inFile ("toolchains/" `isInfixOf'`)
+            | "test runner " `T.isPrefixOf` n -> ["command"]
+            | suffix == "anchors" -> ["textobjects"]
+            | otherwise -> ["tags" | suffix == "units"] ++ [fdName fd | fd <- fields, suffix `elem` fdRows fd]
+    isInfixOf' a p = a `T.isInfixOf` T.pack p
 
 -- | The repair round: the holes the failing rows point at, renamed
 -- @<h>_repair@ (a recorded model answers each name with one text, so the
 -- second round needs its own names; the marker too, or the model answers
--- under the old name), with the files as written and the
--- rows (name, detail, fix) in its context.
+-- under the old name), each told its value fails the rows; the files as
+-- assembled and the rows (name, detail, fix) in its context, and the
+-- providers' protocol in its inputs (supplying a provider is a fix).
 repairRequest :: FillRequest -> [(FilePath, Text)] -> [Check] -> FillRequest
 repairRequest req written rows =
   req
-    { frHoles = [h {fhName = fhName h <> "_repair", fhContext = "\10214" <> fhName h <> "_repair\10215", fhInstruction = fhInstruction h <> "\nThe file below as written fails the rows under \"failing rows\": write it again, whole, so they pass."} | h <- frHoles req, fhName h `elem` asked]
+    { frHoles =
+        [ h
+            { fhName = fhName h <> "_repair"
+            , fhContext = T.replace marker (renamed (fhName h)) (fhContext h)
+            , fhInstruction = fhInstruction h <> "\nThe value as written (in the file below) fails the rows under \"failing rows\": write it again so they pass."
+            }
+        | h <- frHoles req
+        , fhName h `elem` asked
+        , let marker = "\10214" <> fhName h <> "\10215"
+        ]
+    , frInputs = frInputs req ++ [("protocol", providersSection)]
     , frContext = frContext req ++ written ++ [("failing rows", T.unlines [checkName c <> " — " <> checkDetail c <> maybe "" ("; fix: " <>) (checkFix c) | c <- rows])]
     }
   where
     asked = repairHoles req rows
+    renamed h = "\10214" <> h <> "_repair\10215"
+
+-- | A repair's answers under their fields' names (@<h>_repair@ less the
+-- suffix), the others dropped.
+repairAnswers :: Map Text Text -> Map Text Text
+repairAnswers answers = M.fromList [(h, v) | (k, v) <- M.toList answers, Just h <- [T.stripSuffix "_repair" k]]
 
 -- | The grammar checkout's @queries/*.scm@ (beside the grammar's folder in a
 -- monorepo, else at the checkout's root) and its licence, read from disk,
 -- under LABEL (URL @SHA7). No checkout: none.
 readUpstream :: Text -> Maybe FilePath -> Maybe FilePath -> IO Upstream
 readUpstream label checkout path = case checkout of
-  Nothing -> pure (Upstream label [] Nothing)
+  Nothing -> pure (Upstream label [] Nothing Nothing Nothing)
   Just dir -> do
     found <- filterM doesDirectoryExist ([dir </> p </> "queries" | Just p <- [path]] ++ [dir </> "queries"])
     queries <- case found of
@@ -724,6 +826,6 @@ readUpstream label checkout path = case checkout of
     licence <- case [f | f <- tops, "LICENSE" `T.isPrefixOf` T.toUpper (T.pack f)] of
       f : _ -> Just . (f,) <$> readUtf8 (dir </> f)
       [] -> pure Nothing
-    pure (Upstream label queries licence)
+    pure (Upstream label queries licence Nothing Nothing)
   where
     readUtf8 f = TE.decodeUtf8With lenientDecode <$> BS.readFile f

@@ -1,0 +1,14 @@
+# The elmish form's answers (the init --language specs): each is the TOML
+# value the model writes for its key; a key not here is answered none.
+[fills]
+comment = '"--"'
+unit_words = '"a top-level function or type name (Name)"'
+ignore = '["elm-stuff"]'
+unit_name = '''["^type[[:space:]]+alias[[:space:]]+([[:alnum:]_]+)", "^type[[:space:]]+([[:alnum:]_]+)", "^[[:space:]]*([[:alpha:]_][[:alnum:]_']*)"]'''
+tests_for = '"tests/{= stem =}Test.elm"'
+test_unit = '''['^[[:space:]]*[[,]?[[:space:]]*test[[:space:]]+"([^"]*)"']'''
+command = '["elm-test", "{= tests =}"]'
+root = '["elm.json"]'
+install = '"npm install -g elm-test"'
+lines_pass = '"^✓ (.*)$"'
+lines_fail = '"^✗ (.*)$"'

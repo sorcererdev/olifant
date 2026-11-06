@@ -5,7 +5,7 @@
 -- @library/toolchains@, one TOML file each.
 -- `embedDir` sees a newly added file only once this module recompiles:
 -- touch it after adding one.
-module Olifant.Library (shippedLanguages, shippedToolchains, providersSection) where
+module Olifant.Library (shippedLanguages, shippedToolchains, providersSection, queryExemplar, textobjectsSource) where
 
 import Data.ByteString (ByteString)
 import Data.FileEmbed (embedDir, embedFile)
@@ -40,3 +40,15 @@ providersSection =
     withFirst rest = \case
       first : _ -> first : rest
       [] -> []
+
+-- | The one query file @init --language@ shows a model that writes a
+-- grammar's textobjects (nvim has none for it): a shipped file whose shape
+-- C-like grammars share, its node kinds what the model changes.
+queryExemplar :: (FilePath, Text)
+queryExemplar = ("textobjects.scm", TE.decodeUtf8 $(embedFile "library/queries/rust/textobjects.scm"))
+
+-- | Where the shipped textobjects files were taken from
+-- (@library/queries/*/SOURCES@): nvim-treesitter-textobjects' repository
+-- and commit. @init --language@ copies a new grammar's file from it.
+textobjectsSource :: (Text, Text)
+textobjectsSource = ("https://github.com/nvim-treesitter/nvim-treesitter-textobjects", "5c7b0263797dfd1bd6202f2b219f3b53a80b2187")
