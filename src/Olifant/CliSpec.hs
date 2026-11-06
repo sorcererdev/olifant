@@ -306,6 +306,33 @@ initLanguageSpec = describe "init --language" $ do
     language `shouldSatisfy` T.isInfixOf "tests_for"
     language `shouldNotSatisfy` T.isInfixOf "above"
 
+  it "(r) a wrong optional key and a failing doctor row are answered in the one repair" $ do
+    (remote, _) <- elmRemote "r"
+    good <- elmishFills remote
+    let Just unit = lookup "test_unit" good
+        broken = T.replace "test[[:space:]]+" "nevermatches[[:space:]]+" unit
+        wrong k v = case k of
+          "test_unit" -> broken
+          "test_above" -> "[1, 2]"
+          _ -> v
+        fills = [(k, wrong k v) | (k, v) <- good] ++ [("test_unit_repair", unit), ("tests_for_repair", fromMaybe "none" (lookup "tests_for" good)), ("test_above_repair", "none")]
+    files <- elmishProject fills
+    (code, out, err, written) <- run files ["init", "--language", "elmish", "--fills", "fills.toml", "--yes", "--json"]
+    (code, err) `shouldBe` (ExitSuccess, err)
+    err `shouldSatisfy` T.isInfixOf "round 1: elmish: test_above"
+    err `shouldSatisfy` T.isInfixOf "round 1: elmish: test units"
+    out `shouldSatisfy` T.isInfixOf "\"name\":\"elmish: test units\",\"status\":\"ok\""
+    M.findWithDefault "" "/w/.olifant/languages/elmish.toml" written `shouldNotSatisfy` T.isInfixOf "above"
+  it "(s) a key still wrong after the repair is left out, and a warn row says so" $ do
+    (remote, _) <- elmRemote "s"
+    good <- elmishFills remote
+    let fills = [(k, if k == "test_above" then "[1, 2]" else v) | (k, v) <- good] ++ [("test_above_repair", "[3]")]
+    files <- elmishProject fills
+    (code, out, err, written) <- run files (args ["--yes"])
+    (code, out <> err) `shouldBe` (ExitSuccess, out <> err)
+    out `shouldSatisfy` T.isInfixOf "! elmish: test_above — left out: does not load"
+    M.findWithDefault "" "/w/.olifant/languages/elmish.toml" written `shouldNotSatisfy` T.isInfixOf "above"
+
 -- | check on new code (only = "new"), with a base given.
 newCodeCheckSpec :: Spec
 newCodeCheckSpec = describe "check: rules on new code" $ do

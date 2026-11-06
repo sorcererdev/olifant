@@ -33,6 +33,7 @@ module Olifant.LanguageInit
   , isNone
   , valueOf
   , normaliseTemplates
+  , normaliseRegex
   , errorField
   , derivedTestsFor
   , languageFile
@@ -350,12 +351,12 @@ languageForm l =
 -- names @{= report =}@, else @lines@ when @[test.lines]@ is answered).
 toolchainForm :: Text -> [Field]
 toolchainForm l =
-  [ Field "command" ["test", "command"] "argv (an array of strings)" ("the command that runs " <> l <> "'s tests, from the package root (the folder holding a root file) in a copy of the project: {= tests =} one element, the selected tests' arguments; {= report =} the JUnit XML file a runner that writes one is told to write; it must reach the package's tests from that folder. Use a runner on PATH, one that writes JUnit XML when there is one") True ["tests", "test runner"] ["tests", "report", "root", "cache", "context"]
+  [ Field "command" ["test", "command"] "argv (an array of strings)" ("the command that runs " <> l <> "'s tests, from the package root (the folder holding a root file) in a copy of the project: {= tests =} one element where the tests to run are named (olifant puts the selection's arguments there: select_file, select_test); {= report =} the path of the JUnit XML file the runner writes. Use a runner on PATH, the one that writes JUnit XML when there is one") True ["tests", "test runner"] ["tests", "report", "root", "cache", "context"]
   , Field "root" ["test", "root"] "array of strings" "the file names that mark a package root (the manifest's name)" True ["tests"] []
   , Field "install" ["test", "install"] "string" "one line: how to install the test runner" False [] []
   , Field "name" ["test", "name"] "template over {= words =}" "a new test's name from its words: the prefix tests need and {= words|CASE =}, CASE a case filter from the template filters" False [] ["words"]
-  , Field "select_test" ["test", "select", "test"] "argv over {= name =}, {= group =}" "the arguments, in {= tests =}'s place, that run one test: {= name =} its name, {= group =} its file's group" False ["tests"] ["name", "group", "id"]
-  , Field "select_file" ["test", "select", "file"] "argv over {= group =}" "the arguments, in {= tests =}'s place, that run one test file's tests: {= group =} its group, {= id =} its path" False ["tests"] ["name", "group", "id"]
+  , Field "select_test" ["test", "select", "test"] "argv over {= name =}, {= id =}" "the arguments olifant puts in {= tests =}'s place to run one test: {= name =} the test's name, {= id =} its file's path from the package root and its name (file::name; {= id|dir =} the file's folder), {= group =} its file's group (only with module_of)" False ["tests"] ["name", "group", "id"]
+  , Field "select_file" ["test", "select", "file"] "argv over {= id =}" "the arguments olifant puts in {= tests =}'s place to run one test file's tests: {= id =} the file's path from the package root ({= id|dir =} its folder), {= group =} its group (only with module_of)" False ["tests"] ["name", "group", "id"]
   , Field "select_join" ["test", "select", "join"] "string" "what joins a test's name to the names it is nested in" False ["tests"] []
   , Field "junit_join" ["test", "junit", "join"] "string" "in the JUnit report, what joins a testcase's classname parts" False ["tests"] []
   , Field "junit_split" ["test", "junit", "split"] "string" "in the JUnit report, what splits a testcase's name into its nesting" False ["tests"] []
@@ -411,7 +412,7 @@ valueOf fd raw
   | isNone stripped = Right Nothing
   | otherwise = do
       v <- normaliseTemplates (fdVars fd) stripped
-      Just <$> case single v of
+      Just . posix <$> case single v of
         Right () -> Right v
         Left (True, why) -> Left why
         Left (_, why)
@@ -423,6 +424,15 @@ valueOf fd raw
   where
     stripped = T.strip (unfence raw)
     oneString = not (any (`T.isPrefixOf` fdKind fd) ["array", "argv", "inline", "integer"])
+    -- a regex field's strings the POSIX way, re-rendered only when that changed one
+    posix v
+      | "regex" `T.isInfixOf` fdKind fd
+      , Right top <- Toml.parseToml ("v = " <> v <> "\n")
+      , Just tree <- M.lookup "v" top
+      , let tree' = mapStrings normaliseRegex tree
+      , tree' /= tree =
+          renderTree tree'
+      | otherwise = v
     -- Left (more than one key?, why)
     single v = case Toml.parseToml ("v = " <> v <> "\n") of
       Left e -> Left (False, "`" <> fdName fd <> "` is not a TOML value: " <> e)
@@ -434,6 +444,53 @@ valueOf fd raw
       | not ("'''" `T.isInfixOf` t) = "'''\n" <> t <> "'''"
       | otherwise = basic t
     basic t = "\"" <> T.concatMap (\case '"' -> "\\\""; '\\' -> "\\\\"; '\n' -> "\\n"; c -> T.singleton c) t <> "\""
+
+-- | A regex as POSIX extended expressions read it: Perl's classes (@\\s@,
+-- @\\d@, @\\w@ and their negations) as bracket classes, inside a bracket
+-- expression too, and a lazy repeat (@*?@, @+?@, @??@) as the plain one. A
+-- model writes them however it is told; init normalises, the loader never does.
+normaliseRegex :: Text -> Text
+normaliseRegex = T.pack . outside . T.unpack
+  where
+    outside = \case
+      '\\' : c : r | Just cls <- lookup c classes -> cls ++ outside r
+      '\\' : c : r -> '\\' : c : outside r
+      q : '?' : r | q `elem` ("*+?" :: String) -> q : outside r
+      '[' : r -> '[' : bracketStart r
+      c : r -> c : outside r
+      [] -> []
+    bracketStart = \case
+      '^' : ']' : r -> '^' : ']' : inside r
+      '^' : r -> '^' : inside r
+      ']' : r -> ']' : inside r
+      r -> inside r
+    inside = \case
+      '[' : ':' : r -> let (cls, rest) = break (== ']') r in '[' : ':' : cls ++ take 1 rest ++ inside (drop 1 rest)
+      '\\' : c : r | Just cls <- lookup c inBracket -> cls ++ inside r
+      ']' : r -> ']' : outside r
+      c : r -> c : inside r
+      [] -> []
+    classes = [('s', "[[:space:]]"), ('S', "[^[:space:]]"), ('d', "[0-9]"), ('D', "[^0-9]"), ('w', "[[:alnum:]_]"), ('W', "[^[:alnum:]_]")]
+    inBracket = [('s', "[:space:]"), ('d', "0-9"), ('w', "[:alnum:]_")]
+
+-- | Every string in a TOML value through F.
+mapStrings :: (Text -> Text) -> Toml.Tree -> Toml.Tree
+mapStrings f = \case
+  Toml.TText t -> Toml.TText (f t)
+  Toml.TList xs -> Toml.TList (map (mapStrings f) xs)
+  Toml.TTable t -> Toml.TTable (M.map (mapStrings f) t)
+  other -> other
+
+-- | A TOML value as text: strings in double quotes, arrays and inline tables.
+renderTree :: Toml.Tree -> Text
+renderTree = \case
+  Toml.TText t -> "\"" <> T.concatMap (\case '"' -> "\\\""; '\\' -> "\\\\"; '\n' -> "\\n"; c -> T.singleton c) t <> "\""
+  Toml.TInt n -> T.pack (show n)
+  Toml.TDouble d -> T.pack (show d)
+  Toml.TBool b -> if b then "true" else "false"
+  Toml.TList xs -> "[" <> T.intercalate ", " (map renderTree xs) <> "]"
+  Toml.TTable t -> "{" <> T.intercalate ", " [k <> " = " <> renderTree v | (k, v) <- M.toList t] <> "}"
+  Toml.TOther o -> o
 
 -- | A JSON array or object (a model writes @{ "strip": [...] }@ for an inline
 -- table) as the TOML value it means; anything else none.
@@ -653,10 +710,11 @@ shippedFor = queriesFor
 data Answered = Answered {anFiles :: [(FilePath, Text)], anFailing :: [Check], anAnswers :: Map Text Text, anLeftOut :: [Check]}
   deriving stock (Eq, Show)
 
--- | After the one repair: a key that still fails and is not required is
--- left out (answered none) and the file checked again, until no such key
--- fails; each left out is a warn row with why. A required key, a whole
--- file's row and a query keep failing.
+-- | A key that fails and is not required left out (answered none) and the
+-- files checked again, until no such key fails; each left out is a warn row
+-- with why. A required key, a whole file's row and a query keep failing.
+-- Before the repair it lets doctor read the first round's files; after it,
+-- what still fails is left out of the files written.
 leaveOut :: ErrandInput -> Answered -> Answered
 leaveOut ei = go (length (languageForm "" ++ toolchainForm ""))
   where
@@ -665,7 +723,7 @@ leaveOut ei = go (length (languageForm "" ++ toolchainForm ""))
     go n a = case [(f, c) | c <- anFailing a, let f = T.drop 2 (snd (T.breakOn ": " (checkName c))), M.member f optionalField, M.lookup f (anAnswers a) /= Just "none"] of
       dropped@(_ : _) | n > 0 ->
         let again = checkAnswers ei (foldr (\(f, _) -> M.insert f "none") (anAnswers a) dropped)
-            warned = [c {checkStatus = Warn, checkDetail = "left out after the repair: " <> checkDetail c} | (_, c) <- dropped]
+            warned = [c {checkStatus = Warn, checkDetail = "left out: " <> checkDetail c} | (_, c) <- dropped]
          in go (n - 1) again {anLeftOut = anLeftOut a ++ warned}
       _ -> a
 
@@ -717,7 +775,7 @@ checkAnswers ei answers =
     languageText = T.unlines [initHeader] <> assemble langFields engineLanguage values
     toolchainText = T.unlines [initHeader] <> assemble toolFields engineToolchain toolValues
     factRows =
-      [ row "command" "the command has no {= tests =} element: the selected tests' arguments go there, one element"
+      [ row "command" "the command has no {= tests =} element: keep its program, and put {= tests =} where it names the tests to run (olifant puts the selection's arguments there, select_file and select_test)"
       | Just c <- [command], not ("{= tests =}" `T.isInfixOf` c)
       ]
         ++ [ row "command" "`format`: the command names no {= report =} and no [test.lines] pass and fail were answered: a runner that writes JUnit XML to {= report =}, or the console's lines"

@@ -60,7 +60,7 @@ spec = do
       valueOf (field "comment") "none" `shouldBe` Right Nothing
       valueOf (field "comment") "\"//\"" `shouldBe` Right (Just "\"//\"")
       valueOf (field "comment") "--" `shouldBe` Right (Just "'--'")
-      valueOf (field "test_above") "\"^\\s*@\"" `shouldBe` Right (Just "'^\\s*@'")
+      valueOf (field "test_above") "\"^\\s*@\"" `shouldBe` Right (Just "\"^[[:space:]]*@\"")
       valueOf (field "command") "go test ./..." `shouldBe` Right (Just "[\"go\", \"test\", \"./...\"]")
       valueOf (field "branch") "{= pattern =}: {= body =}" `shouldBe` Right (Just "'{= pattern =}: {= body =}'")
       valueOf (field "module_of") "{ \"strip\": [\"^src/\"], \"separator\": \"/\" }" `shouldBe` Right (Just "{separator = \"/\", strip = [\"^src/\"]}")
@@ -73,6 +73,13 @@ spec = do
       normaliseTemplates ["dir", "stem"] "{{dir}}/{{stem}}_t.go" `shouldBe` Right "{= dir =}/{= stem =}_t.go"
       normaliseTemplates ["dir", "stem"] "{= foo =}" `shouldSatisfy` either (const True) (const False)
       normaliseTemplates [] "^a{2}$" `shouldBe` Right "^a{2}$"
+    it "normaliseRegex writes Perl classes and lazy repeats the POSIX way, inside brackets too" $ do
+      normaliseRegex "^\\s*func\\s+(\\w+)\\(.*?\\)" `shouldBe` "^[[:space:]]*func[[:space:]]+([[:alnum:]_]+)\\(.*\\)"
+      normaliseRegex "[^\\s]\\d+?[\\w.]" `shouldBe` "[^[:space:]][0-9]+[[:alnum:]_.]"
+      normaliseRegex "^[[:space:]]*a\\.b" `shouldBe` "^[[:space:]]*a\\.b"
+    it "valueOf normalises a regex field's strings, in arrays and tables too" $ do
+      valueOf (field "test_unit") "[\"^func\\\\s+(Test\\\\w+)\"]" `shouldBe` Right (Just "[\"^func[[:space:]]+(Test[[:alnum:]_]+)\"]")
+      valueOf (field "test_above") "'^\\s*@'" `shouldBe` Right (Just "\"^[[:space:]]*@\"")
     it "errorField maps a reader's key to its field" $ do
       fmap fdName (errorField (languageForm "x") "`test`: `above`: expected a string, got an array") `shouldBe` Just "test_above"
       fmap fdName (errorField (languageForm "x") "`[test] unit`: not a valid expression") `shouldBe` Just "test_unit"
