@@ -22,7 +22,7 @@ import Olifant.LanguageInit
 import Test.Hspec
 
 survey :: Survey
-survey = Survey "https://example.invalid/tree-sitter-x" Nothing Nothing ["**/*.go"] ["**/*_test.go"] (Just "go.mod") ["go"]
+survey = Survey "https://example.invalid/tree-sitter-x" Nothing Nothing ["**/*.go"] ["**/*_test.go"] (Just "go.mod") [Runner "go" Nothing]
 
 -- | The elmish form's answers (testdata/init-language/form.toml), every
 -- other field of both forms answered none.
@@ -88,6 +88,14 @@ spec = do
     it "reads path and name, the loader's monorepo keys" $
       fmap (\s -> (svPath s, svName s)) (parseSurvey "grammar = \"u\"\npath = \"tsx\"\nname = \"tsx\"\nfiles = [\"*.tsx\"]\n")
         `shouldBe` Right (Just "tsx", Just "tsx")
+    it "reads a runner with its JUnit argument, and a bare program" $
+      fmap svRunners (parseSurvey "grammar = \"u\"\nfiles = [\"*.go\"]\nrunners = [\"go\", { program = \"gotestsum\", junit = \"--junitfile {= report =}\" }]\n")
+        `shouldBe` Right [Runner "go" Nothing, Runner "gotestsum" (Just "--junitfile {= report =}")]
+    it "the survey asks for a runner that writes JUnit XML and its argument" $
+      map fhInstruction (frHoles (surveyRequest "go" [])) `shouldSatisfy` any (\i -> "JUnit XML" `T.isInfixOf` i && "junit =" `T.isInfixOf` i)
+    it "runnerLine: where the program is, and its JUnit argument" $ do
+      runnerLine (Runner "gotestsum" (Just "--junitfile {= report =}")) (Just "/opt/bin/gotestsum") `shouldBe` "gotestsum: /opt/bin/gotestsum (JUnit: --junitfile {= report =})"
+      runnerLine (Runner "go" Nothing) Nothing `shouldBe` "go: not on PATH"
     it "refuses an empty grammar and a missing files" $ do
       parseSurvey "grammar = \"\"\nfiles = [\"*.go\"]\n" `shouldSatisfy` either ("grammar" `T.isInfixOf`) (const False)
       parseSurvey "grammar = \"u\"\n" `shouldSatisfy` either ("files" `T.isInfixOf`) (const False)

@@ -11,6 +11,8 @@
 -- ('Olifant.Language.Grammar.remoteHead').
 module Olifant.LanguageInit
   ( Survey (..)
+  , Runner (..)
+  , runnerLine
   , parseSurvey
   , surveyRequest
   , sampleFor
@@ -88,9 +90,19 @@ data Survey = Survey
   , svFiles :: [Text]
   , svTests :: [Text]
   , svManifest :: Maybe FilePath
-  , svRunners :: [Text]
+  , svRunners :: [Runner]
   }
   deriving stock (Eq, Show)
+
+-- | A test runner the survey names: its program, and the argument that has
+-- it write JUnit XML to @{= report =}@ when the model knows one.
+data Runner = Runner {rnProgram :: Text, rnJunit :: Maybe Text}
+  deriving stock (Eq, Show)
+
+-- | A runner as @tools on PATH@ shows it: where its program is (or not on
+-- PATH) and its JUnit argument.
+runnerLine :: Runner -> Maybe FilePath -> Text
+runnerLine r found = rnProgram r <> ": " <> maybe "not on PATH" T.pack found <> maybe "" (\j -> " (JUnit: " <> j <> ")") (rnJunit r)
 
 -- | The survey's TOML (inside one markdown fence at most): @grammar@ and
 -- @files@ are required.
@@ -105,8 +117,14 @@ parseSurvey reply = do
   name <- Toml.optional "name" Toml.text top
   tests <- fromMaybe [] <$> Toml.optional "tests" (Toml.list Toml.text) top
   manifest <- Toml.optional "manifest" Toml.text top
-  runners <- fromMaybe [] <$> Toml.optional "runners" (Toml.list Toml.text) top
+  runners <- fromMaybe [] <$> Toml.optional "runners" (Toml.list runner) top
   pure (Survey (T.strip grammar) (T.unpack <$> path) name files tests (T.unpack <$> manifest) runners)
+  where
+    -- a bare program, or { program, junit }
+    runner = \case
+      Toml.TText p -> Right (Runner p Nothing)
+      Toml.TTable t -> Runner <$> Toml.required "program" Toml.text t <*> Toml.optional "junit" Toml.text t
+      other -> Left ("`runners`: expected a program or { program, junit }, got " <> Toml.describeTree other)
 
 -- | A reply's text with one leading and one trailing markdown fence line
 -- (@```toml@, @```@) dropped; anything else is left as it is.
@@ -146,7 +164,7 @@ surveyRequest language tracked =
         , "files = [globs] (the source files; ** spans folders)"
         , "tests = [globs] (the test files)"
         , "manifest = \"FILE\" (the project's manifest, if it has one)"
-        , "runners = [programs] (the test runners this project could use, by command name)"
+        , "runners = [{ program = \"NAME\", junit = \"ARGS\" }] (the test runners this project could use, by command name, including a wrapper that writes JUnit XML; junit = the argument that names its report file, {= report =} for the path; leave junit out for a runner that writes none)"
         ]
 
 -- | The sample the errand shows the model: the first two source files (not

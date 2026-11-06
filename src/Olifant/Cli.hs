@@ -1019,7 +1019,7 @@ runInitLanguage rt cwd fmt cat l modelArg grammarArg yes plan fillsArg = do
               if plan
                 then do
                   emit rt fmt
-                    (object ["survey" .= object ["grammar" .= url, "files" .= LI.svFiles sv, "tests" .= LI.svTests sv, "runners" .= LI.svRunners sv], "grammar" .= object ["git" .= url, "rev" .= sha], "files" .= files, "sample" .= (sources ++ tests ++ maybe [] pure manifest)])
+                    (object ["survey" .= object ["grammar" .= url, "files" .= LI.svFiles sv, "tests" .= LI.svTests sv, "runners" .= map LI.rnProgram (LI.svRunners sv)], "grammar" .= object ["git" .= url, "rev" .= sha], "files" .= files, "sample" .= (sources ++ tests ++ maybe [] pure manifest)])
                     (T.unlines ([proposal] ++ ["would write " <> f | f <- files] ++ ["sample: " <> T.intercalate ", " (map T.pack (sources ++ tests ++ maybe [] pure manifest))]))
                   pure ExitSuccess
                 else do
@@ -1052,7 +1052,7 @@ runInitLanguage rt cwd fmt cat l modelArg grammarArg yes plan fillsArg = do
                                   Left why -> upstream0 <$ rtErr rt ("init-language: textobjects: not fetched (" <> why <> "): the model writes them\n")
                                   Right (Nothing, _) -> upstream0 <$ rtErr rt ("init-language: textobjects: nvim-treesitter-textobjects has none for " <> gname <> ": the model writes them\n")
                                   Right (found@(Just (from, _)), lic) -> upstream0 {LI.upNvim = found, LI.upNvimLicence = lic} <$ rtErr rt ("init-language: textobjects: " <> from <> "\n")
-                          tools <- mapM (\r -> dpFind (rtDoctor rt) (T.unpack r) <&> \found -> r <> ": " <> maybe "not on PATH" T.pack found) (LI.svRunners sv)
+                          tools <- mapM (\r -> LI.runnerLine r <$> dpFind (rtDoctor rt) (T.unpack (LI.rnProgram r))) (LI.svRunners sv)
                           sample <- fmap concat . mapM (\p -> readText ws p <&> maybe [] (\t -> [(p, LI.cutTo 120 t)])) $ sources ++ tests ++ maybe [] pure manifest
                           let ei = LI.ErrandInput l g (ldNodeTypes ld) upstream LI.shippedFor tools sample (rtProjectDir rt) sv tracked
                           LI.errandCore (mfFiller mf) ei >>= \case
