@@ -25,6 +25,47 @@ survey = Survey "https://example.invalid/tree-sitter-x" Nothing Nothing ["**/*.g
 
 spec :: Spec
 spec = do
+  describe "the form" $ do
+    let field n = case [f | f <- languageForm "x" ++ toolchainForm "x", fdName f == n] of
+          f : _ -> f
+          [] -> error ("no field " <> T.unpack n)
+    it "hole names are underscored, one per key, and each form names its required keys" $ do
+      map fdName (languageForm "x") `shouldSatisfy` all (not . T.isInfixOf ".")
+      [fdName f | f <- languageForm "x", fdRequired f] `shouldBe` ["comment"]
+      [fdName f | f <- toolchainForm "x", fdRequired f] `shouldBe` ["command", "root"]
+      fdPath (field "test_unit") `shouldBe` ["test", "unit"]
+      fdPath (field "holes_expr_wrap") `shouldBe` ["holes", "expr", "wrap"]
+    it "assemble writes the engine's keys first, each field under its table, and leaves none out" $ do
+      let t = assemble (languageForm "x") [(["files"], "[\"**/*.x\"]"), (["test", "preset"], "\"x-test\"")] (M.fromList [("comment", "\"#\""), ("test_unit", "['^def (x)']"), ("test_above", "none"), ("keywords", "none")])
+      T.lines t `shouldBe` ["files = [\"**/*.x\"]", "comment = \"#\"", "", "[test]", "preset = \"x-test\"", "unit = ['^def (x)']"]
+    it "assemble leaves out a table whose needed keys are not all answered" $ do
+      let t = assemble (languageForm "x") [] (M.fromList [("comment", "\"#\""), ("holes_expr_wrap", "\"{= fill =}\"")])
+      t `shouldNotSatisfy` T.isInfixOf "holes"
+    it "valueOf: none is no value; a bare text of a string kind is quoted; two keys in one value are refused" $ do
+      valueOf (field "comment") "none" `shouldBe` Right Nothing
+      valueOf (field "comment") "\"//\"" `shouldBe` Right (Just "\"//\"")
+      valueOf (field "comment") "--" `shouldBe` Right (Just "'--'")
+      valueOf (field "test_above") "\"^\\s*@\"" `shouldBe` Right (Just "'^\\s*@'")
+      valueOf (field "command") "go test ./..." `shouldBe` Right (Just "[\"go\", \"test\", \"./...\"]")
+      valueOf (field "comment") "\"#\"\n[check]\npreset = \"x\"" `shouldSatisfy` either (T.isInfixOf "one value") (const False)
+    it "valueOf normalises a key's own variables, {{x}} and {x}, and refuses another" $ do
+      valueOf (field "tests_for") "\"{{dir}}/{{stem}}_t.go\"" `shouldBe` Right (Just "\"{= dir =}/{= stem =}_t.go\"")
+      valueOf (field "tests_for") "\"{dir}/{stem}_t.go\"" `shouldBe` Right (Just "\"{= dir =}/{= stem =}_t.go\"")
+      valueOf (field "tests_for") "\"{= foo =}/x\"" `shouldSatisfy` either (T.isInfixOf "{= foo =}") (const False)
+      normaliseTemplates ["dir", "stem"] "{{dir}}/{{stem}}_t.go" `shouldBe` Right "{= dir =}/{= stem =}_t.go"
+      normaliseTemplates ["dir", "stem"] "{= foo =}" `shouldSatisfy` either (const True) (const False)
+      normaliseTemplates [] "^a{2}$" `shouldBe` Right "^a{2}$"
+    it "errorField maps a reader's key to its field" $ do
+      fmap fdName (errorField (languageForm "x") "`test`: `above`: expected a string, got an array") `shouldBe` Just "test_above"
+      fmap fdName (errorField (languageForm "x") "`[test] unit`: not a valid expression") `shouldBe` Just "test_unit"
+      fmap fdName (errorField (toolchainForm "x") "`[test.lines] pass`: bad") `shouldBe` Just "lines_pass"
+      fmap fdName (errorField (languageForm "x") "`comment`: expected a string") `shouldBe` Just "comment"
+      fmap fdName (errorField (languageForm "x") "something else") `shouldBe` Nothing
+    it "derivedTestsFor reads tests_for from a source and a test beside it" $ do
+      let sv (_ :: String) fs ts = Survey "g" Nothing Nothing fs ts Nothing []
+      derivedTestsFor (sv "go" ["**/*.go"] ["**/*_test.go"]) ["a/x.go", "a/x_test.go"] `shouldBe` Just "{= dir =}/{= stem =}_test.go"
+      derivedTestsFor (sv "py" ["**/*.py"] ["**/test_*.py"]) ["a/x.py", "a/test_x.py"] `shouldBe` Just "{= dir =}/test_{= stem =}.py"
+      derivedTestsFor (sv "hs" ["src/**/*.hs", "test/**/*.hs"] ["test/**/*Spec.hs"]) ["src/A.hs", "test/ASpec.hs"] `shouldBe` Nothing
   describe "parseSurvey" $ do
     it "reads the keys" $
       parseSurvey (T.unlines ["grammar = \"https://example.invalid/tree-sitter-x\"", "files = [\"**/*.go\"]", "tests = [\"**/*_test.go\"]", "manifest = \"go.mod\"", "runners = [\"go\"]"])

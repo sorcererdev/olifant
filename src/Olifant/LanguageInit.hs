@@ -22,6 +22,16 @@ module Olifant.LanguageInit
   , queriesToWrite
   , withoutDirectives
   , errandRequest
+  , Field (..)
+  , languageForm
+  , toolchainForm
+  , tableNeeds
+  , assemble
+  , isNone
+  , valueOf
+  , normaliseTemplates
+  , errorField
+  , derivedTestsFor
   , languageFile
   , toolchainFile
   , toolchainName
@@ -64,7 +74,7 @@ import Olifant.Language.TreeSitter (knownPredicates, readCaptures)
 import Olifant.Library (providersSection, shippedLanguages, shippedToolchains)
 import Olifant.Template.Parse (knownFilters)
 import Olifant.Toml qualified as Toml
-import System.FilePath (splitDirectories, takeExtension, (</>))
+import System.FilePath (splitDirectories, takeBaseName, takeDirectory, takeExtension, (</>))
 
 -- | The survey's answer: the grammar's repository (and, in a monorepo, the
 -- folder and the name the loader reads), the globs of source and test files,
@@ -235,6 +245,224 @@ toolchainName l = l <> "-test"
 languageFile, toolchainFile :: Text -> FilePath
 languageFile l = ".olifant/languages/" <> T.unpack l <> ".toml"
 toolchainFile l = ".olifant/toolchains/" <> T.unpack (toolchainName l) <> ".toml"
+
+-- | One key of a file the form asks: the hole's name (underscored: a fills
+-- file reads a dotted key as a table), its TOML path, its kind and one-line
+-- instruction as the model sees them, whether `none` is a failing row, the
+-- doctor rows (by suffix) that prove it, and the template variables its
+-- value may use.
+data Field = Field
+  { fdName :: Text
+  , fdPath :: [Text]
+  , fdKind :: Text
+  , fdInstruction :: Text
+  , fdRequired :: Bool
+  , fdRows :: [Text]
+  , fdVars :: [Text]
+  }
+  deriving stock (Eq, Show)
+
+-- | The language file's keys the model answers (user 09, "The keys"). The
+-- engine writes the rest: the header, the pinned @grammar@, @files@ (the
+-- survey's globs), @[test] preset@, the ident and text holes' placeholder,
+-- and @tests_for@ when 'derivedTestsFor' reads it.
+languageForm :: Text -> [Field]
+languageForm l =
+  [ f "comment" ["comment"] "string" ("the text that starts a line comment in " <> l) True [] []
+  , f "keywords" ["keywords"] "array of strings" (l <> "'s reserved words, all of them") False [] []
+  , f "ignore" ["ignore"] "array of strings" ("folder names a project listing never enters: " <> l <> "'s build output and downloaded dependencies ([] when none)") False [] []
+  , f "unit_words" ["unit_words"] "string" ("what a unit is in " <> l <> ", as a prompt says it: \"a top-level function or type name (Name), or a method (Type.Method)\" in " <> l <> "'s own words") False [] []
+  , f "placeholder" ["placeholder"] "code over {= message =}" ("an expression that compiles in " <> l <> " and fails when run, its text {= message =}: " <> l <> "'s own not-implemented idiom (a string filter only from the template filters given)") False ["holes"] ["message"]
+  , f "branch" ["branch"] "template over {= pattern =}, {= body =}" ("one arm of " <> l <> "'s multi-way branch (a case of a switch or a match), on one line: {= pattern =} the case's value, {= body =} its statement") False [] ["pattern", "body"]
+  , f "separator" ["separator"] "string" ("what follows each item in a bracketed list in " <> l <> " (none when nothing does)") False [] []
+  , f "line_length" ["line_length"] "integer" ("the line width " <> l <> "'s usual formatter keeps to (none when it has none)") False [] []
+  , f "opens_block" ["opens_block"] "regex" "a POSIX extended regex matching a line that opens a block (how such a line ends)" False [] []
+  , f "stub_lines" ["stub_lines"] "array of regexes" "POSIX extended regexes, each starting with ^, for a stripped line of a body that is still a stub (the placeholder's line)" False [] []
+  , f "empty_statement" ["empty_statement"] "string" ("a statement that does nothing, when " <> l <> " needs one in an empty body (none when an empty body is fine)") False [] []
+  , f "tests_for" ["test", "tests_for"] "template over {= dir =}, {= stem =}" "the test file of a source file, as a path over {= dir =} (the source's folder) and {= stem =} (its name less extension), read from the sample's test file names; never the source file itself" False ["test units", "tests"] ["dir", "stem"]
+  , f "test_unit" ["test", "unit"] "array of regexes" "POSIX extended regexes (no \\s, \\d, \\w or lazy +?: use [[:space:]], [0-9], [[:alnum:]_]), each matching the line that starts one test in the sample's test files, the test's whole name its last group" False ["test units"] []
+  , f "test_assertion" ["test", "assertion"] "array of regexes" "POSIX extended regexes for the line where a test's first check (its assertion) starts" False ["test units"] []
+  , f "test_above" ["test", "above"] "regex" "a POSIX extended regex for a line above a test that belongs to it (an attribute or a decorator); none when tests have none" False ["test units"] []
+  , f "unit_name" ["unit", "name"] "array of regexes" "POSIX extended regexes, each matching the line that defines a unit (a function, a type, a method), the unit's name its last group" False ["units"] []
+  , f "unit_annotation" ["unit", "annotation"] "regex over {= name =}" "a POSIX extended regex for a name's declared type (a parameter's or a field's): {= name =} where the name goes, the type its last group" False ["sibling tests"] ["name"]
+  , f "module_of" ["imports", "module_of"] "inline table { strip = [regexes], drop = [strings], separator = string }" "how a file's path becomes the module name an import names: strip removes a prefix of the path, drop the last parts that name their folder, separator joins the parts; none when imports name folders or files" False [] []
+  , f "imports_write" ["imports", "write"] "template over {= module =}" "one import line that imports the module {= module =}" False [] ["module", "owner"]
+  , f "imports_paths" ["imports", "paths"] "array of templates over {= path =}, {= base =}" "where an imported module's file is: {= path =} the module's parts joined by /, {= base =} the path up to the project's source folder" False [] ["path", "base"]
+  , f "imports_resolve" ["imports", "resolve"] "array of inline tables { pattern = regex, module = group, names = group }" "for each form of import line: a POSIX extended regex matching it, and the group numbers of the module and of the names imported" False [] []
+  ]
+    ++ concat [[hole k "placeholder" (kindText k), hole k "wrap" (kindText k)] | k <- ["expr", "stmt", "block", "type"]]
+    ++ [hole k "wrap" (kindText k) | k <- ["ident", "text"]]
+  where
+    f n p k i r rows vars = Field n p k i r rows vars
+    hole :: Text -> Text -> Text -> Field
+    hole k "placeholder" what =
+      Field ("holes_" <> k <> "_placeholder") ["holes", k, "placeholder"] "code over {= hole =}, {= instruction =}" ("what an unfilled hole leaves where " <> what <> " goes: code that compiles in " <> l <> " there and fails when run, {= hole =} and {= instruction =} in its message") False ["holes"] ["hole", "instruction"]
+    hole k _ what =
+      Field ("holes_" <> k <> "_wrap") ["holes", k, "wrap"] "code over {= fill =}" ("the least " <> l <> " code around " <> what <> " that parses as a whole file: {= fill =} where it goes") False ["holes"] ["fill"]
+    kindText = \case
+      "expr" -> "an expression"
+      "stmt" -> "a statement"
+      "block" -> "a function body's statements"
+      "type" -> "a type"
+      "ident" -> "a new name (a declaration's)"
+      _ -> "text inside a string literal"
+
+-- | The test preset's keys the model answers. The engine writes
+-- @tests_for@ (the language's) and @format@ (@junit-xml@ when the command
+-- names @{= report =}@, else @lines@ when @[test.lines]@ is answered).
+toolchainForm :: Text -> [Field]
+toolchainForm l =
+  [ Field "command" ["test", "command"] "argv (an array of strings)" ("the command that runs " <> l <> "'s tests, from the package root (the folder holding a root file) in a copy of the project: {= tests =} one element, the selected tests' arguments; {= report =} the JUnit XML file a runner that writes one is told to write; it must reach the package's tests from that folder. Use a runner on PATH, one that writes JUnit XML when there is one") True ["tests", "test runner"] ["tests", "report", "root", "cache", "context"]
+  , Field "root" ["test", "root"] "array of strings" "the file names that mark a package root (the manifest's name)" True ["tests"] []
+  , Field "install" ["test", "install"] "string" "one line: how to install the test runner" False [] []
+  , Field "name" ["test", "name"] "template over {= words =}" "a new test's name from its words: the prefix tests need and {= words|CASE =}, CASE a case filter from the template filters" False [] ["words"]
+  , Field "select_test" ["test", "select", "test"] "argv over {= name =}, {= group =}" "the arguments, in {= tests =}'s place, that run one test: {= name =} its name, {= group =} its file's group" False ["tests"] ["name", "group", "id"]
+  , Field "select_file" ["test", "select", "file"] "argv over {= group =}" "the arguments, in {= tests =}'s place, that run one test file's tests: {= group =} its group, {= id =} its path" False ["tests"] ["name", "group", "id"]
+  , Field "select_join" ["test", "select", "join"] "string" "what joins a test's name to the names it is nested in" False ["tests"] []
+  , Field "junit_join" ["test", "junit", "join"] "string" "in the JUnit report, what joins a testcase's classname parts" False ["tests"] []
+  , Field "junit_split" ["test", "junit", "split"] "string" "in the JUnit report, what splits a testcase's name into its nesting" False ["tests"] []
+  , Field "stub_test" ["test", "stub", "test"] "code over {= name =}, {= indent =}, {= note =}" "a new, failing test named {= name =}: {= indent =} one level of indentation, {= note =} a comment line olifant writes" False [] ["name", "unit", "module", "indent", "note"]
+  , Field "stub_file" ["test", "stub", "file"] "code over {= import =}, {= module =}" "the start of a new test file, before its first test: {= import =} the unit's import, {= module =} its module" False [] ["import", "name", "unit", "module", "indent", "note"]
+  , Field "stub_gap" ["test", "stub", "gap"] "integer" "blank lines between two tests" False [] []
+  , Field "lines_pass" ["test", "lines", "pass"] "regex" "with no JUnit report: a POSIX extended regex for the console line of a passing test, its name the first group" False ["tests"] []
+  , Field "lines_fail" ["test", "lines", "fail"] "regex" "with no JUnit report: a POSIX extended regex for the console line of a failing test, its name the first group" False ["tests"] []
+  , Field "lines_failure" ["test", "lines", "failure"] "regex" "with no JUnit report: a POSIX extended regex for a failure's file:line, file and line its groups" False ["tests"] []
+  ]
+
+-- | The tables whose keys are read together: one is left out of the file
+-- unless every key it needs has a value (a hole kind's placeholder and
+-- wrap; a selection's test and file; a console format's pass and fail).
+tableNeeds :: [([Text], [Text])]
+tableNeeds =
+  [(["holes", k], ["placeholder", "wrap"]) | k <- ["expr", "stmt", "block", "type", "ident", "text"]]
+    ++ [(["test", "select"], ["test", "file"]), (["test", "lines"], ["pass", "fail"]), (["test", "stub"], ["test"])]
+
+-- | A file from the engine's keys (path, TOML value) and the fields' answers
+-- (by hole name, each a TOML value; @none@ and absent ones left out): the
+-- top-level keys first, the engine's before the fields', then each table
+-- in the order its first key appears. A table 'tableNeeds' names is
+-- written only with every key it needs.
+assemble :: [Field] -> [([Text], Text)] -> Map Text Text -> Text
+assemble fields engine answers = T.intercalate "\n" (map section tables)
+  where
+    answered = [(fdPath fd, v) | fd <- fields, Just v <- [M.lookup (fdName fd) answers], not (isNone v)]
+    entries = filter complete (engine ++ answered)
+    complete (p, _) = case [needs | (tbl, needs) <- tableNeeds, tbl == init' p] of
+      needs : _ -> all (\k -> any ((== init' p ++ [k]) . fst) (engine ++ answered)) needs
+      [] -> True
+    init' p = take (length p - 1) p
+    tables = nub ([] : map (init' . fst) entries)
+    section tbl =
+      T.unlines $
+        ["[" <> T.intercalate "." tbl <> "]" | not (null tbl)]
+          ++ [last p <> " = " <> v | (p, v) <- entries, init' p == tbl]
+
+-- | @none@, the model's word for a key it cannot answer (quoted or not).
+isNone :: Text -> Bool
+isNone v = T.toLower (T.strip v) `elem` ["none", "\"none\"", "'none'"]
+
+-- | A model's answer for FIELD as one TOML value: @Nothing@ for @none@; a
+-- key's own variables written @{{x}}@ or @{x}@ made @{= x =}@
+-- ('normaliseTemplates'); a bare text of a one-string kind quoted (and a
+-- double-quoted one whose escapes TOML refuses, a regex's @\\s@, re-quoted
+-- as a literal), a bare argv split into words. Refused: a value that is
+-- not one TOML value (a newline and a table header smuggled in) and a
+-- variable that is not the key's.
+valueOf :: Field -> Text -> Either Text (Maybe Text)
+valueOf fd raw
+  | isNone stripped = Right Nothing
+  | otherwise = do
+      v <- normaliseTemplates (fdVars fd) stripped
+      Just <$> case single v of
+        Right () -> Right v
+        Left (True, why) -> Left why
+        Left (_, why)
+          | oneString, Just inner <- T.stripPrefix "\"" v >>= T.stripSuffix "\"", not ("\n" `T.isInfixOf` inner), Right () <- single (quoted inner) -> Right (quoted inner)
+          | oneString, not (any (`T.isPrefixOf` v) ["[", "{", "\"", "'"]), Right () <- single (quoted v) -> Right (quoted v)
+          | "argv" `T.isPrefixOf` fdKind fd, not ("\n" `T.isInfixOf` v), not (any (`T.isPrefixOf` v) ["[", "\"", "'"]) -> Right ("[" <> T.intercalate ", " [basic w | w <- T.words v] <> "]")
+          | otherwise -> Left why
+  where
+    stripped = T.strip (unfence raw)
+    oneString = not (any (`T.isPrefixOf` fdKind fd) ["array", "argv", "inline", "integer"])
+    -- Left (more than one key?, why)
+    single v = case Toml.parseToml ("v = " <> v <> "\n") of
+      Left e -> Left (False, "`" <> fdName fd <> "` is not a TOML value: " <> e)
+      Right top
+        | M.keys top == ["v"] -> Right ()
+        | otherwise -> Left (True, "`" <> fdName fd <> "` is more than one value: the answer is one value, the right side of `" <> last (fdPath fd) <> " =`")
+    quoted t
+      | not ("'" `T.isInfixOf` t), not ("\n" `T.isInfixOf` t) = "'" <> t <> "'"
+      | not ("'''" `T.isInfixOf` t) = "'''\n" <> t <> "'''"
+      | otherwise = basic t
+    basic t = "\"" <> T.concatMap (\case '"' -> "\\\""; '\\' -> "\\\\"; '\n' -> "\\n"; c -> T.singleton c) t <> "\""
+
+-- | A model's text with VARS (a key's own template variables) written
+-- @{{x}}@, @{{ x }}@ or @{x}@ made @{= x =}@ (a model writes those however it
+-- is told; init normalises, the loader never does). Refused: a @{= v =}@ whose
+-- variable is not one of VARS (@if@, @else@ and @end@ are the template's own).
+normaliseTemplates :: [Text] -> Text -> Either Text Text
+normaliseTemplates vars src =
+  case [v | v <- variablesIn out, v `notElem` vars] of
+    [] -> Right out
+    bad : _ -> Left ("{= " <> bad <> " =} is not one of this key's variables" <> if null vars then " (it has none)" else ": " <> T.intercalate ", " ["{= " <> v <> " =}" | v <- vars])
+  where
+    -- the double-braced spellings first: {x} is inside {{x}}
+    out = foldl (\t v -> foldl (\t' (a, b) -> T.replace a b t') t [("{{" <> v <> "}}", new v), ("{{ " <> v <> " }}", new v), ("{" <> v <> "}", new v)]) src vars
+    new v = "{= " <> v <> " =}"
+    variablesIn t =
+      [ name
+      | chunk <- drop 1 (T.splitOn "{=" t)
+      , let inside = T.strip (fst (T.breakOn "=}" chunk))
+      , let ws = T.words (T.takeWhile (/= '|') inside)
+      , name <- case ws of
+          ["end"] -> []
+          ["else"] -> []
+          "if" : n : _ -> [n]
+          n : _ -> [n]
+          [] -> []
+      ]
+
+-- | A key a reader's error names, as the field that writes it: the
+-- backquoted names in the message (@`test`: `above`: …@, @`[test.lines]
+-- pass`@) as one path, matched against each field's path; the longest
+-- path all of whose parts the message names wins.
+errorField :: [Field] -> Text -> Maybe Field
+errorField fields msg = case sortOn (negate . length . fdPath) [fd | fd <- fields, last (fdPath fd) `elem` named, all (`elem` named) (fdPath fd)] of
+  fd : _ -> Just fd
+  [] -> case [fd | fd <- fields, last (fdPath fd) `elem` named] of
+    [fd] -> Just fd
+    _ -> Nothing
+  where
+    quotedParts = [q | (i, q) <- zip [0 :: Int ..] (T.splitOn "`" msg), odd i]
+    named = concatMap (T.words . T.map (\c -> if c `elem` ("[].=" :: String) then ' ' else c)) quotedParts
+
+-- | @tests_for@ read off the project's names: for a sample source @d/s.e@
+-- (by 'sampleFor''s order) and a tracked test file @d/t.e@ in the same folder
+-- whose stem holds @s@, @{= dir =}/@ and @t@ with @s@ made @{= stem =}@, and
+-- @.e@; the first pair found. None when no test sits beside a source (a
+-- template over @{= dir =}@ cannot say @src/A@ → @test/ASpec@).
+derivedTestsFor :: Survey -> [FilePath] -> Maybe Text
+derivedTestsFor sv tracked =
+  case [ "{= dir =}/" <> before <> "{= stem =}" <> after <> T.pack (takeExtension t)
+       | s <- sources
+       , t <- tests
+       , takeDirectory s == takeDirectory t
+       , takeExtension s == takeExtension t
+       , let ss = T.pack (takeBaseName s)
+             ts = T.pack (takeBaseName t)
+       , ss /= ts
+       , not (T.null ss)
+       , ss `T.isInfixOf` ts
+       , let (before, rest) = T.breakOn ss ts
+             after = T.drop (T.length ss) rest
+       ] of
+    d : _ -> Just d
+    [] -> Nothing
+  where
+    ordered = sortOn (\p -> (length (splitDirectories p), p)) tracked
+    isTest p = any (`matchesGlob` p) (svTests sv)
+    sources = [p | p <- ordered, any (`matchesGlob` p) (svFiles sv), not (isTest p)]
+    tests = filter isTest ordered
 
 -- | The errand: one hole per file (@language@, @toolchain@, and each query
 -- file to write), the shipped Rust pair as exemplars, the sample's files,
