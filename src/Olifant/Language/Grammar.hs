@@ -25,6 +25,7 @@ module Olifant.Language.Grammar
   , grammarSources
   , checkoutOf
   , remoteHead
+  , fetch
   , grammarKey
   , grammarLibrary
   , loadGrammar
@@ -58,6 +59,7 @@ import Foreign.Storable (peek)
 import GHC.Clock (getMonotonicTime)
 import Numeric (showHex)
 import Olifant.Language.Adapter (Grammar (..), GrammarSource (..))
+import Olifant.Library (textobjectsSource)
 import Olifant.Process (runBytes, runBytesWithin)
 import System.Directory (XdgDirectory (XdgCache), createDirectoryIfMissing, doesDirectoryExist, doesFileExist, findExecutable, getFileSize, getHomeDirectory, getModificationTime, getXdgDirectory, makeAbsolute, removePathForcibly, renameDirectory, renameFile)
 import System.Environment (lookupEnv)
@@ -84,11 +86,14 @@ data GrammarSettings = GrammarSettings
   { gsCache :: FilePath
   , gsLocalSources :: [FilePath]
   , gsFind :: String -> IO (Maybe FilePath)
+  , gsTextobjects :: (Text, Text)
+  -- ^ where @init --language@ copies a new grammar's textobjects from (URL,
+  -- SHA): 'textobjectsSource'; the suite's is a repository that is not there
   }
 
 -- | Settings over a cache and local source folders, finding programs on PATH.
 defaultSettings :: FilePath -> [FilePath] -> GrammarSettings
-defaultSettings cache sources = GrammarSettings cache sources findExecutable
+defaultSettings cache sources = GrammarSettings cache sources findExecutable textobjectsSource
 
 settingsRef :: IORef (Maybe GrammarSettings)
 settingsRef = unsafePerformIO (newIORef Nothing)

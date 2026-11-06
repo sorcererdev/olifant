@@ -50,13 +50,15 @@ module Olifant.LanguageInit
   , repairHoles
   , repairAnswers
   , readUpstream
+  , nvimTextobjects
   ) where
 
 import Control.Monad (filterM)
 import Data.ByteString qualified as BS
 import Data.Text.Encoding qualified as TE
 import Data.Text.Encoding.Error (lenientDecode)
-import System.Directory (doesDirectoryExist, listDirectory)
+import System.Directory (doesDirectoryExist, doesFileExist, listDirectory)
+import Olifant.Language.Grammar (GrammarSettings (..), failureDetail, fetch)
 import Data.Bifunctor (bimap, first)
 import Data.Char (isAlphaNum, isSpace)
 import Data.Map.Strict (Map)
@@ -827,5 +829,32 @@ readUpstream label checkout path = case checkout of
       f : _ -> Just . (f,) <$> readUtf8 (dir </> f)
       [] -> pure Nothing
     pure (Upstream label queries licence Nothing Nothing)
+  where
+    readUtf8 f = TE.decodeUtf8With lenientDecode <$> BS.readFile f
+
+-- | The grammar's @textobjects.scm@ from nvim-treesitter-textobjects, at the
+-- repository and commit the settings name ('gsTextobjects': olifant's, never
+-- the model's): fetched once into the cache (@grammars/src/<repo>-<sha7>@,
+-- 'fetch''s safety), then @queries/<g>/textobjects.scm@ read with where it is
+-- from (@<repo> \@SHA7 queries/<g>/textobjects.scm@), and the licence. A
+-- grammar nvim has no file for: none. A fetch that fails: why.
+nvimTextobjects :: GrammarSettings -> Text -> IO (Either Text (Maybe (Text, Text), Maybe (FilePath, Text)))
+nvimTextobjects s g = do
+  let (url, sha) = gsTextobjects s
+      repo = let n = last ("" : filter (not . T.null) (T.splitOn "/" url)) in fromMaybe n (T.stripSuffix ".git" n)
+      checkout = gsCache s </> "grammars" </> "src" </> T.unpack (repo <> "-" <> T.take 7 sha)
+      file = "queries" </> T.unpack g </> "textobjects.scm"
+  there <- doesDirectoryExist checkout
+  fetched <- if there then pure (Right ()) else fetch s url sha checkout
+  case fetched of
+    Left f -> pure (Left (failureDetail repo f))
+    Right () -> do
+      found <- doesFileExist (checkout </> file)
+      text <- if found then Just <$> readUtf8 (checkout </> file) else pure Nothing
+      tops <- sort <$> listDirectory checkout
+      licence <- case [f | f <- tops, "LICENSE" `T.isPrefixOf` T.toUpper (T.pack f)] of
+        f : _ -> Just . (f,) <$> readUtf8 (checkout </> f)
+        [] -> pure Nothing
+      pure (Right ((\t -> (repo <> " @" <> T.take 7 sha <> " " <> T.pack file, t)) <$> text, licence))
   where
     readUtf8 f = TE.decodeUtf8With lenientDecode <$> BS.readFile f

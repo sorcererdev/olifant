@@ -1042,7 +1042,16 @@ runInitLanguage rt cwd fmt cat l modelArg grammarArg yes plan fillsArg = do
                           stop ("the grammar does not load: " <> failureLine f) (Just (rowLine row)) [row]
                         Right ld -> do
                           let info = GrammarInfo (grammarLabel g) (ldAbi ld) (ldLibrary ld) Nothing
-                          upstream <- LI.readUpstream (url <> " @" <> T.take 7 sha) (checkoutOf s g) (LI.svPath sv)
+                          upstream0 <- LI.readUpstream (url <> " @" <> T.take 7 sha) (checkoutOf s g) (LI.svPath sv)
+                          -- nvim's textobjects for a grammar olifant ships no queries for (its URL and SHA olifant's)
+                          upstream <-
+                            if not (null (LI.shippedFor gname))
+                              then pure upstream0
+                              else
+                                LI.nvimTextobjects s gname >>= \case
+                                  Left why -> upstream0 <$ rtErr rt ("init-language: textobjects: not fetched (" <> why <> "): the model writes them\n")
+                                  Right (Nothing, _) -> upstream0 <$ rtErr rt ("init-language: textobjects: nvim-treesitter-textobjects has none for " <> gname <> ": the model writes them\n")
+                                  Right (found@(Just (from, _)), lic) -> upstream0 {LI.upNvim = found, LI.upNvimLicence = lic} <$ rtErr rt ("init-language: textobjects: " <> from <> "\n")
                           tools <- mapM (\r -> dpFind (rtDoctor rt) (T.unpack r) <&> \found -> r <> ": " <> maybe "not on PATH" T.pack found) (LI.svRunners sv)
                           sample <- fmap concat . mapM (\p -> readText ws p <&> maybe [] (\t -> [(p, LI.cutTo 120 t)])) $ sources ++ tests ++ maybe [] pure manifest
                           let ei = LI.ErrandInput l g (ldNodeTypes ld) upstream LI.shippedFor tools sample (rtProjectDir rt) sv tracked

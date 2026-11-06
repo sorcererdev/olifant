@@ -14,7 +14,7 @@ module SpecHook (hook, failAfter, exampleLimit, grammarSetup) where
 
 import Control.Monad (forM_)
 import Olifant.Language (langGrammar, shippedLanguageNow)
-import Olifant.Language.Grammar (defaultSettings, loadGrammar, setGrammarSettings)
+import Olifant.Language.Grammar (GrammarSettings (..), defaultSettings, loadGrammar, setGrammarSettings)
 import System.Directory (getTemporaryDirectory, makeAbsolute)
 import System.Environment (setEnv)
 import System.FilePath ((</>))
@@ -30,7 +30,8 @@ grammarSetup = do
   tmp <- getTemporaryDirectory
   local <- makeAbsolute "library/grammars"
   setEnv "OLIFANT_GRAMMAR_SOURCES" local
-  setGrammarSettings (defaultSettings (tmp </> "olifant-test-cache") [local])
+  -- no spec reaches the network: nvim's repository is one that is not there
+  setGrammarSettings (defaultSettings (tmp </> "olifant-test-cache") [local]) {gsTextobjects = ("file:///nonexistent/nvim-treesitter-textobjects", "0000000000000000000000000000000000000000")}
   forM_ ["python", "rust", "haskell"] $ \g ->
     loadGrammar (langGrammar (shippedLanguageNow g)) >>= either (\f -> fail ("the " <> show g <> " grammar does not load: " <> show f)) (const (pure ()))
 

@@ -8,9 +8,9 @@ import Data.Text.IO qualified as TIO
 import Data.Map.Strict qualified as M
 import Olifant.Fill (parseFills, replayFiller)
 import Olifant.Language (Grammar (..), GrammarSource (..))
-import Olifant.Language.Grammar (Loaded (..), loadGrammar)
+import Olifant.Language.Grammar (GrammarSettings (..), Loaded (..), defaultSettings, loadGrammar)
 import Olifant.Language.GrammarSpec (fixtureRepo)
-import System.Directory (createDirectoryIfMissing, getTemporaryDirectory)
+import System.Directory (createDirectoryIfMissing, getTemporaryDirectory, removePathForcibly)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
 import System.Process (readProcess)
@@ -176,6 +176,33 @@ spec = do
       t `shouldSatisfy` T.isInfixOf "tags.scm"
       t `shouldSatisfy` T.isInfixOf "imports.scm"
       t `shouldSatisfy` T.isInfixOf "written by the model"
+  describe "nvimTextobjects" $ do
+    let nvimRepo name = do
+          tmp <- getTemporaryDirectory
+          let repo = tmp </> "olifant-test-cache" </> ("nvim-fixture-" <> name)
+              git args = readProcess "git" (["-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"] ++ args) ""
+          removePathForcibly repo
+          removePathForcibly (tmp </> "olifant-test-cache" </> ("nvim-cache-" <> name))
+          createDirectoryIfMissing True (repo </> "queries" </> "elm")
+          TIO.writeFile (repo </> "queries" </> "elm" </> "textobjects.scm") "(function_declaration) @function.outer\n"
+          TIO.writeFile (repo </> "LICENSE") "Apache License\n"
+          _ <- readProcess "git" ["init", "--quiet", repo] ""
+          _ <- git ["add", "-A"]
+          _ <- git ["commit", "--quiet", "-m", "queries"]
+          sha <- T.strip . T.pack <$> git ["rev-parse", "HEAD"]
+          let s = (defaultSettings (tmp </> "olifant-test-cache" </> ("nvim-cache-" <> name)) []) {gsTextobjects = ("file://" <> T.pack repo, sha)}
+          pure (s, sha)
+    it "fetches olifant's pinned repository and reads the grammar's file and the licence" $ do
+      (s, sha) <- nvimRepo "a"
+      Right (found, licence) <- nvimTextobjects s "elm"
+      found `shouldSatisfy` maybe False (\(from, t) -> from == "nvim-fixture-a @" <> T.take 7 sha <> " queries/elm/textobjects.scm" && t == "(function_declaration) @function.outer\n")
+      licence `shouldBe` Just ("LICENSE", "Apache License\n")
+    it "a grammar nvim has no file for is none; an unreachable repository says why" $ do
+      (s, _) <- nvimRepo "b"
+      Right (found, _) <- nvimTextobjects s "nonesuch"
+      found `shouldBe` Nothing
+      Left why <- nvimTextobjects s {gsTextobjects = ("file:///nonexistent-nvim", "0123456789012345678901234567890123456789")} "elm"
+      why `shouldSatisfy` T.isInfixOf "nonexistent-nvim"
   describe "failingRows" $ do
     let regenerate = Just "regenerate the key or supply a provider (see chapter 9, Providers)"
         rows =
