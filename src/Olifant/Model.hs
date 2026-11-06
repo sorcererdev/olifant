@@ -15,6 +15,8 @@ module Olifant.Model
   , backendModel
   , systemPrompt
   , conjureSystemPrompt
+  , fileSystemPrompt
+  , valueSystemPrompt
   , userPrompt
   , requestBody
   , decodeFills
@@ -154,6 +156,34 @@ conjureSystemPrompt =
       , "do not handle cases no test names. If the simplest passing code is a constant, write the constant."
       ]
 
+-- | The prompt for @init --language@: each hole is a whole file.
+fileSystemPrompt :: Text
+fileSystemPrompt =
+  T.unlines
+    [ "You write the configuration files olifant reads for a language. Each hole is a whole file, marked \10214name\10215."
+    , "Reply with one block per hole, nothing else:"
+    , "<fill name=\"NAME\">"
+    , "TEXT"
+    , "</fill>"
+    , "TEXT is the file's text only (no escaping): no explanations, no markdown, no fences."
+    ]
+
+-- | The prompt for @init --language@'s form: each hole is one key's value
+-- (the engine writes the file around it), or a whole query file.
+valueSystemPrompt :: Text
+valueSystemPrompt =
+  T.unlines
+    [ "You answer the keys of the configuration file olifant reads for a language, one value per hole, marked \10214name\10215."
+    , "Reply with one block per hole, nothing else:"
+    , "<fill name=\"NAME\">"
+    , "VALUE"
+    , "</fill>"
+    , "VALUE is the TOML value only (the right side of `key =`): a string in quotes ('...' keeps backslashes as they are), an array in brackets,"
+    , "an inline table in braces, a number. Write the value for this project's language, read from the sample files and the inputs;"
+    , "never another language's. A hole you cannot answer from the sample: none (the word, unquoted)."
+    , "A hole of kind `file` is a whole file: its text only. No explanations, no markdown, no fences."
+    ]
+
 userPrompt :: FillRequest -> Text
 userPrompt req =
   T.unlines $
@@ -189,7 +219,7 @@ userPrompt req =
             ++ ["Fix it." <> (if fhImports h then " If it failed on a name that is not defined, add that name's import line first." else "")]
 
 requestBody :: Backend -> FillRequest -> Value
-requestBody b req = chatBody b (case frStance req of ConjureStance -> conjureSystemPrompt; FillStance -> systemPrompt) (userPrompt req)
+requestBody b req = chatBody b (case frStance req of ConjureStance -> conjureSystemPrompt; FillStance -> systemPrompt; FileStance -> fileSystemPrompt; ValueStance -> valueSystemPrompt) (userPrompt req)
 
 -- | A chat request: a system prompt and one user message.
 chatBody :: Backend -> Text -> Text -> Value

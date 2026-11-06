@@ -36,9 +36,11 @@ data FillHole = FillHole
   }
   deriving stock (Eq, Show)
 
--- | How the model is asked: to fill holes well, or (a conjure) to write the
--- least code that makes one failing test pass.
-data Stance = FillStance | ConjureStance
+-- | How the model is asked: to fill holes well, (a conjure) to write the
+-- least code that makes one failing test pass, (init --language) to write
+-- whole files, one per hole, or (init --language's form) to answer the keys
+-- of a configuration file, one TOML value per hole.
+data Stance = FillStance | ConjureStance | FileStance | ValueStance
   deriving stock (Eq, Show)
 
 -- | 'frContext': related files the model should see (a fix's context, e.g.

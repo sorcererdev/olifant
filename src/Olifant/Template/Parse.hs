@@ -1,6 +1,6 @@
 {-# LANGUAGE MultiWayIf #-}
 
-module Olifant.Template.Parse (parseTemplate) where
+module Olifant.Template.Parse (parseTemplate, knownFilters) where
 
 import Data.Bifunctor (first)
 import Data.Char (isAlphaNum, isAsciiLower, isAsciiUpper)

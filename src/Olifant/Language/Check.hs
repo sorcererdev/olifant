@@ -19,6 +19,8 @@ module Olifant.Language.Check
   , checkProgram
   , contextKey
   , checkScope
+  , packageScope
+  , selected
   , runCheckIn
   , runVerifyIn
   , convertReport

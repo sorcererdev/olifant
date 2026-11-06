@@ -1,11 +1,16 @@
 module Olifant.CliSpec (spec) where
 
-import Olifant.Language.Grammar (GrammarFailure (NoSource))
+import Olifant.Language.Grammar (GrammarFailure (NoSource), probeGrammar)
+import Olifant.Language.GrammarSpec (fixtureRepo)
+import Olifant.LanguageInitSpec (formAnswers)
+import Olifant.Language.Test (scriptedRunner)
+import Data.Set qualified as S
+import System.Process (readProcess)
 import Data.Aeson (Value (..), decodeStrict)
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KM
 import Data.Foldable (toList)
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, isJust)
 import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
@@ -129,6 +134,204 @@ initMigrateSpec = describe "init --migrate (an existing repo)" $ do
     config `shouldSatisfy` T.isPrefixOf "name = \"bistro\""
     config `shouldSatisfy` T.isInfixOf "python-strangler = { path = \"/packs/ps\" }"
     config `shouldSatisfy` T.isInfixOf "[migrate]"
+
+-- | A grammar remote for one example: the elm pack's sources in a local git
+-- repository (by file://), with a commit of the example's own so its HEAD
+-- (and so its checkout in the suite's cache) is no other example's.
+elmRemote :: String -> IO (Text, Text)
+elmRemote name = do
+  tmp <- getTemporaryDirectory
+  let repo = tmp </> "olifant-test-cache" </> ("init-language-" <> name)
+  _ <- fixtureRepo repo "."
+  writeFile (repo </> "EXAMPLE") (name <> "\n")
+  let git args = readProcess "git" (["-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"] ++ args) ""
+  _ <- git ["add", "-A"]
+  _ <- git ["commit", "--quiet", "-m", name]
+  sha <- T.strip . T.pack <$> git ["rev-parse", "HEAD"]
+  pure ("file://" <> T.pack repo, sha)
+
+-- | An Elm project at /w (the elm pack's fixture app and one test file),
+-- with a fills.toml of the given holes.
+elmishProject :: [(Text, Text)] -> IO [(FilePath, Text)]
+elmishProject fills = do
+  let app = "packs/elm/fixtures/app"
+  srcs <- forM ["elm.json", "src/Main.elm", "src/Route.elm"] $ \f -> (\t -> ("/w/" <> f, t)) <$> TIO.readFile (app </> f)
+  let test = T.unlines ["module RouteTest exposing (suite)", "", "import Expect", "import Test exposing (Test, describe, test)", "", "", "suite : Test", "suite =", "    describe \"Route\"", "        [ test \"parses home\" <|", "            \\_ -> Expect.equal 1 1", "        ]"]
+      fillsToml = "[fills]\n" <> T.concat [k <> " = '''\n" <> v <> "'''\n" | (k, v) <- fills]
+  pure (srcs ++ [("/w/tests/RouteTest.elm", test), ("/w/fills.toml", fillsToml)])
+
+-- | The fixture answers (src/Olifant/testdata/init-language: the survey
+-- naming REMOTE, and the form's values, one per field).
+elmishFills :: Text -> IO [(Text, Text)]
+elmishFills remote = do
+  survey <- T.replace "@REMOTE@" remote <$> TIO.readFile "src/Olifant/testdata/init-language/survey.toml"
+  (("survey", survey) :) <$> formAnswers
+
+-- | `olifant` in /w over FILES with the real grammar loader (doctor's
+-- grammar row too), git's tracked files being the project's, and a test
+-- runner where every test passes. A terminal answers its questions with
+-- the given line; Nothing is no terminal.
+runInitLanguageIn :: [(FilePath, Text)] -> Maybe Text -> [String] -> IO (ExitCode, Text, Text, Map FilePath Text)
+runInitLanguageIn files terminal args = do
+  (root, snapshot) <- memoryWorkspace files
+  out <- newIORef ""
+  err <- newIORef ""
+  tmp <- getTemporaryDirectory
+  let tracked = S.fromList [drop 3 f | (f, _) <- files, "/w/" `isPrefixOf` f]
+  code <-
+    runCli
+      Runtime
+        { rtRoot = root, rtProjectDir = "/w", rtUserConfigDir = Nothing, rtHomeDir = Nothing
+        , rtReadStdin = pure "", rtReadLine = pure (fromMaybe "" terminal), rtNow = pure fixedNow, rtStdoutIsTty = isJust terminal
+        , rtOut = \t -> modifyIORef' out (<> t), rtErr = \t -> modifyIORef' err (<> t)
+        , rtSyntax = astGrepSyntax (tmp </> "olifant-test-cache"), rtChecker = const noChecker
+        , rtGitChanged = \_ _ -> pure (Right ([], []))
+        , rtDoctor = DoctorPorts (\e -> pure (if take 4 e == "nope" then Nothing else Just ("/bin/" <> e))) (pure "/usr/bin") (\_ -> pure (Right ())) (\_ -> pure False) (\_ -> pure Nothing) (\_ -> pure []) probeGrammar
+        , rtTracked = \_ -> pure (Just tracked), rtBaseText = \_ _ _ -> pure (Left "no base in tests"), rtBaseFiles = \_ _ -> pure (Left "no base"), rtBaseStamp = \_ _ -> pure "", rtGit = \_ _ -> pure (Left "no git in tests")
+        , rtGitInit = \_ _ -> pure (Right ()), rtVerifier = const noVerifier, rtTester = \_ _ -> scriptedRunner M.empty
+        }
+      args
+  (,,,) code <$> readIORef out <*> readIORef err <*> snapshot
+
+-- | `olifant init --language` (m5): the elm pack's grammar by file://, under
+-- the name `elmish` (its grammar named `elm`, so the shipped elm queries
+-- apply), the model a fills.toml.
+initLanguageSpec :: Spec
+initLanguageSpec = describe "init --language" $ do
+  let run files = runInitLanguageIn files Nothing
+      args extra = ["init", "--language", "elmish", "--fills", "fills.toml", "--human"] ++ extra
+  it "(a) writes the language and its toolchain, the grammar pinned by olifant" $ do
+    (remote, sha) <- elmRemote "a"
+    files <- elmishProject =<< elmishFills remote
+    (code, out, err, written) <- run files (args ["--yes"])
+    (code, out <> err) `shouldBe` (ExitSuccess, out <> err)
+    let language = M.findWithDefault "" "/w/.olifant/languages/elmish.toml" written
+    language `shouldSatisfy` T.isInfixOf ("grammar = { git = \"" <> remote <> "\", rev = \"" <> sha <> "\", name = \"elm\" }")
+    language `shouldNotSatisfy` T.isInfixOf "rev = \"main\""
+    language `shouldSatisfy` T.isPrefixOf "# written by olifant init --language\n"
+    M.member "/w/.olifant/toolchains/elmish-test.toml" written `shouldBe` True
+    out `shouldSatisfy` T.isInfixOf "wrote .olifant/languages/elmish.toml"
+  it "(b) a repository that is not there stops with the grammar row, writing nothing" $ do
+    files <- elmishProject =<< elmishFills "file:///nonexistent"
+    (code, out, err, written) <- run files (args ["--yes"])
+    code `shouldBe` ExitFailure 1
+    (out <> err) `shouldSatisfy` T.isInfixOf "elmish: grammar"
+    M.keys written `shouldBe` M.keys (M.fromList files)
+  it "(c) with no terminal and no --yes it stops before fetching, naming the proposal" $ do
+    (remote, sha) <- elmRemote "c"
+    files <- elmishProject =<< elmishFills remote
+    (code, out, err, written) <- run files (args [])
+    code `shouldBe` ExitFailure 1
+    (out <> err) `shouldSatisfy` T.isInfixOf ("grammar: " <> remote <> " @" <> T.take 7 sha <> " (proposed by the model)")
+    (out <> err) `shouldSatisfy` T.isInfixOf "pass --yes to fetch and build it"
+    M.keys written `shouldBe` M.keys (M.fromList files)
+    tmp <- getTemporaryDirectory
+    doesDirectoryExist (tmp </> "olifant-test-cache" </> "grammars" </> "src" </> ("elm-" <> T.unpack (T.take 7 sha))) `shouldReturn` False
+  it "(c) on a terminal, y fetches and builds; any other answer stops" $ do
+    (remote, sha) <- elmRemote "c-tty"
+    files <- elmishProject =<< elmishFills remote
+    (no, _, errNo, writtenNo) <- runInitLanguageIn files (Just "") (args [])
+    no `shouldBe` ExitFailure 1
+    errNo `shouldSatisfy` T.isInfixOf "fetch and build it? [y/N]"
+    M.keys writtenNo `shouldBe` M.keys (M.fromList files)
+    (yes, out, err, written) <- runInitLanguageIn files (Just "y") (args [])
+    (yes, out <> err) `shouldBe` (ExitSuccess, out <> err)
+    M.member "/w/.olifant/languages/elmish.toml" written `shouldBe` True
+    T.length sha `shouldBe` 40
+  it "(d) an existing project layer is not overwritten" $ do
+    files <- elmishProject =<< elmishFills "file:///nonexistent"
+    (code, out, err, _) <- run (("/w/.olifant/languages/elmish.toml", "files = []\n") : files) (args ["--yes"])
+    code `shouldBe` ExitFailure 1
+    (out <> err) `shouldSatisfy` T.isInfixOf ".olifant/languages/elmish.toml exists: olifant doctor shows its rows; delete it to generate again"
+  it "(e) with no model and no --fills it says how to add one" $ do
+    files <- elmishProject []
+    (code, out, err, _) <- run files ["init", "--language", "elmish", "--yes", "--human"]
+    code `shouldBe` ExitFailure 1
+    (out <> err) `shouldSatisfy` T.isInfixOf "init --language needs a model: add [model] (olifant doctor shows how)"
+  it "(f) a shipped language is not generated (m5b)" $ do
+    files <- elmishProject []
+    (code, out, err, _) <- run files ["init", "--language", "rust", "--yes", "--human"]
+    code `shouldBe` ExitFailure 1
+    (out <> err) `shouldSatisfy` T.isInfixOf "rust ships with olifant"
+  it "(g) --plan writes nothing and lists the files" $ do
+    (remote, _) <- elmRemote "g"
+    files <- elmishProject =<< elmishFills remote
+    (code, out, err, written) <- run files (args ["--plan"])
+    (code, out <> err) `shouldBe` (ExitSuccess, out <> err)
+    out `shouldSatisfy` T.isInfixOf "would write .olifant/languages/elmish.toml"
+    out `shouldSatisfy` T.isInfixOf "would write .olifant/toolchains/elmish-test.toml"
+    M.keys written `shouldBe` M.keys (M.fromList files)
+  it "(h) a row failing after the first round is repaired once, and the final rows show it passing" $ do
+    (remote, _) <- elmRemote "h"
+    good <- elmishFills remote
+    let Just unit = lookup "test_unit" good
+        broken = T.replace "test[[:space:]]+" "nevermatches[[:space:]]+" unit
+        fills = [(k, if k == "test_unit" then broken else v) | (k, v) <- good] ++ [("test_unit_repair", unit), ("tests_for_repair", fromMaybe "none" (lookup "tests_for" good))]
+    files <- elmishProject fills
+    (code, out, err, written) <- run files ["init", "--language", "elmish", "--fills", "fills.toml", "--yes", "--json"]
+    (code, err) `shouldBe` (ExitSuccess, err)
+    err `shouldSatisfy` T.isInfixOf "round 1: elmish: test units"
+    let Just v = Aeson.decodeStrict (TE.encodeUtf8 out) :: Maybe Aeson.Value
+    lookupKey "repaired" v `shouldBe` Just (Aeson.Bool True)
+    out `shouldSatisfy` T.isInfixOf "\"name\":\"elmish: test units\",\"status\":\"ok\""
+    M.findWithDefault "" "/w/.olifant/languages/elmish.toml" written `shouldSatisfy` T.isInfixOf "[[,]?[[:space:]]*test"
+  it "(i) a repair still failing leaves the warn and its fix in the final rows (exit 0: no error)" $ do
+    (remote, _) <- elmRemote "i"
+    good <- elmishFills remote
+    let Just unit = lookup "test_unit" good
+        broken = T.replace "test[[:space:]]+" "nevermatches[[:space:]]+" unit
+        fills = [(k, if k == "test_unit" then broken else v) | (k, v) <- good] ++ [("test_unit_repair", broken), ("tests_for_repair", fromMaybe "none" (lookup "tests_for" good))]
+    files <- elmishProject fills
+    (code, out, err, _) <- run files (args ["--yes"])
+    (code, out <> err) `shouldBe` (ExitSuccess, out <> err)
+    out `shouldSatisfy` T.isInfixOf "! elmish: test units — 0 found"
+    out `shouldSatisfy` T.isInfixOf "fix: regenerate the key or supply a provider"
+  it "(j) a good first round asks for no repair" $ do
+    (remote, _) <- elmRemote "j"
+    files <- elmishProject =<< elmishFills remote
+    (code, out, err, _) <- run files ["init", "--language", "elmish", "--fills", "fills.toml", "--yes", "--json"]
+    (code, err) `shouldBe` (ExitSuccess, err)
+    let Just v = Aeson.decodeStrict (TE.encodeUtf8 out) :: Maybe Aeson.Value
+    lookupKey "repaired" v `shouldBe` Just (Aeson.Bool False)
+    out `shouldSatisfy` T.isInfixOf "\"name\":\"elmish: grammar\",\"status\":\"ok\""
+  it "(l) a language that does not load is a row naming the key, repaired before anything is written" $ do
+    (remote, _) <- elmRemote "l"
+    good <- elmishFills remote
+    let fills = [(k, if k == "test_above" then "[1, 2]" else v) | (k, v) <- good] ++ [("test_above_repair", "none")]
+    files <- elmishProject fills
+    (code, out, err, written) <- run files (args ["--yes"])
+    (code, out <> err) `shouldBe` (ExitSuccess, out <> err)
+    err `shouldSatisfy` T.isInfixOf "round 1: elmish: test_above — does not load: `above`: expected a string"
+    let language = M.findWithDefault "" "/w/.olifant/languages/elmish.toml" written
+    language `shouldSatisfy` T.isInfixOf "tests_for"
+    language `shouldNotSatisfy` T.isInfixOf "above"
+
+  it "(r) a wrong optional key and a failing doctor row are answered in the one repair" $ do
+    (remote, _) <- elmRemote "r"
+    good <- elmishFills remote
+    let Just unit = lookup "test_unit" good
+        broken = T.replace "test[[:space:]]+" "nevermatches[[:space:]]+" unit
+        wrong k v = case k of
+          "test_unit" -> broken
+          "test_above" -> "[1, 2]"
+          _ -> v
+        fills = [(k, wrong k v) | (k, v) <- good] ++ [("test_unit_repair", unit), ("tests_for_repair", fromMaybe "none" (lookup "tests_for" good)), ("test_above_repair", "none")]
+    files <- elmishProject fills
+    (code, out, err, written) <- run files ["init", "--language", "elmish", "--fills", "fills.toml", "--yes", "--json"]
+    (code, err) `shouldBe` (ExitSuccess, err)
+    err `shouldSatisfy` T.isInfixOf "round 1: elmish: test_above"
+    err `shouldSatisfy` T.isInfixOf "round 1: elmish: test units"
+    out `shouldSatisfy` T.isInfixOf "\"name\":\"elmish: test units\",\"status\":\"ok\""
+    M.findWithDefault "" "/w/.olifant/languages/elmish.toml" written `shouldNotSatisfy` T.isInfixOf "above"
+  it "(s) a key still wrong after the repair is left out, and a warn row says so" $ do
+    (remote, _) <- elmRemote "s"
+    good <- elmishFills remote
+    let fills = [(k, if k == "test_above" then "[1, 2]" else v) | (k, v) <- good] ++ [("test_above_repair", "[3]")]
+    files <- elmishProject fills
+    (code, out, err, written) <- run files (args ["--yes"])
+    (code, out <> err) `shouldBe` (ExitSuccess, out <> err)
+    out `shouldSatisfy` T.isInfixOf "! elmish: test_above — left out: does not load"
+    M.findWithDefault "" "/w/.olifant/languages/elmish.toml" written `shouldNotSatisfy` T.isInfixOf "above"
 
 -- | check on new code (only = "new"), with a base given.
 newCodeCheckSpec :: Spec
@@ -324,7 +527,7 @@ runInBaseFilesGit git syntax base baseFiles dir stdinText files tty args = do
         , rtProjectDir = dir
         , rtUserConfigDir = Nothing
         , rtHomeDir = Nothing
-        , rtReadStdin = pure stdinText
+        , rtReadStdin = pure stdinText, rtReadLine = pure ""
         , rtNow = pure fixedNow
         , rtStdoutIsTty = tty
         , rtOut = \t -> modifyIORef' out (<> t)
@@ -353,7 +556,7 @@ runInitWith committed files args = do
     runCli
       Runtime
         { rtRoot = root, rtProjectDir = "/w", rtUserConfigDir = Just "/u", rtHomeDir = Nothing
-        , rtReadStdin = pure "", rtNow = pure fixedNow, rtStdoutIsTty = False
+        , rtReadStdin = pure "", rtReadLine = pure "", rtNow = pure fixedNow, rtStdoutIsTty = False
         , rtOut = \t -> modifyIORef' out (<> t), rtErr = \t -> modifyIORef' err (<> t)
         , rtSyntax = noSyntax, rtChecker = const noChecker
         , rtGitChanged = \_ _ -> pure (Right ([], []))
@@ -371,7 +574,7 @@ jsonAt path out = decodeStrict (TE.encodeUtf8 out) >>= go path
     go _ _ = Nothing
 
 spec :: Spec
-spec = planOutputSpec >> runCliSpec >> newCodeCheckSpec >> initMigrateSpec >> anticipateCliSpec >> plansCostSpec
+spec = planOutputSpec >> runCliSpec >> newCodeCheckSpec >> initMigrateSpec >> initLanguageSpec >> anticipateCliSpec >> plansCostSpec
 
 planOutputSpec :: Spec
 planOutputSpec = describe "planHuman" $ do

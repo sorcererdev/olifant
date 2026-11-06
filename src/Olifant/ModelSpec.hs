@@ -42,6 +42,16 @@ spec = describe "Olifant.Model (spec §6.4)" $ do
     mapM_ (\k -> requestBody (OpenAICompatible "u" "m") req `shouldSatisfy` \v -> k `T.isInfixOf` asText v)
       ["least code that makes this test pass", "return 1", "rejected by the person", "return 2", "attempt 2:", "Previous attempts (do not repeat them):"]
     requestBody (OpenAICompatible "u" "m") request `shouldSatisfy` \v -> not ("least code" `T.isInfixOf` asText v)
+  it "a file request uses the file stance: whole files, no markdown" $ do
+    let req = request {frStance = FileStance}
+        asText = TE.decodeUtf8 . BL.toStrict . encode
+    requestBody (OpenAICompatible "u" "m") req `shouldSatisfy` \v -> "configuration files olifant reads" `T.isInfixOf` asText v
+    requestBody (OpenAICompatible "u" "m") request `shouldSatisfy` \v -> not ("configuration files olifant reads" `T.isInfixOf` asText v)
+  it "a value request uses the value stance: one TOML value per hole, `none` when the sample cannot say" $ do
+    let req = request {frStance = ValueStance}
+        asText = TE.decodeUtf8 . BL.toStrict . encode
+    requestBody (OpenAICompatible "u" "m") req `shouldSatisfy` \v -> all (`T.isInfixOf` asText v) ["one value per hole", "the right side of", "none"]
+    requestBody (OpenAICompatible "u" "m") request `shouldSatisfy` \v -> not ("one value per hole" `T.isInfixOf` asText v)
   it "says a fill may begin with imports only where the language moves them, once, and on a retry" $ do
     let withImports = request {frHoles = [h {fhImports = True} | h <- frHoles request]}
         rule = "start the fill with the import line"

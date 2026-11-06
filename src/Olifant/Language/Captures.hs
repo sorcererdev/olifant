@@ -25,6 +25,7 @@ module Olifant.Language.Captures
   ) where
 
 import Data.ByteString qualified as BS
+import Data.Char (isSpace)
 import Data.List (nub, sortOn)
 import Data.IntMap.Strict qualified as IM
 import Data.Map.Strict qualified as M
@@ -224,9 +225,9 @@ anchorFromCaptures joinAdj root caps = \case
         glue x ((f, l) : rest)
           | x `notElem` defNodes, l `elem` defNodes, fst (pStart f) <= fst (pEnd x) + 1 = (x, l) : rest
         glue x rest = (x, x) : rest
-    groupMatch (f, l)
-      | f == l = toMatch f
-      | otherwise = let (a, z) = (fst (pBytes f), snd (pBytes l)) in Match (pStart f) (pEnd l) (TE.decodeUtf8Lenient (BS.take (z - a) (BS.drop a source))) (a, z)
+    groupMatch (f, l0)
+      | f == l0 = toMatch (trimmed f)
+      | otherwise = let l = trimmed l0; (a, z) = (fst (pBytes f), snd (pBytes l)) in Match (pStart f) (pEnd l) (TE.decodeUtf8Lenient (BS.take (z - a) (BS.drop a source))) (a, z)
     source = TE.encodeUtf8 (pText root)
     -- a node's field (a parameter or argument list) and, as items, the
     -- captures of @name whose parent it is
@@ -319,6 +320,20 @@ nameMatcher names pat
   | otherwise = case makeRegexM ("^(" <> T.unpack pat <> ")$") :: Maybe Regex of
       Just rx -> matchTest rx . T.unpack
       Nothing -> const False
+
+-- | A node less the white space it ends with: a list node that holds its
+-- last terminator (tree-sitter-go's statement list, its newline before the
+-- block's `}`) ends at its last character, so an item ends on its own line.
+trimmed :: PNode -> PNode
+trimmed p
+  | T.null trailing = p
+  | otherwise = p {pEnd = end, pBytes = (fst (pBytes p), snd (pBytes p) - BS.length (TE.encodeUtf8 trailing)), pText = kept}
+  where
+    kept = T.dropWhileEnd isSpace (pText p)
+    trailing = T.drop (T.length kept) (pText p)
+    end = case T.splitOn "\n" kept of
+      [one] -> (fst (pStart p), snd (pStart p) + T.length one)
+      ls -> (fst (pStart p) + length ls - 1, T.length (last ls))
 
 toMatch :: PNode -> Match
 toMatch p = Match (pStart p) (pEnd p) (pText p) (pBytes p)

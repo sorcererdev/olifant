@@ -88,7 +88,12 @@ spec = describe "Olifant.Evidence" $ do
     let never = py {langTest = (\td -> td {testUnitRules = [UnitRule "^NEVER" Nothing Nothing]}) <$> langTest py}
     withPorts pair Nothing $ \ports -> do
       ev <- evidenceFor ports never
-      evTestUnits ev `shouldBe` Disproven "0 found; src/a__test.py:4 is `def test_add() -> None:`"
+      evTestUnits ev `shouldBe` Disproven "0 found; tests_for maps src/a.py to src/a__test.py; src/a__test.py:4 is `def test_add() -> None:`"
+  it "a tests_for that maps a source to itself says so in the test-units row" $ do
+    let itself = py {langTest = (\td -> td {testsFor = "{= dir =}/{= stem =}.py", testUnitRules = [UnitRule "^NEVER" Nothing Nothing]}) <$> langTest py}
+    withPorts pair Nothing $ \ports -> do
+      ev <- evidenceFor ports itself
+      proofText (evTestUnits ev) `shouldSatisfy` T.isPrefixOf "0 found; tests_for maps src/a.py to src/a.py (itself)"
   it "a stmt wrapper that does not parse is Disproven naming [holes.stmt]" $ do
     let broken = py {langHoles = [(k, if k == "stmt" then h {kindWrap = "def (:\n{= fill|indent =}\n"} else h) | (k, h) <- langHoles py]}
     withPorts pair Nothing $ \ports -> do
@@ -131,4 +136,14 @@ spec = describe "Olifant.Evidence" $ do
       evTests ev `shouldBe` Proven "ran pytest on src/a__test.py, 2 results parsed (junit-xml)"
     withPorts pair (Just (\_ _ -> pure (Right (TestRun [] [] (Just "no tests ran"))))) $ \ports -> do
       ev <- evidenceFor ports py
-      evTests ev `shouldBe` Disproven "src/a__test.py: no tests ran"
+      evTests ev `shouldBe` Disproven "`pytest -q --tb=short -p no:cacheprovider {= tests =} -o junit_family=xunit1 --junitxml={= report =}` ran in the project root (src/) on src/a__test.py, with {= tests =} = `src/a__test.py`, with {= report =}: no tests ran"
+    withPorts pair (Just (\_ _ -> pure (Right (TestRun [] [("src::TestMain", Failure Nothing "FAIL . [setup failed]\nmore" "")] Nothing)))) $ \ports -> do
+      ev <- evidenceFor ports py
+      proofText (evTests ev) `shouldSatisfy` T.isSuffixOf "with {= report =}: none of 1 passed; the first failure, src::TestMain: FAIL . [setup failed]"
+      evTests ev `shouldSatisfy` isDisproven
+  it "tests: a broken run says where it ran, what is there, and what the command lacks" $ do
+    let bare = py {langTest = (\td -> td {testCommand = ["go", "test"], testCandidates = [], testRoot = ["pyproject.toml"]}) <$> langTest py}
+        files = [("svc/pyproject.toml", ""), ("svc/src/a.py", source), ("svc/src/a__test.py", test), ("README.md", "")]
+    withPorts files (Just (\_ _ -> pure (Right (TestRun [] [] (Just "no Go files in /tmp/x\nsecond\nthird\nfourth"))))) $ \ports -> do
+      ev <- evidenceFor ports bare
+      evTests ev `shouldBe` Disproven "`go test` ran in svc/ (pyproject.toml, src/) on svc/src/a__test.py, without {= tests =}, without {= report =}: no Go files in /tmp/x\nsecond\nthird"

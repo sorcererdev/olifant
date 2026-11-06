@@ -33,7 +33,7 @@ data Options = Options {optFormat :: Maybe Format, optCommand :: Command}
   deriving stock (Eq, Show)
 
 -- | 'ListCmd': --detail. 'AnchorsCmd': a language's `at` targets. 'WhereCmd': file, phrase.
-data Command = ListCmd Bool | ShowCmd Text [(Text, Text)] | GenCmd GenOptions | AnchorsCmd Text | WhereCmd FilePath Text | SyncCmd SyncMode | SchemaCmd | NewCmd Text (Maybe Text) | ActionsCmd FilePath (Maybe (Int, Int)) Bool | DoctorCmd Bool | CheckCmd Bool (Maybe FilePath) Bool Bool Bool (Maybe Text) | FixCmd Text FilePath (Int, Int) Int [(Text, Text)] GenOptions | CompleteCmd FilePath (Int, Int) Bool | InitCmd Text Text (Maybe FilePath) Bool | InitMigrateCmd [FilePath] (Maybe Text) (Maybe Text) | LspCmd | AnticipateCmd FilePath Int (Maybe FilePath) (Maybe FilePath)
+data Command = ListCmd Bool | ShowCmd Text [(Text, Text)] | GenCmd GenOptions | AnchorsCmd Text | WhereCmd FilePath Text | SyncCmd SyncMode | SchemaCmd | NewCmd Text (Maybe Text) | ActionsCmd FilePath (Maybe (Int, Int)) Bool | DoctorCmd Bool | CheckCmd Bool (Maybe FilePath) Bool Bool Bool (Maybe Text) | FixCmd Text FilePath (Int, Int) Int [(Text, Text)] GenOptions | CompleteCmd FilePath (Int, Int) Bool | InitCmd Text Text (Maybe FilePath) Bool | InitMigrateCmd [FilePath] (Maybe Text) (Maybe Text) | InitLanguageCmd Text (Maybe Text) (Maybe Text) Bool Bool (Maybe FilePath) | LspCmd | AnticipateCmd FilePath Int (Maybe FilePath) (Maybe FilePath)
   | -- | `plans cost`: errands against Claude Code sessions, per branch.
     -- 'pcoTranscripts' overrides @~/.claude/projects/<slug>@.
     PlansCostCmd {pcoBranch :: Maybe Text, pcoSince :: Maybe Day, pcoJson :: Bool, pcoTranscripts :: Maybe FilePath, pcoBy :: By, pcoPlan :: Maybe FilePath}
@@ -121,7 +121,7 @@ parseOptions args = case execParserPure defaultPrefs parserInfo args of
             <> cmd "fix" fixP "Apply a rule's fix where it found something: the fix's generator, and the code it replaces, as one plan (--plan to preview)"
             <> cmd "doctor" (DoctorCmd <$> switch (long "run" <> help "Also run one sample test file per language, to prove its test command and report format")) "Check what generators need here (tools on this PATH, packs, the model, each language's slots on a sample of this project) and how to fix it"
             <> cmd "actions" (actionsP) "The generators that apply at a position (for editors): --at FILE:LINE:COL [--content -]"
-            <> cmd "init" initP "Start a project from a pack's starter in an empty folder: init --pack PACK NAME [--dir DIR] [--plan]; or, in an existing repo, init --migrate PATH [--migrate PATH]… [--pack PACK]: strangle the legacy code under PATH"
+            <> cmd "init" initP "Start a project from a pack's starter in an empty folder: init --pack PACK NAME [--dir DIR] [--plan]; or, in an existing repo, init --migrate PATH [--migrate PATH]… [--pack PACK]: strangle the legacy code under PATH; or init --language NAME [--yes] [--grammar URL] [--model NAME] [--plan]: write a language's file, its test toolchain and its queries from one model errand, proved by doctor"
             <> cmd "lsp" (pure LspCmd) "Run the language server over stdin/stdout (editors start it; every Olifant project in the editor's folders)"
             <> cmd "complete" completeP "Snippets for a completion menu at a position (for editors): --at FILE:LINE:COL [--content -]"
             <> cmd "plans" plansP "Plan errands: `plans cost [--by plan|branch] [--plan PATH] [--branch B] [--since YYYY-MM-DD] [--json]` shows what errands cost against Claude Code sessions, per plan and the PR it landed in (or per branch)"
@@ -164,15 +164,22 @@ parseOptions args = case execParserPure defaultPrefs parserInfo args of
         <*> switch (long "baseline" <> help "Record today's findings in .olifant/baseline.toml: from then on only new findings fail (spec §5.10)")
         <*> switch (long "accept-new" <> help "With --baseline: also record findings that are new since the last baseline")
         <*> optional (strOption (long "changed-since" <> metavar "REF" <> help "Only findings on lines changed since REF (git), for CI on a branch"))
-    -- one parser for both forms (their options overlap): --migrate PATH…
-    -- strangles legacy code in an existing repo; else --pack PACK NAME
-    -- starts a project (missing pieces are a usage error at run time)
+    -- one parser for the three forms (their options overlap): --language
+    -- NAME writes a language for this project; --migrate PATH… strangles
+    -- legacy code in an existing repo; else --pack PACK NAME starts a
+    -- project (missing pieces are a usage error at run time)
     initP =
-      ( \migrate pack strangler name dir plan -> case migrate of
-          [] -> InitCmd (maybe "" T.pack pack) (maybe "" T.pack name) dir plan
-          paths -> InitMigrateCmd paths (T.pack <$> pack) (T.pack <$> strangler)
+      ( \language model grammar yes fills migrate pack strangler name dir plan -> case (language, migrate) of
+          (Just l, _) -> InitLanguageCmd (T.pack l) (T.pack <$> model) (T.pack <$> grammar) yes plan fills
+          (Nothing, []) -> InitCmd (maybe "" T.pack pack) (maybe "" T.pack name) dir plan
+          (Nothing, paths) -> InitMigrateCmd paths (T.pack <$> pack) (T.pack <$> strangler)
       )
-        <$> many (strOption (long "migrate" <> metavar "PATH" <> help "In an existing repo: legacy code to strangle (repeat for more)"))
+        <$> optional (strOption (long "language" <> metavar "NAME" <> help "In an existing project: write .olifant/languages/NAME.toml, its test toolchain and the grammar's missing queries from one model errand"))
+        <*> optional (strOption (long "model" <> metavar "NAME" <> help "With --language: ask [model.backends.NAME] (default: [model] default)"))
+        <*> optional (strOption (long "grammar" <> metavar "URL" <> help "With --language: the grammar's git repository (else the model proposes one)"))
+        <*> switch (long "yes" <> help "With --language: fetch and build the proposed grammar without asking")
+        <*> optional (strOption (long "fills" <> metavar "FILE" <> help "With --language: recorded answers (a [fills] table) stand in for the model"))
+        <*> many (strOption (long "migrate" <> metavar "PATH" <> help "In an existing repo: legacy code to strangle (repeat for more)"))
         <*> optional (strOption (long "pack" <> metavar "PACK" <> help "A pack's directory, or a name under [packs] in ~/.config/olifant/config.toml (with --migrate: the target architecture; default: the project's one configured pack)"))
         <*> optional (strOption (long "strangler" <> metavar "PACK" <> help "With --migrate: the strangler pack (one with a migrate.toml); default: the one the project, your [packs] or the target pack's folder holds"))
         <*> optional (strArgument (metavar "NAME" <> help "The project's name (and its folder, unless --dir)"))

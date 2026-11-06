@@ -23,6 +23,9 @@ module Olifant.Language.Grammar
   , TSLanguage
   , Loaded (..)
   , grammarSources
+  , checkoutOf
+  , remoteHead
+  , fetch
   , grammarKey
   , grammarLibrary
   , loadGrammar
@@ -56,6 +59,7 @@ import Foreign.Storable (peek)
 import GHC.Clock (getMonotonicTime)
 import Numeric (showHex)
 import Olifant.Language.Adapter (Grammar (..), GrammarSource (..))
+import Olifant.Library (textobjectsSource)
 import Olifant.Process (runBytes, runBytesWithin)
 import System.Directory (XdgDirectory (XdgCache), createDirectoryIfMissing, doesDirectoryExist, doesFileExist, findExecutable, getFileSize, getHomeDirectory, getModificationTime, getXdgDirectory, makeAbsolute, removePathForcibly, renameDirectory, renameFile)
 import System.Environment (lookupEnv)
@@ -82,11 +86,14 @@ data GrammarSettings = GrammarSettings
   { gsCache :: FilePath
   , gsLocalSources :: [FilePath]
   , gsFind :: String -> IO (Maybe FilePath)
+  , gsTextobjects :: (Text, Text)
+  -- ^ where @init --language@ copies a new grammar's textobjects from (URL,
+  -- SHA): 'textobjectsSource'; the suite's is a repository that is not there
   }
 
 -- | Settings over a cache and local source folders, finding programs on PATH.
 defaultSettings :: FilePath -> [FilePath] -> GrammarSettings
-defaultSettings cache sources = GrammarSettings cache sources findExecutable
+defaultSettings cache sources = GrammarSettings cache sources findExecutable textobjectsSource
 
 settingsRef :: IORef (Maybe GrammarSettings)
 settingsRef = unsafePerformIO (newIORef Nothing)
@@ -230,27 +237,86 @@ located s g doFetch = case grSource g of
 checkoutDir :: GrammarSettings -> Grammar -> Text -> FilePath
 checkoutDir s g rev = gsCache s </> "grammars" </> "src" </> T.unpack (grName g <> "-" <> T.take 7 rev)
 
+-- | Where a git grammar's checkout is, fetched or not ('grammarSources'
+-- fetches it there): @<cache>/grammars/src/<name>-<rev7>@. Nothing for a
+-- folder or a bare name. @init --language@ reads upstream @queries/@ from it.
+checkoutOf :: GrammarSettings -> Grammar -> Maybe FilePath
+checkoutOf s g = case grSource g of
+  Just (SourceGit _ rev _) -> Just (checkoutDir s g rev)
+  _ -> Nothing
+
+-- | @git ls-remote URL HEAD@: the full SHA the remote's HEAD names (40
+-- lowercase hex, nothing else), or why not (git's last line). The URL passes
+-- the same checks as a fetch ('refusedUrl', git's own transports only), so a
+-- pin is never taken from a URL a fetch would refuse. @init --language@ pins
+-- a model's proposed repository with it: the rev is olifant's, never the model's.
+remoteHead :: GrammarSettings -> Text -> IO (Either Text Text)
+remoteHead s url = case refusedUrl url of
+  Just why -> pure (Left why)
+  Nothing ->
+    gsFind s "git" >>= \case
+      Nothing -> pure (Left "git is not on PATH")
+      Just git ->
+        runGit git ["ls-remote", T.unpack url, "HEAD"] >>= \case
+          Left why -> pure (Left why)
+          Right out -> pure $ case [w | l <- T.lines out, w : rest <- [T.words l], rest == ["HEAD"]] of
+            [sha] | T.length sha == 40 && T.all (`elem` ("0123456789abcdef" :: String)) sha -> Right sha
+            [] -> Left ("the remote names no HEAD: " <> url)
+            other -> Left ("not a full commit SHA: " <> T.intercalate ", " other)
+
+-- | Why a grammar URL is refused before git runs: a remote helper
+-- (@ext::@, @fd::@, any @<helper>::@), an option-looking argument, or any
+-- form a language file's @git@ key does not take (the same four schemes and
+-- @user\@host:path@).
+refusedUrl :: Text -> Maybe Text
+refusedUrl url
+  | "-" `T.isPrefixOf` url = Just ("refused: " <> url <> " looks like an option")
+  | "::" `T.isInfixOf` T.takeWhile (/= '/') url = Just ("refused: " <> url <> " names a git remote helper")
+  | any (`T.isPrefixOf` url) ["https://", "ssh://", "git://", "file://"] = Nothing
+  | "@" `T.isInfixOf` T.takeWhile (/= ':') url, ":" `T.isInfixOf` url = Nothing
+  | otherwise = Just ("refused: " <> url <> " is not an https://, ssh://, git:// or file:// URL (or user@host:path)")
+
+-- | git with the loader's safety: its own transports only (no remote
+-- helpers), no redirects, no hooks, symlinks as plain files, no prompt for
+-- credentials; 600 s at most. Stdout stripped, or git's @fatal:@ line.
+runGit :: FilePath -> [String] -> IO (Either Text Text)
+runGit git args = do
+  ran <- runBytesWithin 600 "/usr/bin/env" (["GIT_TERMINAL_PROMPT=0", "GIT_SSH_COMMAND=ssh -o BatchMode=yes", "GIT_CONFIG_NOSYSTEM=1", git] ++ safe ++ args) Nothing ""
+  pure $ case ran of
+    Right (Just (ExitSuccess, out, _)) -> Right (T.strip (TE.decodeUtf8With lenientDecode out))
+    Right (Just (ExitFailure _, _, err)) -> Left (lastLine (TE.decodeUtf8With lenientDecode err))
+    Right Nothing -> Left "timed out after 600 s"
+    Left why -> Left why
+  where
+    safe =
+      concatMap (\c -> ["-c", c])
+        [ "protocol.allow=never", "protocol.https.allow=always", "protocol.ssh.allow=always"
+        , "protocol.git.allow=always", "protocol.file.allow=always"
+        , "http.followRedirects=false", "core.symlinks=false", "core.hooksPath=/dev/null"
+        , "advice.detachedHead=false", "credential.helper="
+        ]
+    -- git's first `fatal:` or `error:` line says why; its advice follows
+    lastLine t =
+      let ls = filter (not . T.null) (map T.strip (T.lines t))
+       in case [l | l <- ls, any (`T.isPrefixOf` l) ["fatal:", "error:"]] ++ reverse ls of
+            l : _ -> l
+            [] -> "git failed"
+
 -- | A git source fetched at its pinned revision into its checkout:
 -- @git init@, @git fetch --depth 1 URL REV@, @git checkout FETCH_HEAD@ in
 -- an aside folder renamed on success, so a half-fetched checkout is never
--- used. Git's own transports only (no remote helpers), no redirects, no
--- hooks, symlinks checked out as plain files (nothing points out of the
--- checkout), and no prompt for credentials.
+-- used, under 'runGit''s safety ('refusedUrl' first).
 fetch :: GrammarSettings -> Text -> Text -> FilePath -> IO (Either GrammarFailure ())
-fetch s url rev checkout =
+fetch s url rev checkout
+  | Just why <- refusedUrl url = pure (Left (failed why))
+  | otherwise =
   gsFind s "git" >>= \case
     Nothing -> pure (Left (failed "git is not on PATH"))
     Just git -> do
       createDirectoryIfMissing True (takeDirectory checkout)
       mine <- aside checkout
       removePathForcibly mine
-      let run args = do
-            ran <- runBytesWithin 600 "/usr/bin/env" (["GIT_TERMINAL_PROMPT=0", "GIT_SSH_COMMAND=ssh -o BatchMode=yes", "GIT_CONFIG_NOSYSTEM=1", git] ++ safe ++ args) Nothing ""
-            pure $ case ran of
-              Right (Just (ExitSuccess, out, _)) -> Right (T.strip (TE.decodeUtf8With lenientDecode out))
-              Right (Just (ExitFailure _, _, err)) -> Left (lastLine (TE.decodeUtf8With lenientDecode err))
-              Right Nothing -> Left "timed out after 600 s"
-              Left why -> Left why
+      let run = runGit git
       r <- runSteps
         [ run ["init", "--quiet", "--template=", mine]
         , run ["-C", mine, "fetch", "--quiet", "--depth", "1", "--no-tags", T.unpack url, T.unpack rev]
@@ -268,22 +334,9 @@ fetch s url rev checkout =
           pure (Right ())
   where
     failed why = FetchFailed ("fetching " <> url <> " @" <> T.take 7 rev <> " failed: " <> why)
-    safe =
-      concatMap (\c -> ["-c", c])
-        [ "protocol.allow=never", "protocol.https.allow=always", "protocol.ssh.allow=always"
-        , "protocol.git.allow=always", "protocol.file.allow=always"
-        , "http.followRedirects=false", "core.symlinks=false", "core.hooksPath=/dev/null"
-        , "advice.detachedHead=false", "credential.helper="
-        ]
     runSteps = \case
       [] -> pure (Right ())
       step : rest -> step >>= either (pure . Left) (const (runSteps rest))
-    -- git's first `fatal:` or `error:` line says why; its advice follows
-    lastLine t =
-      let ls = filter (not . T.null) (map T.strip (T.lines t))
-       in case [l | l <- ls, any (`T.isPrefixOf` l) ["fatal:", "error:"]] ++ reverse ls of
-            l : _ -> l
-            [] -> "git failed"
 
 -- | The library's base name: the grammar's name and 8 hex of an fnv64 over
 -- the source's identity (a checkout's revision; a folder's path and its

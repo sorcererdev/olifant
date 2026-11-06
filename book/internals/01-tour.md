@@ -2068,6 +2068,14 @@ the rule's id.
 `--plan` stops after step 5's plan, writing nothing. `GeneratorTesting` skips the fixture
 for a starter's case (`genStarter`): a starter makes a project from nothing.
 
+### `olifant init --language` (`runInitLanguage`, `Cli.hs`)
+
+`InitLanguageCmd` goes through `runCommand` like any project command: the project's catalog is
+open. `runInitLanguage` asks the model for a survey, pins the grammar repository's `HEAD`, asks
+before it fetches and builds, loads the grammar, asks one errand for the language file, its test
+toolchain and the missing queries, checks every answer and only then writes. The pure parts are
+`Olifant.LanguageInit`; [chapter 5](05-languages.md#init---language-the-errand) has the flow.
+
 ### `olifant check` (`runCommand`, `Cli.hs`)
 
 `checkP` (`Cli/Options.hs`) parses `CheckCmd report file fromStdin baseline
