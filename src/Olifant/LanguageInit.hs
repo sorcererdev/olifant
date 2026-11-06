@@ -778,9 +778,13 @@ checkAnswers ei answers =
     toolchainText = T.unlines [initHeader] <> assemble toolFields engineToolchain toolValues
     -- a command naming no {= tests =} runs, every time, all the tests it names itself
     noTests =
-      [ (row "command" "the command has no {= tests =} element, so every run runs all the tests it names: keep its program, and put {= tests =} where it names the tests to run (olifant puts the selection's arguments there, select_file and select_test)") {checkStatus = Warn}
-      | Just c <- [command], not ("{= tests =}" `T.isInfixOf` c)
+      [ (row "command" "the command has no element that is exactly {= tests =}, so every run runs all the tests it names: keep its program, and put {= tests =}, alone, where it names the tests to run (olifant puts the selection's arguments there, select_file and select_test)") {checkStatus = Warn}
+      | Just c <- [command], not (testsElement c)
       ]
+    -- the run puts the selection only in an element that is exactly {= tests =}
+    testsElement c = case Toml.parseToml ("v = " <> c <> "\n") >>= Toml.required "v" (Toml.list Toml.text) of
+      Right argv -> "{= tests =}" `elem` map T.strip argv
+      Left _ -> "{= tests =}" `T.isInfixOf` c
     factRows =
       [ row "command" "`format`: the command names no {= report =} and no [test.lines] pass and fail were answered: a runner that writes JUnit XML to {= report =}, or the console's lines"
            | isJust command, isNothing format

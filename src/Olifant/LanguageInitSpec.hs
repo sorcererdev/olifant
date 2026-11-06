@@ -348,6 +348,7 @@ spec = do
       let noTests = checkAnswers (input g ld up) (M.insert "command" "[\"elm-test\"]" (anAnswers a))
       map (\c -> (checkName c, checkStatus c)) (anWarnings noTests) `shouldBe` [("elmish: command", Warn)]
       isJust (lookup ".olifant/toolchains/elmish-test.toml" (anFiles noTests)) `shouldBe` True
+      map checkName (anWarnings (checkAnswers (input g ld up) (M.insert "command" "['elm-test', '-run', 'Test{= tests =}']" (anAnswers a)))) `shouldBe` ["elmish: command"]
       with "command" "['elm-test', '{= tests =}']" `shouldBe` []
       with "lines_fail" "none" `shouldBe` ["elmish: command"]
     it "(o3b) leaveOut: a key still wrong after the repair is left out with a warn row; a required one stays failing" $ do

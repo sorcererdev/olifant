@@ -7,7 +7,7 @@ import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
 import Olifant.Anchor (Miss (..), RenderedAnchor (..), Spacing (..), locLine, locIndent, locOpen, locSpacing, locateContainers, resolveLayers)
 import Olifant.Language
-import Olifant.Language.Captures (anchorFromCaptures)
+import Olifant.Language.Captures (Cap (..), PNode (..), anchorFromCaptures)
 import Olifant.Language.TreeSitter (capturesOf, loadableGrammar, queriesFor)
 import Olifant.Language (shippedLanguageNow)
 import Olifant.Language.Adapter (Grammar)
@@ -41,8 +41,26 @@ tests = T.unlines ["use std::sync::Arc;", "use crate::a::B;", "", "pub struct Em
 service :: IO Text
 service = TIO.readFile "packs/rust-htmx/fixtures/app/billing/billing-service/src/service.rs"
 
+-- | A node over FILE's text from byte A to byte Z (ASCII: bytes are characters).
+nodeIn :: Text -> Text -> Bool -> Int -> Int -> PNode
+nodeIn file ty named a z = PNode ty (at a) (at z) (a, z) (T.take (z - a) (T.drop a file)) named False
+  where
+    at i = let before = T.take i file in (T.count "\n" before, T.length (snd (T.breakOnEnd "\n" before)))
+
 spec :: Spec
 spec = describe "the generic anchor rule (captures)" $ do
+  it "an inner item that ends in white space (a statement list and its last newline) ends at its last character" $ do
+    -- tree-sitter-go: block { statement_list }, the list holding the newline before `}`
+    let file = "func Add() int {\n\treturn 1\n}\n"
+        root = nodeIn file "source_file" True 0 (T.length file)
+        def = nodeIn file "function_declaration" True 0 28
+        name = nodeIn file "identifier" True 5 8
+        block = nodeIn file "block" True 15 28
+        list = nodeIn file "statement_list" True 17 27
+        caps = [Cap "definition.function" "tags.scm" 0 0 def Nothing Nothing [("body", block, [])], Cap "name" "tags.scm" 0 0 name Nothing Nothing [], Cap "function.inner" "textobjects.scm" 0 1 list (Just block) Nothing []]
+    case anchorFromCaptures False root caps ["function", "Add"] of
+      Just (Right [(_, [item])]) -> (matchEnd item, matchText item) `shouldBe` ((1, 9), "\treturn 1")
+      other -> expectationFailure (show other)
   it "a name given as an expression matches whole, as a declared target's `^NAME$` did (python-htmx's `parameters in [a-z_]+_routes`)" $ do
     let file = T.unlines ["fn bookings_routes(", "    a: u8,", ")", "{", "}", "", "fn other(b: u8) {}"]
     fmap (fmap length) (containers file ["parameters", "in", "[a-z_]+_routes"]) `shouldBe` Just (Right 1)
