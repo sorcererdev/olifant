@@ -52,6 +52,7 @@ module Olifant.LanguageInit
   , repairRequest
   , repairHoles
   , repairAnswers
+  , regressedFields
   , leaveOut
   , errorFields
   , readUpstream
@@ -943,10 +944,25 @@ repairRequest req written rows =
     asked = repairHoles req rows
     renamed h = "\10214" <> h <> "_repair\10215"
 
--- | A repair's answers under their fields' names (@<h>_repair@ less the
--- suffix), the others dropped.
-repairAnswers :: Map Text Text -> Map Text Text
-repairAnswers answers = M.fromList [(h, v) | (k, v) <- M.toList answers, Just h <- [T.stripSuffix "_repair" k]]
+-- | The repaired fields (by name) behind a row that passed BEFORE the repair
+-- and does not AFTER it (by the fields' 'fdRows'): the repair may not break
+-- what passed, so these go back to the first round's values.
+regressedFields :: [Check] -> [Check] -> [Text] -> [Text]
+regressedFields before after repaired =
+  [ fdName fd
+  | fd <- languageForm "" ++ toolchainForm ""
+  , fdName fd `elem` repaired
+  , any (`elem` fdRows fd) broke
+  ]
+  where
+    suffix c = T.drop 2 (snd (T.breakOn ": " (checkName c)))
+    broke = [suffix a | b <- before, checkStatus b == Ok, a <- after, checkName a == checkName b, checkStatus a /= Ok]
+
+-- | A repair's answers to the holes REQ asked, under their fields' names
+-- (@<h>_repair@ less the suffix); any other dropped (a recorded model
+-- answers every name it has).
+repairAnswers :: FillRequest -> Map Text Text -> Map Text Text
+repairAnswers req answers = M.fromList [(h, v) | (k, v) <- M.toList answers, k `elem` map fhName (frHoles req), Just h <- [T.stripSuffix "_repair" k]]
 
 -- | The grammar checkout's @queries/*.scm@ (beside the grammar's folder in a
 -- monorepo, else at the checkout's root) and its licence, read from disk,

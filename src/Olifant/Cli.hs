@@ -1062,10 +1062,14 @@ runInitLanguage rt cwd fmt cat l modelArg grammarArg yes plan fillsArg = do
                                     rtErr rt (T.unlines ["init-language: round 1: " <> checkName c <> " — " <> checkDetail c | c <- rows])
                                     let rreq = LI.repairRequest req written rows
                                     runFill (mfFiller mf) rreq <&> \case
-                                      Left why -> LI.Answered [] [Check (l <> ": repair") Bad ("the model did not answer the repair: " <> why) Nothing] (LI.anAnswers first') []
+                                      Left why -> (LI.Answered [] [Check (l <> ": repair") Bad ("the model did not answer the repair: " <> why) Nothing] (LI.anAnswers first') [], [])
                                       -- the repair's values over the first round's, the files assembled
                                       -- again; a key not required that still fails is left out
-                                      Right answers -> LI.leaveOut ei (LI.checkAnswers ei (M.union (LI.repairAnswers answers) (LI.anAnswers first')))
+                                      Right answers ->
+                                        let repaired = LI.repairAnswers rreq answers
+                                         in (LI.leaveOut ei (LI.checkAnswers ei (M.union repaired (LI.anAnswers first'))), M.keys repaired)
+                                  -- FIELDS back to the first round's values (absent there: absent)
+                                  revert answers fields = foldr (\f -> maybe (M.delete f) (M.insert f) (M.lookup f (LI.anAnswers first'))) answers fields
                                   merge old new' = [(p, t) | (p, t) <- old, p `notElem` map fst new'] ++ new'
                                   doctorRows = do
                                     reopened <- openProjectCatalog (rtRoot rt) (CatalogPaths (rtProjectDir rt) (rtUserConfigDir rt) (rtHomeDir rt))
@@ -1087,7 +1091,7 @@ runInitLanguage rt cwd fmt cat l modelArg grammarArg yes plan fillsArg = do
                               if not (null (LI.anFailing provisional))
                                 then do
                                   -- a required key or a whole file fails: nothing is written until every file loads
-                                  second <- repairWith (LI.anFiles first') (LI.anFailing first' ++ LI.anWarnings first')
+                                  (second, _) <- repairWith (LI.anFiles first') (LI.anFailing first')
                                   if not (null (LI.anFailing second))
                                     then stop "the model's files do not load after one repair; nothing was written" Nothing (LI.anFailing second)
                                     else do
@@ -1100,16 +1104,30 @@ runInitLanguage rt cwd fmt cat l modelArg grammarArg yes plan fillsArg = do
                                       ownFiles = map fst files1
                                   forM_ files1 $ \(p, t) -> writeText ws p t
                                   rows1 <- doctorRows
-                                  case LI.anFailing first' ++ LI.anWarnings first' ++ LI.failingRows l ownFiles rows1 of
-                                    [] -> finish files1 False (LI.languageRows l ownFiles rows1) Nothing
+                                  let before = LI.languageRows l ownFiles rows1
+                                  -- a warn row that does not stop the files (a command naming no
+                                  -- {= tests =}) is shown, not repaired: doctor's rows say whether it runs
+                                  case LI.anFailing first' ++ LI.failingRows l ownFiles rows1 of
+                                    [] -> finish files1 False (before ++ LI.anWarnings provisional) Nothing
                                     failing -> do
-                                      second <- repairWith files1 failing
+                                      (second, repaired) <- repairWith files1 failing
                                       if null (LI.anFailing second)
                                         then do
                                           forM_ (LI.anFiles second) $ \(p, t) -> writeText ws p t
                                           rows2 <- LI.languageRows l ownFiles <$> doctorRows
-                                          finish (merge files1 (LI.anFiles second)) True (rows2 ++ LI.anWarnings second) Nothing
-                                        else finish files1 True (LI.languageRows l ownFiles rows1 ++ LI.anFailing second ++ LI.anWarnings provisional) (Just "the repair's files did not load: the first round's files are kept")
+                                          -- the repair may not break a row that passed: its fields go back
+                                          case LI.regressedFields before rows2 repaired of
+                                            [] -> finish (merge files1 (LI.anFiles second)) True (rows2 ++ LI.anWarnings second) Nothing
+                                            back -> do
+                                              rtErr rt ("init-language: the repair broke a row that passed; the first round's " <> T.intercalate ", " back <> " kept\n")
+                                              let third = LI.leaveOut ei (LI.checkAnswers ei (revert (LI.anAnswers second) back))
+                                              if null (LI.anFailing third)
+                                                then do
+                                                  forM_ (LI.anFiles third) $ \(p, t) -> writeText ws p t
+                                                  rows3 <- LI.languageRows l ownFiles <$> doctorRows
+                                                  finish (merge files1 (LI.anFiles third)) True (rows3 ++ LI.anWarnings third) Nothing
+                                                else finish (merge files1 (LI.anFiles second)) True (rows2 ++ LI.anWarnings second) Nothing
+                                        else finish files1 True (before ++ LI.anFailing second ++ LI.anWarnings provisional) (Just "the repair's files did not load: the first round's files are kept")
   where
     rowsJson rows = case doctorJson rows of
       Object o | Just v <- KM.lookup "checks" o -> v

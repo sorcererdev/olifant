@@ -269,8 +269,14 @@ spec = do
     it "a test runner row points at the command; a whole-file row at the file's fields" $ do
       holes [Check "test runner gotestsum (go)" Bad "absent" Nothing] `shouldBe` ["command_repair"]
       holes [Check "go: toolchain" Bad "does not load" Nothing] `shouldSatisfy` (\hs -> "command_repair" `elem` hs && "comment_repair" `notElem` hs)
-    it "repairAnswers keeps a repair's answers under their fields' names" $
-      repairAnswers (M.fromList [("comment_repair", "x"), ("comment", "y")]) `shouldBe` M.fromList [("comment", "x")]
+    it "regressedFields: the repaired fields behind a row that passed before the repair and fails after it" $ do
+      let before = [Check "go: tests" Ok "ran" Nothing, Check "go: test units" Warn "0 found" Nothing, Check "go: units" Ok "3" Nothing]
+          after = [Check "go: tests" Warn "none passed" Nothing, Check "go: test units" Ok "2 found" Nothing, Check "go: units" Ok "3" Nothing]
+      regressedFields before after ["command", "test_unit", "comment"] `shouldBe` ["command"]
+      regressedFields before before ["command"] `shouldBe` []
+    it "repairAnswers keeps the asked holes' answers under their fields' names" $ do
+      let r = repairRequest req written [Check "go: comment" Bad "x" Nothing]
+      repairAnswers r (M.fromList [("comment_repair", "x"), ("comment", "y"), ("keywords_repair", "z")]) `shouldBe` M.fromList [("comment", "x")]
   describe "the errand's queries (errandCore, no shipped set)" $ do
     let elmGrammar name = do
           tmp <- getTemporaryDirectory
@@ -319,7 +325,7 @@ spec = do
       map (\c -> (checkName c, T.take 16 (checkDetail c))) (anFailing a) `shouldBe` [("elmish: queries", "textobjects.scm:")]
       let rreq = repairRequest req (anFiles a) (anFailing a)
       map fhName (frHoles rreq) `shouldBe` ["textobjects_repair"]
-      let repaired = checkAnswers (input g ld up) (M.union (repairAnswers (M.fromList [("textobjects_repair", fills0 M.! "textobjects")])) (anAnswers a))
+      let repaired = checkAnswers (input g ld up) (M.union (repairAnswers rreq (M.fromList [("textobjects_repair", fills0 M.! "textobjects")])) (anAnswers a))
       anFailing repaired `shouldBe` []
       lookup ".olifant/queries/elm/textobjects.scm" (anFiles repaired) `shouldBe` M.lookup "textobjects" fills0
     it "(o2) the form assembles both files: the engine's keys, the answered ones, junit or lines by the command" $ do
