@@ -348,7 +348,9 @@ whole file, and every row that fails names the key behind it. How it gets there:
 
 You then see what was written and doctor's rows for the language, in doctor's own form. A row
 still failing after the repair keeps doctor's fix line; you are not expected to fix a generated
-file by hand (regenerate it, or answer the slot with a provider). If the repair's own answers do
+file by hand (regenerate it, or answer the slot with a provider). For a layer whose first line
+is init's header, doctor's fix says how: "…; or run olifant init --language go again after
+deleting .olifant/languages/go.toml". If the repair's own answers do
 not load, the first round's files stay and init says so. The exit code is doctor's: 1 if a row is
 an error. `--json` prints `{"written": [...], "grammar": {...}, "rows": [...], "repaired": bool}`,
 and lines on stderr give where the textobjects came from, the first round's failing rows, the

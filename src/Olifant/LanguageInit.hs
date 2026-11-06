@@ -87,7 +87,7 @@ import Data.List (isPrefixOf, nub, nubBy, sort, sortOn)
 import Data.Maybe (fromMaybe, isJust, isNothing)
 import Data.Text (Text)
 import Data.Text qualified as T
-import Olifant.Doctor (Check (..), Status (..))
+import Olifant.Doctor (Check (..), Status (..), initHeader)
 import Olifant.Fill (FillHole (..), FillRequest (..), Filler (..), Stance (..))
 import Olifant.Language (Grammar (..), GrammarSource (..), Language (..), Layer (..), languageFromLayers, queriesFor, queryError)
 import Olifant.Language.Presets (overPresets, presetsFrom, shippedPresets)
@@ -678,9 +678,6 @@ sourcesFile g grammar copied holes =
       r : _ -> ", directives removed (" <> T.intercalate ", " (T.words r) <> ")"
       [] -> ""
 
--- | The first line of every file @init --language@ writes.
-initHeader :: Text
-initHeader = "# written by olifant init --language"
 
 -- | The pinned grammar as a language file's @grammar@ line: olifant's URL
 -- and revision, never the model's text.

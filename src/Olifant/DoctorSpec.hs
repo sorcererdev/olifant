@@ -229,6 +229,12 @@ spec = describe "olifant doctor (spec §4.7)" $ do
     row "rust: tests" `shouldBe` (Ok, "ran cargo on src/a.rs, 1 results parsed (lines) · from toolchain cargo-test", Nothing)
     -- an evidence warning is never an error: doctor's exit stays 0
     [c | c <- cs, checkStatus c == Bad, "rust: " `T.isPrefixOf` checkName c] `shouldBe` []
+  it "a Disproven row of a layer init wrote says how to regenerate it; a hand-written layer's does not" $ do
+    rust <- shippedLanguage "rust" []
+    let ev = Evidence (Disproven "0 found in 2 files") (Proven "t") (Proven "r") (Unproven "a") (Proven "x") (Unproven "s")
+        fixWith layer = head [checkFix c | c <- runIdentity (doctor (ports ["ast-grep", "cargo"] (Right ()) []) {dpRead = \f -> Identity (if f == "/proj/.olifant/languages/rust.toml" then Just layer else Nothing)} ((input local) {diLanguages = [rust], diEvidence = [("rust", ev)]})), checkName c == "rust: units"]
+    fixWith (initHeader <> "\n[test]\nunit = ['^x']\n") `shouldBe` Just "regenerate the key or supply a provider (see chapter 9, Providers); or run olifant init --language rust again after deleting .olifant/languages/rust.toml"
+    fixWith "# my own layer\n[test]\nunit = ['^x']\n" `shouldBe` Just "regenerate the key or supply a provider (see chapter 9, Providers)"
 
 fst3 :: (a, b, c) -> a
 fst3 (a, _, _) = a

@@ -11,6 +11,7 @@ module Olifant.Doctor
   , doctor
   , grammarRow
   , grammarCheck
+  , initHeader
   ) where
 
 import Data.Maybe (fromMaybe)
@@ -79,10 +80,18 @@ doctor ports di = do
   model <- modelCheck
   runner <- plansRunner
   grammars <- traverse (\l -> (langName l,) <$> dpGrammar ports (langGrammar l)) (diLanguages di)
-  pure ([config] ++ packs ++ languages ++ broken ++ [astGrep] ++ concat tools ++ [model] ++ recognizeCheck ++ concatMap (capabilityRows grammars) (diLanguages di) ++ [runner])
+  generated <- traverse (\l -> (langName l,) <$> writtenByInit (langName l)) (diLanguages di)
+  pure ([config] ++ packs ++ languages ++ broken ++ [astGrep] ++ concat tools ++ [model] ++ recognizeCheck ++ concatMap (\l -> capabilityRows grammars (lookup (langName l) generated == Just True) l) (diLanguages di) ++ [runner])
   where
+    -- the project's layer for L starts with init's header: it was generated
+    writtenByInit l = case diProject di of
+      Nothing -> pure False
+      Just r -> maybe False (\t -> take 1 (T.lines t) == [initHeader]) <$> dpRead ports (r </> ".olifant" </> "languages" </> T.unpack l <> ".toml")
+    disprovenFix lang generated =
+      "regenerate the key or supply a provider (see chapter 9, Providers)"
+        <> (if generated then "; or run olifant init --language " <> langName lang <> " again after deleting .olifant/languages/" <> langName lang <> ".toml" else "")
     -- what each language can do; an absent capability names its key
-    capabilityRows grammars lang =
+    capabilityRows grammars generated lang =
       siblingRow lang
       [ case capHow c of
           Right how ->
@@ -93,7 +102,7 @@ doctor ports di = do
                   -- tests are run only with `doctor --run`: not run is no warning
                   Just (Unproven _) | capName c == "tests", not (diRan di) -> Check name Ok (how <> " (not run: olifant doctor --run)" <> origin) Nothing
                   Just (Unproven t) -> Check name Warn (t <> origin) Nothing
-                  Just (Disproven t) -> Check name Warn (t <> origin) (Just "regenerate the key or supply a provider (see chapter 9, Providers)")
+                  Just (Disproven t) -> Check name Warn (t <> origin) (Just (disprovenFix lang generated))
           Left key ->
             let (k, note) = T.breakOn " (" key
              in Check name Warn "absent" (Just (fromMaybe ("add " <> k <> " to .olifant/languages/" <> langName lang <> ".toml" <> note) (capFix c)))
@@ -201,6 +210,11 @@ doctor ports di = do
           dpEnvSet ports keyEnv >>= \case
             True -> pure (Check "model" Warn (m <> " via Jev answers decisions only, not holes; " <> keyEnv <> " is set") (Just "point [model] default at a chat backend and [decide] model at this one"))
             False -> pure (Check "model" Warn (keyEnv <> " is not set: decisions stay unsure") (Just ("export " <> keyEnv <> "=… in the shell that starts olifant (or your editor)")))
+
+-- | The first line of every file @olifant init --language@ writes: doctor
+-- reads it to say how a generated layer is regenerated.
+initHeader :: Text
+initHeader = "# written by olifant init --language"
 
 modelSnippet :: Text
 modelSnippet =

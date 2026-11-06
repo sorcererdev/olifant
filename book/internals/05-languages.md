@@ -608,7 +608,10 @@ KEY to .olifant/languages/NAME.toml" unless `capFix` says otherwise; no evidence
 units`, `tests`, `anchors`, `holes`): `Proven` is `Ok` with the evidence text in place of `how`;
 `Unproven` is `Warn`, except the tests row when doctor did not run tests (`diRan`, from `doctor
 --run`), which stays `Ok` with `how (not run: olifant doctor --run)`; `Disproven` is `Warn` with
-the fix "regenerate the key or supply a provider (see chapter 9, Providers)". The origin is kept
+the fix "regenerate the key or supply a provider (see chapter 9, Providers)", and when the
+project's `.olifant/languages/NAME.toml` starts with `Doctor.initHeader` (read through `dpRead`;
+init writes it, `LanguageInit` imports it from here) the fix adds "; or run olifant init
+--language NAME again after deleting .olifant/languages/NAME.toml". The origin is kept
 on every row, and evidence never makes a row `Bad`, so doctor's exit code rule is unchanged.
 After a language's capability rows, `Doctor.grammarRow` adds `LANGUAGE: grammar` from the
 `dpGrammar` port (`Grammar.probeGrammar` in `Main`, which loads the grammar as a first use
