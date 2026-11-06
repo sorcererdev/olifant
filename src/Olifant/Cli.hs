@@ -1087,20 +1087,20 @@ runInitLanguage rt cwd fmt cat l modelArg grammarArg yes plan fillsArg = do
                               if not (null (LI.anFailing provisional))
                                 then do
                                   -- a required key or a whole file fails: nothing is written until every file loads
-                                  second <- repairWith (LI.anFiles first') (LI.anFailing first')
+                                  second <- repairWith (LI.anFiles first') (LI.anFailing first' ++ LI.anWarnings first')
                                   if not (null (LI.anFailing second))
                                     then stop "the model's files do not load after one repair; nothing was written" Nothing (LI.anFailing second)
                                     else do
                                       let written = merge (LI.anFiles first') (LI.anFiles second)
                                       forM_ written $ \(p, t) -> writeText ws p t
                                       rows <- LI.languageRows l (map fst written) <$> doctorRows
-                                      finish written True (rows ++ LI.anLeftOut second) Nothing
+                                      finish written True (rows ++ LI.anWarnings second) Nothing
                                 else do
                                   let files1 = merge (LI.anFiles first') (LI.anFiles provisional)
                                       ownFiles = map fst files1
                                   forM_ files1 $ \(p, t) -> writeText ws p t
                                   rows1 <- doctorRows
-                                  case LI.anFailing first' ++ LI.failingRows l ownFiles rows1 of
+                                  case LI.anFailing first' ++ LI.anWarnings first' ++ LI.failingRows l ownFiles rows1 of
                                     [] -> finish files1 False (LI.languageRows l ownFiles rows1) Nothing
                                     failing -> do
                                       second <- repairWith files1 failing
@@ -1108,8 +1108,8 @@ runInitLanguage rt cwd fmt cat l modelArg grammarArg yes plan fillsArg = do
                                         then do
                                           forM_ (LI.anFiles second) $ \(p, t) -> writeText ws p t
                                           rows2 <- LI.languageRows l ownFiles <$> doctorRows
-                                          finish (merge files1 (LI.anFiles second)) True (rows2 ++ LI.anLeftOut second) Nothing
-                                        else finish files1 True (LI.languageRows l ownFiles rows1 ++ LI.anFailing second ++ LI.anLeftOut provisional) (Just "the repair's files did not load: the first round's files are kept")
+                                          finish (merge files1 (LI.anFiles second)) True (rows2 ++ LI.anWarnings second) Nothing
+                                        else finish files1 True (LI.languageRows l ownFiles rows1 ++ LI.anFailing second ++ LI.anWarnings provisional) (Just "the repair's files did not load: the first round's files are kept")
   where
     rowsJson rows = case doctorJson rows of
       Object o | Just v <- KM.lookup "checks" o -> v

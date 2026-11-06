@@ -3,6 +3,7 @@
 module Olifant.LanguageInitSpec (spec, formAnswers) where
 
 import Data.List (isPrefixOf)
+import Data.Maybe (isJust)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
 import Data.Map.Strict qualified as M
@@ -335,7 +336,7 @@ spec = do
       let junit = checkAnswers (input g ld up) (M.insert "command" "['elm-test', '--report', '{= report =}', '{= tests =}']" (anAnswers a))
       rowsOf junit `shouldBe` []
       lookup ".olifant/toolchains/elmish-test.toml" (anFiles junit) `shouldSatisfy` maybe False (\t -> "format = \"junit-xml\"" `T.isInfixOf` t && not ("[test.lines]" `T.isInfixOf` t))
-    it "(o3) a wrong value is a row naming its field: smuggled keys, a required none, a reader's error, a command's missing facts" $ do
+    it "(o3) a wrong value is a row naming its field: smuggled keys, a required none, a reader's error; a command with no {= tests =} a warn" $ do
       (g, ld, up) <- elmGrammar "o3"
       fills <- fixtures
       Right (_, a) <- errandCore (replayFiller fills) (input g ld up)
@@ -343,7 +344,10 @@ spec = do
       with "comment" "\"--\"\n[check]\npreset = \"x\"" `shouldBe` ["elmish: comment"]
       with "comment" "none" `shouldBe` ["elmish: comment"]
       with "test_above" "[1, 2]" `shouldBe` ["elmish: test_above"]
-      with "command" "[\"elm-test\"]" `shouldBe` ["elmish: command"]
+      with "command" "[\"elm-test\"]" `shouldBe` []
+      let noTests = checkAnswers (input g ld up) (M.insert "command" "[\"elm-test\"]" (anAnswers a))
+      map (\c -> (checkName c, checkStatus c)) (anWarnings noTests) `shouldBe` [("elmish: command", Warn)]
+      isJust (lookup ".olifant/toolchains/elmish-test.toml" (anFiles noTests)) `shouldBe` True
       with "command" "['elm-test', '{= tests =}']" `shouldBe` []
       with "lines_fail" "none" `shouldBe` ["elmish: command"]
     it "(o3b) leaveOut: a key still wrong after the repair is left out with a warn row; a required one stays failing" $ do
@@ -353,7 +357,7 @@ spec = do
       let wrong = checkAnswers (input g ld up) (M.insert "test_above" "[1, 2]" (anAnswers a))
           left = leaveOut (input g ld up) wrong
       map checkName (anFailing left) `shouldBe` []
-      map (\c -> (checkName c, checkStatus c)) (anLeftOut left) `shouldBe` [("elmish: test_above", Warn)]
+      map (\c -> (checkName c, checkStatus c)) (anWarnings left) `shouldBe` [("elmish: test_above", Warn)]
       lookup ".olifant/languages/elmish.toml" (anFiles left) `shouldSatisfy` maybe False (not . T.isInfixOf "above")
       map checkName (anFailing (leaveOut (input g ld up) (checkAnswers (input g ld up) (M.insert "comment" "none" (anAnswers a))))) `shouldBe` ["elmish: comment"]
     it "(o4) tests_for mapping a sampled source to itself, or to no test file, is a row with the mapping" $ do

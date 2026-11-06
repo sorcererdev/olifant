@@ -705,9 +705,11 @@ shippedFor = queriesFor
 
 -- | A round's checked answers: the files to write (path under the project,
 -- text), the rows that failed (a key the model answered wrong, a file that
--- does not load, a query that does not compile), and the answers they were
--- made from (a repair's are put over them).
-data Answered = Answered {anFiles :: [(FilePath, Text)], anFailing :: [Check], anAnswers :: Map Text Text, anLeftOut :: [Check]}
+-- does not load, a query that does not compile), the answers they were
+-- made from (a repair's are put over them), and the warn rows that do not
+-- stop the files (a key left out, a command that names no @{= tests =}@):
+-- the repair is asked about them too.
+data Answered = Answered {anFiles :: [(FilePath, Text)], anFailing :: [Check], anAnswers :: Map Text Text, anWarnings :: [Check]}
   deriving stock (Eq, Show)
 
 -- | A key that fails and is not required left out (answered none) and the
@@ -724,7 +726,7 @@ leaveOut ei = go (length (languageForm "" ++ toolchainForm ""))
       dropped@(_ : _) | n > 0 ->
         let again = checkAnswers ei (foldr (\(f, _) -> M.insert f "none") (anAnswers a) dropped)
             warned = [c {checkStatus = Warn, checkDetail = "left out: " <> checkDetail c} | (_, c) <- dropped]
-         in go (n - 1) again {anLeftOut = anLeftOut a ++ warned}
+         in go (n - 1) again {anWarnings = anWarnings a ++ warned}
       _ -> a
 
 -- | The answers (by hole name) checked before anything is written. Each
@@ -743,7 +745,7 @@ checkAnswers ei answers =
     -- one row per field: a value's own row before the load error it causes
     (nubBy (\a b -> checkName a == checkName b) (valueRows ++ factRows ++ toolchainErrors ++ languageErrors) ++ [c | Left c <- queries])
     answers
-    []
+    noTests
   where
     l = eiLanguage ei
     g = eiGrammar ei
@@ -774,11 +776,13 @@ checkAnswers ei answers =
     engineToolchain = [(["test", "tests_for"], t) | Just t <- [testsFor]] ++ [(["test", "format"], quote f) | Just f <- [format]]
     languageText = T.unlines [initHeader] <> assemble langFields engineLanguage values
     toolchainText = T.unlines [initHeader] <> assemble toolFields engineToolchain toolValues
-    factRows =
-      [ row "command" "the command has no {= tests =} element: keep its program, and put {= tests =} where it names the tests to run (olifant puts the selection's arguments there, select_file and select_test)"
+    -- a command naming no {= tests =} runs, every time, all the tests it names itself
+    noTests =
+      [ (row "command" "the command has no {= tests =} element, so every run runs all the tests it names: keep its program, and put {= tests =} where it names the tests to run (olifant puts the selection's arguments there, select_file and select_test)") {checkStatus = Warn}
       | Just c <- [command], not ("{= tests =}" `T.isInfixOf` c)
       ]
-        ++ [ row "command" "`format`: the command names no {= report =} and no [test.lines] pass and fail were answered: a runner that writes JUnit XML to {= report =}, or the console's lines"
+    factRows =
+      [ row "command" "`format`: the command names no {= report =} and no [test.lines] pass and fail were answered: a runner that writes JUnit XML to {= report =}, or the console's lines"
            | isJust command, isNothing format
            ]
         ++ [r | Nothing <- [derived], Just t <- [testsFor], r <- testsForRows t]
