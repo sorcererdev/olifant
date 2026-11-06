@@ -51,6 +51,8 @@ module Olifant.LanguageInit
   , repairRequest
   , repairHoles
   , repairAnswers
+  , leaveOut
+  , errorFields
   , readUpstream
   , nvimTextobjects
   ) where
@@ -62,7 +64,12 @@ import Data.Text.Encoding.Error (lenientDecode)
 import System.Directory (doesDirectoryExist, doesFileExist, listDirectory)
 import Olifant.Language.Grammar (GrammarSettings (..), failureDetail, fetch)
 import Data.Bifunctor (bimap, first)
+import Data.Aeson qualified as Aeson
+import Data.Aeson.Key qualified as AK
+import Data.Aeson.KeyMap qualified as AKM
 import Data.Char (isAlphaNum, isSpace)
+import Data.Foldable (toList)
+import Data.Scientific (floatingOrInteger)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
 import Data.List (nub, nubBy, sort, sortOn)
@@ -164,7 +171,7 @@ surveyRequest language tracked =
         , "files = [globs] (the source files; ** spans folders)"
         , "tests = [globs] (the test files)"
         , "manifest = \"FILE\" (the project's manifest, if it has one)"
-        , "runners = [{ program = \"NAME\", junit = \"ARGS\" }] (the test runners this project could use, by command name, including a wrapper that writes JUnit XML; junit = the argument that names its report file, {= report =} for the path; leave junit out for a runner that writes none)"
+        , "runners = [{ program = \"RUNNER\" }, { program = \"WRAPPER\", junit = \"OPTION {= report =}\" }] (the test runners this project could use, by command name: RUNNER the language's own; WRAPPER a separate program that runs those tests and writes a JUnit XML file, OPTION its flag naming the file)"
         ]
 
 -- | The sample the errand shows the model: the first two source files (not
@@ -408,8 +415,9 @@ valueOf fd raw
         Right () -> Right v
         Left (True, why) -> Left why
         Left (_, why)
+          | Just t <- jsonAsToml v, Right () <- single t -> Right t
           | oneString, Just inner <- T.stripPrefix "\"" v >>= T.stripSuffix "\"", not ("\n" `T.isInfixOf` inner), Right () <- single (quoted inner) -> Right (quoted inner)
-          | oneString, not (any (`T.isPrefixOf` v) ["[", "{", "\"", "'"]), Right () <- single (quoted v) -> Right (quoted v)
+          | oneString, "{=" `T.isPrefixOf` v || not (any (`T.isPrefixOf` v) ["[", "{", "\"", "'"]), Right () <- single (quoted v) -> Right (quoted v)
           | "argv" `T.isPrefixOf` fdKind fd, not ("\n" `T.isInfixOf` v), not (any (`T.isPrefixOf` v) ["[", "\"", "'"]) -> Right ("[" <> T.intercalate ", " [basic w | w <- T.words v] <> "]")
           | otherwise -> Left why
   where
@@ -426,6 +434,22 @@ valueOf fd raw
       | not ("'''" `T.isInfixOf` t) = "'''\n" <> t <> "'''"
       | otherwise = basic t
     basic t = "\"" <> T.concatMap (\case '"' -> "\\\""; '\\' -> "\\\\"; '\n' -> "\\n"; c -> T.singleton c) t <> "\""
+
+-- | A JSON array or object (a model writes @{ "strip": [...] }@ for an inline
+-- table) as the TOML value it means; anything else none.
+jsonAsToml :: Text -> Maybe Text
+jsonAsToml t = case Aeson.decodeStrict (TE.encodeUtf8 t) of
+  Just v@(Aeson.Object _) -> go v
+  Just v@(Aeson.Array _) -> go v
+  _ -> Nothing
+  where
+    go = \case
+      Aeson.Object o -> (\kvs -> "{" <> T.intercalate ", " kvs <> "}") <$> mapM (\(k, v) -> ((AK.toText k <> " = ") <>) <$> go v) (sortOn fst (AKM.toList o))
+      Aeson.Array a -> (\vs -> "[" <> T.intercalate ", " vs <> "]") <$> mapM go (toList a)
+      Aeson.String x -> Just ("\"" <> T.concatMap (\case '"' -> "\\\""; '\\' -> "\\\\"; '\n' -> "\\n"; c -> T.singleton c) x <> "\"")
+      Aeson.Number n -> Just (either (T.pack . show) (T.pack . show) (floatingOrInteger n :: Either Double Integer))
+      Aeson.Bool b -> Just (if b then "true" else "false")
+      Aeson.Null -> Nothing
 
 -- | A model's text with VARS (a key's own template variables) written
 -- @{{x}}@, @{{ x }}@ or @{x}@ made @{= x =}@ (a model writes those however it
@@ -458,14 +482,26 @@ normaliseTemplates vars src =
 -- pass`@) as one path, matched against each field's path; the longest
 -- path all of whose parts the message names wins.
 errorField :: [Field] -> Text -> Maybe Field
-errorField fields msg = case sortOn (negate . length . fdPath) [fd | fd <- fields, last (fdPath fd) `elem` named, all (`elem` named) (fdPath fd)] of
+errorField fields msg = case errorFields fields msg of
   fd : _ -> Just fd
+  [] -> Nothing
+
+-- | Every field a reader's error names: the backquoted names and the
+-- @[table] key@ mentions in it, matched against the fields' paths (all of
+-- a path's parts named), longest first; else the one field whose key alone
+-- is named.
+errorFields :: [Field] -> Text -> [Field]
+errorFields fields msg = case sortOn (negate . length . fdPath) [fd | fd <- fields, last (fdPath fd) `elem` named, all (`elem` named) (fdPath fd)] of
+  fds@(_ : _) -> fds
   [] -> case [fd | fd <- fields, last (fdPath fd) `elem` named] of
-    [fd] -> Just fd
-    _ -> Nothing
+    [fd] -> [fd]
+    _ -> []
   where
     quotedParts = [q | (i, q) <- zip [0 :: Int ..] (T.splitOn "`" msg), odd i]
-    named = concatMap (T.words . T.map (\c -> if c `elem` ("[].=" :: String) then ' ' else c)) quotedParts
+    -- `[imports] module_of` outside backquotes: the table and the word after it
+    tableRefs = [tbl <> " " <> T.takeWhile keyChar (T.stripStart after) | chunk <- drop 1 (T.splitOn "[" msg), let (tbl, rest) = T.breakOn "]" chunk, not (T.null rest), T.all (\c -> keyChar c || c == '.') tbl, let after = T.drop 1 rest]
+    keyChar c = isAlphaNum c || c == '_'
+    named = concatMap (T.words . T.map (\c -> if c `elem` ("[].=" :: String) then ' ' else c)) (quotedParts ++ tableRefs)
 
 -- | @tests_for@ read off the project's names: for a sample source @d/s.e@
 -- (by 'sampleFor''s order) and a tracked test file @d/t.e@ in the same folder
@@ -614,8 +650,24 @@ shippedFor = queriesFor
 -- text), the rows that failed (a key the model answered wrong, a file that
 -- does not load, a query that does not compile), and the answers they were
 -- made from (a repair's are put over them).
-data Answered = Answered {anFiles :: [(FilePath, Text)], anFailing :: [Check], anAnswers :: Map Text Text}
+data Answered = Answered {anFiles :: [(FilePath, Text)], anFailing :: [Check], anAnswers :: Map Text Text, anLeftOut :: [Check]}
   deriving stock (Eq, Show)
+
+-- | After the one repair: a key that still fails and is not required is
+-- left out (answered none) and the file checked again, until no such key
+-- fails; each left out is a warn row with why. A required key, a whole
+-- file's row and a query keep failing.
+leaveOut :: ErrandInput -> Answered -> Answered
+leaveOut ei = go (length (languageForm "" ++ toolchainForm ""))
+  where
+    optionalField = M.fromList [(fdName fd, ()) | fd <- languageForm "" ++ toolchainForm "", not (fdRequired fd)]
+    go :: Int -> Answered -> Answered
+    go n a = case [(f, c) | c <- anFailing a, let f = T.drop 2 (snd (T.breakOn ": " (checkName c))), M.member f optionalField, M.lookup f (anAnswers a) /= Just "none"] of
+      dropped@(_ : _) | n > 0 ->
+        let again = checkAnswers ei (foldr (\(f, _) -> M.insert f "none") (anAnswers a) dropped)
+            warned = [c {checkStatus = Warn, checkDetail = "left out after the repair: " <> checkDetail c} | (_, c) <- dropped]
+         in go (n - 1) again {anLeftOut = anLeftOut a ++ warned}
+      _ -> a
 
 -- | The answers (by hole name) checked before anything is written. Each
 -- field's value is read by 'valueOf' (a value that is not one TOML value,
@@ -633,6 +685,7 @@ checkAnswers ei answers =
     -- one row per field: a value's own row before the load error it causes
     (nubBy (\a b -> checkName a == checkName b) (valueRows ++ factRows ++ toolchainErrors ++ languageErrors) ++ [c | Left c <- queries])
     answers
+    []
   where
     l = eiLanguage ei
     g = eiGrammar ei
@@ -688,11 +741,11 @@ checkAnswers ei answers =
     presets = case presetsFrom "project" [(toolchainName l, toolchainText)] of
       Right p -> overPresets shippedPresets p
       Left _ -> shippedPresets
-    loadError file why = case errorField (langFields ++ toolFields) why of
-      Just fd -> [row (fdName fd) ("does not load: " <> why)]
+    loadError file why = case errorFields (langFields ++ toolFields) why of
+      fds@(_ : _) -> [row (fdName fd) ("does not load: " <> why) | fd <- fds]
       -- the engine writes `format` by the command
-      Nothing | "`format`" `T.isInfixOf` why -> [row "command" ("does not load: " <> why)]
-      Nothing -> [row file ("does not load: " <> why)]
+      [] | "`format`" `T.isInfixOf` why -> [row "command" ("does not load: " <> why)]
+      [] -> [row file ("does not load: " <> why)]
     toolchainErrors = case presetsFrom "project" [(toolchainName l, toolchainText)] of
       Left why -> loadError "toolchain" why
       Right _ -> []

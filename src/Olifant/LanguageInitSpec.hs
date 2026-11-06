@@ -62,6 +62,9 @@ spec = do
       valueOf (field "comment") "--" `shouldBe` Right (Just "'--'")
       valueOf (field "test_above") "\"^\\s*@\"" `shouldBe` Right (Just "'^\\s*@'")
       valueOf (field "command") "go test ./..." `shouldBe` Right (Just "[\"go\", \"test\", \"./...\"]")
+      valueOf (field "branch") "{= pattern =}: {= body =}" `shouldBe` Right (Just "'{= pattern =}: {= body =}'")
+      valueOf (field "module_of") "{ \"strip\": [\"^src/\"], \"separator\": \"/\" }" `shouldBe` Right (Just "{separator = \"/\", strip = [\"^src/\"]}")
+      valueOf (field "imports_resolve") "[{ \"pattern\": \"^import (x)\", \"module\": 1 }]" `shouldBe` Right (Just "[{module = 1, pattern = \"^import (x)\"}]")
       valueOf (field "comment") "\"#\"\n[check]\npreset = \"x\"" `shouldSatisfy` either (T.isInfixOf "one value") (const False)
     it "valueOf normalises a key's own variables, {{x}} and {x}, and refuses another" $ do
       valueOf (field "tests_for") "\"{{dir}}/{{stem}}_t.go\"" `shouldBe` Right (Just "\"{= dir =}/{= stem =}_t.go\"")
@@ -76,6 +79,7 @@ spec = do
       fmap fdName (errorField (toolchainForm "x") "`[test.lines] pass`: bad") `shouldBe` Just "lines_pass"
       fmap fdName (errorField (languageForm "x") "`comment`: expected a string") `shouldBe` Just "comment"
       fmap fdName (errorField (languageForm "x") "something else") `shouldBe` Nothing
+      map fdName (errorFields (languageForm "x" ++ toolchainForm "x") "[test.select] uses {= group =}, which needs `file_group` (or [imports] module_of)") `shouldBe` ["select_test", "module_of"]
     it "derivedTestsFor reads tests_for from a source and a test beside it" $ do
       let sv (_ :: String) fs ts = Survey "g" Nothing Nothing fs ts Nothing []
       derivedTestsFor (sv "go" ["**/*.go"] ["**/*_test.go"]) ["a/x.go", "a/x_test.go"] `shouldBe` Just "{= dir =}/{= stem =}_test.go"
@@ -335,6 +339,16 @@ spec = do
       with "command" "[\"elm-test\"]" `shouldBe` ["elmish: command"]
       with "command" "['elm-test', '{= tests =}']" `shouldBe` []
       with "lines_fail" "none" `shouldBe` ["elmish: command"]
+    it "(o3b) leaveOut: a key still wrong after the repair is left out with a warn row; a required one stays failing" $ do
+      (g, ld, up) <- elmGrammar "o3b"
+      fills <- fixtures
+      Right (_, a) <- errandCore (replayFiller fills) (input g ld up)
+      let wrong = checkAnswers (input g ld up) (M.insert "test_above" "[1, 2]" (anAnswers a))
+          left = leaveOut (input g ld up) wrong
+      map checkName (anFailing left) `shouldBe` []
+      map (\c -> (checkName c, checkStatus c)) (anLeftOut left) `shouldBe` [("elmish: test_above", Warn)]
+      lookup ".olifant/languages/elmish.toml" (anFiles left) `shouldSatisfy` maybe False (not . T.isInfixOf "above")
+      map checkName (anFailing (leaveOut (input g ld up) (checkAnswers (input g ld up) (M.insert "comment" "none" (anAnswers a))))) `shouldBe` ["elmish: comment"]
     it "(o4) tests_for mapping a sampled source to itself, or to no test file, is a row with the mapping" $ do
       (g, ld, up) <- elmGrammar "o4"
       fills <- fixtures

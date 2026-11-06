@@ -1062,9 +1062,10 @@ runInitLanguage rt cwd fmt cat l modelArg grammarArg yes plan fillsArg = do
                                     rtErr rt (T.unlines ["init-language: round 1: " <> checkName c <> " — " <> checkDetail c | c <- rows])
                                     let rreq = LI.repairRequest req written rows
                                     runFill (mfFiller mf) rreq <&> \case
-                                      Left why -> LI.Answered [] [Check (l <> ": repair") Bad ("the model did not answer the repair: " <> why) Nothing] (LI.anAnswers first')
-                                      -- the repair's values over the first round's, the files assembled again
-                                      Right answers -> LI.checkAnswers ei (M.union (LI.repairAnswers answers) (LI.anAnswers first'))
+                                      Left why -> LI.Answered [] [Check (l <> ": repair") Bad ("the model did not answer the repair: " <> why) Nothing] (LI.anAnswers first') []
+                                      -- the repair's values over the first round's, the files assembled
+                                      -- again; a key not required that still fails is left out
+                                      Right answers -> LI.leaveOut ei (LI.checkAnswers ei (M.union (LI.repairAnswers answers) (LI.anAnswers first')))
                                   merge old new' = [(p, t) | (p, t) <- old, p `notElem` map fst new'] ++ new'
                                   doctorRows = do
                                     reopened <- openProjectCatalog (rtRoot rt) (CatalogPaths (rtProjectDir rt) (rtUserConfigDir rt) (rtHomeDir rt))
@@ -1089,7 +1090,7 @@ runInitLanguage rt cwd fmt cat l modelArg grammarArg yes plan fillsArg = do
                                       let written = merge (LI.anFiles first') (LI.anFiles second)
                                       forM_ written $ \(p, t) -> writeText ws p t
                                       rows <- LI.languageRows l (map fst written) <$> doctorRows
-                                      finish written True rows Nothing
+                                      finish written True (rows ++ LI.anLeftOut second) Nothing
                                 else do
                                   forM_ (LI.anFiles first') $ \(p, t) -> writeText ws p t
                                   rows1 <- doctorRows
@@ -1101,7 +1102,7 @@ runInitLanguage rt cwd fmt cat l modelArg grammarArg yes plan fillsArg = do
                                       forM_ (LI.anFiles second) $ \(p, t) -> writeText ws p t
                                       rows2 <- LI.languageRows l ownFiles <$> doctorRows
                                       let note = if null (LI.anFailing second) then Nothing else Just "the repair's files did not load: the first round's files are kept"
-                                      finish (merge (LI.anFiles first') (LI.anFiles second)) True (rows2 ++ LI.anFailing second) note
+                                      finish (merge (LI.anFiles first') (LI.anFiles second)) True (rows2 ++ LI.anFailing second ++ LI.anLeftOut second) note
   where
     rowsJson rows = case doctorJson rows of
       Object o | Just v <- KM.lookup "checks" o -> v
