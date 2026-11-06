@@ -2074,7 +2074,10 @@ for a starter's case (`genStarter`): a starter makes a project from nothing.
 open. `runInitLanguage` asks the model for a survey, pins the grammar repository's `HEAD`, asks
 before it fetches and builds, loads the grammar, asks one errand for the language file, its test
 toolchain and the missing queries, checks every answer and only then writes. The pure parts are
-`Olifant.LanguageInit`; [chapter 5](05-languages.md#init---language-the-errand) has the flow.
+`Olifant.LanguageInit`; [chapter 5](05-languages.md#init---language-the-errand) has the flow. A shipped
+language goes to `runInitShipped`: doctor first, nothing written when no row fails, else a layer
+of only the failing rows' keys through the same rounds (`answerRounds`)
+([chapter 5](05-languages.md#a-shipped-language-runinitshipped)).
 
 ### `olifant check` (`runCommand`, `Cli.hs`)
 

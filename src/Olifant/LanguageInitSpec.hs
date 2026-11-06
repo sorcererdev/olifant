@@ -247,6 +247,18 @@ spec = do
           written = [".olifant/queries/go/tags.scm", ".olifant/languages/go.toml"]
       map checkName (failingRows "go" written [refused, other]) `shouldBe` [checkName refused]
       map checkName (languageRows "go" written [refused, other]) `shouldBe` [checkName refused]
+  describe "a shipped language's layer" $ do
+    it "layerKeysOk: the asked keys, an inline table's own keys and the tables on the way; any other key refused, named" $ do
+      let allowed = [["test", "unit"], ["imports", "module_of"]]
+      layerKeysOk allowed "[test]\nunit = ['^x']\n[imports]\nmodule_of = { strip = ['a'], separator = '.' }\n" `shouldBe` Right ()
+      layerKeysOk allowed "files = ['**/*.x']\n[test]\nunit = ['^x']\n" `shouldBe` Left "sets `files`, which no failing row needs"
+      layerKeysOk allowed "[test]\nunit = ['^x']\nabove = 'y'\n" `shouldBe` Left "sets `test.above`, which no failing row needs"
+    it "shippedFailing: a tests run with results, none passing, is the project's tests, not a key's; a broken run is sent" $ do
+      let row d = Check "rust: tests" Warn d (Just "regenerate the key or supply a provider (see chapter 9, Providers)")
+          failed = row "ran cargo test in the package root (.); none of 2 passed; the first failure, x: boom"
+          broken = row "ran cargo test in the package root (.): error: no network"
+      shippedFailing "rust" [] [failed, broken] `shouldBe` [broken]
+
   describe "repairRequest" $ do
     let req = formRequest (bareInput upstream ["a/x.go"])
         written = [(".olifant/languages/go.toml", "files = []\n")]

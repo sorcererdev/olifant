@@ -358,10 +358,48 @@ survey's and the errand's seconds and whether a repair ran.
 model is still asked for the survey). `--model NAME` picks a backend, as for `gen`; with no model
 it stops: "init --language needs a model: add [model] (olifant doctor shows how)". A language that
 already has `.olifant/languages/<name>.toml` (or its toolchain file) is not overwritten: delete the
-file to generate again. A language olifant ships is not regenerated.
+file to generate again. A language olifant ships is not regenerated ([below](#a-language-olifant-ships-a-layer-for-what-fails)).
 
 The files are ordinary layers: edit them as you would one you wrote, and `olifant doctor` reads
 them like any other.
+
+### A language olifant ships: a layer for what fails
+
+`olifant init --language rust` (or `python`, `haskell`, `elm`) does not write the language again.
+It runs doctor first, with `--run`, before any model is asked:
+
+```
+$ olifant init --language rust --human
+rust ships with olifant; doctor finds nothing to override here
+✓ rust: units — 4 found in 2 files (e.g. src/rates.rs:1 add) · from shipped
+…
+```
+
+With no failing row it writes nothing and exits 0 (no model is needed for that). In a project
+that names no Rust yet (no pack, generator or `languages = ["rust"]` in `.olifant/config.toml`)
+doctor is run over the shipped file alone and a line says so.
+
+When rows fail, the model is asked only for the keys those rows point at, by the same mapping
+the repair uses (`test units`: `tests_for` and `[test] unit`; `tests`: the command, its root,
+selection and output keys; `holes`: the hole kinds; a test runner row: the command), each with
+the shipped value shown and `none` to keep it. Before that, the survey runs for the globs,
+the runners and the sample (its grammar is not read: the shipped one stays). A `tests_for` the
+project's names show is written by olifant and not asked. A `tests` row counts only when the run
+was broken (no results): a run whose tests ran and failed is your tests failing, not a key.
+Olifant writes what the model answered as a thin project layer over the shipped file:
+
+- `.olifant/languages/<name>.toml`, holding only those keys (`[test] unit = …` for tests under an
+  attribute the shipped rules do not know, say `#[rstest]`);
+- `.olifant/toolchains/<preset>.toml`, the project's preset of the shipped preset's name
+  (`cargo-test`), holding only the preset keys the `tests` or test runner rows point at, when the
+  shipped `[test]` names a preset; it merges key by key over the shipped one
+  ([Presets](#presets-check-and-test)).
+
+Each file starts `# written by olifant init --language`, and a file with no key is not written.
+The answers are checked as a new language's are, plus one more: every key a file sets must be
+one the rows asked for (a value that smuggles `files = …` in is a row naming its key, sent to
+the repair). Then doctor runs on the layer and the one repair round follows, as above. An
+existing `.olifant/languages/<name>.toml`, or a preset file it would write, stops init.
 
 ### The keys
 
