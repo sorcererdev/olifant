@@ -229,6 +229,26 @@ spec = describe "olifant doctor (spec §4.7)" $ do
     row "rust: tests" `shouldBe` (Ok, "ran cargo on src/a.rs, 1 results parsed (lines) · from toolchain cargo-test", Nothing)
     -- an evidence warning is never an error: doctor's exit stays 0
     [c | c <- cs, checkStatus c == Bad, "rust: " `T.isPrefixOf` checkName c] `shouldBe` []
+  it "a Disproven row of a layer init wrote says how to regenerate it; a hand-written layer's does not" $ do
+    rust <- shippedLanguage "rust" []
+    let ev = Evidence (Disproven "0 found in 2 files") (Proven "t") (Proven "r") (Unproven "a") (Proven "x") (Unproven "s")
+        fixOf files = head [checkFix c | c <- runIdentity (doctor (ports ["ast-grep", "cargo"] (Right ()) []) {dpRead = \f -> Identity (lookup f [("/proj/" <> p, t) | (p, t) <- files])} ((input local) {diLanguages = [rust], diEvidence = [("rust", ev)]})), checkName c == "rust: units"]
+        fixWith layer = fixOf [(".olifant/languages/rust.toml", layer)]
+        plain = "regenerate the key or supply a provider (see chapter 9, Providers)"
+    fixWith (initHeader <> "\n[test]\nunit = ['^x']\n") `shouldBe` Just (plain <> "; or run olifant init --language rust again after deleting .olifant/languages/rust.toml")
+    fixWith "# my own layer\n[test]\nunit = ['^x']\n" `shouldBe` Just plain
+    -- the layer and the toolchain preset init wrote: a rerun refuses on both, so both are named
+    fixOf [(".olifant/languages/rust.toml", initHeader <> "\n[test]\nunit = ['^x']\n"), (".olifant/toolchains/cargo-test.toml", initHeader <> "\ncommand = ['cargo']\n")]
+      `shouldBe` Just (plain <> "; or run olifant init --language rust again after deleting .olifant/languages/rust.toml and .olifant/toolchains/cargo-test.toml")
+    -- a hand-written preset is not named
+    fixOf [(".olifant/languages/rust.toml", initHeader <> "\n[test]\nunit = ['^x']\n"), (".olifant/toolchains/cargo-test.toml", "command = ['cargo']\n")]
+      `shouldBe` Just (plain <> "; or run olifant init --language rust again after deleting .olifant/languages/rust.toml")
+  it "a layer holding only the grammar (init's grammar-only layer) has no regenerate hint" $ do
+    rust <- shippedLanguage "rust" []
+    let ev = Evidence (Disproven "0 found in 2 files") (Proven "t") (Proven "r") (Unproven "a") (Proven "x") (Unproven "s")
+        layer = initHeader <> "\n# rust ships without a grammar source: this one, pinned by init\ngrammar = { git = \"https://x/y\", rev = \"abc\", name = \"rust\" }\n"
+        fix = head [checkFix c | c <- runIdentity (doctor (ports ["ast-grep", "cargo"] (Right ()) []) {dpRead = \f -> Identity (if f == "/proj/.olifant/languages/rust.toml" then Just layer else Nothing)} ((input local) {diLanguages = [rust], diEvidence = [("rust", ev)]})), checkName c == "rust: units"]
+    fix `shouldBe` Just "regenerate the key or supply a provider (see chapter 9, Providers)"
 
 fst3 :: (a, b, c) -> a
 fst3 (a, _, _) = a

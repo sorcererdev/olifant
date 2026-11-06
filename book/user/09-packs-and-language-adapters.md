@@ -284,8 +284,9 @@ whole file, and every row that fails names the key behind it. How it gets there:
    source and test files, its manifest, and which test runners the project could use: the
    language's own, and a separate program that runs those tests and writes JUnit XML, with the
    option that names its report file (`runners = [{ program = "go" }, { program = "gotestsum",
-   junit = "--junitfile {= report =}" }]`; a bare `"go"` reads too). `--grammar URL` gives the
-   repository yourself.
+   junit = "--junitfile {= report =}" }]`; a bare `"go"` reads too). An empty `path` or `name`
+   counts as none, and a `name` written as the C symbol (`tree_sitter_go`) as what follows
+   `tree_sitter_`. `--grammar URL` gives the repository yourself.
 2. **The pin.** Olifant asks the repository for its `HEAD` (`git ls-remote`) and pins that full
    commit SHA. The revision is olifant's, never the model's.
 3. **The question.** The repository is the model's proposal, and olifant is about to compile its
@@ -348,7 +349,11 @@ whole file, and every row that fails names the key behind it. How it gets there:
 
 You then see what was written and doctor's rows for the language, in doctor's own form. A row
 still failing after the repair keeps doctor's fix line; you are not expected to fix a generated
-file by hand (regenerate it, or answer the slot with a provider). If the repair's own answers do
+file by hand (regenerate it, or answer the slot with a provider). For a layer whose first line
+is init's header, doctor's fix says how, naming every file init wrote that a rerun refuses on (the
+language's layer, and its toolchain preset when that starts with the header too): "…; or run
+olifant init --language go again after deleting .olifant/languages/go.toml and
+.olifant/toolchains/go-test.toml". A layer holding only a grammar (the elm case, below) gets no such hint. If the repair's own answers do
 not load, the first round's files stay and init says so. The exit code is doctor's: 1 if a row is
 an error. `--json` prints `{"written": [...], "grammar": {...}, "rows": [...], "repaired": bool}`,
 and lines on stderr give where the textobjects came from, the first round's failing rows, the
@@ -358,10 +363,71 @@ survey's and the errand's seconds and whether a repair ran.
 model is still asked for the survey). `--model NAME` picks a backend, as for `gen`; with no model
 it stops: "init --language needs a model: add [model] (olifant doctor shows how)". A language that
 already has `.olifant/languages/<name>.toml` (or its toolchain file) is not overwritten: delete the
-file to generate again. A language olifant ships is not regenerated.
+file to generate again. A language olifant ships is not regenerated ([below](#a-language-olifant-ships-a-layer-for-what-fails)).
 
 The files are ordinary layers: edit them as you would one you wrote, and `olifant doctor` reads
 them like any other.
+
+### A language olifant ships: a layer for what fails
+
+`olifant init --language rust` (or `python`, `haskell`, `elm`) does not write the language again.
+It runs doctor first, with `--run`, before any model is asked:
+
+```
+$ olifant init --language rust --human
+rust ships with olifant; doctor finds nothing to override here
+✓ rust: units — 4 found in 2 files (e.g. src/rates.rs:1 add) · from shipped
+…
+```
+
+With no failing row it writes nothing and exits 0 (no model is needed for that). In a project
+that names no Rust yet (no pack, generator or `languages = ["rust"]` in `.olifant/config.toml`)
+doctor is run over the shipped file alone and a line says so. When init then writes a layer or a
+preset for it, it also adds the language to `languages` in `.olifant/config.toml` (making the file
+if there is none), so the final rows show it. `--grammar URL` on a language that ships a grammar is
+ignored, and init says so.
+
+When rows fail but none points at a key a layer sets (a grammar that will not build with no C
+compiler, say), init stops before any model call and prints the grammar row with its fix.
+
+When rows fail, the model is asked only for the keys those rows point at, by the same mapping
+the repair uses (`test units`: `tests_for` and `[test] unit`; `tests`: the command, its root,
+selection and output keys; `holes`: the hole kinds; a test runner row: the command), each with
+the shipped value shown and `none` to keep it. Before that, the survey runs for the globs,
+the runners and the sample (its grammar is not read: the shipped one stays). A `tests_for` the
+project's names show is written by olifant and not asked. A `tests` row counts only when the run
+was broken (no results): a run whose tests ran and failed is your tests failing, not a key.
+Olifant writes what the model answered as a thin project layer over the shipped file:
+
+- `.olifant/languages/<name>.toml`, holding only those keys (`[test] unit = …` for tests under an
+  attribute the shipped rules do not know, say `#[rstest]`);
+- `.olifant/toolchains/<preset>.toml`, the project's preset of the shipped preset's name
+  (`cargo-test`), holding only the preset keys the `tests` or test runner rows point at, when the
+  shipped `[test]` names a preset; it merges key by key over the shipped one
+  ([Presets](#presets-check-and-test)).
+
+Each file starts `# written by olifant init --language`, and a file with no key is not written.
+The answers are checked as a new language's are, plus one more: every key a file sets must be
+one the rows asked for (a value that smuggles `files = …` in is a row naming its key, sent to
+the repair). Then doctor runs on the layer and the one repair round follows, as above. An
+existing `.olifant/languages/<name>.toml`, or a preset file it would write, stops init.
+
+**Elm without its pack.** The shipped `elm.toml` names no grammar source (the elm pack carries
+one). With no layer giving it one, `init --language elm` asks the survey for the grammar alone
+(or takes `--grammar URL`, and then needs no model), pins it, asks before it fetches and builds
+it as for a new language, and writes a one-key layer:
+
+```toml
+# written by olifant init --language
+# elm ships with olifant without a grammar source: this one, pinned by init
+grammar = { git = "https://github.com/elm-tooling/tree-sitter-elm", rev = "…", name = "elm" }
+```
+
+The shipped elm queries then read the project's grammar (`elm: queries … (shipped)`). With the
+elm pack configured, elm has its grammar and init finds nothing to override. The survey may
+propose the wrong repository for a grammar (a model can name elm/compiler for Elm); init pins what
+it is given, and when the grammar row stops on a wrong repository, pass `--grammar URL` (Elm's is
+https://github.com/elm-tooling/tree-sitter-elm).
 
 ### The keys
 

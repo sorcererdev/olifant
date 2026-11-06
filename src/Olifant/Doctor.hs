@@ -11,8 +11,10 @@ module Olifant.Doctor
   , doctor
   , grammarRow
   , grammarCheck
+  , initHeader
   ) where
 
+import Data.Map.Strict qualified as M
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -79,10 +81,30 @@ doctor ports di = do
   model <- modelCheck
   runner <- plansRunner
   grammars <- traverse (\l -> (langName l,) <$> dpGrammar ports (langGrammar l)) (diLanguages di)
-  pure ([config] ++ packs ++ languages ++ broken ++ [astGrep] ++ concat tools ++ [model] ++ recognizeCheck ++ concatMap (capabilityRows grammars) (diLanguages di) ++ [runner])
+  generated <- traverse (\l -> (langName l,) <$> writtenByInit l) (diLanguages di)
+  pure ([config] ++ packs ++ languages ++ broken ++ [astGrep] ++ concat tools ++ [model] ++ recognizeCheck ++ concatMap (\l -> capabilityRows grammars (fromMaybe [] (lookup (langName l) generated)) l) (diLanguages di) ++ [runner])
   where
+    -- the files init wrote for L that a rerun of init refuses on: the
+    -- project's layer, when it starts with init's header, and the toolchain
+    -- preset L names (or <L>-test) when it does too. A layer holding only
+    -- `grammar` (init's grammar-only layer) is not regenerated: no hint.
+    writtenByInit lang = case diProject di of
+      Nothing -> pure []
+      Just r -> do
+        let l = langName lang
+            fromInit rel = fmap (\t -> (take 1 (T.lines t) == [initHeader], t)) <$> dpRead ports (r </> rel)
+            layerRel = ".olifant/languages/" <> T.unpack l <> ".toml"
+            presets = foldr (\x acc -> x : filter (/= x) acc) [] ([p | o <- M.elems (langOrigins lang), Just p <- [T.stripPrefix "toolchain " o]] ++ [l <> "-test"])
+            presetRels = [".olifant/toolchains/" <> T.unpack p <> ".toml" | p <- presets]
+            body t = [T.strip ln | ln <- T.lines t, not (T.null (T.strip ln)), not ("#" `T.isPrefixOf` T.strip ln)]
+        layer <- fromInit layerRel
+        presetFiles <- traverse fromInit presetRels
+        pure ([layerRel | Just (True, t) <- [layer], not (all ("grammar" `T.isPrefixOf`) (body t))] ++ [rel | (rel, Just (True, _)) <- zip presetRels presetFiles])
+    disprovenFix lang generated =
+      "regenerate the key or supply a provider (see chapter 9, Providers)"
+        <> (if null generated then "" else "; or run olifant init --language " <> langName lang <> " again after deleting " <> T.intercalate " and " (map T.pack generated))
     -- what each language can do; an absent capability names its key
-    capabilityRows grammars lang =
+    capabilityRows grammars generated lang =
       siblingRow lang
       [ case capHow c of
           Right how ->
@@ -93,7 +115,7 @@ doctor ports di = do
                   -- tests are run only with `doctor --run`: not run is no warning
                   Just (Unproven _) | capName c == "tests", not (diRan di) -> Check name Ok (how <> " (not run: olifant doctor --run)" <> origin) Nothing
                   Just (Unproven t) -> Check name Warn (t <> origin) Nothing
-                  Just (Disproven t) -> Check name Warn (t <> origin) (Just "regenerate the key or supply a provider (see chapter 9, Providers)")
+                  Just (Disproven t) -> Check name Warn (t <> origin) (Just (disprovenFix lang generated))
           Left key ->
             let (k, note) = T.breakOn " (" key
              in Check name Warn "absent" (Just (fromMaybe ("add " <> k <> " to .olifant/languages/" <> langName lang <> ".toml" <> note) (capFix c)))
@@ -201,6 +223,11 @@ doctor ports di = do
           dpEnvSet ports keyEnv >>= \case
             True -> pure (Check "model" Warn (m <> " via Jev answers decisions only, not holes; " <> keyEnv <> " is set") (Just "point [model] default at a chat backend and [decide] model at this one"))
             False -> pure (Check "model" Warn (keyEnv <> " is not set: decisions stay unsure") (Just ("export " <> keyEnv <> "=… in the shell that starts olifant (or your editor)")))
+
+-- | The first line of every file @olifant init --language@ writes: doctor
+-- reads it to say how a generated layer is regenerated.
+initHeader :: Text
+initHeader = "# written by olifant init --language"
 
 modelSnippet :: Text
 modelSnippet =

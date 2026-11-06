@@ -3,7 +3,9 @@ module Olifant.CliSpec (spec) where
 import Olifant.Language.Grammar (GrammarFailure (NoSource), probeGrammar)
 import Olifant.Language.GrammarSpec (fixtureRepo)
 import Olifant.LanguageInitSpec (formAnswers)
-import Olifant.Language.Test (scriptedRunner)
+import Olifant.Language.Test (Runner (..), TestRun (..), scriptedRunner)
+import Olifant.Language.Adapter (TestDef (..))
+import Olifant.LanguageInit (fdName, layerForm)
 import Data.Set qualified as S
 import System.Process (readProcess)
 import Data.Aeson (Value (..), decodeStrict)
@@ -29,7 +31,7 @@ import Data.ByteString.Lazy qualified as BL
 import Data.Text.Lazy qualified as TL
 import Data.Text.Lazy.Encoding qualified as TLE
 import Olifant.Generator (GeneratorId (..))
-import Olifant.Language (Syntax, noChecker, noRunner, noSyntax, noVerifier)
+import Olifant.Language (Language (..), Syntax, noChecker, noRunner, noSyntax, noVerifier)
 import Olifant.Workspace (memoryWorkspace)
 import Olifant.Server.Errand (Status (..))
 import Olifant.Server.Telemetry (ErrandRecord (..), OutcomeRecord (..), ReconcileRecord (..), Record (..), recordJson)
@@ -172,7 +174,11 @@ elmishFills remote = do
 -- runner where every test passes. A terminal answers its questions with
 -- the given line; Nothing is no terminal.
 runInitLanguageIn :: [(FilePath, Text)] -> Maybe Text -> [String] -> IO (ExitCode, Text, Text, Map FilePath Text)
-runInitLanguageIn files terminal args = do
+runInitLanguageIn = runInitLanguageWith (scriptedRunner M.empty)
+
+-- | 'runInitLanguageIn' with the test runner given.
+runInitLanguageWith :: Runner IO -> [(FilePath, Text)] -> Maybe Text -> [String] -> IO (ExitCode, Text, Text, Map FilePath Text)
+runInitLanguageWith tester files terminal args = do
   (root, snapshot) <- memoryWorkspace files
   out <- newIORef ""
   err <- newIORef ""
@@ -188,7 +194,7 @@ runInitLanguageIn files terminal args = do
         , rtGitChanged = \_ _ -> pure (Right ([], []))
         , rtDoctor = DoctorPorts (\e -> pure (if take 4 e == "nope" then Nothing else Just ("/bin/" <> e))) (pure "/usr/bin") (\_ -> pure (Right ())) (\_ -> pure False) (\_ -> pure Nothing) (\_ -> pure []) probeGrammar
         , rtTracked = \_ -> pure (Just tracked), rtBaseText = \_ _ _ -> pure (Left "no base in tests"), rtBaseFiles = \_ _ -> pure (Left "no base"), rtBaseStamp = \_ _ -> pure "", rtGit = \_ _ -> pure (Left "no git in tests")
-        , rtGitInit = \_ _ -> pure (Right ()), rtVerifier = const noVerifier, rtTester = \_ _ -> scriptedRunner M.empty
+        , rtGitInit = \_ _ -> pure (Right ()), rtVerifier = const noVerifier, rtTester = \_ _ -> tester
         }
       args
   (,,,) code <$> readIORef out <*> readIORef err <*> snapshot
@@ -248,11 +254,13 @@ initLanguageSpec = describe "init --language" $ do
     (code, out, err, _) <- run files ["init", "--language", "elmish", "--yes", "--human"]
     code `shouldBe` ExitFailure 1
     (out <> err) `shouldSatisfy` T.isInfixOf "init --language needs a model: add [model] (olifant doctor shows how)"
-  it "(f) a shipped language is not generated (m5b)" $ do
+  it "(f) a shipped language is not generated: with no rust here, nothing to override, and no model needed" $ do
     files <- elmishProject []
-    (code, out, err, _) <- run files ["init", "--language", "rust", "--yes", "--human"]
-    code `shouldBe` ExitFailure 1
-    (out <> err) `shouldSatisfy` T.isInfixOf "rust ships with olifant"
+    (code, out, err, written) <- run files ["init", "--language", "rust", "--yes", "--human"]
+    (code, out <> err) `shouldBe` (ExitSuccess, out <> err)
+    out `shouldSatisfy` T.isInfixOf "rust ships with olifant; doctor finds nothing to override here"
+    out `shouldSatisfy` T.isInfixOf "nothing in this project names rust yet"
+    M.keys written `shouldBe` M.keys (M.fromList files)
   it "(g) --plan writes nothing and lists the files" $ do
     (remote, _) <- elmRemote "g"
     files <- elmishProject =<< elmishFills remote
@@ -332,6 +340,126 @@ initLanguageSpec = describe "init --language" $ do
     (code, out <> err) `shouldBe` (ExitSuccess, out <> err)
     out `shouldSatisfy` T.isInfixOf "! elmish: test_above — left out: does not load"
     M.findWithDefault "" "/w/.olifant/languages/elmish.toml" written `shouldNotSatisfy` T.isInfixOf "above"
+
+-- | A Rust crate at /w that names rust in its config (as the m4b `money`
+-- crate does), its test under ATTRIBUTE (`#[test]` in the file's own `mod
+-- tests`, else a top-level fn), and a
+-- fills.toml: every key of a shipped language's layer answered none but
+-- those given.
+rustProject :: Text -> [(Text, Text)] -> [(FilePath, Text)]
+rustProject attribute given =
+  [ ("/w/.olifant/config.toml", "languages = [\"rust\"]\n")
+  , ("/w/Cargo.toml", "[package]\nname = \"money\"\nversion = \"0.1.0\"\nedition = \"2021\"\n")
+  , ("/w/src/lib.rs", "pub mod rates;\n")
+  , ("/w/src/rates.rs", T.unlines (["pub fn add(a: i64, b: i64) -> i64 {", "    a + b", "}", ""] ++ tests))
+  , ("/w/fills.toml", "[fills]\n" <> T.concat [k <> " = '''\n" <> v <> "'''\n" | (k, v) <- fills])
+  ]
+  where
+    -- #[test] in a `mod tests` (shipped rust finds it); any other attribute on a top-level fn (none found)
+    tests
+      | attribute == "#[test]" = ["#[cfg(test)]", "mod tests {", "    use super::*;", "", "    #[test]", "    fn adds() {", "        assert_eq!(add(2, 3), 5);", "    }", "}"]
+      | otherwise = [attribute, "fn adds() {", "    assert_eq!(add(2, 3), 5);", "}"]
+    nones = [(fdName f, "none") | f <- layerForm "rust"]
+    fills = [(k, v) | (k, v) <- given] ++ [(k, v) | (k, v) <- nones ++ [(k <> "_repair", "none") | (k, _) <- nones], k `notElem` map fst given]
+
+-- | The survey's answer for the Rust crate (its grammar is the shipped one: not read).
+rustSurvey :: Text
+rustSurvey = "grammar = \"https://example.invalid/tree-sitter-rust\"\nfiles = [\"src/**/*.rs\"]\ntests = [\"tests/**/*.rs\"]\nmanifest = \"Cargo.toml\"\nrunners = [\"cargo\"]\n"
+
+-- | `[test] unit` for tests under `#[rstest]`.
+rstestUnit :: Text
+rstestUnit = "[{ pattern = '^[[:space:]]*fn[[:space:]]+([[:alnum:]_]+)', after = '^[[:space:]]*#\\[rstest\\]' }]"
+
+-- | `olifant init --language` for a language olifant ships (m5b): doctor
+-- first, a project layer only for the keys of what fails; and elm, shipped
+-- with no grammar source, given one.
+initShippedSpec :: Spec
+initShippedSpec = describe "init --language (a shipped language)" $ do
+  let run files = runInitLanguageIn files Nothing
+      rust extra = ["init", "--language", "rust", "--fills", "fills.toml"] ++ extra
+  it "(t) every row passing writes nothing and asks no model" $ do
+    let files = rustProject "#[test]" []
+    (code, out, err, written) <- run files (rust ["--human"])
+    (code, out <> err) `shouldBe` (ExitSuccess, out <> err)
+    out `shouldSatisfy` T.isInfixOf "rust ships with olifant; doctor finds nothing to override here"
+    out `shouldSatisfy` T.isInfixOf "✓ rust: test units"
+    M.keys written `shouldBe` M.keys (M.fromList files)
+  it "(u) a failing row gets a project layer of only the keys it points at" $ do
+    let files = rustProject "#[rstest]" [("survey", rustSurvey), ("test_unit", rstestUnit), ("tests_for", "\"{= dir =}/{= stem =}.rs\"")]
+    (code, out, err, written) <- run files (rust ["--json"])
+    (code, err <> out) `shouldBe` (ExitSuccess, err <> out)
+    out `shouldSatisfy` T.isInfixOf "\"name\":\"rust: test units\",\"status\":\"ok\""
+    let layer = M.findWithDefault "" "/w/.olifant/languages/rust.toml" written
+    layer `shouldSatisfy` T.isPrefixOf "# written by olifant init --language\n"
+    layer `shouldSatisfy` T.isInfixOf "rstest"
+    [k | l <- T.lines layer, let k = T.strip (fst (T.breakOn "=" l)), "=" `T.isInfixOf` l] `shouldBe` ["tests_for", "unit"]
+    M.member "/w/.olifant/toolchains/cargo-test.toml" written `shouldBe` False
+  it "(v) an answer smuggling another key is a row naming its field, sent to the repair" $ do
+    let files = rustProject "#[rstest]" [("survey", rustSurvey), ("test_unit", "['^x']\nfiles = [\"**/*.x\"]"), ("tests_for", "\"{= dir =}/{= stem =}.rs\""), ("test_unit_repair", rstestUnit), ("tests_for_repair", "\"{= dir =}/{= stem =}.rs\"")]
+    (code, out, err, written) <- run files (rust ["--json"])
+    (code, err) `shouldBe` (ExitSuccess, err)
+    err `shouldSatisfy` T.isInfixOf "round 1: rust: test_unit — `test_unit` is more than one value"
+    out `shouldSatisfy` T.isInfixOf "\"name\":\"rust: test units\",\"status\":\"ok\""
+    M.findWithDefault "" "/w/.olifant/languages/rust.toml" written `shouldNotSatisfy` T.isInfixOf "files"
+  it "(w) a broken test run writes the shipped preset's name under .olifant/toolchains, holding only the command" $ do
+    let offline = Runner $ \lang ids fs -> case langTest lang of
+          Just td | "--offline" `elem` testCommand td -> runTests (scriptedRunner M.empty) lang ids fs
+          _ -> pure (Right (TestRun [] [] (Just "error: failed to download from crates.io")))
+        files = rustProject "#[test]" [("survey", rustSurvey), ("command", "[\"cargo\", \"test\", \"--offline\", \"--\", \"{= tests =}\"]")]
+    (code, out, err, written) <- runInitLanguageWith offline files Nothing (rust ["--json"])
+    (code, err) `shouldBe` (ExitSuccess, err)
+    out `shouldSatisfy` T.isInfixOf "\"name\":\"rust: tests\",\"status\":\"ok\""
+    let preset = M.findWithDefault "" "/w/.olifant/toolchains/cargo-test.toml" written
+    filter (not . T.null) (T.lines preset) `shouldBe` ["# written by olifant init --language", "[test]", "command = [\"cargo\", \"test\", \"--offline\", \"--\", \"{= tests =}\"]"]
+    M.member "/w/.olifant/languages/rust.toml" written `shouldBe` False
+    -- the project's preset there already: not overwritten
+    (code2, out2, err2, written2) <- runInitLanguageWith offline (("/w/.olifant/toolchains/cargo-test.toml", "[test]\ntimeout = 900\n") : files) Nothing (rust ["--human"])
+    code2 `shouldBe` ExitFailure 1
+    (out2 <> err2) `shouldSatisfy` T.isInfixOf ".olifant/toolchains/cargo-test.toml exists"
+    M.lookup "/w/.olifant/toolchains/cargo-test.toml" written2 `shouldBe` Just "[test]\ntimeout = 900\n"
+  it "(w2) a layer written for a language nothing names lists it in the config, and the final rows show it" $ do
+    let offline = Runner $ \lang ids fs -> case langTest lang of
+          Just td | "--offline" `elem` testCommand td -> runTests (scriptedRunner M.empty) lang ids fs
+          _ -> pure (Right (TestRun [] [] (Just "error: failed to download from crates.io")))
+        files = [f | f@(p, _) <- rustProject "#[test]" [("survey", rustSurvey), ("command", "[\"cargo\", \"test\", \"--offline\", \"--\", \"{= tests =}\"]")], p /= "/w/.olifant/config.toml"]
+    (code, out, err, written) <- runInitLanguageWith offline files Nothing (rust ["--human"])
+    (code, out <> err) `shouldBe` (ExitSuccess, out <> err)
+    M.lookup "/w/.olifant/config.toml" written `shouldBe` Just "languages = [\"rust\"]\n"
+    out `shouldSatisfy` T.isInfixOf "rust: tests"
+    M.member "/w/.olifant/toolchains/cargo-test.toml" written `shouldBe` True
+  it "(w3) failing rows that name no key stop before the survey, asking no model" $ do
+    -- a pack whose rust check tool is not on PATH: that row fails, and no key is its
+    let pack = [("/w/.olifant/config.toml", "languages = [\"rust\"]\n[packs]\nbad = { path = \"/packs/bad\" }\n"), ("/packs/bad/languages/rust.toml", "[check]\ncommand = [\"nope-check\"]\nformat = \"rustc-json\"\n")]
+        files = pack ++ [f | f@(p, _) <- rustProject "#[test]" [], p /= "/w/.olifant/config.toml"]
+    (code, out, err, _) <- run files (rust ["--human"])
+    (code, out <> err) `shouldBe` (ExitFailure 1, out <> err)
+    (out <> err) `shouldSatisfy` T.isInfixOf "name no key a project layer sets"
+    (out <> err) `shouldNotSatisfy` T.isInfixOf "survey"
+  it "(w4) --grammar on a shipped language with a grammar is noted as ignored" $ do
+    (code, out, err, _) <- run (rustProject "#[test]" []) (rust ["--grammar", "https://example.invalid/g", "--human"])
+    (code, out <> err) `shouldBe` (ExitSuccess, out <> err)
+    err `shouldSatisfy` T.isInfixOf "--grammar is ignored: rust ships with a grammar"
+  it "(x) elm without its pack: a one-key layer, the grammar pinned, the shipped queries over it" $ do
+    (remote, sha) <- elmRemote "x"
+    survey <- T.replace "@REMOTE@" remote <$> TIO.readFile "src/Olifant/testdata/init-language/survey.toml"
+    files <- elmishProject [("survey", survey)]
+    (code, out, err, written) <- run files ["init", "--language", "elm", "--fills", "fills.toml", "--yes", "--human"]
+    (code, out <> err) `shouldBe` (ExitSuccess, out <> err)
+    let layer = M.findWithDefault "" "/w/.olifant/languages/elm.toml" written
+    layer `shouldSatisfy` T.isPrefixOf "# written by olifant init --language\n"
+    [l | l <- T.lines layer, not ("#" `T.isPrefixOf` l)] `shouldBe` ["grammar = { git = \"" <> remote <> "\", rev = \"" <> sha <> "\", name = \"elm\" }"]
+    out `shouldSatisfy` T.isInfixOf "✓ elm: grammar"
+    out `shouldSatisfy` T.isInfixOf "(shipped)"
+    out `shouldSatisfy` T.isInfixOf "✓ elm: units"
+    out `shouldSatisfy` T.isInfixOf "✓ elm: queries"
+  it "(y) elm with a pack that gives it a grammar: nothing to override, no model asked" $ do
+    (remote, sha) <- elmRemote "y"
+    files <- elmishProject []
+    let pack = [("/w/.olifant/config.toml", "[packs]\nelm = { path = \"/packs/elm\" }\n"), ("/packs/elm/languages/elm.toml", "grammar = { git = \"" <> remote <> "\", rev = \"" <> sha <> "\" }\n")]
+    (code, out, err, written) <- run (pack ++ files) ["init", "--language", "elm", "--fills", "fills.toml", "--human"]
+    (code, out <> err) `shouldBe` (ExitSuccess, out <> err)
+    out `shouldSatisfy` T.isInfixOf "elm ships with olifant; doctor finds nothing to override here"
+    M.keys written `shouldBe` M.keys (M.fromList (pack ++ files))
 
 -- | check on new code (only = "new"), with a base given.
 newCodeCheckSpec :: Spec
@@ -574,7 +702,7 @@ jsonAt path out = decodeStrict (TE.encodeUtf8 out) >>= go path
     go _ _ = Nothing
 
 spec :: Spec
-spec = planOutputSpec >> runCliSpec >> newCodeCheckSpec >> initMigrateSpec >> initLanguageSpec >> anticipateCliSpec >> plansCostSpec
+spec = planOutputSpec >> runCliSpec >> newCodeCheckSpec >> initMigrateSpec >> initLanguageSpec >> initShippedSpec >> anticipateCliSpec >> plansCostSpec
 
 planOutputSpec :: Spec
 planOutputSpec = describe "planHuman" $ do

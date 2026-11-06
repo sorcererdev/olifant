@@ -54,7 +54,16 @@ module Olifant.LanguageInit
   , repairAnswers
   , regressedFields
   , leaveOut
+  , leaveOutWith
   , errorFields
+  , LayerInput (..)
+  , layerForm
+  , layerAsk
+  , layerRequest
+  , checkLayer
+  , layerKeysOk
+  , presetFile
+  , shippedFailing
   , readUpstream
   , nvimTextobjects
   ) where
@@ -74,11 +83,12 @@ import Data.Foldable (toList)
 import Data.Scientific (floatingOrInteger)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
-import Data.List (nub, nubBy, sort, sortOn)
+import Data.List (isPrefixOf, nub, nubBy, sort, sortOn)
 import Data.Maybe (fromMaybe, isJust, isNothing)
 import Data.Text (Text)
 import Data.Text qualified as T
-import Olifant.Doctor (Check (..), Status (..))
+import Olifant.Doctor (Check (..), Status (..), initHeader)
+import Olifant.Evidence (nonePassedMarker)
 import Olifant.Fill (FillHole (..), FillRequest (..), Filler (..), Stance (..))
 import Olifant.Language (Grammar (..), GrammarSource (..), Language (..), Layer (..), languageFromLayers, queriesFor, queryError)
 import Olifant.Language.Presets (overPresets, presetsFrom, shippedPresets)
@@ -122,13 +132,18 @@ parseSurvey reply = do
   if T.null (T.strip grammar) then Left "the survey's `grammar` is empty" else pure ()
   files <- Toml.required "files" (Toml.list Toml.text) top
   if null files then Left "the survey's `files` is empty" else pure ()
-  path <- Toml.optional "path" Toml.text top
-  name <- Toml.optional "name" Toml.text top
+  -- an empty path or name is none (a model writes `path = ""`); a name is
+  -- what follows tree_sitter_ (a model writes the whole C symbol)
+  path <- nonEmpty <$> Toml.optional "path" Toml.text top
+  name <- fmap (\n -> fromMaybe n (T.stripPrefix "tree_sitter_" n)) . nonEmpty <$> Toml.optional "name" Toml.text top
   tests <- fromMaybe [] <$> Toml.optional "tests" (Toml.list Toml.text) top
   manifest <- Toml.optional "manifest" Toml.text top
   runners <- fromMaybe [] <$> Toml.optional "runners" (Toml.list runner) top
   pure (Survey (T.strip grammar) (T.unpack <$> path) name files tests (T.unpack <$> manifest) runners)
   where
+    nonEmpty = \case
+      Just t | not (T.null (T.strip t)) -> Just (T.strip t)
+      _ -> Nothing
     -- a bare program, or { program, junit }
     runner = \case
       Toml.TText p -> Right (Runner p Nothing)
@@ -633,13 +648,16 @@ formRequest ei =
     queryHoles = snd (errandQueries ei)
     fieldHole file fd =
       FillHole (fdName fd) (fdKind fd) (fdInstruction fd) file (keyContext fd) [] False Nothing
-    keyContext fd = T.intercalate "\n" (["[" <> T.intercalate "." (init (fdPath fd)) <> "]" | length (fdPath fd) > 1] ++ [last (fdPath fd) <> " = \10214" <> fdName fd <> "\10215"])
     queryHole h = FillHole h "file" (queryInstruction h) (".olifant/queries/" <> T.unpack h <> ".scm") ("\10214" <> h <> "\10215") [] False Nothing
     queryInstruction = \case
       "tags" -> "tree-sitter queries (tags.scm) over the node kinds given: each definition @definition.<kind> (function, method, class, …) with its name @name."
       "imports" -> "tree-sitter queries (imports.scm) over the node kinds given: each import declaration @import."
       "textobjects" -> "tree-sitter queries (textobjects.scm) over the node kinds given, in the exemplar's shape: @function.outer, @function.inner (the body's contents), @class.outer, @class.inner, @parameter.inner and @call.outer."
       h -> "tree-sitter queries (" <> h <> ".scm) over the node kinds given."
+
+-- | A field's hole as the model sees it: @key = ⟦name⟧@ under its table.
+keyContext :: Field -> Text
+keyContext fd = T.intercalate "\n" (["[" <> T.intercalate "." (init (fdPath fd)) <> "]" | length (fdPath fd) > 1] ++ [last (fdPath fd) <> " = \10214" <> fdName fd <> "\10215"])
 
 -- | The query files the errand writes: those copied from upstream (path
 -- under the grammar's query folder, text) and the holes asked.
@@ -666,9 +684,6 @@ sourcesFile g grammar copied holes =
       r : _ -> ", directives removed (" <> T.intercalate ", " (T.words r) <> ")"
       [] -> ""
 
--- | The first line of every file @init --language@ writes.
-initHeader :: Text
-initHeader = "# written by olifant init --language"
 
 -- | The pinned grammar as a language file's @grammar@ line: olifant's URL
 -- and revision, never the model's text.
@@ -719,16 +734,24 @@ data Answered = Answered {anFiles :: [(FilePath, Text)], anFailing :: [Check], a
 -- Before the repair it lets doctor read the first round's files; after it,
 -- what still fails is left out of the files written.
 leaveOut :: ErrandInput -> Answered -> Answered
-leaveOut ei = go (length (languageForm "" ++ toolchainForm ""))
+leaveOut ei = leaveOutWith (`M.member` optionalField) (checkAnswers ei)
   where
     optionalField = M.fromList [(fdName fd, ()) | fd <- languageForm "" ++ toolchainForm "", not (fdRequired fd)]
+
+-- | 'leaveOut' with the fields that may be left out (OPTIONAL) and the
+-- check that reads the answers again (CHECK): a shipped language's layer
+-- may leave out any key, the shipped file still has it.
+leaveOutWith :: (Text -> Bool) -> (Map Text Text -> Answered) -> Answered -> Answered
+leaveOutWith optional check = go (length (languageForm "" ++ toolchainForm ""))
+  where
     go :: Int -> Answered -> Answered
-    go n a = case [(f, c) | c <- anFailing a, let f = T.drop 2 (snd (T.breakOn ": " (checkName c))), M.member f optionalField, M.lookup f (anAnswers a) /= Just "none"] of
+    go n a = case [(f, c) | c <- anFailing a, let f = T.drop 2 (snd (T.breakOn ": " (checkName c))), optional f, isField f, M.lookup f (anAnswers a) /= Just "none"] of
       dropped@(_ : _) | n > 0 ->
-        let again = checkAnswers ei (foldr (\(f, _) -> M.insert f "none") (anAnswers a) dropped)
+        let again = check (foldr (\(f, _) -> M.insert f "none") (anAnswers a) dropped)
             warned = [c {checkStatus = Warn, checkDetail = "left out: " <> checkDetail c} | (_, c) <- dropped]
          in go (n - 1) again {anWarnings = anWarnings a ++ warned}
       _ -> a
+    isField f = f `elem` map fdName (languageForm "" ++ toolchainForm "")
 
 -- | The answers (by hole name) checked before anything is written. Each
 -- field's value is read by 'valueOf' (a value that is not one TOML value,
@@ -1011,3 +1034,180 @@ nvimTextobjects s g = do
       pure (Right ((\t -> (repo <> " @" <> T.take 7 sha <> " " <> T.pack file, t)) <$> text, licence))
   where
     readUtf8 f = TE.decodeUtf8With lenientDecode <$> BS.readFile f
+
+-- | A language olifant ships, and the project layer init writes over it for
+-- what doctor finds failing: the shipped file (its text, shown the model,
+-- and its layer, under which the answers must load), its test preset (name
+-- and shipped text) when its @[test]@ names one, the runners found on PATH,
+-- the sample, the project folder, the survey and the tracked paths, and the
+-- @tests_for@ read off the names when a failing row points at it
+-- ('derivedTestsFor'; the engine writes it, the model is not asked).
+data LayerInput = LayerInput
+  { liLanguage :: Text
+  , liShipped :: Text
+  , liLayer :: Layer
+  , liPreset :: Maybe (Text, Text)
+  , liTools :: [Text]
+  , liSample :: [(FilePath, Text)]
+  , liProjectDir :: FilePath
+  , liSurvey :: Survey
+  , liTracked :: [FilePath]
+  , liDerived :: Maybe Text
+  }
+
+-- | The keys a shipped language's layer may set: the language file's and
+-- its test preset's, as the form asks them for a new language.
+layerForm :: Text -> [Field]
+layerForm l = languageForm l ++ toolchainForm l
+
+-- | Where a project's toolchain preset of that name lives.
+presetFile :: Text -> FilePath
+presetFile p = ".olifant/toolchains/" <> T.unpack p <> ".toml"
+
+-- | The file a layer's field is written to: a preset's key to the project's
+-- preset of the shipped name (@.olifant/toolchains/cargo-test.toml@) when the
+-- language names a preset, else to the language's layer, under its @[test]@.
+layerFileOf :: LayerInput -> Field -> FilePath
+layerFileOf li fd = case liPreset li of
+  Just (p, _) | presetSide fd -> presetFile p
+  _ -> languageFile (liLanguage li)
+
+presetSide :: Field -> Bool
+presetSide fd = fdName fd `elem` map fdName (toolchainForm "")
+
+-- | What the failing ROWS ask of a shipped language: the @tests_for@ read off
+-- the project's names when a row points at it (so it is not asked), and the
+-- fields the model answers ('repairHoles'' row-to-field mapping over the
+-- whole 'layerForm').
+layerAsk :: LayerInput -> [Check] -> (Maybe Text, [Text])
+layerAsk li rows = (derived, [h | h <- pointed, not (isJust derived && h == "tests_for")])
+  where
+    pointed = repairHoles (layerRequest li [] (map fdName (layerForm (liLanguage li)))) rows
+    derived
+      | "tests_for" `elem` pointed = derivedTestsFor (liSurvey li) (liTracked li)
+      | otherwise = Nothing
+
+-- | The errand for a shipped language: one hole per field NAMES (the keys
+-- doctor's failing ROWS need), each answered with its value or @none@ (the
+-- shipped value stays); the facts as for a new language; the context the
+-- sample, the shipped file (and its preset when a preset key is asked) and
+-- the rows. No grammar, no query holes: olifant ships them.
+layerRequest :: LayerInput -> [Check] -> [Text] -> FillRequest
+layerRequest li rows names =
+  FillRequest
+    [ FillHole (fdName fd) (fdKind fd) (fdInstruction fd <> "\nThe shipped value (in the shipped file below) fails doctor's rows: write the value this project needs, or none to keep the shipped one.") (layerFileOf li fd) (keyContext fd) [] False Nothing
+    | fd <- asked
+    ]
+    [ ("language", l)
+    , ("source globs", T.intercalate ", " (svFiles sv))
+    , ("test globs", T.intercalate ", " (svTests sv))
+    , ("tools on PATH", T.intercalate "\n" (liTools li))
+    , ("template filters", "only these, after a bar ({= message|escaped =}): " <> T.intercalate ", " knownFilters)
+    ]
+    ( liSample li
+        ++ [("library/languages/" <> T.unpack l <> ".toml (shipped with olifant; the project's layer goes over it)", liShipped li)]
+        ++ [("library/toolchains/" <> T.unpack p <> ".toml (shipped with olifant; the project's preset goes over it)", t) | Just (p, t) <- [liPreset li], any presetSide asked]
+        ++ [("doctor's failing rows", T.unlines [checkName c <> " — " <> checkDetail c | c <- rows]) | not (null rows)]
+    )
+    ValueStance
+  where
+    l = liLanguage li
+    sv = liSurvey li
+    asked = [fd | fd <- layerForm l, fdName fd `elem` names]
+
+-- | Which keys a layer's TEXT sets that it may not: every key path must be
+-- one of ALLOWED, or inside one (an inline table's keys), or a table on the
+-- way to one. A key the failing rows do not need is refused, naming it.
+layerKeysOk :: [[Text]] -> Text -> Either Text ()
+layerKeysOk allowed text = do
+  top <- Toml.parseToml text
+  case [p | p <- paths [] top, not (any (`isPrefixOf` p) allowed)] of
+    [] -> Right ()
+    p : _ -> Left ("sets `" <> T.intercalate "." p <> "`, which no failing row needs")
+  where
+    paths pre t =
+      concat
+        [ case v of
+            Toml.TTable sub | p `notElem` allowed, any (p `isPrefixOf`) allowed -> paths p sub
+            _ -> [p]
+        | (k, v) <- M.toList t
+        , let p = pre ++ [k]
+        ]
+
+-- | A shipped language's answers (by hole name; a field is read only when
+-- it was asked, which is when it is in ANSWERS) checked before anything is
+-- written: each value read by 'valueOf' (no field is required: the shipped
+-- file has them); the layer assembled from the language's fields (and the
+-- derived @tests_for@) and the preset from the preset's (and @format@, by
+-- the command, when it changes), each written only when it has a key;
+-- 'layerKeysOk' on each; the preset read over the shipped presets and the
+-- language loaded as the shipped layer and this one, a reader's error
+-- naming its field. Rows are @<l>: <field>@ (@<l>: layer@ for a key no row
+-- needs).
+checkLayer :: LayerInput -> Map Text Text -> Answered
+checkLayer li answers =
+  Answered
+    ([(languageFile l, t) | Just t <- [languageText], null languageErrors] ++ [(presetFile p, t) | Just p <- [preset], Just t <- [toolchainText], null toolchainErrors])
+    (nubBy (\a b -> checkName a == checkName b) (valueRows ++ toolchainErrors ++ languageErrors))
+    answers
+    noTests
+  where
+    l = liLanguage li
+    preset = fst <$> liPreset li
+    row name detail = Check (l <> ": " <> name) Bad detail (Just "regenerate the key or supply a provider (see chapter 9, Providers)")
+    fields = [fd | fd <- layerForm l, M.member (fdName fd) answers, not (isJust (liDerived li) && fdName fd == "tests_for")]
+    readings = [(fd, valueOf fd v) | fd <- fields, Just v <- [M.lookup (fdName fd) answers]]
+    valueRows = [row (fdName fd) why | (fd, Left why) <- readings]
+    values = M.fromList [(fdName fd, v) | (fd, Right (Just v)) <- readings]
+    inPreset fd = isJust preset && presetSide fd
+    langFields = filter (not . inPreset) fields
+    toolFields = filter inPreset fields
+    command = M.lookup "command" values
+    junit = maybe False ("{= report =}" `T.isInfixOf`) command
+    linesAnswered = all (`M.member` values) ["lines_pass", "lines_fail"]
+    format
+      | junit = [(["test", "format"], quote "junit-xml")]
+      | linesAnswered = [(["test", "format"], quote "lines")]
+      | otherwise = []
+    engineLanguage = [(["test", "tests_for"], quote d <> "  # from the sample's names") | Just d <- [liDerived li]] ++ (if isJust preset then [] else format)
+    engineToolchain = if isJust preset then format else []
+    answeredIn fs = any (\fd -> M.member (fdName fd) values) fs
+    languageText
+      | answeredIn langFields || not (null engineLanguage) = Just (T.unlines [initHeader] <> assemble langFields engineLanguage values)
+      | otherwise = Nothing
+    toolchainText
+      | answeredIn toolFields = Just (T.unlines [initHeader] <> assemble toolFields engineToolchain values)
+      | otherwise = Nothing
+    keysRow fs engine = maybe [] (\t -> either (\why -> [row "layer" why]) (const []) (layerKeysOk (map fdPath fs ++ map fst engine) t))
+    presets = case (preset, toolchainText) of
+      (Just p, Just t) | Right ps <- presetsFrom "project" [(p, t)] -> overPresets shippedPresets ps
+      _ -> shippedPresets
+    loadError file why = case errorFields fields why of
+      fds@(_ : _) -> [row (fdName fd) ("does not load: " <> why) | fd <- fds]
+      [] | "`format`" `T.isInfixOf` why -> [row "command" ("does not load: " <> why)]
+      [] -> [row file ("does not load: " <> why)]
+    toolchainErrors = case (preset, toolchainText) of
+      (Just p, Just t) -> keysRow toolFields engineToolchain toolchainText ++ either (loadError "toolchain") (const []) (presetsFrom "project" [(p, t)])
+      _ -> []
+    languageErrors =
+      keysRow langFields engineLanguage languageText
+        ++ case Toml.parseToml (fromMaybe "" languageText) >>= \top -> languageFromLayers presets l [liLayer li, Layer "project" (Just (liProjectDir li)) top] of
+          Left why -> loadError "language" why
+          Right _ -> []
+    noTests =
+      [ (row "command" "the command has no element that is exactly {= tests =}, so every run runs all the tests it names: keep its program, and put {= tests =}, alone, where it names the tests to run (olifant puts the selection's arguments there, select_file and select_test)") {checkStatus = Warn}
+      | Just c <- [command]
+      , case Toml.parseToml ("v = " <> c <> "\n") >>= Toml.required "v" (Toml.list Toml.text) of
+          Right argv -> "{= tests =}" `notElem` map T.strip argv
+          Left _ -> not ("{= tests =}" `T.isInfixOf` c)
+      ]
+    quote t = "\"" <> T.concatMap (\case '"' -> "\\\""; '\\' -> "\\\\"; c -> T.singleton c) t <> "\""
+
+-- | The rows a shipped language's layer answers: 'failingRows', less a
+-- @tests@ row whose run had results and none passed (the project's tests
+-- fail; that is not a key's to answer). A broken run, with no results, is
+-- sent.
+shippedFailing :: Text -> [FilePath] -> [Check] -> [Check]
+shippedFailing l written = filter (not . testsFailed) . failingRows l written
+  where
+    testsFailed c = checkName c == l <> ": tests" && nonePassedMarker `T.isInfixOf` checkDetail c

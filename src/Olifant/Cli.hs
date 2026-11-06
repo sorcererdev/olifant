@@ -13,11 +13,12 @@ import Olifant.Server.Telemetry (ErrandRecord (..), OutcomeRecord (..), Reconcil
 import Olifant.Transcripts (Message (..), messageCost, readTranscripts, slugOf)
 import Control.Applicative ((<|>))
 import Control.Exception qualified as E
-import Olifant.Language.Grammar (GrammarFailure (..), GrammarInfo (..), GrammarUnavailable (..), Loaded (..), checkoutOf, grammarLabel, grammarSettings, loadGrammarWith, remoteHead)
-import Olifant.Language.Adapter (Grammar (..), GrammarSource (..))
+import Olifant.Language.Grammar (GrammarFailure (..), GrammarInfo (..), GrammarSettings, GrammarUnavailable (..), Loaded (..), checkoutOf, grammarLabel, grammarSettings, loadGrammarWith, remoteHead)
+import Olifant.Language.Adapter (Grammar (..), GrammarSource (..), Layer (..), languageFromLayers, shippedLayer)
+import Olifant.Language.Presets (shippedPresets)
 import Olifant.LanguageInit qualified as LI
-import Olifant.Library (shippedLanguages)
-import Olifant.Fill (Filler (..), ModelFiller (..), Stance (..), parseFills, replayFiller)
+import Olifant.Library (shippedLanguages, shippedToolchains)
+import Olifant.Fill (FillRequest, Filler (..), ModelFiller (..), Stance (..), parseFills, replayFiller)
 import Olifant.Migration (MigrationReport (..), Switch (..), migrationJson, reportLine)
 import Olifant.Rules (Exception (..), FixOffer (..), Finding (..), RuleDef (..), RulesConfig (..), checkFiles, markBaselined, ruleCovers)
 import Olifant.Rules qualified as R
@@ -972,12 +973,13 @@ initFences ws tools def
 -- pins the revision ('remoteHead'), asks before it fetches and builds a
 -- proposed repository (`--yes`, or y on a terminal), reads node kinds only
 -- from a grammar that loaded, and checks every answer before anything is
--- written ('LI.checkAnswers').
+-- written ('LI.checkAnswers'). A language olifant ships goes to
+-- 'runInitShipped'.
 runInitLanguage :: Runtime -> FilePath -> Format -> Catalog -> Text -> Maybe Text -> Maybe Text -> Bool -> Bool -> Maybe FilePath -> IO ExitCode
 runInitLanguage rt cwd fmt cat l modelArg grammarArg yes plan fillsArg = do
   let ws = within (rtProjectDir rt) (rtRoot rt)
       project = projectOf rt cat
-      stop msg hint rows = failWith rt fmt 1 "init_language" msg hint ["rows" .= rowsJson rows]
+      stop = initStop rt fmt
   layerThere <- fileExists ws (LI.languageFile l)
   toolchainThere <- fileExists ws (LI.toolchainFile l)
   chosen <- case fillsArg of
@@ -986,154 +988,273 @@ runInitLanguage rt cwd fmt cat l modelArg grammarArg yes plan fillsArg = do
       Nothing -> Left ("--fills " <> T.pack f <> ": no such file")
       Just src -> (\fills -> Just (ModelFiller "recorded" 0 (replayFiller fills))) <$> parseFills src
   case chosen of
-    _ | isJust (lookup l shippedLanguages) -> stop (l <> " ships with olifant (init --language for shipped languages comes in m5b)") Nothing []
     _ | layerThere -> stop (T.pack (LI.languageFile l) <> " exists: olifant doctor shows its rows; delete it to generate again") Nothing []
+    _ | Just shipped <- lookup l shippedLanguages -> runInitShipped rt fmt cat l shipped chosen grammarArg yes plan
     _ | toolchainThere -> stop (T.pack (LI.toolchainFile l) <> " exists: olifant doctor shows its rows; delete it to generate again") Nothing []
     Left why -> failWith rt fmt 2 "usage" why Nothing []
     Right Nothing -> stop "init --language needs a model: add [model] (olifant doctor shows how)" Nothing []
     Right (Just mf) -> do
       t0 <- getMonotonicTime
       tracked <- sort <$> projectListing (portsOf rt) project
-      survey <- runFill (mfFiller mf) (LI.surveyRequest l tracked) <&> \case
-        Left why -> Left ("the model did not answer the survey: " <> why)
-        Right fills -> maybe (Left "the model gave no `survey`") LI.parseSurvey (M.lookup "survey" fills)
+      survey <- askSurvey mf l tracked
       t1 <- getMonotonicTime
       case survey of
         Left why -> stop why Nothing []
         Right sv0 -> do
           let sv = maybe sv0 (\u -> sv0 {LI.svGrammar = u}) grammarArg
-              url = LI.svGrammar sv
               gname = fromMaybe l (LI.svName sv)
-          s <- grammarSettings
-          remoteHead s url >>= \case
-            Left why -> do
-              let row = grammarCheck l gname (Left (FetchFailed ("pinning " <> url <> " failed: " <> why)))
-              stop ("the grammar's repository has no revision to pin: " <> url) (Just (rowLine row)) [row]
-            Right sha -> do
-              let g = Grammar gname (Just (SourceGit url sha (LI.svPath sv)))
-                  label = url <> " @" <> T.take 7 sha
-                  proposal = "grammar: " <> label <> (if isJust grammarArg then " (given with --grammar)" else " (proposed by the model)")
-                  (sources, tests, manifest) = LI.sampleFor sv tracked
-                  queries = if null (LI.shippedFor gname) then [".olifant/queries/" <> gname <> "/"] else []
-                  files = [T.pack (LI.languageFile l), T.pack (LI.toolchainFile l)] ++ queries
-              if plan
-                then do
-                  emit rt fmt
-                    (object ["survey" .= object ["grammar" .= url, "files" .= LI.svFiles sv, "tests" .= LI.svTests sv, "runners" .= map LI.rnProgram (LI.svRunners sv)], "grammar" .= object ["git" .= url, "rev" .= sha], "files" .= files, "sample" .= (sources ++ tests ++ maybe [] pure manifest)])
-                    (T.unlines ([proposal] ++ ["would write " <> f | f <- files] ++ ["sample: " <> T.intercalate ", " (map T.pack (sources ++ tests ++ maybe [] pure manifest))]))
-                  pure ExitSuccess
-                else do
-                  go <-
-                    if yes || isJust grammarArg
-                      then pure True
-                      else
-                        if rtStdoutIsTty rt
-                          then do
-                            rtErr rt (proposal <> "\nfetch and build it? [y/N] ")
-                            answer <- T.toLower . T.strip <$> rtReadLine rt
-                            pure (answer `elem` ["y", "yes"])
-                          else pure False
-                  if not go
-                    then stop proposal (Just "pass --yes to fetch and build it") []
-                    else
-                      loadGrammarWith s g >>= \case
-                        Left f -> do
-                          let row = grammarCheck l gname (Left f)
-                          stop ("the grammar does not load: " <> failureLine f) (Just (rowLine row)) [row]
-                        Right ld -> do
-                          let info = GrammarInfo (grammarLabel g) (ldAbi ld) (ldLibrary ld) Nothing
-                          upstream0 <- LI.readUpstream (url <> " @" <> T.take 7 sha) (checkoutOf s g) (LI.svPath sv)
-                          -- nvim's textobjects for a grammar olifant ships no queries for (its URL and SHA olifant's)
-                          upstream <-
-                            if not (null (LI.shippedFor gname))
-                              then pure upstream0
-                              else
-                                LI.nvimTextobjects s gname >>= \case
-                                  Left why -> upstream0 <$ rtErr rt ("init-language: textobjects: not fetched (" <> why <> "): the model writes them\n")
-                                  Right (Nothing, _) -> upstream0 <$ rtErr rt ("init-language: textobjects: nvim-treesitter-textobjects has none for " <> gname <> ": the model writes them\n")
-                                  Right (found@(Just (from, _)), lic) -> upstream0 {LI.upNvim = found, LI.upNvimLicence = lic} <$ rtErr rt ("init-language: textobjects: " <> from <> "\n")
-                          tools <- mapM (\r -> LI.runnerLine r <$> dpFind (rtDoctor rt) (T.unpack (LI.rnProgram r))) (LI.svRunners sv)
-                          sample <- fmap concat . mapM (\p -> readText ws p <&> maybe [] (\t -> [(p, LI.cutTo 120 t)])) $ sources ++ tests ++ maybe [] pure manifest
-                          let ei = LI.ErrandInput l g (ldNodeTypes ld) upstream LI.shippedFor tools sample (rtProjectDir rt) sv tracked
-                          LI.errandCore (mfFiller mf) ei >>= \case
-                            Left why -> stop ("the model did not answer the errand: " <> why) Nothing [grammarCheck l gname (Right info)]
-                            Right (req, first') -> do
-                              let repairWith written rows = do
-                                    rtErr rt (T.unlines ["init-language: round 1: " <> checkName c <> " — " <> checkDetail c | c <- rows])
-                                    let rreq = LI.repairRequest req written rows
-                                    runFill (mfFiller mf) rreq <&> \case
-                                      Left why -> (LI.Answered [] [Check (l <> ": repair") Bad ("the model did not answer the repair: " <> why) Nothing] (LI.anAnswers first') [], [])
-                                      -- the repair's values over the first round's, the files assembled
-                                      -- again; a key not required that still fails is left out
-                                      Right answers ->
-                                        let repaired = LI.repairAnswers rreq answers
-                                         in (LI.leaveOut ei (LI.checkAnswers ei (M.union repaired (LI.anAnswers first'))), M.keys repaired)
-                                  -- FIELDS back to the first round's values (absent there: absent)
-                                  revert answers fields = foldr (\f -> maybe (M.delete f) (M.insert f) (M.lookup f (LI.anAnswers first'))) answers fields
-                                  merge old new' = [(p, t) | (p, t) <- old, p `notElem` map fst new'] ++ new'
-                                  doctorRows = do
-                                    reopened <- openProjectCatalog (rtRoot rt) (CatalogPaths (rtProjectDir rt) (rtUserConfigDir rt) (rtHomeDir rt))
-                                    case reopened of
-                                      Left e -> pure [Check ("language " <> l) Bad (T.pack (show e)) Nothing]
-                                      Right cat' -> doctorChecks (portsOf rt) (projectOf rt cat') True
-                                  finish written repaired rows note = do
-                                    t2 <- getMonotonicTime
-                                    rtErr rt ("init-language: survey " <> secs (t1 - t0) <> ", errand " <> secs (t2 - t1) <> ", repair " <> (if repaired then "yes" else "no") <> "\n")
-                                    let paths = map (T.pack . fst) written
-                                    emit rt fmt
-                                      (object ["written" .= paths, "grammar" .= object ["git" .= url, "rev" .= sha], "rows" .= rowsJson rows, "repaired" .= repaired])
-                                      (T.unlines ([proposal] ++ ["wrote " <> w | w <- paths] ++ [n | Just n <- [note]] ++ map rowLine rows))
-                                    pure (if any ((== Bad) . checkStatus) rows then ExitFailure 1 else ExitSuccess)
-                              -- the first round's files with a wrong key that is not required left
-                              -- out: when they load, doctor sees them before the one repair, so it
-                              -- answers the init rows and doctor's at once
-                              let provisional = LI.leaveOut ei first'
-                              if not (null (LI.anFailing provisional))
-                                then do
-                                  -- a required key or a whole file fails: nothing is written until every file loads
-                                  (second, _) <- repairWith (LI.anFiles first') (LI.anFailing first')
-                                  if not (null (LI.anFailing second))
-                                    then stop "the model's files do not load after one repair; nothing was written" Nothing (LI.anFailing second)
-                                    else do
-                                      let written = merge (LI.anFiles first') (LI.anFiles second)
-                                      forM_ written $ \(p, t) -> writeText ws p t
-                                      rows <- LI.languageRows l (map fst written) <$> doctorRows
-                                      finish written True (rows ++ LI.anWarnings second) Nothing
-                                else do
-                                  let files1 = merge (LI.anFiles first') (LI.anFiles provisional)
-                                      ownFiles = map fst files1
-                                  forM_ files1 $ \(p, t) -> writeText ws p t
-                                  rows1 <- doctorRows
-                                  let before = LI.languageRows l ownFiles rows1
-                                  -- a warn row that does not stop the files (a command naming no
-                                  -- {= tests =}) is shown, not repaired: doctor's rows say whether it runs
-                                  case LI.anFailing first' ++ LI.failingRows l ownFiles rows1 of
-                                    [] -> finish files1 False (before ++ LI.anWarnings provisional) Nothing
-                                    failing -> do
-                                      (second, repaired) <- repairWith files1 failing
-                                      if null (LI.anFailing second)
-                                        then do
-                                          forM_ (LI.anFiles second) $ \(p, t) -> writeText ws p t
-                                          rows2 <- LI.languageRows l ownFiles <$> doctorRows
-                                          -- the repair may not break a row that passed: its fields go back
-                                          case LI.regressedFields before rows2 repaired of
-                                            [] -> finish (merge files1 (LI.anFiles second)) True (rows2 ++ LI.anWarnings second) Nothing
-                                            back -> do
-                                              rtErr rt ("init-language: the repair broke a row that passed; the first round's " <> T.intercalate ", " back <> " kept\n")
-                                              let third = LI.leaveOut ei (LI.checkAnswers ei (revert (LI.anAnswers second) back))
-                                              if null (LI.anFailing third)
-                                                then do
-                                                  forM_ (LI.anFiles third) $ \(p, t) -> writeText ws p t
-                                                  rows3 <- LI.languageRows l ownFiles <$> doctorRows
-                                                  finish (merge files1 (LI.anFiles third)) True (rows3 ++ LI.anWarnings third) Nothing
-                                                else finish (merge files1 (LI.anFiles second)) True (rows2 ++ LI.anWarnings second) Nothing
-                                        else finish files1 True (before ++ LI.anFailing second ++ LI.anWarnings provisional) (Just "the repair's files did not load: the first round's files are kept")
+              (sources, tests, manifest) = LI.sampleFor sv tracked
+              queries = if null (LI.shippedFor gname) then [".olifant/queries/" <> gname <> "/"] else []
+              files = [T.pack (LI.languageFile l), T.pack (LI.toolchainFile l)] ++ queries
+              planOut proposal url sha = do
+                emit rt fmt
+                  (object ["survey" .= object ["grammar" .= url, "files" .= LI.svFiles sv, "tests" .= LI.svTests sv, "runners" .= map LI.rnProgram (LI.svRunners sv)], "grammar" .= object ["git" .= url, "rev" .= sha], "files" .= files, "sample" .= (sources ++ tests ++ maybe [] pure manifest)])
+                  (T.unlines ([proposal] ++ ["would write " <> f | f <- files] ++ ["sample: " <> T.intercalate ", " (map T.pack (sources ++ tests ++ maybe [] pure manifest))]))
+                pure ExitSuccess
+          gateGrammar rt fmt l gname sv (isJust grammarArg) yes plan planOut >>= \case
+            Left code -> pure code
+            Right (g, proposal, url, sha, ld, s) -> do
+              let info = GrammarInfo (grammarLabel g) (ldAbi ld) (ldLibrary ld) Nothing
+              upstream0 <- LI.readUpstream (url <> " @" <> T.take 7 sha) (checkoutOf s g) (LI.svPath sv)
+              -- nvim's textobjects for a grammar olifant ships no queries for (its URL and SHA olifant's)
+              upstream <-
+                if not (null (LI.shippedFor gname))
+                  then pure upstream0
+                  else
+                    LI.nvimTextobjects s gname >>= \case
+                      Left why -> upstream0 <$ rtErr rt ("init-language: textobjects: not fetched (" <> why <> "): the model writes them\n")
+                      Right (Nothing, _) -> upstream0 <$ rtErr rt ("init-language: textobjects: nvim-treesitter-textobjects has none for " <> gname <> ": the model writes them\n")
+                      Right (found@(Just (from, _)), lic) -> upstream0 {LI.upNvim = found, LI.upNvimLicence = lic} <$ rtErr rt ("init-language: textobjects: " <> from <> "\n")
+              tools <- mapM (\r -> LI.runnerLine r <$> dpFind (rtDoctor rt) (T.unpack (LI.rnProgram r))) (LI.svRunners sv)
+              sample <- fmap concat . mapM (\p -> readText ws p <&> maybe [] (\t -> [(p, LI.cutTo 120 t)])) $ sources ++ tests ++ maybe [] pure manifest
+              let ei = LI.ErrandInput l g (ldNodeTypes ld) upstream LI.shippedFor tools sample (rtProjectDir rt) sv tracked
+              LI.errandCore (mfFiller mf) ei >>= \case
+                Left why -> stop ("the model did not answer the errand: " <> why) Nothing [grammarCheck l gname (Right info)]
+                Right (req, first') ->
+                  answerRounds rt fmt
+                    Rounds
+                      { rdLanguage = l
+                      , rdFiller = mfFiller mf
+                      , rdRequest = req
+                      , rdCheck = LI.checkAnswers ei
+                      , rdLeave = LI.leaveOut ei
+                      , rdFailing = LI.failingRows l
+                      , rdHead = [proposal]
+                      , rdJson = ["grammar" .= object ["git" .= url, "rev" .= sha]]
+                      , rdStart = (t0, t1)
+                      , rdBeforeWrite = pure ()
+                      }
+                    first'
+
+-- | `init --language L` for a language olifant ships (m5b). Doctor runs
+-- first, before any model is asked. A language whose layers name no grammar
+-- source (elm without the elm pack: 'catalogNoGrammar') gets a one-key
+-- layer, the grammar the survey (or `--grammar`) names, pinned, asked about
+-- and loaded as for a new language. Otherwise, with no failing row, nothing
+-- is written; with failing rows, the model answers only the keys those rows
+-- point at ('LI.layerAsk'), the engine writes them as a project layer (and
+-- the preset's keys as the project's preset of the shipped name), and the
+-- one repair round follows as for a new language ('answerRounds').
+runInitShipped :: Runtime -> Format -> Catalog -> Text -> Text -> Either Text (Maybe (ModelFiller IO)) -> Maybe Text -> Bool -> Bool -> IO ExitCode
+runInitShipped rt fmt cat l shippedText chosen grammarArg yes plan
+  | l `elem` catalogNoGrammar cat = grammarLayer
+  | Just (path, why) <- listToMaybe [b | b@(p, _) <- catalogBrokenLanguages cat, takeBaseName p == T.unpack l] = stop (T.pack path <> " does not load: " <> why) (Just "fix the adapter file") []
+  | otherwise = case (find ((== l) . langName) (catalogLanguages cat), languageFromLayers shippedPresets l [layer]) of
+      (Nothing, Left why) -> stop ("the shipped " <> l <> " does not load: " <> why) Nothing []
+      (named, alone) -> do
+        when (isJust grammarArg) $ rtErr rt ("init-language: --grammar is ignored: " <> l <> " ships with a grammar\n")
+        let unnamed = isNothing named
+            doctorCat = if unnamed then cat {catalogLanguages = catalogLanguages cat ++ either (const []) pure alone} else cat
+        rows0 <- doctorChecks (portsOf rt) (projectOf rt doctorCat) True
+        let rows = LI.languageRows l [] rows0
+            failing = LI.shippedFailing l [] rows0
+            note = ["nothing in this project names " <> l <> " yet: list it in .olifant/config.toml (languages = [\"" <> l <> "\"]) or add a pack that does" | unnamed]
+        if null failing
+          then do
+            emit rt fmt
+              (object ["written" .= ([] :: [Text]), "rows" .= initRowsJson rows, "repaired" .= False])
+              (T.unlines ([l <> " ships with olifant; doctor finds nothing to override here"] ++ note ++ map initRowLine rows))
+            pure (if any ((== Bad) . checkStatus) rows then ExitFailure 1 else ExitSuccess)
+          else layerFor unnamed failing
   where
-    rowsJson rows = case doctorJson rows of
-      Object o | Just v <- KM.lookup "checks" o -> v
-      v -> v
-    rowLine c = markOf (checkStatus c) <> " " <> checkName c <> " — " <> checkDetail c <> maybe "" ("\n  fix: " <>) (checkFix c)
-    markOf = \case Ok -> "✓" :: Text; Warn -> "!"; Bad -> "✗"
+    ws = within (rtProjectDir rt) (rtRoot rt)
+    stop = initStop rt fmt
+    layer = fromMaybe (Layer "shipped" Nothing M.empty) (shippedLayer l)
+    -- the preset the shipped [test] names, and its shipped text
+    preset = case M.lookup "test" (layerTable layer) of
+      Just (Toml.TTable t) | Just (Toml.TText p) <- M.lookup "preset" t -> Just (p, fromMaybe "" (lookup p shippedToolchains))
+      _ -> Nothing
+    presetField name = name `elem` map LI.fdName (LI.toolchainForm l)
+    withModel k = case chosen of
+      Left why -> failWith rt fmt 2 "usage" why Nothing []
+      Right Nothing -> stop "init --language needs a model: add [model] (olifant doctor shows how)" Nothing []
+      Right (Just mf) -> k mf
+    -- failing rows: the keys they point at, as a layer over the shipped file
+    layerFor unnamed failing = do
+      presetThere <- maybe (pure False) (\(p, _) -> fileExists ws (LI.presetFile p)) preset
+      -- the keys the rows point at need no survey: none asked stops before any model call
+      let noSurvey = LI.Survey "" Nothing Nothing [] [] Nothing []
+          (preDerived, preAsked) = LI.layerAsk (LI.LayerInput l shippedText layer preset [] [] (rtProjectDir rt) noSurvey [] Nothing) failing
+          grammarRow = listToMaybe [c | c <- failing, checkName c == l <> ": grammar"]
+      if null preAsked && isNothing preDerived
+        then stop ("doctor's failing rows for " <> l <> " name no key a project layer sets") (initRowLine <$> grammarRow) failing
+        else withModel $ \mf -> do
+          t0 <- getMonotonicTime
+          tracked <- sort <$> projectListing (portsOf rt) (projectOf rt cat)
+          survey <- askSurvey mf l tracked
+          t1 <- getMonotonicTime
+          case survey of
+            Left why -> stop why Nothing []
+            Right sv -> do
+              let (sources, tests, manifest) = LI.sampleFor sv tracked
+              tools <- mapM (\r -> LI.runnerLine r <$> dpFind (rtDoctor rt) (T.unpack (LI.rnProgram r))) (LI.svRunners sv)
+              sample <- fmap concat . mapM (\p -> readText ws p <&> maybe [] (\t -> [(p, LI.cutTo 120 t)])) $ sources ++ tests ++ maybe [] pure manifest
+              let li0 = LI.LayerInput l shippedText layer preset tools sample (rtProjectDir rt) sv tracked Nothing
+                  (derived, asked) = LI.layerAsk li0 failing
+                  li = li0 {LI.liDerived = derived}
+                  presetAsked = filter presetField asked
+                  files =
+                    [T.pack (LI.languageFile l) | isJust derived || any (not . presetField) asked]
+                      ++ [T.pack (LI.presetFile p) | Just (p, _) <- [preset], not (null presetAsked)]
+                      ++ [T.pack (LI.languageFile l) | isNothing preset, not (null presetAsked), isNothing derived, all presetField asked]
+                  header = l <> " ships with olifant; doctor finds rows failing here, so a project layer answers their keys"
+              case () of
+                _ | presetThere, not (null presetAsked), Just (p, _) <- preset -> stop (T.pack (LI.presetFile p) <> " exists: olifant doctor shows its rows; delete it to generate again") Nothing failing
+                _ | null asked, isNothing derived -> stop ("doctor's failing rows for " <> l <> " name no key a project layer sets") Nothing failing
+                _ | plan -> do
+                  emit rt fmt
+                    (object ["asks" .= asked, "files" .= files, "rows" .= initRowsJson failing])
+                    (T.unlines ([header] ++ ["would write " <> f | f <- files] ++ ["asks: " <> T.intercalate ", " asked | not (null asked)] ++ map initRowLine failing))
+                  pure ExitSuccess
+                _ -> do
+                  first' <-
+                    if null asked
+                      then pure (Right (LI.checkLayer li M.empty))
+                      else runFill (mfFiller mf) (LI.layerRequest li failing asked) <&> fmap (LI.checkLayer li . (`M.restrictKeys` S.fromList asked))
+                  case first' of
+                    Left why -> stop ("the model did not answer the errand: " <> why) Nothing failing
+                    Right answered ->
+                      answerRounds rt fmt
+                        Rounds
+                          { rdLanguage = l
+                          , rdFiller = mfFiller mf
+                          , -- a repair may ask any key but a derived tests_for, or one of a preset file that is there
+                            rdRequest = LI.layerRequest li [] [n | fd <- LI.layerForm l, let n = LI.fdName fd, not (isJust derived && n == "tests_for"), not (presetThere && presetField n)]
+                          , rdCheck = LI.checkLayer li
+                          , rdLeave = LI.leaveOutWith (const True) (LI.checkLayer li)
+                          , rdFailing = LI.shippedFailing l
+                          , rdHead = [header]
+                          , rdJson = []
+                          , rdStart = (t0, t1)
+                          , rdBeforeWrite = when unnamed (nameLanguage ws l)
+                          }
+                        answered
+    -- no grammar source in any layer: one key, the grammar, pinned
+    grammarLayer = case (grammarArg, chosen) of
+      (Nothing, Left why) -> failWith rt fmt 2 "usage" why Nothing []
+      (Nothing, Right Nothing) -> stop "init --language needs a model: add [model] (olifant doctor shows how)" Nothing []
+      (_, model) -> do
+        t0 <- getMonotonicTime
+        tracked <- sort <$> projectListing (portsOf rt) (projectOf rt cat)
+        survey <- case (grammarArg, model) of
+          (Just u, _) -> pure (Right (LI.Survey u Nothing Nothing [] [] Nothing []))
+          (Nothing, Right (Just mf)) -> askSurvey mf l tracked
+          _ -> pure (Left "init --language needs a model: add [model] (olifant doctor shows how)")
+        t1 <- getMonotonicTime
+        case survey of
+          Left why -> stop why Nothing []
+          Right sv -> do
+            let gname = fromMaybe l (LI.svName sv)
+                file = LI.languageFile l
+                header = l <> " ships with olifant without a grammar source; the project layer gives it one"
+                planOut proposal url sha = do
+                  emit rt fmt
+                    (object ["grammar" .= object ["git" .= url, "rev" .= sha], "files" .= [T.pack file]])
+                    (T.unlines [header, proposal, "would write " <> T.pack file])
+                  pure ExitSuccess
+            gateGrammar rt fmt l gname sv (isJust grammarArg) yes plan planOut >>= \case
+              Left code -> pure code
+              Right (g, proposal, url, sha, _, _) -> do
+                let text = T.unlines [LI.initHeader, "# " <> l <> " ships with olifant without a grammar source: this one, pinned by init", LI.pinText g]
+                    loads = Toml.parseToml text >>= \top -> languageFromLayers shippedPresets l [layer, Layer "project" (Just (rtProjectDir rt)) top]
+                case loads of
+                  Left why -> stop ("the grammar layer does not load: " <> why) Nothing []
+                  Right _ -> do
+                    writeText ws file text
+                    rows <- LI.languageRows l [file] <$> initDoctorRows rt l
+                    initFinish rt fmt (t0, t1) [header, proposal] ["grammar" .= object ["git" .= url, "rev" .= sha]] [(file, text)] False rows Nothing
+
+-- | The language named in `.olifant/config.toml`'s `languages` (the file made
+-- when there is none), so a shipped language nothing else names is the
+-- project's.
+nameLanguage :: Workspace IO -> Text -> IO ()
+nameLanguage ws l = do
+  let path = ".olifant/config.toml"
+  current <- fromMaybe "" <$> readText ws path
+  writeText ws path (addToLanguages l current)
+
+-- | TEXT, a config, with L in its top-level `languages` list (made when absent).
+addToLanguages :: Text -> Text -> Text
+addToLanguages l text = case break isLanguages ls of
+  (_, []) -> T.unlines (("languages = [" <> q <> "]") : ls)
+  (before, line : after)
+    | "]" `T.isInfixOf` line ->
+        let (open, close) = T.breakOnEnd "]" line
+            body = T.dropEnd 1 open
+         in T.unlines (before ++ [(if T.isSuffixOf "[" (T.stripEnd body) then body <> q else body <> ", " <> q) <> "]" <> close] ++ after)
+    | otherwise -> T.unlines (before ++ [line, "  " <> q <> ","] ++ after)
+  where
+    q = "\"" <> l <> "\""
+    ls = T.lines text
+    isLanguages ln = "languages" `T.isPrefixOf` ln && "=" `T.isPrefixOf` T.strip (T.drop 9 ln)
+
+-- | The survey (one hole, `survey`) asked and read.
+askSurvey :: ModelFiller IO -> Text -> [FilePath] -> IO (Either Text LI.Survey)
+askSurvey mf l tracked =
+  runFill (mfFiller mf) (LI.surveyRequest l tracked) <&> \case
+    Left why -> Left ("the model did not answer the survey: " <> why)
+    Right fills -> maybe (Left "the model gave no `survey`") LI.parseSurvey (M.lookup "survey" fills)
+
+-- | The survey's grammar pinned ('remoteHead'), shown, asked about (unless
+-- GIVEN with `--grammar` or YES), fetched, built and loaded: the grammar,
+-- the proposal line, its URL and SHA, what loaded and the settings; or the
+-- exit, having printed the grammar row. With PLAN, PLANOUT prints what
+-- would be written, after the pin and before any fetch.
+gateGrammar :: Runtime -> Format -> Text -> Text -> LI.Survey -> Bool -> Bool -> Bool -> (Text -> Text -> Text -> IO ExitCode) -> IO (Either ExitCode (Grammar, Text, Text, Text, Loaded, GrammarSettings))
+gateGrammar rt fmt l gname sv given yes plan planOut = do
+  let url = LI.svGrammar sv
+      stop = initStop rt fmt
+  s <- grammarSettings
+  remoteHead s url >>= \case
+    Left why -> do
+      let row = grammarCheck l gname (Left (FetchFailed ("pinning " <> url <> " failed: " <> why)))
+      Left <$> stop ("the grammar's repository has no revision to pin: " <> url) (Just (initRowLine row)) [row]
+    Right sha -> do
+      let g = Grammar gname (Just (SourceGit url sha (LI.svPath sv)))
+          label = url <> " @" <> T.take 7 sha
+          proposal = "grammar: " <> label <> (if given then " (given with --grammar)" else " (proposed by the model)")
+      if plan
+        then Left <$> planOut proposal url sha
+        else do
+          go <-
+            if yes || given
+              then pure True
+              else
+                if rtStdoutIsTty rt
+                  then do
+                    rtErr rt (proposal <> "\nfetch and build it? [y/N] ")
+                    answer <- T.toLower . T.strip <$> rtReadLine rt
+                    pure (answer `elem` ["y", "yes"])
+                  else pure False
+          if not go
+            then Left <$> stop proposal (Just "pass --yes to fetch and build it") []
+            else
+              loadGrammarWith s g >>= \case
+                Left f -> do
+                  let row = grammarCheck l gname (Left f)
+                  Left <$> stop ("the grammar does not load: " <> failureLine f) (Just (initRowLine row)) [row]
+                Right ld -> pure (Right (g, proposal, url, sha, ld, s))
+  where
     failureLine = \case
       FetchFailed why -> why
       NeedsCompiler why -> "needs a C compiler: " <> why
@@ -1141,7 +1262,137 @@ runInitLanguage rt cwd fmt cat l modelArg grammarArg yes plan fillsArg = do
       LoadFailed why -> "loading failed: " <> why
       AbiMismatch n _ -> "ABI " <> T.pack (show n) <> " is not one this olifant reads"
       NoSource -> "no source"
+
+-- | What 'answerRounds' needs after the first round: the language, the
+-- model, the request a repair asks its holes from, the check of a round's
+-- answers, how a key that fails is left out, which of doctor's rows count as
+-- failing, the lines printed first and the JSON added, and when the survey
+-- started and ended.
+data Rounds = Rounds
+  { rdLanguage :: Text
+  , rdFiller :: Filler IO
+  , rdRequest :: FillRequest
+  , rdCheck :: M.Map Text Text -> LI.Answered
+  , rdLeave :: LI.Answered -> LI.Answered
+  , rdFailing :: [FilePath] -> [Check] -> [Check]
+  , rdHead :: [Text]
+  , rdJson :: [Pair]
+  , rdStart :: (Double, Double)
+  , rdBeforeWrite :: IO ()
+  -- ^ run once before the first file is written (a shipped language nothing
+  -- names is listed in the config then)
+  }
+
+-- | The first round's checked answers written, doctor, exactly one repair
+-- round, and the final rows (Decision 10). A key that fails and may be left
+-- out is, so doctor reads the files before the repair and the repair answers
+-- the init rows and doctor's at once; a file that does not load is repaired
+-- before anything is written; a repair that breaks a row that passed gets
+-- the first round's values back for the keys behind it.
+answerRounds :: Runtime -> Format -> Rounds -> LI.Answered -> IO ExitCode
+answerRounds rt fmt rd first' = do
+  let ws = within (rtProjectDir rt) (rtRoot rt)
+      l = rdLanguage rd
+      stop = initStop rt fmt
+      finish = initFinish rt fmt (rdStart rd) (rdHead rd) (rdJson rd)
+      doctorRows = initDoctorRows rt l
+      repairWith written rows = do
+        rtErr rt (T.unlines ["init-language: round 1: " <> checkName c <> " — " <> checkDetail c | c <- rows])
+        let rreq = LI.repairRequest (rdRequest rd) written rows
+        runFill (rdFiller rd) rreq <&> \case
+          Left why -> (LI.Answered [] [Check (l <> ": repair") Bad ("the model did not answer the repair: " <> why) Nothing] (LI.anAnswers first') [], [])
+          -- the repair's values over the first round's, the files assembled
+          -- again; a key not required that still fails is left out
+          Right answers ->
+            let repaired = LI.repairAnswers rreq answers
+             in (rdLeave rd (rdCheck rd (M.union repaired (LI.anAnswers first'))), M.keys repaired)
+      -- FIELDS back to the first round's values (absent there: absent)
+      revert answers fields = foldr (\f -> maybe (M.delete f) (M.insert f) (M.lookup f (LI.anAnswers first'))) answers fields
+      merge old new' = [(p, t) | (p, t) <- old, p `notElem` map fst new'] ++ new'
+      -- the first round's files with a wrong key that is not required left
+      -- out: when they load, doctor sees them before the one repair, so it
+      -- answers the init rows and doctor's at once
+      provisional = rdLeave rd first'
+  if not (null (LI.anFailing provisional))
+    then do
+      -- a required key or a whole file fails: nothing is written until every file loads
+      (second, _) <- repairWith (LI.anFiles first') (LI.anFailing first')
+      if not (null (LI.anFailing second))
+        then stop "the model's files do not load after one repair; nothing was written" Nothing (LI.anFailing second)
+        else do
+          let written = merge (LI.anFiles first') (LI.anFiles second)
+          rdBeforeWrite rd
+          forM_ written $ \(p, t) -> writeText ws p t
+          rows <- LI.languageRows l (map fst written) <$> doctorRows
+          finish written True (rows ++ LI.anWarnings second) Nothing
+    else do
+      let files1 = merge (LI.anFiles first') (LI.anFiles provisional)
+          ownFiles = map fst files1
+      rdBeforeWrite rd
+      forM_ files1 $ \(p, t) -> writeText ws p t
+      rows1 <- doctorRows
+      let before = LI.languageRows l ownFiles rows1
+      -- a warn row that does not stop the files (a command naming no
+      -- {= tests =}) is shown, not repaired: doctor's rows say whether it runs
+      case LI.anFailing first' ++ rdFailing rd ownFiles rows1 of
+        [] -> finish files1 False (before ++ LI.anWarnings provisional) Nothing
+        failing -> do
+          (second, repaired) <- repairWith files1 failing
+          if null (LI.anFailing second)
+            then do
+              forM_ (LI.anFiles second) $ \(p, t) -> writeText ws p t
+              rows2 <- LI.languageRows l ownFiles <$> doctorRows
+              -- the repair may not break a row that passed: its fields go back
+              case LI.regressedFields before rows2 repaired of
+                [] -> finish (merge files1 (LI.anFiles second)) True (rows2 ++ LI.anWarnings second) Nothing
+                back -> do
+                  rtErr rt ("init-language: the repair broke a row that passed; the first round's " <> T.intercalate ", " back <> " kept\n")
+                  let third = rdLeave rd (rdCheck rd (revert (LI.anAnswers second) back))
+                  if null (LI.anFailing third)
+                    then do
+                      forM_ (LI.anFiles third) $ \(p, t) -> writeText ws p t
+                      rows3 <- LI.languageRows l ownFiles <$> doctorRows
+                      finish (merge files1 (LI.anFiles third)) True (rows3 ++ LI.anWarnings third) Nothing
+                    else finish (merge files1 (LI.anFiles second)) True (rows2 ++ LI.anWarnings second) Nothing
+            else finish files1 True (before ++ LI.anFailing second ++ LI.anWarnings provisional) (Just "the repair's files did not load: the first round's files are kept")
+
+-- | `init --language`'s stop: exit 1 with the line, a hint and the rows.
+initStop :: Runtime -> Format -> Text -> Maybe Text -> [Check] -> IO ExitCode
+initStop rt fmt msg hint rows = failWith rt fmt 1 "init_language" msg hint ["rows" .= initRowsJson rows]
+
+-- | Doctor's rows, run, on the catalog opened again over what init wrote.
+initDoctorRows :: Runtime -> Text -> IO [Check]
+initDoctorRows rt l = do
+  reopened <- openProjectCatalog (rtRoot rt) (CatalogPaths (rtProjectDir rt) (rtUserConfigDir rt) (rtHomeDir rt))
+  case reopened of
+    Left e -> pure [Check ("language " <> l) Bad (T.pack (show e)) Nothing]
+    Right cat' -> doctorChecks (portsOf rt) (projectOf rt cat') True
+
+-- | What init wrote and the final rows (Decision 10), with the stderr line
+-- of the survey's and the errand's seconds; exit 1 when a row is an error.
+initFinish :: Runtime -> Format -> (Double, Double) -> [Text] -> [Pair] -> [(FilePath, Text)] -> Bool -> [Check] -> Maybe Text -> IO ExitCode
+initFinish rt fmt (t0, t1) heads json written repaired rows note = do
+  t2 <- getMonotonicTime
+  rtErr rt ("init-language: survey " <> secs (t1 - t0) <> ", errand " <> secs (t2 - t1) <> ", repair " <> (if repaired then "yes" else "no") <> "\n")
+  let paths = map (T.pack . fst) written
+  emit rt fmt
+    (object (["written" .= paths, "rows" .= initRowsJson rows, "repaired" .= repaired] ++ json))
+    (T.unlines (heads ++ ["wrote " <> w | w <- paths] ++ [n | Just n <- [note]] ++ map initRowLine rows))
+  pure (if any ((== Bad) . checkStatus) rows then ExitFailure 1 else ExitSuccess)
+  where
     secs t = T.pack (showFFloat (Just 1) t "") <> " s"
+
+-- | Doctor's rows as its JSON's `checks`.
+initRowsJson :: [Check] -> Value
+initRowsJson rows = case doctorJson rows of
+  Object o | Just v <- KM.lookup "checks" o -> v
+  v -> v
+
+-- | One of doctor's rows as doctor prints it, its fix on the next line.
+initRowLine :: Check -> Text
+initRowLine c = markOf (checkStatus c) <> " " <> checkName c <> " — " <> checkDetail c <> maybe "" ("\n  fix: " <>) (checkFix c)
+  where
+    markOf = \case Ok -> "✓" :: Text; Warn -> "!"; Bad -> "✗"
 
 -- | The model that fills holes in a `gen` (spec §6.4): `--model`, else
 -- the config's `default`; none with `--no-fill`.

@@ -7,6 +7,7 @@ import Data.Maybe (isJust)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
 import Data.Map.Strict qualified as M
+import Olifant.Evidence (nonePassedMarker)
 import Olifant.Fill (parseFills, replayFiller)
 import Olifant.Language (Grammar (..), GrammarSource (..))
 import Olifant.Language.Grammar (GrammarSettings (..), Loaded (..), defaultSettings, loadGrammar)
@@ -97,6 +98,10 @@ spec = do
     it "reads the keys" $
       parseSurvey (T.unlines ["grammar = \"https://example.invalid/tree-sitter-x\"", "files = [\"**/*.go\"]", "tests = [\"**/*_test.go\"]", "manifest = \"go.mod\"", "runners = [\"go\"]"])
         `shouldBe` Right survey
+    it "an empty path or name is none; a name written as the C symbol is what follows tree_sitter_" $ do
+      let Right sv = parseSurvey "grammar = \"https://x/g\"\npath = \"\"\nname = \"\"\nfiles = [\"**/*.g\"]\n"
+          Right sv2 = parseSurvey "grammar = \"https://x/g\"\nname = \"tree_sitter_g\"\nfiles = [\"**/*.g\"]\n"
+      (svPath sv, svName sv, svName sv2) `shouldBe` (Nothing, Nothing, Just "g")
     it "reads path and name, the loader's monorepo keys" $
       fmap (\s -> (svPath s, svName s)) (parseSurvey "grammar = \"u\"\npath = \"tsx\"\nname = \"tsx\"\nfiles = [\"*.tsx\"]\n")
         `shouldBe` Right (Just "tsx", Just "tsx")
@@ -247,6 +252,18 @@ spec = do
           written = [".olifant/queries/go/tags.scm", ".olifant/languages/go.toml"]
       map checkName (failingRows "go" written [refused, other]) `shouldBe` [checkName refused]
       map checkName (languageRows "go" written [refused, other]) `shouldBe` [checkName refused]
+  describe "a shipped language's layer" $ do
+    it "layerKeysOk: the asked keys, an inline table's own keys and the tables on the way; any other key refused, named" $ do
+      let allowed = [["test", "unit"], ["imports", "module_of"]]
+      layerKeysOk allowed "[test]\nunit = ['^x']\n[imports]\nmodule_of = { strip = ['a'], separator = '.' }\n" `shouldBe` Right ()
+      layerKeysOk allowed "files = ['**/*.x']\n[test]\nunit = ['^x']\n" `shouldBe` Left "sets `files`, which no failing row needs"
+      layerKeysOk allowed "[test]\nunit = ['^x']\nabove = 'y'\n" `shouldBe` Left "sets `test.above`, which no failing row needs"
+    it "shippedFailing: a tests run with results, none passing, is the project's tests, not a key's; a broken run is sent" $ do
+      let row d = Check "rust: tests" Warn d (Just "regenerate the key or supply a provider (see chapter 9, Providers)")
+          failed = row ("ran cargo test in the package root (.); none of 2" <> nonePassedMarker <> "x: boom")
+          broken = row "ran cargo test in the package root (.): error: no network"
+      shippedFailing "rust" [] [failed, broken] `shouldBe` [broken]
+
   describe "repairRequest" $ do
     let req = formRequest (bareInput upstream ["a/x.go"])
         written = [(".olifant/languages/go.toml", "files = []\n")]
