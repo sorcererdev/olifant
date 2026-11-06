@@ -97,6 +97,10 @@ spec = do
     it "reads the keys" $
       parseSurvey (T.unlines ["grammar = \"https://example.invalid/tree-sitter-x\"", "files = [\"**/*.go\"]", "tests = [\"**/*_test.go\"]", "manifest = \"go.mod\"", "runners = [\"go\"]"])
         `shouldBe` Right survey
+    it "an empty path or name is none; a name written as the C symbol is what follows tree_sitter_" $ do
+      let Right sv = parseSurvey "grammar = \"https://x/g\"\npath = \"\"\nname = \"\"\nfiles = [\"**/*.g\"]\n"
+          Right sv2 = parseSurvey "grammar = \"https://x/g\"\nname = \"tree_sitter_g\"\nfiles = [\"**/*.g\"]\n"
+      (svPath sv, svName sv, svName sv2) `shouldBe` (Nothing, Nothing, Just "g")
     it "reads path and name, the loader's monorepo keys" $
       fmap (\s -> (svPath s, svName s)) (parseSurvey "grammar = \"u\"\npath = \"tsx\"\nname = \"tsx\"\nfiles = [\"*.tsx\"]\n")
         `shouldBe` Right (Just "tsx", Just "tsx")

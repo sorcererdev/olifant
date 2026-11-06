@@ -131,13 +131,18 @@ parseSurvey reply = do
   if T.null (T.strip grammar) then Left "the survey's `grammar` is empty" else pure ()
   files <- Toml.required "files" (Toml.list Toml.text) top
   if null files then Left "the survey's `files` is empty" else pure ()
-  path <- Toml.optional "path" Toml.text top
-  name <- Toml.optional "name" Toml.text top
+  -- an empty path or name is none (a model writes `path = ""`); a name is
+  -- what follows tree_sitter_ (a model writes the whole C symbol)
+  path <- nonEmpty <$> Toml.optional "path" Toml.text top
+  name <- fmap (\n -> fromMaybe n (T.stripPrefix "tree_sitter_" n)) . nonEmpty <$> Toml.optional "name" Toml.text top
   tests <- fromMaybe [] <$> Toml.optional "tests" (Toml.list Toml.text) top
   manifest <- Toml.optional "manifest" Toml.text top
   runners <- fromMaybe [] <$> Toml.optional "runners" (Toml.list runner) top
   pure (Survey (T.strip grammar) (T.unpack <$> path) name files tests (T.unpack <$> manifest) runners)
   where
+    nonEmpty = \case
+      Just t | not (T.null (T.strip t)) -> Just (T.strip t)
+      _ -> Nothing
     -- a bare program, or { program, junit }
     runner = \case
       Toml.TText p -> Right (Runner p Nothing)

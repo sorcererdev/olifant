@@ -284,8 +284,9 @@ whole file, and every row that fails names the key behind it. How it gets there:
    source and test files, its manifest, and which test runners the project could use: the
    language's own, and a separate program that runs those tests and writes JUnit XML, with the
    option that names its report file (`runners = [{ program = "go" }, { program = "gotestsum",
-   junit = "--junitfile {= report =}" }]`; a bare `"go"` reads too). `--grammar URL` gives the
-   repository yourself.
+   junit = "--junitfile {= report =}" }]`; a bare `"go"` reads too). An empty `path` or `name`
+   counts as none, and a `name` written as the C symbol (`tree_sitter_go`) as what follows
+   `tree_sitter_`. `--grammar URL` gives the repository yourself.
 2. **The pin.** Olifant asks the repository for its `HEAD` (`git ls-remote`) and pins that full
    commit SHA. The revision is olifant's, never the model's.
 3. **The question.** The repository is the model's proposal, and olifant is about to compile its
