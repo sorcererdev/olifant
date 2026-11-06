@@ -23,6 +23,7 @@ import Data.Either (lefts)
 import Data.List (nub, sort, sortOn, stripPrefix)
 import Data.Maybe (catMaybes, fromMaybe, isJust, listToMaybe)
 import Data.Ord (Down (..))
+import Data.Map.Strict qualified as M
 import Data.Set qualified as S
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -172,11 +173,13 @@ testUnitsProof ports lang mapping testTexts
       Just (src, t) -> "tests_for maps " <> T.pack src <> " to " <> T.pack t <> (if t == src then " (itself)" else "") <> "; "
       Nothing -> ""
 
--- | Tests: one sample test file run, with `doctor --run`. A broken run says
--- what ran and where: the command (its program and arguments), the package
--- root it ran in (the nearest folder with a @root@ file, else the project's)
--- and that folder's top-level listing, whether the command has
--- @{= tests =}@ and @{= report =}@, and the output's first lines.
+-- | Tests: one sample test file run, with `doctor --run`. A broken run, or
+-- one where no result passed (a runner's setup failure reported as a test),
+-- says what ran and where: the command (its program and arguments), the
+-- package root it ran in (the nearest folder with a @root@ file, else the
+-- project's) and that folder's top-level listing, what @{= tests =}@ became
+-- (or that the command has none) and whether it names @{= report =}@; then
+-- the output's first lines, or the first failure.
 testsProof :: EvidencePorts -> Language -> [FilePath] -> IO Proof
 testsProof ports lang testFiles = case (langTest lang, epRun ports) of
   (Nothing, _) -> pure (Unproven "no [test]")
@@ -191,18 +194,34 @@ testsProof ports lang testFiles = case (langTest lang, epRun ports) of
       run lang [T.pack f] >>= \case
         Left why -> pure (Disproven why)
         Right r | Just why <- trBroken r -> do
-          files <- epFiles ports
-          let argv = either (const (testCommand td)) (testCommand . fst) chosen
-              scope = packageScope (testRoot td) False files [f]
-              listing = sort (nub [case break (== '/') rel of (d, _ : _) -> d <> "/"; (n, _) -> n | p <- files, Just rel <- [under scope p]])
-              shown = T.intercalate ", " (map T.pack (take 8 listing)) <> (if length listing > 8 then ", …" else "")
-              has v = (if any (v `T.isInfixOf`) argv then "with " else "without ") <> v
-          pure . Disproven $
-            "`" <> T.unwords (map (T.replace "{= root =}/" "") argv) <> "` ran in " <> (if null scope then "the project root" else T.pack scope <> "/")
-              <> " (" <> shown <> ") on " <> T.pack f <> ", " <> has "{= tests =}" <> ", " <> has "{= report =}" <> ": "
-              <> T.intercalate "\n" (take 3 (filter (not . T.null . T.strip) (T.lines why)))
+          ran <- whereRan td chosen f
+          pure (Disproven (ran <> T.intercalate "\n" (take 3 (filter (not . T.null . T.strip) (T.lines why)))))
+        -- results, none passing: the runner ran, but not the project's tests (a setup failure)
+        Right r | null (trPassed r), (i, fl) : _ <- trFailed r -> do
+          ran <- whereRan td chosen f
+          pure (Disproven (ran <> "none of " <> count (length (trFailed r)) <> " passed; the first failure, " <> i <> ": " <> T.strip (T.takeWhile (/= '\n') (fMessage fl))))
         Right r ->
           pure (Proven ("ran " <> maybe "the test command" (T.replace "{= root =}/" "") program <> " on " <> T.pack f <> ", " <> count (length (trPassed r) + length (trFailed r)) <> " results parsed (" <> format <> ")"))
+
+  where
+    -- what ran and where, for a run that proves nothing: the command, the
+    -- package root it ran in and that folder's top-level listing, what
+    -- {= tests =} became and whether {= report =} is in it
+    whereRan td chosen f = do
+      files <- epFiles ports
+      let argv = either (const (testCommand td)) (testCommand . fst) chosen
+          scope = packageScope (testRoot td) False files [f]
+          listing = sort (nub [case break (== '/') rel of (d, _ : _) -> d <> "/"; (n, _) -> n | p <- files, Just rel <- [under scope p]])
+          shown = T.intercalate ", " (map T.pack (take 8 listing)) <> (if length listing > 8 then ", …" else "")
+          rel = T.pack (fromMaybe f (under scope f))
+          args = maybe [rel] (\sel -> nub (selected lang td M.empty sel rel)) (testSelect td)
+          tests
+            | "{= tests =}" `elem` argv = "with {= tests =} = `" <> T.unwords args <> "`"
+            | otherwise = "without {= tests =}"
+          report = (if any ("{= report =}" `T.isInfixOf`) argv then "with " else "without ") <> "{= report =}"
+      pure $
+        "`" <> T.unwords (map (T.replace "{= root =}/" "") argv) <> "` ran in " <> (if null scope then "the project root" else T.pack scope <> "/")
+          <> " (" <> shown <> ") on " <> T.pack f <> ", " <> tests <> ", " <> report <> ": "
 
 -- | A path under a folder, relative to it (the project's: as it is).
 under :: FilePath -> FilePath -> Maybe FilePath

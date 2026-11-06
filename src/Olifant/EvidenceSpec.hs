@@ -136,7 +136,11 @@ spec = describe "Olifant.Evidence" $ do
       evTests ev `shouldBe` Proven "ran pytest on src/a__test.py, 2 results parsed (junit-xml)"
     withPorts pair (Just (\_ _ -> pure (Right (TestRun [] [] (Just "no tests ran"))))) $ \ports -> do
       ev <- evidenceFor ports py
-      evTests ev `shouldBe` Disproven "`pytest -q --tb=short -p no:cacheprovider {= tests =} -o junit_family=xunit1 --junitxml={= report =}` ran in the project root (src/) on src/a__test.py, with {= tests =}, with {= report =}: no tests ran"
+      evTests ev `shouldBe` Disproven "`pytest -q --tb=short -p no:cacheprovider {= tests =} -o junit_family=xunit1 --junitxml={= report =}` ran in the project root (src/) on src/a__test.py, with {= tests =} = `src/a__test.py`, with {= report =}: no tests ran"
+    withPorts pair (Just (\_ _ -> pure (Right (TestRun [] [("src::TestMain", Failure Nothing "FAIL . [setup failed]\nmore" "")] Nothing)))) $ \ports -> do
+      ev <- evidenceFor ports py
+      proofText (evTests ev) `shouldSatisfy` T.isSuffixOf "with {= report =}: none of 1 passed; the first failure, src::TestMain: FAIL . [setup failed]"
+      evTests ev `shouldSatisfy` isDisproven
   it "tests: a broken run says where it ran, what is there, and what the command lacks" $ do
     let bare = py {langTest = (\td -> td {testCommand = ["go", "test"], testCandidates = [], testRoot = ["pyproject.toml"]}) <$> langTest py}
         files = [("svc/pyproject.toml", ""), ("svc/src/a.py", source), ("svc/src/a__test.py", test), ("README.md", "")]
