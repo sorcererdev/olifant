@@ -609,9 +609,11 @@ units`, `tests`, `anchors`, `holes`): `Proven` is `Ok` with the evidence text in
 `Unproven` is `Warn`, except the tests row when doctor did not run tests (`diRan`, from `doctor
 --run`), which stays `Ok` with `how (not run: olifant doctor --run)`; `Disproven` is `Warn` with
 the fix "regenerate the key or supply a provider (see chapter 9, Providers)", and when the
-project's `.olifant/languages/NAME.toml` starts with `Doctor.initHeader` (read through `dpRead`;
-init writes it, `LanguageInit` imports it from here) the fix adds "; or run olifant init
---language NAME again after deleting .olifant/languages/NAME.toml". The origin is kept
+project's `.olifant/languages/NAME.toml`, or a toolchain preset the language takes keys from (or
+`NAME-test.toml`), starts with `Doctor.initHeader` (read through `dpRead` in `writtenByInit`; init
+writes it, `LanguageInit` imports it from here) the fix adds "; or run olifant init --language NAME
+again after deleting" those files, every one a rerun refuses on. A layer whose body is only
+`grammar` lines (the elm grammar-only layer) is not listed: a rerun would write it again. The origin is kept
 on every row, and evidence never makes a row `Bad`, so doctor's exit code rule is unchanged.
 After a language's capability rows, `Doctor.grammarRow` adds `LANGUAGE: grammar` from the
 `dpGrammar` port (`Grammar.probeGrammar` in `Main`, which loads the grammar as a first use
@@ -816,9 +818,13 @@ specced against a `file://` repository of its own.
 - **Nothing failing.** Doctor (`App.doctorChecks`, `run = True`) runs on the catalog first;
   a language nothing names is added for the run from its shipped layer alone (and the output
   says nothing names it). `LanguageInit.shippedFailing` is `failingRows` less a `tests` row whose
-  run had results and none passed. None: the "nothing to override here" line and the rows,
+  run had results and none passed (matched on `Evidence.nonePassedMarker`, the text
+  `testsProof` writes, so the two cannot drift). None: the "nothing to override here" line and the rows,
   exit 0, no model asked.
-- **Failing rows** (`layerFor`). The model is needed now; the survey runs for the globs, the
+- **Failing rows** (`layerFor`). Before any model call, `layerAsk` is run over the rows with an
+  empty survey: no key asked (the failing row is the grammar's, say, with no C compiler) stops
+  with the grammar row and its fix, no survey asked. `--grammar` on this path is noted on stderr
+  as ignored. The model is needed now; the survey runs for the globs, the
   runners and the sample. A `LayerInput` holds the shipped text and `Layer`, the preset the
   shipped `[test]` names (from `layerTable`, with its text from `Library.shippedToolchains`), the
   facts and the derived `tests_for`. `layerAsk` maps the rows to fields with `repairHoles` over
@@ -836,7 +842,10 @@ specced against a `file://` repository of its own.
   (`leaveOutWith (const True)`), and the `tests_for` facts of a new language are not checked
   (Rust's own file is its test file). Then `answerRounds`, the new language's write, doctor, one
   repair and final rows, parameterised by a `Rounds` record (the request a repair asks from, the
-  check, the leave-out, which rows fail, the head lines and JSON); a shipped repair may ask any
+  check, the leave-out, which rows fail, the head lines and JSON, and `rdBeforeWrite`, which for a
+  language nothing names runs `nameLanguage` before the first file is written: it adds the
+  language to `.olifant/config.toml`'s `languages` (`addToLanguages`), so the reopened catalog
+  in `initDoctorRows` names it and the final rows show it); a shipped repair may ask any
   layer key but a derived `tests_for` or a key of a preset file that was already there.
 
 `CliSpec`'s "init --language (a shipped language)" drives it in memory: `rustProject` (a crate that

@@ -417,6 +417,28 @@ initShippedSpec = describe "init --language (a shipped language)" $ do
     code2 `shouldBe` ExitFailure 1
     (out2 <> err2) `shouldSatisfy` T.isInfixOf ".olifant/toolchains/cargo-test.toml exists"
     M.lookup "/w/.olifant/toolchains/cargo-test.toml" written2 `shouldBe` Just "[test]\ntimeout = 900\n"
+  it "(w2) a layer written for a language nothing names lists it in the config, and the final rows show it" $ do
+    let offline = Runner $ \lang ids fs -> case langTest lang of
+          Just td | "--offline" `elem` testCommand td -> runTests (scriptedRunner M.empty) lang ids fs
+          _ -> pure (Right (TestRun [] [] (Just "error: failed to download from crates.io")))
+        files = [f | f@(p, _) <- rustProject "#[test]" [("survey", rustSurvey), ("command", "[\"cargo\", \"test\", \"--offline\", \"--\", \"{= tests =}\"]")], p /= "/w/.olifant/config.toml"]
+    (code, out, err, written) <- runInitLanguageWith offline files Nothing (rust ["--human"])
+    (code, out <> err) `shouldBe` (ExitSuccess, out <> err)
+    M.lookup "/w/.olifant/config.toml" written `shouldBe` Just "languages = [\"rust\"]\n"
+    out `shouldSatisfy` T.isInfixOf "rust: tests"
+    M.member "/w/.olifant/toolchains/cargo-test.toml" written `shouldBe` True
+  it "(w3) failing rows that name no key stop before the survey, asking no model" $ do
+    -- a pack whose rust check tool is not on PATH: that row fails, and no key is its
+    let pack = [("/w/.olifant/config.toml", "languages = [\"rust\"]\n[packs]\nbad = { path = \"/packs/bad\" }\n"), ("/packs/bad/languages/rust.toml", "[check]\ncommand = [\"nope-check\"]\nformat = \"rustc-json\"\n")]
+        files = pack ++ [f | f@(p, _) <- rustProject "#[test]" [], p /= "/w/.olifant/config.toml"]
+    (code, out, err, _) <- run files (rust ["--human"])
+    (code, out <> err) `shouldBe` (ExitFailure 1, out <> err)
+    (out <> err) `shouldSatisfy` T.isInfixOf "name no key a project layer sets"
+    (out <> err) `shouldNotSatisfy` T.isInfixOf "survey"
+  it "(w4) --grammar on a shipped language with a grammar is noted as ignored" $ do
+    (code, out, err, _) <- run (rustProject "#[test]" []) (rust ["--grammar", "https://example.invalid/g", "--human"])
+    (code, out <> err) `shouldBe` (ExitSuccess, out <> err)
+    err `shouldSatisfy` T.isInfixOf "--grammar is ignored: rust ships with a grammar"
   it "(x) elm without its pack: a one-key layer, the grammar pinned, the shipped queries over it" $ do
     (remote, sha) <- elmRemote "x"
     survey <- T.replace "@REMOTE@" remote <$> TIO.readFile "src/Olifant/testdata/init-language/survey.toml"

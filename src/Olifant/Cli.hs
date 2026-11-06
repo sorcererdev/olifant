@@ -1042,6 +1042,7 @@ runInitLanguage rt cwd fmt cat l modelArg grammarArg yes plan fillsArg = do
                       , rdHead = [proposal]
                       , rdJson = ["grammar" .= object ["git" .= url, "rev" .= sha]]
                       , rdStart = (t0, t1)
+                      , rdBeforeWrite = pure ()
                       }
                     first'
 
@@ -1061,6 +1062,7 @@ runInitShipped rt fmt cat l shippedText chosen grammarArg yes plan
   | otherwise = case (find ((== l) . langName) (catalogLanguages cat), languageFromLayers shippedPresets l [layer]) of
       (Nothing, Left why) -> stop ("the shipped " <> l <> " does not load: " <> why) Nothing []
       (named, alone) -> do
+        when (isJust grammarArg) $ rtErr rt ("init-language: --grammar is ignored: " <> l <> " ships with a grammar\n")
         let unnamed = isNothing named
             doctorCat = if unnamed then cat {catalogLanguages = catalogLanguages cat ++ either (const []) pure alone} else cat
         rows0 <- doctorChecks (portsOf rt) (projectOf rt doctorCat) True
@@ -1073,7 +1075,7 @@ runInitShipped rt fmt cat l shippedText chosen grammarArg yes plan
               (object ["written" .= ([] :: [Text]), "rows" .= initRowsJson rows, "repaired" .= False])
               (T.unlines ([l <> " ships with olifant; doctor finds nothing to override here"] ++ note ++ map initRowLine rows))
             pure (if any ((== Bad) . checkStatus) rows then ExitFailure 1 else ExitSuccess)
-          else layerFor failing
+          else layerFor unnamed failing
   where
     ws = within (rtProjectDir rt) (rtRoot rt)
     stop = initStop rt fmt
@@ -1088,58 +1090,65 @@ runInitShipped rt fmt cat l shippedText chosen grammarArg yes plan
       Right Nothing -> stop "init --language needs a model: add [model] (olifant doctor shows how)" Nothing []
       Right (Just mf) -> k mf
     -- failing rows: the keys they point at, as a layer over the shipped file
-    layerFor failing = do
+    layerFor unnamed failing = do
       presetThere <- maybe (pure False) (\(p, _) -> fileExists ws (LI.presetFile p)) preset
-      withModel $ \mf -> do
-        t0 <- getMonotonicTime
-        tracked <- sort <$> projectListing (portsOf rt) (projectOf rt cat)
-        survey <- askSurvey mf l tracked
-        t1 <- getMonotonicTime
-        case survey of
-          Left why -> stop why Nothing []
-          Right sv -> do
-            let (sources, tests, manifest) = LI.sampleFor sv tracked
-            tools <- mapM (\r -> LI.runnerLine r <$> dpFind (rtDoctor rt) (T.unpack (LI.rnProgram r))) (LI.svRunners sv)
-            sample <- fmap concat . mapM (\p -> readText ws p <&> maybe [] (\t -> [(p, LI.cutTo 120 t)])) $ sources ++ tests ++ maybe [] pure manifest
-            let li0 = LI.LayerInput l shippedText layer preset tools sample (rtProjectDir rt) sv tracked Nothing
-                (derived, asked) = LI.layerAsk li0 failing
-                li = li0 {LI.liDerived = derived}
-                presetAsked = filter presetField asked
-                files =
-                  [T.pack (LI.languageFile l) | isJust derived || any (not . presetField) asked]
-                    ++ [T.pack (LI.presetFile p) | Just (p, _) <- [preset], not (null presetAsked)]
-                    ++ [T.pack (LI.languageFile l) | isNothing preset, not (null presetAsked), isNothing derived, all presetField asked]
-                header = l <> " ships with olifant; doctor finds rows failing here, so a project layer answers their keys"
-            case () of
-              _ | presetThere, not (null presetAsked), Just (p, _) <- preset -> stop (T.pack (LI.presetFile p) <> " exists: olifant doctor shows its rows; delete it to generate again") Nothing failing
-              _ | null asked, isNothing derived -> stop ("doctor's failing rows for " <> l <> " name no key a project layer sets") Nothing failing
-              _ | plan -> do
-                emit rt fmt
-                  (object ["asks" .= asked, "files" .= files, "rows" .= initRowsJson failing])
-                  (T.unlines ([header] ++ ["would write " <> f | f <- files] ++ ["asks: " <> T.intercalate ", " asked | not (null asked)] ++ map initRowLine failing))
-                pure ExitSuccess
-              _ -> do
-                first' <-
-                  if null asked
-                    then pure (Right (LI.checkLayer li M.empty))
-                    else runFill (mfFiller mf) (LI.layerRequest li failing asked) <&> fmap (LI.checkLayer li . (`M.restrictKeys` S.fromList asked))
-                case first' of
-                  Left why -> stop ("the model did not answer the errand: " <> why) Nothing failing
-                  Right answered ->
-                    answerRounds rt fmt
-                      Rounds
-                        { rdLanguage = l
-                        , rdFiller = mfFiller mf
-                        , -- a repair may ask any key but a derived tests_for, or one of a preset file that is there
-                          rdRequest = LI.layerRequest li [] [n | fd <- LI.layerForm l, let n = LI.fdName fd, not (isJust derived && n == "tests_for"), not (presetThere && presetField n)]
-                        , rdCheck = LI.checkLayer li
-                        , rdLeave = LI.leaveOutWith (const True) (LI.checkLayer li)
-                        , rdFailing = LI.shippedFailing l
-                        , rdHead = [header]
-                        , rdJson = []
-                        , rdStart = (t0, t1)
-                        }
-                      answered
+      -- the keys the rows point at need no survey: none asked stops before any model call
+      let noSurvey = LI.Survey "" Nothing Nothing [] [] Nothing []
+          (preDerived, preAsked) = LI.layerAsk (LI.LayerInput l shippedText layer preset [] [] (rtProjectDir rt) noSurvey [] Nothing) failing
+          grammarRow = listToMaybe [c | c <- failing, checkName c == l <> ": grammar"]
+      if null preAsked && isNothing preDerived
+        then stop ("doctor's failing rows for " <> l <> " name no key a project layer sets") (initRowLine <$> grammarRow) failing
+        else withModel $ \mf -> do
+          t0 <- getMonotonicTime
+          tracked <- sort <$> projectListing (portsOf rt) (projectOf rt cat)
+          survey <- askSurvey mf l tracked
+          t1 <- getMonotonicTime
+          case survey of
+            Left why -> stop why Nothing []
+            Right sv -> do
+              let (sources, tests, manifest) = LI.sampleFor sv tracked
+              tools <- mapM (\r -> LI.runnerLine r <$> dpFind (rtDoctor rt) (T.unpack (LI.rnProgram r))) (LI.svRunners sv)
+              sample <- fmap concat . mapM (\p -> readText ws p <&> maybe [] (\t -> [(p, LI.cutTo 120 t)])) $ sources ++ tests ++ maybe [] pure manifest
+              let li0 = LI.LayerInput l shippedText layer preset tools sample (rtProjectDir rt) sv tracked Nothing
+                  (derived, asked) = LI.layerAsk li0 failing
+                  li = li0 {LI.liDerived = derived}
+                  presetAsked = filter presetField asked
+                  files =
+                    [T.pack (LI.languageFile l) | isJust derived || any (not . presetField) asked]
+                      ++ [T.pack (LI.presetFile p) | Just (p, _) <- [preset], not (null presetAsked)]
+                      ++ [T.pack (LI.languageFile l) | isNothing preset, not (null presetAsked), isNothing derived, all presetField asked]
+                  header = l <> " ships with olifant; doctor finds rows failing here, so a project layer answers their keys"
+              case () of
+                _ | presetThere, not (null presetAsked), Just (p, _) <- preset -> stop (T.pack (LI.presetFile p) <> " exists: olifant doctor shows its rows; delete it to generate again") Nothing failing
+                _ | null asked, isNothing derived -> stop ("doctor's failing rows for " <> l <> " name no key a project layer sets") Nothing failing
+                _ | plan -> do
+                  emit rt fmt
+                    (object ["asks" .= asked, "files" .= files, "rows" .= initRowsJson failing])
+                    (T.unlines ([header] ++ ["would write " <> f | f <- files] ++ ["asks: " <> T.intercalate ", " asked | not (null asked)] ++ map initRowLine failing))
+                  pure ExitSuccess
+                _ -> do
+                  first' <-
+                    if null asked
+                      then pure (Right (LI.checkLayer li M.empty))
+                      else runFill (mfFiller mf) (LI.layerRequest li failing asked) <&> fmap (LI.checkLayer li . (`M.restrictKeys` S.fromList asked))
+                  case first' of
+                    Left why -> stop ("the model did not answer the errand: " <> why) Nothing failing
+                    Right answered ->
+                      answerRounds rt fmt
+                        Rounds
+                          { rdLanguage = l
+                          , rdFiller = mfFiller mf
+                          , -- a repair may ask any key but a derived tests_for, or one of a preset file that is there
+                            rdRequest = LI.layerRequest li [] [n | fd <- LI.layerForm l, let n = LI.fdName fd, not (isJust derived && n == "tests_for"), not (presetThere && presetField n)]
+                          , rdCheck = LI.checkLayer li
+                          , rdLeave = LI.leaveOutWith (const True) (LI.checkLayer li)
+                          , rdFailing = LI.shippedFailing l
+                          , rdHead = [header]
+                          , rdJson = []
+                          , rdStart = (t0, t1)
+                          , rdBeforeWrite = when unnamed (nameLanguage ws l)
+                          }
+                        answered
     -- no grammar source in any layer: one key, the grammar, pinned
     grammarLayer = case (grammarArg, chosen) of
       (Nothing, Left why) -> failWith rt fmt 2 "usage" why Nothing []
@@ -1174,6 +1183,30 @@ runInitShipped rt fmt cat l shippedText chosen grammarArg yes plan
                     writeText ws file text
                     rows <- LI.languageRows l [file] <$> initDoctorRows rt l
                     initFinish rt fmt (t0, t1) [header, proposal] ["grammar" .= object ["git" .= url, "rev" .= sha]] [(file, text)] False rows Nothing
+
+-- | The language named in `.olifant/config.toml`'s `languages` (the file made
+-- when there is none), so a shipped language nothing else names is the
+-- project's.
+nameLanguage :: Workspace IO -> Text -> IO ()
+nameLanguage ws l = do
+  let path = ".olifant/config.toml"
+  current <- fromMaybe "" <$> readText ws path
+  writeText ws path (addToLanguages l current)
+
+-- | TEXT, a config, with L in its top-level `languages` list (made when absent).
+addToLanguages :: Text -> Text -> Text
+addToLanguages l text = case break isLanguages ls of
+  (_, []) -> T.unlines (("languages = [" <> q <> "]") : ls)
+  (before, line : after)
+    | "]" `T.isInfixOf` line ->
+        let (open, close) = T.breakOnEnd "]" line
+            body = T.dropEnd 1 open
+         in T.unlines (before ++ [(if T.isSuffixOf "[" (T.stripEnd body) then body <> q else body <> ", " <> q) <> "]" <> close] ++ after)
+    | otherwise -> T.unlines (before ++ [line, "  " <> q <> ","] ++ after)
+  where
+    q = "\"" <> l <> "\""
+    ls = T.lines text
+    isLanguages ln = "languages" `T.isPrefixOf` ln && "=" `T.isPrefixOf` T.strip (T.drop 9 ln)
 
 -- | The survey (one hole, `survey`) asked and read.
 askSurvey :: ModelFiller IO -> Text -> [FilePath] -> IO (Either Text LI.Survey)
@@ -1245,6 +1278,9 @@ data Rounds = Rounds
   , rdHead :: [Text]
   , rdJson :: [Pair]
   , rdStart :: (Double, Double)
+  , rdBeforeWrite :: IO ()
+  -- ^ run once before the first file is written (a shipped language nothing
+  -- names is listed in the config then)
   }
 
 -- | The first round's checked answers written, doctor, exactly one repair
@@ -1285,12 +1321,14 @@ answerRounds rt fmt rd first' = do
         then stop "the model's files do not load after one repair; nothing was written" Nothing (LI.anFailing second)
         else do
           let written = merge (LI.anFiles first') (LI.anFiles second)
+          rdBeforeWrite rd
           forM_ written $ \(p, t) -> writeText ws p t
           rows <- LI.languageRows l (map fst written) <$> doctorRows
           finish written True (rows ++ LI.anWarnings second) Nothing
     else do
       let files1 = merge (LI.anFiles first') (LI.anFiles provisional)
           ownFiles = map fst files1
+      rdBeforeWrite rd
       forM_ files1 $ \(p, t) -> writeText ws p t
       rows1 <- doctorRows
       let before = LI.languageRows l ownFiles rows1

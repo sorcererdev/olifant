@@ -10,6 +10,7 @@ module Olifant.Evidence
   , Evidence (..)
   , EvidencePorts (..)
   , sampleSize
+  , nonePassedMarker
   , sampleOf
   , evidenceFor
   ) where
@@ -64,6 +65,12 @@ sampleSize = 40
 -- `files`.
 sampleOf :: Language -> [FilePath] -> [FilePath]
 sampleOf lang files = take sampleSize (S.toAscList (S.fromList [f | f <- files, any (`matchesGlob` f) (langFiles lang)]))
+
+-- | The words in the Disproven @tests@ detail of a run that had results and
+-- none passed (@none of 2 passed; the first failure, …@): the tests ran and
+-- failed. Init matches on it to tell that from a broken run.
+nonePassedMarker :: Text
+nonePassedMarker = " passed; the first failure, "
 
 -- | Each slot of LANG run on a sample of the project's files. Doctor never
 -- throws: a grammar that cannot load leaves every row of its language
@@ -199,7 +206,7 @@ testsProof ports lang testFiles = case (langTest lang, epRun ports) of
         -- results, none passing: the runner ran, but not the project's tests (a setup failure)
         Right r | null (trPassed r), (i, fl) : _ <- trFailed r -> do
           ran <- whereRan td chosen f
-          pure (Disproven (ran <> "none of " <> count (length (trFailed r)) <> " passed; the first failure, " <> i <> ": " <> T.strip (T.takeWhile (/= '\n') (fMessage fl))))
+          pure (Disproven (ran <> "none of " <> count (length (trFailed r)) <> nonePassedMarker <> i <> ": " <> T.strip (T.takeWhile (/= '\n') (fMessage fl))))
         Right r ->
           pure (Proven ("ran " <> maybe "the test command" (T.replace "{= root =}/" "") program <> " on " <> T.pack f <> ", " <> count (length (trPassed r) + length (trFailed r)) <> " results parsed (" <> format <> ")"))
 

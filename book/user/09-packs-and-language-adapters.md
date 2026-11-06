@@ -350,8 +350,10 @@ whole file, and every row that fails names the key behind it. How it gets there:
 You then see what was written and doctor's rows for the language, in doctor's own form. A row
 still failing after the repair keeps doctor's fix line; you are not expected to fix a generated
 file by hand (regenerate it, or answer the slot with a provider). For a layer whose first line
-is init's header, doctor's fix says how: "…; or run olifant init --language go again after
-deleting .olifant/languages/go.toml". If the repair's own answers do
+is init's header, doctor's fix says how, naming every file init wrote that a rerun refuses on (the
+language's layer, and its toolchain preset when that starts with the header too): "…; or run
+olifant init --language go again after deleting .olifant/languages/go.toml and
+.olifant/toolchains/go-test.toml". A layer holding only a grammar (the elm case, below) gets no such hint. If the repair's own answers do
 not load, the first round's files stay and init says so. The exit code is doctor's: 1 if a row is
 an error. `--json` prints `{"written": [...], "grammar": {...}, "rows": [...], "repaired": bool}`,
 and lines on stderr give where the textobjects came from, the first round's failing rows, the
@@ -380,7 +382,13 @@ rust ships with olifant; doctor finds nothing to override here
 
 With no failing row it writes nothing and exits 0 (no model is needed for that). In a project
 that names no Rust yet (no pack, generator or `languages = ["rust"]` in `.olifant/config.toml`)
-doctor is run over the shipped file alone and a line says so.
+doctor is run over the shipped file alone and a line says so. When init then writes a layer or a
+preset for it, it also adds the language to `languages` in `.olifant/config.toml` (making the file
+if there is none), so the final rows show it. `--grammar URL` on a language that ships a grammar is
+ignored, and init says so.
+
+When rows fail but none points at a key a layer sets (a grammar that will not build with no C
+compiler, say), init stops before any model call and prints the grammar row with its fix.
 
 When rows fail, the model is asked only for the keys those rows point at, by the same mapping
 the repair uses (`test units`: `tests_for` and `[test] unit`; `tests`: the command, its root,
@@ -416,7 +424,10 @@ grammar = { git = "https://github.com/elm-tooling/tree-sitter-elm", rev = "…",
 ```
 
 The shipped elm queries then read the project's grammar (`elm: queries … (shipped)`). With the
-elm pack configured, elm has its grammar and init finds nothing to override.
+elm pack configured, elm has its grammar and init finds nothing to override. The survey may
+propose the wrong repository for a grammar (a model can name elm/compiler for Elm); init pins what
+it is given, and when the grammar row stops on a wrong repository, pass `--grammar URL` (Elm's is
+https://github.com/elm-tooling/tree-sitter-elm).
 
 ### The keys
 

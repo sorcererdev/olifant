@@ -7,6 +7,7 @@ import Data.Maybe (isJust)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
 import Data.Map.Strict qualified as M
+import Olifant.Evidence (nonePassedMarker)
 import Olifant.Fill (parseFills, replayFiller)
 import Olifant.Language (Grammar (..), GrammarSource (..))
 import Olifant.Language.Grammar (GrammarSettings (..), Loaded (..), defaultSettings, loadGrammar)
@@ -259,7 +260,7 @@ spec = do
       layerKeysOk allowed "[test]\nunit = ['^x']\nabove = 'y'\n" `shouldBe` Left "sets `test.above`, which no failing row needs"
     it "shippedFailing: a tests run with results, none passing, is the project's tests, not a key's; a broken run is sent" $ do
       let row d = Check "rust: tests" Warn d (Just "regenerate the key or supply a provider (see chapter 9, Providers)")
-          failed = row "ran cargo test in the package root (.); none of 2 passed; the first failure, x: boom"
+          failed = row ("ran cargo test in the package root (.); none of 2" <> nonePassedMarker <> "x: boom")
           broken = row "ran cargo test in the package root (.): error: no network"
       shippedFailing "rust" [] [failed, broken] `shouldBe` [broken]
 

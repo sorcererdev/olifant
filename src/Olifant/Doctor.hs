@@ -14,6 +14,7 @@ module Olifant.Doctor
   , initHeader
   ) where
 
+import Data.Map.Strict qualified as M
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -80,16 +81,28 @@ doctor ports di = do
   model <- modelCheck
   runner <- plansRunner
   grammars <- traverse (\l -> (langName l,) <$> dpGrammar ports (langGrammar l)) (diLanguages di)
-  generated <- traverse (\l -> (langName l,) <$> writtenByInit (langName l)) (diLanguages di)
-  pure ([config] ++ packs ++ languages ++ broken ++ [astGrep] ++ concat tools ++ [model] ++ recognizeCheck ++ concatMap (\l -> capabilityRows grammars (lookup (langName l) generated == Just True) l) (diLanguages di) ++ [runner])
+  generated <- traverse (\l -> (langName l,) <$> writtenByInit l) (diLanguages di)
+  pure ([config] ++ packs ++ languages ++ broken ++ [astGrep] ++ concat tools ++ [model] ++ recognizeCheck ++ concatMap (\l -> capabilityRows grammars (fromMaybe [] (lookup (langName l) generated)) l) (diLanguages di) ++ [runner])
   where
-    -- the project's layer for L starts with init's header: it was generated
-    writtenByInit l = case diProject di of
-      Nothing -> pure False
-      Just r -> maybe False (\t -> take 1 (T.lines t) == [initHeader]) <$> dpRead ports (r </> ".olifant" </> "languages" </> T.unpack l <> ".toml")
+    -- the files init wrote for L that a rerun of init refuses on: the
+    -- project's layer, when it starts with init's header, and the toolchain
+    -- preset L names (or <L>-test) when it does too. A layer holding only
+    -- `grammar` (init's grammar-only layer) is not regenerated: no hint.
+    writtenByInit lang = case diProject di of
+      Nothing -> pure []
+      Just r -> do
+        let l = langName lang
+            fromInit rel = fmap (\t -> (take 1 (T.lines t) == [initHeader], t)) <$> dpRead ports (r </> rel)
+            layerRel = ".olifant/languages/" <> T.unpack l <> ".toml"
+            presets = foldr (\x acc -> x : filter (/= x) acc) [] ([p | o <- M.elems (langOrigins lang), Just p <- [T.stripPrefix "toolchain " o]] ++ [l <> "-test"])
+            presetRels = [".olifant/toolchains/" <> T.unpack p <> ".toml" | p <- presets]
+            body t = [T.strip ln | ln <- T.lines t, not (T.null (T.strip ln)), not ("#" `T.isPrefixOf` T.strip ln)]
+        layer <- fromInit layerRel
+        presetFiles <- traverse fromInit presetRels
+        pure ([layerRel | Just (True, t) <- [layer], not (all ("grammar" `T.isPrefixOf`) (body t))] ++ [rel | (rel, Just (True, _)) <- zip presetRels presetFiles])
     disprovenFix lang generated =
       "regenerate the key or supply a provider (see chapter 9, Providers)"
-        <> (if generated then "; or run olifant init --language " <> langName lang <> " again after deleting .olifant/languages/" <> langName lang <> ".toml" else "")
+        <> (if null generated then "" else "; or run olifant init --language " <> langName lang <> " again after deleting " <> T.intercalate " and " (map T.pack generated))
     -- what each language can do; an absent capability names its key
     capabilityRows grammars generated lang =
       siblingRow lang

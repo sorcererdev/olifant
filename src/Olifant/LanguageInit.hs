@@ -88,6 +88,7 @@ import Data.Maybe (fromMaybe, isJust, isNothing)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Doctor (Check (..), Status (..), initHeader)
+import Olifant.Evidence (nonePassedMarker)
 import Olifant.Fill (FillHole (..), FillRequest (..), Filler (..), Stance (..))
 import Olifant.Language (Grammar (..), GrammarSource (..), Language (..), Layer (..), languageFromLayers, queriesFor, queryError)
 import Olifant.Language.Presets (overPresets, presetsFrom, shippedPresets)
@@ -1209,4 +1210,4 @@ checkLayer li answers =
 shippedFailing :: Text -> [FilePath] -> [Check] -> [Check]
 shippedFailing l written = filter (not . testsFailed) . failingRows l written
   where
-    testsFailed c = checkName c == l <> ": tests" && " passed; the first failure" `T.isInfixOf` checkDetail c
+    testsFailed c = checkName c == l <> ": tests" && nonePassedMarker `T.isInfixOf` checkDetail c
