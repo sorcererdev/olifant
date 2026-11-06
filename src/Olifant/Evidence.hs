@@ -20,7 +20,7 @@ import Control.Exception (bracket_, evaluate, try)
 import Olifant.Language.Grammar (GrammarUnavailable (..))
 import Data.Aeson (object, (.=))
 import Data.Either (lefts)
-import Data.List (nub, sort, sortOn)
+import Data.List (nub, sort, sortOn, stripPrefix)
 import Data.Maybe (catMaybes, fromMaybe, isJust, listToMaybe)
 import Data.Ord (Down (..))
 import Data.Set qualified as S
@@ -106,7 +106,11 @@ evidenceRun ports lang = do
   anchors <- anchorsProof ports lang [(p, t, ns) | (p, t, Right ns) <- units, not (maybe False (`isTestFile` p) td)]
   holes <- holesProof ports lang
   tests <- testsProof ports lang (map fst testTexts)
-  testUnits <- testUnitsProof ports lang testTexts
+  -- the first sampled source's test file by `tests_for`: the test-units row says it
+  let mapping = case td of
+        Just d | (p, _) : _ <- [x | x@(p', _) <- texts, not (isTestFile d p')] -> Just (p, testsForFile d p)
+        _ -> Nothing
+  testUnits <- testUnitsProof ports lang mapping testTexts
   siblings <- siblingsProof ports lang known [(p, t, ns) | (p, t, Right ns) <- units]
   pure (Evidence (unitsProof lang texts units) testUnits tests anchors holes siblings)
 
@@ -141,9 +145,11 @@ unitsProof lang texts results
         why : _ -> Disproven why
         [] -> Disproven ("0 found in " <> count (length texts) <> " files" <> maybe "" ("; " <>) (firstLineOf texts))
 
--- | Test units: how many in the sample's test files, with one example.
-testUnitsProof :: EvidencePorts -> Language -> [(FilePath, Text)] -> IO Proof
-testUnitsProof ports lang testTexts
+-- | Test units: how many in the sample's test files, with one example;
+-- with none, where @tests_for@ maps the first sampled source (MAPPING) and
+-- the first line the rule did not take.
+testUnitsProof :: EvidencePorts -> Language -> Maybe (FilePath, FilePath) -> [(FilePath, Text)] -> IO Proof
+testUnitsProof ports lang mapping testTexts
   | not (hasTestUnits lang) = pure (Unproven "no [test] unit")
   | null testTexts = pure (Unproven ("not seen (no test file in the " <> count sampleSize <> " sampled)"))
   | otherwise =
@@ -157,11 +163,20 @@ testUnitsProof ports lang testTexts
                     x : _ -> x
                     [] -> ("", "")
               first <- if hasUnits lang then unitsOf (epSyntax ports) lang (Just p) t else pure (Left "")
-              pure . Disproven . ("0 found; " <>) $ case first of
+              pure . Disproven . (("0 found; " <> mapped) <>) $ case first of
                 Right (n : _) -> T.pack p <> ":" <> count (namedDef n) <> " is `" <> lineOf t (namedDef n) <> "`"
                 _ -> fromMaybe (T.pack p <> " is empty") (firstLineOf [(p, t)])
 
--- | Tests: one sample test file run, with `doctor --run`.
+  where
+    mapped = case mapping of
+      Just (src, t) -> "tests_for maps " <> T.pack src <> " to " <> T.pack t <> (if t == src then " (itself)" else "") <> "; "
+      Nothing -> ""
+
+-- | Tests: one sample test file run, with `doctor --run`. A broken run says
+-- what ran and where: the command (its program and arguments), the package
+-- root it ran in (the nearest folder with a @root@ file, else the project's)
+-- and that folder's top-level listing, whether the command has
+-- @{= tests =}@ and @{= report =}@, and the output's first lines.
 testsProof :: EvidencePorts -> Language -> [FilePath] -> IO Proof
 testsProof ports lang testFiles = case (langTest lang, epRun ports) of
   (Nothing, _) -> pure (Unproven "no [test]")
@@ -175,9 +190,24 @@ testsProof ports lang testFiles = case (langTest lang, epRun ports) of
           format = either (const (testFormat td)) (testFormat . fst) chosen
       run lang [T.pack f] >>= \case
         Left why -> pure (Disproven why)
-        Right r | Just why <- trBroken r -> pure (Disproven (T.pack f <> ": " <> why))
+        Right r | Just why <- trBroken r -> do
+          files <- epFiles ports
+          let argv = either (const (testCommand td)) (testCommand . fst) chosen
+              scope = packageScope (testRoot td) False files [f]
+              listing = sort (nub [case break (== '/') rel of (d, _ : _) -> d <> "/"; (n, _) -> n | p <- files, Just rel <- [under scope p]])
+              shown = T.intercalate ", " (map T.pack (take 8 listing)) <> (if length listing > 8 then ", …" else "")
+              has v = (if any (v `T.isInfixOf`) argv then "with " else "without ") <> v
+          pure . Disproven $
+            "`" <> T.unwords (map (T.replace "{= root =}/" "") argv) <> "` ran in " <> (if null scope then "the project root" else T.pack scope <> "/")
+              <> " (" <> shown <> ") on " <> T.pack f <> ", " <> has "{= tests =}" <> ", " <> has "{= report =}" <> ": "
+              <> T.intercalate "\n" (take 3 (filter (not . T.null . T.strip) (T.lines why)))
         Right r ->
           pure (Proven ("ran " <> maybe "the test command" (T.replace "{= root =}/" "") program <> " on " <> T.pack f <> ", " <> count (length (trPassed r) + length (trFailed r)) <> " results parsed (" <> format <> ")"))
+
+-- | A path under a folder, relative to it (the project's: as it is).
+under :: FilePath -> FilePath -> Maybe FilePath
+under "" p = Just p
+under d p = stripPrefix (d <> "/") p
 
 -- | Holes: each kind's placeholder, put in its `wrap`, parses.
 holesProof :: EvidencePorts -> Language -> IO Proof
