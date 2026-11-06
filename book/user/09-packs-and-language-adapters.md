@@ -1309,7 +1309,10 @@ reads. `olifant doctor`'s `queries` row names each file's origin:
 
 This is also where `init --language` ([above](#adding-a-language-init---language)) puts the
 queries of a grammar olifant ships none for. The grammar repository's own `queries/tags.scm` is
-copied when it has one, with a first line `; from URL @SHA7 (LICENSE: …)`; the model writes
+copied when it has one, with a first line `; from URL @SHA7 (LICENSE: …)`. Its directives
+(`#strip!`, `#set-adjacent!`: instructions for showing a doc comment, which olifant does not
+read) are removed, since olifant refuses a query file that uses one; a second line
+`; directives removed: …` and the `SOURCES` file say which. The model writes
 `textobjects.scm`, `imports.scm` and, when upstream has none, `tags.scm`, from the grammar's node
 kinds and the captures above. Each must compile against the grammar before anything is written (a
 file that does not is a `queries` row the repair round answers), and a `SOURCES` file beside them

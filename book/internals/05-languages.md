@@ -722,12 +722,15 @@ The flow, each step's failure printing one line and the row it came from (exit 1
 
 8. **Doctor and one repair.** The catalog is opened again over the written files and
    `App.doctorChecks` runs with `run = True`. `failingRows` keeps the language's rows
-   (`languageRows`: `<l>: …`, `… (<l>)`, `language <l>`) that are `Bad`, a `Warn` with the
+   (`languageRows`: `<l>: …`, `… (<l>)`, `language <l>`, and a load error that names a file init
+   wrote, as the loader names a refused query file by its path) that are `Bad`, a `Warn` with the
    "regenerate the key" fix (disproven evidence), or a queries or grammar `Warn`. If any,
    `repairRequest` re-asks only the holes those rows point at (`repairHoles`: a row named after a
-   hole, a queries row's file, a test runner or `tests` row the toolchain, a grammar row nothing,
-   anything else the language), renamed `<h>_repair` because `replayFiller` answers each name
-   with one text, so a fills file scripts both rounds. `checkAnswers` reads the `_repair` names
+   hole, a queries row's file or a load error's query file, a test runner or `tests` row the
+   toolchain, a grammar row nothing, anything else the language), renamed `<h>_repair` because
+   `replayFiller` answers each name with one text, so a fills file scripts both rounds. The
+   hole's `⟦<h>_repair⟧` marker is renamed with it: shown the old `⟦language⟧`, a model answers
+   under the old name and the repair is lost. `checkAnswers` reads the `_repair` names
    (a repair that does not re-ask the toolchain loads the language over the one written), the
    passing files overwrite theirs, and doctor runs again. A first round whose answers do not load
    goes to the same repair before any write. There is exactly one repair round.
@@ -736,7 +739,11 @@ The flow, each step's failure printing one line and the row it came from (exit 1
 a set for the grammar (`shippedFor`, which is `queriesFor`; the errand takes it as
 `eiShipped` so a spec can pass `const []` and drive `errandCore` with a grammar that has
 shipped queries). Otherwise upstream's `tags.scm` is copied under a `; from URL @SHA7
-(LICENSE: …)` header (`Upstream`'s `upLabel` and `upLicence`, read by `readUpstream` from the
+(LICENSE: …)` header, less its directives: `withoutDirectives` drops each `(#…! …)` form
+(`#strip!`, `#set-adjacent!`: GitHub's tags files use them on `@doc`, a capture olifant never
+reads, and the loader refuses any directive), names them on a second header line
+(`; directives removed: …`) and `sourcesFile` repeats it. Without this tree-sitter-go's
+`tags.scm` fails the compile and the whole project set is dropped (`Upstream`'s `upLabel` and `upLicence`, read by `readUpstream` from the
 checkout's `queries/` and `LICENSE*`) and the rest are holes: `imports`, `textobjects`, and
 `tags` when upstream has none. `checkAnswers` compiles each answered query alone with
 `queryError` and writes it to `.olifant/queries/<grammar>/<hole>.scm`; `sourcesFile` writes the

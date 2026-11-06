@@ -20,6 +20,7 @@ module Olifant.LanguageInit
   , captureNamesIn
   , Upstream (..)
   , queriesToWrite
+  , withoutDirectives
   , errandRequest
   , languageFile
   , toolchainFile
@@ -46,7 +47,8 @@ import Data.ByteString qualified as BS
 import Data.Text.Encoding qualified as TE
 import Data.Text.Encoding.Error (lenientDecode)
 import System.Directory (doesDirectoryExist, listDirectory)
-import Data.Char (isAlphaNum)
+import Data.Bifunctor (bimap, first)
+import Data.Char (isAlphaNum, isSpace)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
 import Data.List (nub, sort, sortOn)
@@ -168,19 +170,62 @@ data Upstream = Upstream {upLabel :: Text, upQueries :: [(FilePath, Text)], upLi
 
 -- | The query files a grammar needs, given its shipped set: none when olifant
 -- ships some; else upstream's @tags.scm@ copied (a header line naming where
--- it is from and its licence) or a @tags@ hole, and @imports@ and
--- @textobjects@ holes, sorted.
+-- it is from and its licence, and one naming the directives removed) or a
+-- @tags@ hole, and @imports@ and @textobjects@ holes, sorted.
 queriesToWrite :: Text -> [(FilePath, Text)] -> Upstream -> ([(FilePath, Text)], [Text])
 queriesToWrite _ shipped up
   | not (null shipped) = ([], [])
   | otherwise = case lookup "tags.scm" (upQueries up) of
-      Just tags -> ([("tags.scm", header <> "\n" <> tags)], ["imports", "textobjects"])
+      Just tags ->
+        let (kept, removed) = withoutDirectives tags
+            note = ["; directives removed: " <> T.unwords removed | not (null removed)]
+         in ([("tags.scm", T.unlines (header : note) <> kept)], ["imports", "textobjects"])
       Nothing -> ([], ["imports", "tags", "textobjects"])
   where
     header = "; from " <> upLabel up <> maybe "" licence (upLicence up)
     licence (f, t) = " (" <> T.pack f <> case filter (not . T.null) (map T.strip (T.lines t)) of
       l : _ -> ": " <> l <> ")"
       [] -> ")"
+
+-- | A query file without its directives (@(#strip! …)@, @(#set-adjacent! …)@:
+-- instructions to the program that shows a match, which olifant does not
+-- evaluate, so its loader refuses them), a line that held only directives
+-- dropped, and the directives' names in order, once each. Upstream
+-- @tags.scm@ files use them on @\@doc@, a capture olifant never reads.
+-- Predicates (@#eq?@), comments and strings are kept as they are.
+withoutDirectives :: Text -> (Text, [Text])
+withoutDirectives src = (T.unlines kept, nub names)
+  where
+    (out, names) = go (T.unpack src)
+    -- a directive's newlines are kept, so the lines still pair up
+    kept = [n | (o, n) <- zip (T.lines src) (T.lines (T.pack out)), not (T.null (T.strip n)) || T.null (T.strip o)]
+    go = \case
+      '(' : rest
+        | Just (name, after) <- directiveHead rest ->
+            let (body, rest') = closing (1 :: Int) after
+             in bimap (filter (== '\n') body ++) (T.pack ('#' : name) :) (go rest')
+      '"' : rest -> let (str, rest') = stringBody rest in first (('"' : str) ++) (go rest')
+      ';' : rest -> let (c, rest') = break (== '\n') rest in first ((';' : c) ++) (go rest')
+      c : rest -> first (c :) (go rest)
+      [] -> ([], [])
+    directiveHead rest = case dropWhile isSpace rest of
+      '#' : r | (n@(_ : _), a) <- span nameChar r, last n == '!' -> Just (n, a)
+      _ -> Nothing
+    nameChar c = isAlphaNum c || c `elem` ("-_?!." :: String)
+    -- the text up to and including the paren that closes depth D
+    closing d = \case
+      ')' : s | d == 1 -> (")", s)
+      ')' : s -> first (')' :) (closing (d - 1) s)
+      '(' : s -> first ('(' :) (closing (d + 1) s)
+      '"' : s -> let (str, s') = stringBody s in first (('"' : str) ++) (closing d s')
+      c : s -> first (c :) (closing d s)
+      [] -> ([], [])
+    -- a string's text after its opening quote, through its closing one
+    stringBody = \case
+      '\\' : c : s -> first (\t -> '\\' : c : t) (stringBody s)
+      '"' : s -> ("\"", s)
+      c : s -> first (c :) (stringBody s)
+      [] -> ([], [])
 
 -- | The toolchain preset a new language's tests run with: @<language>-test@.
 toolchainName :: Text -> Text
@@ -245,7 +290,13 @@ sourcesFile :: Text -> Text -> [(FilePath, Text)] -> [Text] -> Text
 sourcesFile g grammar copied holes =
   T.unlines $
     ["# Tree-sitter queries for the " <> g <> " grammar (" <> grammar <> "), written by olifant init --language."]
-      ++ sort ([T.pack f <> "  copied from " <> grammar <> " queries/" <> T.pack f | (f, _) <- copied] ++ [h <> ".scm  written by the model, compiled against the grammar" | h <- holes])
+      ++ sort ([T.pack f <> "  copied from " <> grammar <> " queries/" <> T.pack f <> removed t | (f, t) <- copied] ++ [h <> ".scm  written by the model, compiled against the grammar" | h <- holes])
+
+  where
+    -- the copied file's own header line says which directives went
+    removed t = case [r | l <- T.lines t, Just r <- [T.stripPrefix "; directives removed: " l]] of
+      r : _ -> ", directives removed (" <> T.intercalate ", " (T.words r) <> ")"
+      [] -> ""
 
 -- | The first line of every file @init --language@ writes.
 initHeader :: Text
@@ -364,22 +415,27 @@ errandCore filler ei = do
       pure (Right (req, checked {anFiles = anFiles checked ++ queryFiles}))
 
 -- | Doctor's rows about a language: its capability, grammar, queries and
--- sibling rows (@<l>: …@), its tool rows (@… (<l>)@) and its own
--- @language <l>@ line.
-languageRows :: Text -> [Check] -> [Check]
-languageRows l = filter ours
+-- sibling rows (@<l>: …@), its tool rows (@… (<l>)@), its own
+-- @language <l>@ line, and a load error naming one of the files WRITTEN (a
+-- query file the loader refused is named by its path, not the language).
+languageRows :: Text -> [FilePath] -> [Check] -> [Check]
+languageRows l written = filter ours
   where
     ours c =
       let n = checkName c
-       in (l <> ": ") `T.isPrefixOf` n || (" (" <> l <> ")") `T.isSuffixOf` n || n == "language " <> l || ("languages/" <> l <> ".toml") `T.isInfixOf` n
+       in (l <> ": ") `T.isPrefixOf` n
+            || (" (" <> l <> ")") `T.isSuffixOf` n
+            || n == "language " <> l
+            || ("languages/" <> l <> ".toml") `T.isInfixOf` n
+            || any (\p -> ("/" <> T.pack p) `T.isSuffixOf` n || T.pack p == n) [p | p <- written, "language " `T.isPrefixOf` n]
 
 -- | The rows a repair round answers: the language's errors, its evidence
 -- that disproved a key (the @regenerate the key@ fix), and a queries or
 -- grammar warn. Not an unproven sibling row, an absent optional capability
 -- (conjure shapes, signature, mutation, stub: a new language starts at the
 -- floor), nor another language's rows.
-failingRows :: Text -> [Check] -> [Check]
-failingRows l = filter failing . languageRows l
+failingRows :: Text -> [FilePath] -> [Check] -> [Check]
+failingRows l written = filter failing . languageRows l written
   where
     failing c =
       checkStatus c == Bad
@@ -401,6 +457,7 @@ repairHoles req rows = [h | h <- names, h `elem` wanted]
           suffix = T.drop 2 (snd (T.breakOn ": " n))
        in if
             | suffix `elem` names -> [suffix]
+            | hs@(_ : _) <- [h | h <- queryHoles, ("/" <> h <> ".scm") `T.isSuffixOf` n] -> hs
             | suffix == "queries" -> case [h | h <- queryHoles, (h <> ".scm") `T.isPrefixOf` checkDetail c] of
                 [] -> queryHoles
                 hs -> hs
@@ -410,12 +467,13 @@ repairHoles req rows = [h | h <- names, h `elem` wanted]
 
 -- | The repair round: the holes the failing rows point at, renamed
 -- @<h>_repair@ (a recorded model answers each name with one text, so the
--- second round needs its own names), with the files as written and the
+-- second round needs its own names; the marker too, or the model answers
+-- under the old name), with the files as written and the
 -- rows (name, detail, fix) in its context.
 repairRequest :: FillRequest -> [(FilePath, Text)] -> [Check] -> FillRequest
 repairRequest req written rows =
   req
-    { frHoles = [h {fhName = fhName h <> "_repair", fhInstruction = fhInstruction h <> "\nThe file below as written fails the rows under \"failing rows\": write it again, whole, so they pass."} | h <- frHoles req, fhName h `elem` asked]
+    { frHoles = [h {fhName = fhName h <> "_repair", fhContext = "\10214" <> fhName h <> "_repair\10215", fhInstruction = fhInstruction h <> "\nThe file below as written fails the rows under \"failing rows\": write it again, whole, so they pass."} | h <- frHoles req, fhName h `elem` asked]
     , frContext = frContext req ++ written ++ [("failing rows", T.unlines [checkName c <> " — " <> checkDetail c <> maybe "" ("; fix: " <>) (checkFix c) | c <- rows])]
     }
   where

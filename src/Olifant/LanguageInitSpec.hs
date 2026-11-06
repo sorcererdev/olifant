@@ -72,6 +72,19 @@ spec = do
       map fst copied `shouldBe` ["tags.scm"]
       concatMap (take 1 . T.lines . snd) copied `shouldBe` ["; from https://example.invalid/tree-sitter-x @0123456 (LICENSE: The MIT License (MIT))"]
       holes `shouldBe` ["imports", "textobjects"]
+    it "withoutDirectives drops each #…! form, its line too when nothing else is on it, and names them" $ do
+      let goTags = T.unlines ["(", "  (comment)* @doc", "  .", "  (function_declaration", "    name: (identifier) @name) @definition.function", "  (#strip! @doc \"^//\\\\s*\")", "  (#set-adjacent! @doc @definition.function)", ")"]
+      withoutDirectives goTags `shouldBe` (T.unlines ["(", "  (comment)* @doc", "  .", "  (function_declaration", "    name: (identifier) @name) @definition.function", ")"], ["#strip!", "#set-adjacent!"])
+    it "withoutDirectives keeps predicates, comments and a directive's look-alikes in strings" $ do
+      let q = T.unlines ["; (#strip! in a comment)", "((identifier) @name (#eq? @name \"(#set! x)\"))"]
+      withoutDirectives q `shouldBe` (q, [])
+    it "withoutDirectives reads a directive's string with a paren and a quote in it" $
+      withoutDirectives "((identifier) @name (#set! k \"a)\\\"b\"))\n" `shouldBe` ("((identifier) @name )\n", ["#set!"])
+    it "queriesToWrite: an upstream file's directives are removed, and its header says so" $ do
+      let up = upstream {upQueries = [("tags.scm", "((identifier) @name (#strip! @name \"x\")) @definition.function\n")]}
+          (copied, _) = queriesToWrite "x" [] up
+      concatMap (T.lines . snd) copied `shouldBe` ["; from https://example.invalid/tree-sitter-x @0123456 (LICENSE: The MIT License (MIT))", "; directives removed: #strip!", "((identifier) @name ) @definition.function"]
+      sourcesFile "x" "u @1" copied [] `shouldSatisfy` T.isInfixOf "tags.scm  copied from u @1 queries/tags.scm, directives removed (#strip!)"
     it "queriesToWrite: with no upstream queries, all three are holes" $
       snd (queriesToWrite "x" [] upstream {upQueries = []}) `shouldBe` ["imports", "tags", "textobjects"]
     it "errandRequest: the files as holes, the exemplar pair and the protocol" $ do
@@ -112,9 +125,15 @@ spec = do
           , Check "model" Bad "no default" Nothing
           ]
     it "keeps the language's errors and disproven rows, and a queries or grammar warn" $
-      map checkName (failingRows "go" rows) `shouldBe` ["go: test units", "go: grammar", "go: queries", "test runner gotestsum (go)"]
+      map checkName (failingRows "go" [] rows) `shouldBe` ["go: test units", "go: grammar", "go: queries", "test runner gotestsum (go)"]
     it "languageRows are the language's rows, all of them" $
-      map checkName (languageRows "go" rows) `shouldBe` ["go: units", "go: test units", "go: sibling tests", "go: conjure shapes", "go: signature", "go: grammar", "go: queries", "test runner gotestsum (go)"]
+      map checkName (languageRows "go" [] rows) `shouldBe` ["go: units", "go: test units", "go: sibling tests", "go: conjure shapes", "go: signature", "go: grammar", "go: queries", "test runner gotestsum (go)"]
+    it "a load error naming a file init wrote is the language's, and failing" $ do
+      let refused = Check "language /p/.olifant/queries/go/tags.scm" Bad "`tags.scm`: unknown predicate `#strip!`" Nothing
+          other = Check "language /p/.olifant/queries/rust/tags.scm" Bad "unknown predicate" Nothing
+          written = [".olifant/queries/go/tags.scm", ".olifant/languages/go.toml"]
+      map checkName (failingRows "go" written [refused, other]) `shouldBe` [checkName refused]
+      map checkName (languageRows "go" written [refused, other]) `shouldBe` [checkName refused]
   describe "repairRequest" $ do
     let req = errandRequest "go" "g @1" [] [] [] [] ["imports", "textobjects"]
         written = [(".olifant/languages/go.toml", "files = []\n")]
@@ -123,6 +142,10 @@ spec = do
       map fhName (frHoles r) `shouldBe` ["language_repair", "textobjects_repair"]
       lookup ".olifant/languages/go.toml" (frContext r) `shouldBe` Just "files = []\n"
       lookup "failing rows" (frContext r) `shouldSatisfy` maybe False ("go: test units — 0 found" `T.isInfixOf`)
+    it "a load error naming a query file points at that query's hole" $
+      map fhName (frHoles (repairRequest req written [Check "language /p/.olifant/queries/go/imports.scm" Bad "bad node" Nothing])) `shouldBe` ["imports_repair"]
+    it "a repair hole's marker carries its new name, so the model answers under it" $
+      map fhContext (frHoles (repairRequest req written [Check "go: test units" Warn "0 found" Nothing])) `shouldBe` ["\10214language_repair\10215"]
     it "a test runner row points at the toolchain" $
       map fhName (frHoles (repairRequest req written [Check "test runner gotestsum (go)" Bad "absent" Nothing])) `shouldBe` ["toolchain_repair"]
   describe "the errand's queries (errandCore, no shipped set)" $ do

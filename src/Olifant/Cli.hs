@@ -1078,17 +1078,18 @@ runInitLanguage rt cwd fmt cat l modelArg grammarArg yes plan fillsArg = do
                                     else do
                                       let written = merge (LI.anFiles first') (LI.anFiles second)
                                       forM_ written $ \(p, t) -> writeText ws p t
-                                      rows <- LI.languageRows l <$> doctorRows
+                                      rows <- LI.languageRows l (map fst written) <$> doctorRows
                                       finish written True rows Nothing
                                 else do
                                   forM_ (LI.anFiles first') $ \(p, t) -> writeText ws p t
                                   rows1 <- doctorRows
-                                  case LI.failingRows l rows1 of
-                                    [] -> finish (LI.anFiles first') False (LI.languageRows l rows1) Nothing
+                                  let ownFiles = map fst (LI.anFiles first')
+                                  case LI.failingRows l ownFiles rows1 of
+                                    [] -> finish (LI.anFiles first') False (LI.languageRows l ownFiles rows1) Nothing
                                     failing -> do
                                       second <- repairWith (LI.anFiles first') failing
                                       forM_ (LI.anFiles second) $ \(p, t) -> writeText ws p t
-                                      rows2 <- LI.languageRows l <$> doctorRows
+                                      rows2 <- LI.languageRows l ownFiles <$> doctorRows
                                       let note = if null (LI.anFailing second) then Nothing else Just "the repair's files did not load: the first round's files are kept"
                                       finish (merge (LI.anFiles first') (LI.anFiles second)) True (rows2 ++ LI.anFailing second) note
   where
