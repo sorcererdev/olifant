@@ -544,8 +544,16 @@ and each capability the layer that set its key (`toolchain cargo`: the preset fi
 | `model` | `[model]` ([chapter 12](12-holes-and-models.md#configuring-a-model)): none is a `warn`, with the snippet to add; a `default` with no such backend is an `error`. An `openai-compatible` default must list its model at `URL/models` within 3 seconds (else `warn`: `curl: (7) Failed to connect …`, or `` the server answers but has no model `NAME` ``); for `anthropic`, only that the key's environment variable is set, never its value and never a request |
 
 `olifant doctor --run` also runs one sample test file per language through its runner, and
-the tests row says what came back (`ran uv on src/a__test.py, 4 results parsed (pytest)`) or
-why the run broke. Without `--run` no tests run, so doctor stays quick (and the editor's
+the tests row says what came back (`ran uv on src/a__test.py, 4 results parsed (pytest)`). A
+run that broke, or where no result passed (a runner's setup failure reported as a test), is a
+`warn` that says what ran and where: the command, the package root it ran in and that folder's
+top-level listing, what `{= tests =}` became (or that the command has none) and whether it names
+`{= report =}`, then the output's first lines or the first failure (`` `gotestsum --junitfile
+{= report =} -- -run {= tests =}` ran in the project root (cmd/, go.mod, internal/) on
+internal/rates/rates_test.go, with {= tests =} = `-run ^.*::Test$`, with {= report =}: none of 1
+passed; the first failure, …::TestMain: Failed ``). A test-units row that found none names where
+`tests_for` maps the first sampled source, then the line the rule missed (``0 found; tests_for maps
+src/a.py to src/a__test.py; src/a__test.py:4 is `def test_add() -> None:` ``). Without `--run` no tests run, so doctor stays quick (and the editor's
 doctor never runs them). The editor's doctor works in the background: the editor stays
 responsive while it reads the sample, and cancelling it stops the tools it started. A
 [provider](09-packs-and-language-adapters.md#providers-answering-a-slot-with-a-program) that

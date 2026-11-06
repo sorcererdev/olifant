@@ -276,12 +276,16 @@ It writes three things from one model errand:
 - `.olifant/queries/<grammar>/`, the tree-sitter queries the grammar needs when olifant ships none
   for it ([Overriding a language's queries](#overriding-a-languages-queries)).
 
-How it gets there:
+The model writes text; olifant decides the structure. It is asked for one value per key, never a
+whole file, and every row that fails names the key behind it. How it gets there:
 
 1. **The survey.** The model is shown the language's name and the project's tracked paths (the
    first 200), and answers which tree-sitter grammar repository parses it, which globs are its
-   source and test files, its manifest, and which test runners the project could use. `--grammar
-   URL` gives the repository yourself.
+   source and test files, its manifest, and which test runners the project could use: the
+   language's own, and a separate program that runs those tests and writes JUnit XML, with the
+   option that names its report file (`runners = [{ program = "go" }, { program = "gotestsum",
+   junit = "--junitfile {= report =}" }]`; a bare `"go"` reads too). `--grammar URL` gives the
+   repository yourself.
 2. **The pin.** Olifant asks the repository for its `HEAD` (`git ls-remote`) and pins that full
    commit SHA. The revision is olifant's, never the model's.
 3. **The question.** The repository is the model's proposal, and olifant is about to compile its
@@ -292,32 +296,63 @@ How it gets there:
 4. **The gate.** The grammar is fetched, built and loaded as any grammar is ([Grammars](#grammars-built-once-loaded-at-run-time)).
    If it does not load, init prints the `<name>: grammar` row doctor would and writes nothing:
    there is no fallback, and the model is never asked to describe a grammar olifant could not read.
-5. **The errand.** The model is shown what olifant knows rather than what it remembers: the
-   grammar's node kinds (read from the loaded grammar), the capture names the grammar's own
-   queries use and the ones olifant reads, which of the survey's runners are on this PATH, two
-   source files, two test files and the manifest from the project (120 lines each), the shipped
-   `rust.toml` and `cargo-test.toml` as worked examples, and the [provider
-   protocol](#providers-answering-a-slot-with-a-program). It writes each file whole.
-6. **The checks.** Before anything is written, the language file must load as a project layer
-   over the toolchain it wrote, the toolchain must read as a preset, and each query must compile
-   against the grammar. Whatever `grammar` line the model wrote is replaced by olifant's pin.
-   Nothing is written until every file passes.
-
-7. **Doctor, and one repair.** With the files written, init runs doctor on them, with `--run` (so
-   the sample's test file runs). The rows that count as failing are the language's errors, any
-   evidence that disproved a key ("regenerate the key or supply a provider"), and a `queries` or
-   `grammar` warn; an absent optional capability (conjure shapes, signature, mutation, stub) and
-   an unproven sibling row do not, since a new language starts at the floor. If any fail, the model
-   is asked once more, for only the files those rows point at, shown the files as written and the
-   rows; the answers are checked again and overwrite only the files they replace. A file that did
-   not load in the first round goes to the same repair before anything is written.
+5. **The queries olifant can copy.** For a grammar olifant ships no queries for, upstream's
+   `tags.scm` is copied from the grammar's own repository, and `textobjects.scm` from
+   nvim-treesitter-textobjects at the commit olifant's shipped files came from (`5c7b026`): that
+   URL and SHA are olifant's, the file is query data compiled before use, so nothing more is
+   asked. Each copy carries a `; from …` header naming where it came from and its licence (nvim's
+   `LICENSE-nvim-treesitter` is written beside it), less any directive olifant does not read.
+   A grammar nvim has no file for gets its textobjects from the model, shown one shipped
+   textobjects file as the shape to follow; `imports.scm` is always the model's.
+6. **The form.** The model is shown what olifant knows rather than what it remembers: the
+   language, the grammar, the survey's globs, the runners found on this PATH with their JUnit
+   option (`gotestsum: /opt/homebrew/bin/gotestsum (JUnit: --junitfile {= report =})`), the
+   template filters and query predicates olifant knows, two source files, two test files and
+   the manifest (120 lines each), and, for query holes, the grammar's node kinds and captures.
+   Then one hole per key of the language file and of its test preset, each with its kind and a
+   one-line instruction (`placeholder`, `kind: code over {= message =}`: "an expression that
+   compiles in go and fails when run, its text {= message =}"). It answers each with the TOML
+   value only, or `none`. Olifant writes the rest itself: the header, the pinned `grammar`,
+   `files` (the survey's globs), `[test] preset`, the `ident` and `text` holes' placeholder, the
+   preset's `tests_for` (the language's) and `format` (`junit-xml` when the command names
+   `{= report =}`, else `lines` when `[test.lines]` was answered). `tests_for` is not asked at
+   all when the project's names show it: a source and a test file in the same folder, the test's
+   name holding the source's (`rates.go` beside `rates_test.go`), give
+   `{= dir =}/{= stem =}_test.go`, marked `# from the sample's names`.
+7. **The checks.** Each value is read as TOML on its own. A model writes some things however it
+   is told, so init (never the loader) puts them right: a bare text is quoted, a JSON object or
+   array becomes the TOML it means, a key's own variables written `{{dir}}` or `{dir}` become
+   `{= dir =}`, and a regex's `\s`, `\d`, `\w` and lazy `*?` are written the POSIX way
+   (`[[:space:]]`, `[0-9]`, `[[:alnum:]_]`, `*`). Refused, as a row naming the key: a value that
+   is more than one TOML value (a newline and a `[check]` smuggled in), a variable that is not
+   the key's, a required key (`comment`, `command`, `root`) answered `none`, `tests_for` mapping
+   a sampled source to itself or to no test file ("maps internal/rates/rates.go to
+   internal/rates/rates.go (itself); the sample's test file beside it is
+   internal/rates/rates_test.go"), and a file that does not load, named by the key its error
+   names (`go: test_above` "does not load: `above`: expected a string"). A command with no element
+   that is exactly `{= tests =}` is a warn (`go: command`): it loads, and every run runs all the
+   tests it names.
+8. **Doctor, and one repair.** A key that fails and is not required is left out for now, the
+   files are written, and init runs doctor on them, with `--run` (so the sample's test file runs).
+   The rows that count as failing are the keys' own rows, the language's errors, any evidence that
+   disproved a key ("regenerate the key or supply a provider"), and a `queries` or `grammar` warn;
+   an absent optional capability (conjure shapes, signature, mutation, stub) and an unproven
+   sibling row do not, since a new language starts at the floor. If any fail, the model is asked
+   once more, for only the keys those rows point at (`test units`: `tests_for` and `[test] unit`;
+   `tests`: the command, its root, selection and output keys; `holes`: the hole kinds; `anchors`:
+   the textobjects it wrote), shown the files as written and the rows. The answers are put over
+   the first round's and checked the same way. A key still wrong after it is left out, with a
+   warn row ("left out: …"). A row that passed before the repair and fails after it gets the
+   first round's values back for the keys behind it. When a required key fails, nothing is
+   written until the repair's answers load.
 
 You then see what was written and doctor's rows for the language, in doctor's own form. A row
 still failing after the repair keeps doctor's fix line; you are not expected to fix a generated
 file by hand (regenerate it, or answer the slot with a provider). If the repair's own answers do
 not load, the first round's files stay and init says so. The exit code is doctor's: 1 if a row is
 an error. `--json` prints `{"written": [...], "grammar": {...}, "rows": [...], "repaired": bool}`,
-and a line on stderr gives the survey's and the errand's seconds and whether a repair ran.
+and lines on stderr give where the textobjects came from, the first round's failing rows, the
+survey's and the errand's seconds and whether a repair ran.
 
 `--plan` shows the survey's answer, the pin and the files it would write, and writes nothing (the
 model is still asked for the survey). `--model NAME` picks a backend, as for `gen`; with no model

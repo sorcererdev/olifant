@@ -473,7 +473,10 @@ anchor phrases from community queries (design 4b §A).
   every capture of a `_+` however many (`ots_next` returns the count, `ots_captures` copies
   them), so a body of hundreds of children is read whole. When the inner capture is the whole
   body (a Python block), the body is the container and its named children are the items
-  (`wholeBody`). Adjacent function definitions of one name with only white space between
+  (`wholeBody`). An item ends at its last character, not at white space it holds (`trimmed`,
+  in `groupMatch`): tree-sitter-go's block wraps its statements in a `statement_list` that
+  ends with the newline before `}`, and that item would otherwise share the brace's line.
+  Adjacent function definitions of one name with only white space between
   are one (`adjacent`: a Haskell signature and its equations, captured each on its own, are
   one function from the signature to the last equation); class-like ones are not joined, and
   nothing is joined unless the language says `[unit] join = true` (Python's `@overload` stubs and
@@ -649,8 +652,9 @@ the rows, so it changes too.
 - **test units:** `testUnitsReport` on each test file (each with its path). A sampled source
   that holds test units itself is found by asking every sampled file when the language has rules,
   but with a test-units provider the asking stops at the first failure; with none in an existing test file, the
-  first unit the units slot finds there ("0 found; path:9 is `…`"); with no test file, "not seen
-  (no test file in the 40 sampled)".
+  first unit the units slot finds there, after where `tests_for` maps the first sampled source
+  (`testUnitsProof`'s mapping, by `testsForFile`: "0 found; tests_for maps a.go to a.go
+  (itself); path:9 is `…`"); with no test file, "not seen (no test file in the 40 sampled)".
 - **anchors:** for a loadable grammar, the generic phrases first: `end of function N` and `end of
   class N`, N from the definitions the captures name in each sampled file (`genericNames`;
   names only one definition has first, since a struct and its impl share one), and `end of
@@ -672,7 +676,13 @@ the rows, so it changes too.
   it is never `Disproven`. Doctor puts its row after `test units` (`Doctor.siblingRow`): an
   evidence row with no capability key, `Ok` when proven, else a warning.
 - **tests:** with `epRun`, the first test file runs: "ran uv on src/a__test.py, 3 results parsed
-  (junit-xml)", or the run's broken reason.
+  (junit-xml)". A broken run, or one with results but none passing (gotestsum reports a package
+  that did not build as a failing `TestMain`), is `Disproven` with `whereRan`: the chosen
+  command, the package root it ran in (`Check.packageScope` over `testRoot`, as `runTestsIn`
+  finds it) and that folder's top-level listing, what `{= tests =}` became (`Check.selected`
+  over `[test.select]`, else the file) or that the command has no such element, and whether it
+  names `{= report =}`; then the output's first three lines, or the first failure. `init
+  --language`'s repair reads this row to fix the command.
 
 ## `init --language`: the errand
 
@@ -691,68 +701,100 @@ The flow, each step's failure printing one line and the row it came from (exit 1
    `Model.fileSystemPrompt` says each hole is a whole file). Its inputs are the language, the
    top-level listing and the first 200 paths of `App.projectListing` (git's tracked files, else
    the walk doctor's evidence uses). `parseSurvey` reads the TOML (one markdown fence is
-   stripped by `unfence`; any other text is an error) into `Survey`.
+   stripped by `unfence`; any other text is an error) into `Survey`; its `runners` are `Runner`s
+   (a bare program, or `{ program, junit }`). The runners line shows two entries, the language's
+   own and a JUnit wrapper with its option: told only "including a wrapper", qwen3-coder named
+   `go` alone, every time.
 3. **Pin.** `Grammar.remoteHead` gives the repository's `HEAD` as a full SHA. The proposal line
    is printed and, unless `--yes` or `--grammar`, asked about on a terminal (`rtReadLine`, one
    line of stdin; `Main` reads it with `getLine`); with no terminal it stops before any fetch.
 4. **Gate.** `loadGrammarWith` on `Grammar name (SourceGit url sha path)`. A `Left` prints
    `Doctor.grammarCheck` (the `grammarRow` of a language by name, before any language file
    exists) and stops: no node kinds or captures are read from a grammar that did not load.
-5. **Errand.** `upstreamOf` (`Cli.hs`) reads the checkout (`Grammar.checkoutOf`)'s
-   `queries/*.scm` and `LICENSE*` into `Upstream`. The survey's runners are probed with
-   `dpFind`; `sampleFor` picks two sources, two tests and the manifest (shallowest first), each
-   cut to 120 lines (`cutTo`). `errandCore` takes an `ErrandInput` (the loaded grammar's
-   `ldNodeTypes`, the upstream files, `shippedFor`, the tools, the sample) and a `Filler`:
-   `queriesToWrite` decides which query files are copied and which are holes, `errandRequest`
-   builds the request (holes `language`, `toolchain` and the query holes; the shipped
-   `rust.toml`/`cargo-test.toml` as exemplars in `frContext`; `providersSection`, the user
-   chapter's providers section embedded by `Library`, as the `protocol` input; the closed sets
-   as inputs, `template filters` from `Template.Parse.knownFilters` and `query predicates` from
-   `TreeSitter.knownPredicates`, since a model shown `rust_string` writes `go_string`; the
-   `language` hole's instruction leaves `[check]` to the user), and `checkAnswers` checks the
-   reply.
-6. **Check.** `checkAnswers` replaces the language's top-level `grammar` lines with `pinText`
-   (`withPin`, which also puts `initHeader` first), loads it with `languageFromLayers` over the
-   shipped presets and the toolchain answered (`presetsFrom`), and compiles each query with
-   `queryError`. A file that fails is a `Check` row (`<l>: language` "does not load: …",
-   `<l>: queries` "<file>: …"), never a write.
-7. **Write.** Only when every answer passes, each file goes through the project's workspace
-   (`within rtProjectDir`). A project file is enough for the catalog to load the language
-   (chapter 9's "A language is the project's when…"), so `config.toml` is not touched.
-
-8. **Doctor and one repair.** The catalog is opened again over the written files and
-   `App.doctorChecks` runs with `run = True`. `failingRows` keeps the language's rows
-   (`languageRows`: `<l>: …`, `… (<l>)`, `language <l>`, and a load error that names a file init
-   wrote, as the loader names a refused query file by its path) that are `Bad`, a `Warn` with the
-   "regenerate the key" fix (disproven evidence), or a queries or grammar `Warn`. If any,
-   `repairRequest` re-asks only the holes those rows point at (`repairHoles`: a row named after a
-   hole, a queries row's file or a load error's query file, a test runner or `tests` row the
-   toolchain, a grammar row nothing, anything else the language), renamed `<h>_repair` because
-   `replayFiller` answers each name with one text, so a fills file scripts both rounds. The
-   hole's `⟦<h>_repair⟧` marker is renamed with it: shown the old `⟦language⟧`, a model answers
-   under the old name and the repair is lost. `checkAnswers` reads the `_repair` names
-   (a repair that does not re-ask the toolchain loads the language over the one written), the
-   passing files overwrite theirs, and doctor runs again. A first round whose answers do not load
-   goes to the same repair before any write. There is exactly one repair round.
+5. **Upstream.** `readUpstream` reads the checkout (`Grammar.checkoutOf`)'s `queries/*.scm` and
+   `LICENSE*` into `Upstream`. For a grammar with no shipped queries, `nvimTextobjects` fetches
+   `GrammarSettings.gsTextobjects` (`Library.textobjectsSource`: nvim-treesitter-textobjects at
+   the commit `library/queries/*/SOURCES` name; the suite's settings name a repository that is
+   not there, so no spec reaches the network) with `Grammar.fetch` into
+   `<cache>/grammars/src/<repo>-<sha7>`, and reads `queries/<grammar>/textobjects.scm` and the
+   licence into `upNvim`/`upNvimLicence`. A fetch that fails is a stderr line; the model writes
+   the file instead. The survey's runners are probed with `dpFind` (`runnerLine`: the path and
+   the JUnit option); `sampleFor` picks two sources, two tests and the manifest (shallowest
+   first), each cut to 120 lines (`cutTo`).
+6. **The form.** `errandCore` takes an `ErrandInput` (the language, the pinned grammar, its
+   `ldNodeTypes`, `Upstream`, `shippedFor`, the tools, the sample, the project folder, the
+   `Survey` and the tracked paths) and a `Filler`. `errandQueries` (`queriesToWrite`) decides
+   which query files are copied and which are holes; `formRequest` builds round 1 with
+   `ValueStance` (the fourth `Stance`; `Model.valueSystemPrompt`: one TOML value per hole, `none`
+   when the sample cannot say): one `FillHole` per `Field` of `languageForm` and
+   `toolchainForm` (name, TOML path, kind, one-line instruction, `fdRequired`, the doctor rows
+   that prove it `fdRows`, its template variables `fdVars`), each shown as `key = ⟦name⟧` under
+   its table; then the query holes (kind `file`). A `tests_for` that `derivedTestsFor` reads off
+   the tracked names (a source and a test beside it whose stem holds the source's) is not asked.
+   The inputs are facts: the globs, the tools, the closed sets (`template filters` from
+   `Template.Parse.knownFilters`, `query predicates` from `TreeSitter.knownPredicates`), and for
+   query holes the node kinds and captures. The context is the sample, and for a `textobjects`
+   hole `Library.queryExemplar` (Rust's: the shape is what to copy there). No whole-file
+   exemplar and no provider protocol: shown `rust.toml`, qwen3-coder copied `todo!(…)` into Go.
+7. **Check.** `checkAnswers ei answers` reads each field with `valueOf`: `none` is no value; the
+   key's own variables written `{{x}}`/`{x}` become `{= x =}` (`normaliseTemplates`, which
+   refuses another variable); a value TOML cannot read is quoted when the kind is one string,
+   converted when it is JSON (`jsonAsToml`), split into words when it is an argv; a value that
+   parses as more than one key is refused; a regex kind's strings go through `normaliseRegex`
+   (Perl classes and lazy repeats the POSIX way). `assemble fields engine values` writes the file:
+   the engine's keys first (the pin's value from `pinText`, `files`, `[test] preset`, a derived
+   `tests_for`, the ident/text placeholders; for the preset `tests_for` and `format`), then each
+   answered field under its table header, a table `tableNeeds` names only with every key it needs.
+   The toolchain must read as a preset (`presetsFrom`) and the language load over it
+   (`languageFromLayers`); a reader's error is mapped to its fields by `errorFields` (the
+   backquoted names and the `[table] key` mentions, matched against `fdPath`), else it is the whole
+   file's row (`<l>: language`). Facts: `tests_for` on the first sampled source must name another
+   file that the survey's test globs match; a command with no element that is exactly
+   `{= tests =}` is a `Warn` in `anWarnings` (shown, never sent to the repair). Each query compiles
+   with `queryError`. Every row is `<l>: <field>`; `Answered` carries the files, the failing rows,
+   the answers and the warn rows.
+8. **Write, doctor and one repair** (`runInitLanguage`). `leaveOut` drops each failing key that
+   is not required (answered `none`, checked again, a `Warn` "left out: …"). If the files then
+   load they are written, the catalog is opened again over them, and `App.doctorChecks` runs
+   with `run = True`. The repair's rows are the first round's failing rows and `failingRows` of
+   doctor's (`languageRows`: `<l>: …`, `… (<l>)`, `language <l>`, and a load error that names a
+   file init wrote; `Bad`, a `Warn` with the "regenerate the key" fix, a queries or grammar
+   `Warn`). `repairRequest` re-asks only the holes they point at: `repairHoles` maps a row to
+   fields by name, by `fdRows` (`test units` → `tests_for`, `test_unit`; `tests` → the command,
+   root, selection, junit and lines keys; `holes` → the hole kinds), `anchors` to the textobjects
+   hole, a queries row to its file's hole, a test runner row to `command`, a whole-file row to
+   that file's fields. The holes are renamed `<h>_repair` (`replayFiller` answers each name
+   with one text, so a fills file scripts both rounds; the `⟦<h>_repair⟧` marker too, or a model
+   answers under the old name), the assembled files and the rows go in the context, and the
+   provider protocol (`providersSection`) comes back as an input. `repairAnswers` keeps the asked
+   holes' answers, put over the first round's; `checkAnswers` and `leaveOut` again; the files are
+   written and doctor runs again. `regressedFields` names the repaired fields behind a row that
+   was `Ok` before and is not after; they get the first round's values and the files are
+   checked, written and read once more. When a required key fails round 1, nothing is written
+   until the repair's answers load. There is exactly one repair round.
 
 **The queries.** `queriesToWrite grammarName shipped upstream` asks for none when olifant ships
 a set for the grammar (`shippedFor`, which is `queriesFor`; the errand takes it as
 `eiShipped` so a spec can pass `const []` and drive `errandCore` with a grammar that has
-shipped queries). Otherwise upstream's `tags.scm` is copied under a `; from URL @SHA7
-(LICENSE: …)` header, less its directives: `withoutDirectives` drops each `(#…! …)` form
-(`#strip!`, `#set-adjacent!`: GitHub's tags files use them on `@doc`, a capture olifant never
-reads, and the loader refuses any directive), names them on a second header line
-(`; directives removed: …`) and `sourcesFile` repeats it. Without this tree-sitter-go's
-`tags.scm` fails the compile and the whole project set is dropped (`Upstream`'s `upLabel` and `upLicence`, read by `readUpstream` from the
-checkout's `queries/` and `LICENSE*`) and the rest are holes: `imports`, `textobjects`, and
-`tags` when upstream has none. `checkAnswers` compiles each answered query alone with
-`queryError` and writes it to `.olifant/queries/<grammar>/<hole>.scm`; `sourcesFile` writes the
-`SOURCES` beside them, one line per file, copied or written by the model.
+shipped queries). Otherwise upstream's `tags.scm` and nvim's `textobjects.scm` are copied
+under a `; from <where> (LICENSE: …)` header, less their directives: `withoutDirectives` drops
+each `(#…! …)` form (`#strip!`, `#set-adjacent!`: GitHub's tags files use them on `@doc`, a
+capture olifant never reads, and the loader refuses any directive; nvim's Python file uses
+`#make-range!`, which leaves that pattern capturing nothing), names them on a second header
+line (`; directives removed: …`) and `sourcesFile` repeats it. Without this tree-sitter-go's
+`tags.scm` fails the compile and the whole project set is dropped. `LICENSE-nvim-treesitter`
+is written beside a copied textobjects file (Apache-2.0 asks for the notice). The rest are
+holes: `imports`, and `tags` or `textobjects` when there is no file to copy. `checkAnswers`
+compiles each answered query alone with `queryError` and writes it to
+`.olifant/queries/<grammar>/<hole>.scm`; `sourcesFile` writes the `SOURCES` beside them, one
+line per file, copied (from where) or written by the model.
 
 `providersSection` cuts user chapter 9 from its `### Providers` heading to the next heading: a
 rename of that heading breaks `LanguageInitSpec`. The specs (`CliSpec`'s "init --language") use
 the elm pack's grammar in a local git repository by `file://` (`GrammarSpec.fixtureRepo`) under the
-name `elmish`, so no spec reaches the network.
+name `elmish`, its answers per field (`testdata/init-language/form.toml`, every other field
+`none`, `LanguageInitSpec.formAnswers`), so no spec reaches the network; `nvimTextobjects` is
+specced against a `file://` repository of its own.
 
 ## The rule, and the specs that hold it
 
