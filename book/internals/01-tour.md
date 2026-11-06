@@ -2076,7 +2076,8 @@ before it fetches and builds, loads the grammar, asks one errand for the languag
 toolchain and the missing queries, checks every answer and only then writes. The pure parts are
 `Olifant.LanguageInit`; [chapter 5](05-languages.md#init---language-the-errand) has the flow. A shipped
 language goes to `runInitShipped`: doctor first, nothing written when no row fails, else a layer
-of only the failing rows' keys through the same rounds (`answerRounds`)
+of only the failing rows' keys through the same rounds (`answerRounds`); elm with no grammar
+source (`catalogNoGrammar`) gets a one-key grammar layer through `gateGrammar`
 ([chapter 5](05-languages.md#a-shipped-language-runinitshipped)).
 
 ### `olifant check` (`runCommand`, `Cli.hs`)

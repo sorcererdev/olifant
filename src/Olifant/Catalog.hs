@@ -24,6 +24,7 @@ module Olifant.Catalog
   , catalogBroken
   , catalogLanguages
   , catalogBrokenLanguages
+  , catalogNoGrammar
   , catalogRegions
   , catalogBrokenRegions
   , catalogModel
@@ -75,6 +76,7 @@ import Olifant.Language (Grammar (..), Language (..), Layer (..), Match (..), Sy
 import Olifant.Language.Presets (Presets, overPresets, presetsFrom, shippedPresets)
 import Text.Regex.TDFA (Regex, makeRegexM, matchTest)
 import Olifant.ProjectModel (ModelMap, parseModelMap)
+import Olifant.Library (shippedLanguages)
 import Olifant.Region (RegionDef, RegionDefWith (..), parseRegions)
 import Olifant.Rules (FixDef (..), RuleDef (..), RulesConfig (..), parseRules, parseRulesConfig)
 import Olifant.Template (describeExemplarError, describeTemplateError, exemplar, freeVariables, parseTemplate, templateSource)
@@ -137,6 +139,10 @@ data Catalog = Catalog
     -- what strangling reads from the pack (book chapter 17); one that does
     -- not parse is in 'catalogBrokenRules'
     catalogStrangler :: Maybe Strangler
+  , -- | the shipped languages none of whose layers (the shipped file, the
+    -- packs', the project's) sets a `grammar`: they cannot load, and
+    -- `init --language` gives them one (elm without the elm pack)
+    catalogNoGrammar :: [Text]
   }
 
 -- | `[plans]`: the plans directory, the runner command, its model, a timeout
@@ -422,7 +428,14 @@ openAt root loadP olifantDir packs = do
   unused <- maybe (pure []) (unusedQueries root [grName (langGrammar l) | l <- rooted, grSource (langGrammar l) /= Nothing]) olifantDir
   let langs = map fst queried
       broken = lefts layers ++ lefts toolchains ++ either pure (const []) configured ++ concatMap snd queried ++ unused
-      base = Catalog Nothing (sortOn entryId (rights loaded)) (sortOn (\(gid, _, _) -> gid) (lefts loaded)) (map fst packs) langs (broken ++ brokenLangs) [] [] defaultModelConfig [] [] (RulesConfig [] []) [m | Just (Right m) <- map lpModel fromPacks] [b | Just (Left b) <- map lpModel fromPacks] (map snd packs) Nothing (RecognizeConfig True Nothing) Nothing Nothing Nothing defaultPlans (listToMaybe [st | Just (Right st) <- map lpStrangler fromPacks])
+      base = Catalog Nothing (sortOn entryId (rights loaded)) (sortOn (\(gid, _, _) -> gid) (lefts loaded)) (map fst packs) langs (broken ++ brokenLangs) [] [] defaultModelConfig [] [] (RulesConfig [] []) [m | Just (Right m) <- map lpModel fromPacks] [b | Just (Left b) <- map lpModel fromPacks] (map snd packs) Nothing (RecognizeConfig True Nothing) Nothing Nothing Nothing defaultPlans (listToMaybe [st | Just (Right st) <- map lpStrangler fromPacks]) noGrammar
+      noGrammar =
+        [ n
+        | (n, _) <- shippedLanguages
+        , n `notElem` [T.pack (takeBaseName p) | Left (p, _) <- layers]
+        , Just shipped <- [shippedLayer n]
+        , not (any (M.member "grammar" . layerTable) (shipped : [lay | (n', _, lay) <- rights layers, n' == n]))
+        ]
       strangled = base {catalogBrokenRules = catalogBrokenRules base ++ [b | Just (Left b) <- map lpStrangler fromPacks]}
   pure (foldl (flip addRules) (foldl (flip addRegions) strangled (map lpRegions fromPacks)) (map lpRules fromPacks))
   where

@@ -106,7 +106,8 @@ project, writes `.olifant/languages/NAME.toml`, its test toolchain and the gramm
 queries from one model errand, after asking before it fetches and builds the grammar repository
 the model proposes. [Chapter 9](09-packs-and-language-adapters.md#adding-a-language-init---language)
 has the steps. For a language olifant ships it runs doctor first and writes nothing when no row
-fails, else a thin project layer for only the failing rows' keys; [chapter 9](09-packs-and-language-adapters.md#a-language-olifant-ships-a-layer-for-what-fails).
+fails, else a thin project layer for only the failing rows' keys (Elm without its pack: the
+grammar, pinned); [chapter 9](09-packs-and-language-adapters.md#a-language-olifant-ships-a-layer-for-what-fails).
 
 ## What does it need? `olifant show`
 

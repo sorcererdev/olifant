@@ -401,6 +401,20 @@ one the rows asked for (a value that smuggles `files = …` in is a row naming i
 the repair). Then doctor runs on the layer and the one repair round follows, as above. An
 existing `.olifant/languages/<name>.toml`, or a preset file it would write, stops init.
 
+**Elm without its pack.** The shipped `elm.toml` names no grammar source (the elm pack carries
+one). With no layer giving it one, `init --language elm` asks the survey for the grammar alone
+(or takes `--grammar URL`, and then needs no model), pins it, asks before it fetches and builds
+it as for a new language, and writes a one-key layer:
+
+```toml
+# written by olifant init --language
+# elm ships with olifant without a grammar source: this one, pinned by init
+grammar = { git = "https://github.com/elm-tooling/tree-sitter-elm", rev = "…", name = "elm" }
+```
+
+The shipped elm queries then read the project's grammar (`elm: queries … (shipped)`). With the
+elm pack configured, elm has its grammar and init finds nothing to override.
+
 ### The keys
 
 From `library/languages/rust.toml` and `library/languages/elm.toml`:

@@ -371,7 +371,8 @@ rstestUnit :: Text
 rstestUnit = "[{ pattern = '^[[:space:]]*fn[[:space:]]+([[:alnum:]_]+)', after = '^[[:space:]]*#\\[rstest\\]' }]"
 
 -- | `olifant init --language` for a language olifant ships (m5b): doctor
--- first, a project layer only for the keys of what fails.
+-- first, a project layer only for the keys of what fails; and elm, shipped
+-- with no grammar source, given one.
 initShippedSpec :: Spec
 initShippedSpec = describe "init --language (a shipped language)" $ do
   let run files = runInitLanguageIn files Nothing
@@ -416,6 +417,27 @@ initShippedSpec = describe "init --language (a shipped language)" $ do
     code2 `shouldBe` ExitFailure 1
     (out2 <> err2) `shouldSatisfy` T.isInfixOf ".olifant/toolchains/cargo-test.toml exists"
     M.lookup "/w/.olifant/toolchains/cargo-test.toml" written2 `shouldBe` Just "[test]\ntimeout = 900\n"
+  it "(x) elm without its pack: a one-key layer, the grammar pinned, the shipped queries over it" $ do
+    (remote, sha) <- elmRemote "x"
+    survey <- T.replace "@REMOTE@" remote <$> TIO.readFile "src/Olifant/testdata/init-language/survey.toml"
+    files <- elmishProject [("survey", survey)]
+    (code, out, err, written) <- run files ["init", "--language", "elm", "--fills", "fills.toml", "--yes", "--human"]
+    (code, out <> err) `shouldBe` (ExitSuccess, out <> err)
+    let layer = M.findWithDefault "" "/w/.olifant/languages/elm.toml" written
+    layer `shouldSatisfy` T.isPrefixOf "# written by olifant init --language\n"
+    [l | l <- T.lines layer, not ("#" `T.isPrefixOf` l)] `shouldBe` ["grammar = { git = \"" <> remote <> "\", rev = \"" <> sha <> "\", name = \"elm\" }"]
+    out `shouldSatisfy` T.isInfixOf "✓ elm: grammar"
+    out `shouldSatisfy` T.isInfixOf "(shipped)"
+    out `shouldSatisfy` T.isInfixOf "✓ elm: units"
+    out `shouldSatisfy` T.isInfixOf "✓ elm: queries"
+  it "(y) elm with a pack that gives it a grammar: nothing to override, no model asked" $ do
+    (remote, sha) <- elmRemote "y"
+    files <- elmishProject []
+    let pack = [("/w/.olifant/config.toml", "[packs]\nelm = { path = \"/packs/elm\" }\n"), ("/packs/elm/languages/elm.toml", "grammar = { git = \"" <> remote <> "\", rev = \"" <> sha <> "\" }\n")]
+    (code, out, err, written) <- run (pack ++ files) ["init", "--language", "elm", "--fills", "fills.toml", "--human"]
+    (code, out <> err) `shouldBe` (ExitSuccess, out <> err)
+    out `shouldSatisfy` T.isInfixOf "elm ships with olifant; doctor finds nothing to override here"
+    M.keys written `shouldBe` M.keys (M.fromList (pack ++ files))
 
 -- | check on new code (only = "new"), with a base given.
 newCodeCheckSpec :: Spec

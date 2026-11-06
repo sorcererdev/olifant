@@ -799,8 +799,17 @@ specced against a `file://` repository of its own.
 
 ### A shipped language: `runInitShipped`
 
-`runInitShipped` (`Cli.hs`) never regenerates a shipped file. Its cases:
+`runInitShipped` (`Cli.hs`) never regenerates a shipped file. Its three cases:
 
+- **No grammar source.** `Catalog.catalogNoGrammar` lists the shipped languages none of whose
+  layers (shipped, packs', project's) has a `grammar` key, computed in `openAt` for every shipped
+  name, asked for or not (elm without the elm pack; `assembleLanguages` sets it aside as broken,
+  or quietly when only a generator names it). It is a value, not a match on
+  `catalogBrokenLanguages`' text. `grammarLayer` takes the URL from `--grammar` (no model then)
+  or the survey (`askSurvey`), and `gateGrammar` (shared with the new-language path: pin, `--plan`,
+  the y/N question, `loadGrammarWith`, the grammar row on failure) loads it. The layer is
+  `initHeader`, a comment and `pinText`, checked to load over the shipped layer with
+  `languageFromLayers`, written, and `initDoctorRows` gives the final rows (`initFinish`).
 - **Nothing failing.** Doctor (`App.doctorChecks`, `run = True`) runs on the catalog first;
   a language nothing names is added for the run from its shipped layer alone (and the output
   says nothing names it). `LanguageInit.shippedFailing` is `failingRows` less a `tests` row whose
@@ -830,7 +839,8 @@ specced against a `file://` repository of its own.
 `CliSpec`'s "init --language (a shipped language)" drives it in memory: `rustProject` (a crate that
 lists rust in its config, its test under an attribute; a fills file answering every layer key
 `none` but those given), `runInitLanguageWith` with a runner that is broken unless the command
-says `--offline` (the preset file case).
+says `--offline` (the preset file case), and elm by the `elmRemote` `file://` grammar, with and
+without a pack layer that gives it the grammar.
 
 ## The rule, and the specs that hold it
 

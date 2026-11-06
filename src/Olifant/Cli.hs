@@ -1046,13 +1046,17 @@ runInitLanguage rt cwd fmt cat l modelArg grammarArg yes plan fillsArg = do
                     first'
 
 -- | `init --language L` for a language olifant ships (m5b). Doctor runs
--- first, before any model is asked. With no failing row, nothing
+-- first, before any model is asked. A language whose layers name no grammar
+-- source (elm without the elm pack: 'catalogNoGrammar') gets a one-key
+-- layer, the grammar the survey (or `--grammar`) names, pinned, asked about
+-- and loaded as for a new language. Otherwise, with no failing row, nothing
 -- is written; with failing rows, the model answers only the keys those rows
 -- point at ('LI.layerAsk'), the engine writes them as a project layer (and
 -- the preset's keys as the project's preset of the shipped name), and the
 -- one repair round follows as for a new language ('answerRounds').
 runInitShipped :: Runtime -> Format -> Catalog -> Text -> Text -> Either Text (Maybe (ModelFiller IO)) -> Maybe Text -> Bool -> Bool -> IO ExitCode
-runInitShipped rt fmt cat l shippedText chosen _ _ plan
+runInitShipped rt fmt cat l shippedText chosen grammarArg yes plan
+  | l `elem` catalogNoGrammar cat = grammarLayer
   | Just (path, why) <- listToMaybe [b | b@(p, _) <- catalogBrokenLanguages cat, takeBaseName p == T.unpack l] = stop (T.pack path <> " does not load: " <> why) (Just "fix the adapter file") []
   | otherwise = case (find ((== l) . langName) (catalogLanguages cat), languageFromLayers shippedPresets l [layer]) of
       (Nothing, Left why) -> stop ("the shipped " <> l <> " does not load: " <> why) Nothing []
@@ -1136,6 +1140,40 @@ runInitShipped rt fmt cat l shippedText chosen _ _ plan
                         , rdStart = (t0, t1)
                         }
                       answered
+    -- no grammar source in any layer: one key, the grammar, pinned
+    grammarLayer = case (grammarArg, chosen) of
+      (Nothing, Left why) -> failWith rt fmt 2 "usage" why Nothing []
+      (Nothing, Right Nothing) -> stop "init --language needs a model: add [model] (olifant doctor shows how)" Nothing []
+      (_, model) -> do
+        t0 <- getMonotonicTime
+        tracked <- sort <$> projectListing (portsOf rt) (projectOf rt cat)
+        survey <- case (grammarArg, model) of
+          (Just u, _) -> pure (Right (LI.Survey u Nothing Nothing [] [] Nothing []))
+          (Nothing, Right (Just mf)) -> askSurvey mf l tracked
+          _ -> pure (Left "init --language needs a model: add [model] (olifant doctor shows how)")
+        t1 <- getMonotonicTime
+        case survey of
+          Left why -> stop why Nothing []
+          Right sv -> do
+            let gname = fromMaybe l (LI.svName sv)
+                file = LI.languageFile l
+                header = l <> " ships with olifant without a grammar source; the project layer gives it one"
+                planOut proposal url sha = do
+                  emit rt fmt
+                    (object ["grammar" .= object ["git" .= url, "rev" .= sha], "files" .= [T.pack file]])
+                    (T.unlines [header, proposal, "would write " <> T.pack file])
+                  pure ExitSuccess
+            gateGrammar rt fmt l gname sv (isJust grammarArg) yes plan planOut >>= \case
+              Left code -> pure code
+              Right (g, proposal, url, sha, _, _) -> do
+                let text = T.unlines [LI.initHeader, "# " <> l <> " ships with olifant without a grammar source: this one, pinned by init", LI.pinText g]
+                    loads = Toml.parseToml text >>= \top -> languageFromLayers shippedPresets l [layer, Layer "project" (Just (rtProjectDir rt)) top]
+                case loads of
+                  Left why -> stop ("the grammar layer does not load: " <> why) Nothing []
+                  Right _ -> do
+                    writeText ws file text
+                    rows <- LI.languageRows l [file] <$> initDoctorRows rt l
+                    initFinish rt fmt (t0, t1) [header, proposal] ["grammar" .= object ["git" .= url, "rev" .= sha]] [(file, text)] False rows Nothing
 
 -- | The survey (one hole, `survey`) asked and read.
 askSurvey :: ModelFiller IO -> Text -> [FilePath] -> IO (Either Text LI.Survey)

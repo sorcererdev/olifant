@@ -255,6 +255,11 @@ spec = describe "catalog" $ do
     it "a generator naming elm without the elm pack: no elm, and nothing broken" $ do
       Right cat <- openWith [cfg, ("/packs/p/generators/g/generator.toml", gen "elm")]
       (map langName (catalogLanguages cat), catalogBrokenLanguages cat) `shouldBe` ([], [])
+    it "a shipped language no layer gives a grammar is named as such, asked for or not; a pack's grammar takes it off" $ do
+      Right asked <- openWith [("/proj/.olifant/config.toml", "languages = [\"elm\"]\n")]
+      Right quiet <- openWith [("/proj/.olifant/config.toml", "")]
+      Right given <- openWith [cfg, ("/packs/p/languages/elm.toml", "grammar = { source = \"grammar/elm\" }\n")]
+      (catalogNoGrammar asked, catalogNoGrammar quiet, catalogNoGrammar given) `shouldBe` (["elm"], ["elm"], [])
     it "edits to the project's override and to a pack's toolchain show on the next open (Review Focus 5)" $ do
       (root, _) <- memoryWorkspace [cfg, ("/packs/p/languages/python.toml", ""), ("/packs/p/toolchains/pytest.toml", "[test]\ncommand = [\"a\"]\n")]
       cache <- newPackCache
