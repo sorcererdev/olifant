@@ -147,6 +147,8 @@ rung = do
     let ls = parsePlan (T.unlines ["# Loader", "- one", "- two", "- ? How is the tracker read?", "  - The loader reads `read_tracker`   @app.py:read_tracker ✓ abc1234", "  - It keeps totals", "Some prose.", "- [ ] Add a step @app.py:write_totals", "- three", "- four"])
         target = ls !! 5
     lineContext ls target
-      `shouldBe` LineContext "It keeps totals" (Just "How is the tracker read?") "Loader" (T.intercalate "\n" ["two", "? How is the tracker read?", "The loader reads `read_tracker`", "[ ] Add a step", "three", "four"])
+      `shouldBe` LineContext "It keeps totals" (Just "How is the tracker read?") "Loader" (T.intercalate "\n" ["two", "? How is the tracker read?", "The loader reads `read_tracker`", "Add a step", "three", "four"])
     lcLine (lineContext ls (ls !! 4)) `shouldBe` "The loader reads `read_tracker`"
+    lcLine (lineContext ls (ls !! 7)) `shouldBe` "Add a step"
+    lcLine (lineContext (parsePlan "- [x] done thing\n") (head (parsePlan "- [x] done thing\n"))) `shouldBe` "done thing"
     lnRow target `shouldBe` 5

@@ -252,8 +252,8 @@ got no answer) and the next pass after ten minutes checks them. On `right` the e
 plan version it read (a plan that moved on meanwhile keeps the verdict, and the next pass writes
 it). On `wrong` nothing is written: the why is in the margin and in hover (`K`). On `elsewhere`
 the check has rejected the unit: the line is left unresolved, that unit out of its candidates,
-and nothing is written. Measured on a real plan, Jev picks the anchor its author chose for 33 of
-76 lines and another unit, confidently, for 19, many of them defensible (a method for its class,
+and nothing is written. Measured on a real plan, Jev picks the anchor its author chose for 34 of
+76 lines and another unit, confidently, for 18, many of them defensible (a method for its class,
 the other unit a line names); the check is the guard against a wrong unit, so no anchor lands
 without one.
 

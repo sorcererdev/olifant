@@ -208,12 +208,13 @@ roundName = \case
 data LineContext = LineContext {lcLine :: Text, lcQuestion :: Maybe Text, lcSection :: Text, lcAround :: Text}
   deriving stock (Eq, Show)
 
--- | A line's words: without its indentation, its `- `, and its anchor and
--- verdict.
+-- | A line's words: without its indentation, its `- `, a `[ ] `/`[x] `
+-- checkbox, and its anchor and verdict.
 bareLine :: Line -> Text
-bareLine l = T.strip (dash (maybe (lnText l) (\a -> T.take (anStart a) (lnText l)) (lnAnchor l)))
+bareLine l = T.strip (box (dash (maybe (lnText l) (\a -> T.take (anStart a) (lnText l)) (lnAnchor l))))
   where
     dash t = let s = T.stripStart t in fromMaybe s (T.stripPrefix "- " s)
+    box t = fromMaybe t (listToMaybe [r | p <- ["[ ] ", "[x] "], Just r <- [T.stripPrefix p t]])
 
 -- | A line's context in its plan: its words, the `- ?` it is a child of (that
 -- question's words without the `? `), its section's title, and the three list
