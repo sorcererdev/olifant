@@ -218,8 +218,9 @@ A line without an anchor is resolved and checked by the **claim pass**, which ru
 plan, on a save of it, and when the editor says the plan went quiet (`olifant/plans/idle`;
 durandal.nvim sends it a second after your last change, never while you are in insert mode). An
 editor that sends no idle gets the pass on save only. One pass runs per plan; a new one cancels
-the running one, and an edit to the plan cancels it too, so it never writes into a line you are
-typing.
+the running one, and an edit to the plan cancels it too (the verdicts it had earned are kept), so
+it never writes into a line you are typing. In insert or replace mode durandal.nvim refuses the
+pass's write; the verdict stays in the store and the next pass writes it.
 
 **What it works on.** Each list line of the plan whose words it has not seen:
 
@@ -260,7 +261,7 @@ without one.
 
 | code | shows | when |
 |---|---|---|
-| `claim-checking` | `…` | the running pass is working on the line |
+| `claim-checking` | `…` | the running pass will work on the line (every line in its work list shows it from the start) |
 | `claim-right` | `✓ <unit> (<file>)` | checked right, until the anchor lands |
 | `claim-wrong` | `✗ <why> — <unit> (<file>)` | checked wrong |
 | `claim-resolved` | `→ <unit> (<file>)` | a unit found, not checked |
