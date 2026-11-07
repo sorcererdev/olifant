@@ -45,6 +45,8 @@ spec = describe "Olifant.Server.Resolve" $ do
  describe "Resolve candidates" $ do
   it "(a) splits camel and snake, keeps digits, drops stop words" $
     lineTokens "The 2018 loader reads read_tracker in Comparison2018Admin" `shouldBe` ["2018", "loader", "reads", "read", "tracker", "comparison", "2018", "admin"]
+  it "(a2) a letter with no case, or a digit outside ASCII, ends its word's run" $
+    lineTokens "数据 x² Ab²c" `shouldBe` ["数据", "x²", "ab²c"]
   it "(b) a backticked or snake identifier equal to a unit name ranks that unit first" $ do
     identifiers "The 2018 loader `read_tracker` keeps Comparison2018Admin and write_totals." `shouldBe` ["read_tracker", "2018", "Comparison2018Admin", "write_totals"]
     map (urName . upRef . fst) (take 1 (candidates "The 2018 loader `read_tracker` keeps totals" idx)) `shouldBe` ["read_tracker"]

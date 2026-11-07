@@ -113,8 +113,11 @@ humps = map T.pack . go . T.unpack
       | isUpper c = case span isUpper s of
           -- an acronym before a word: its last capital starts the word
           (ups@(_ : _ : _), r@(l : _)) | isLower l -> (init ups, last ups : r)
-          (ups, r) -> let (ls, r') = span isLower r in (ups ++ ls, r')
-      | otherwise = span isLower s
+          (ups, r) -> let (ls, r') = span lowerish r in (ups ++ ls, r')
+      | otherwise = span lowerish s
+    -- anything that is not a capital or an ASCII digit continues a word: a
+    -- letter with no case or a digit outside ASCII never ends the run
+    lowerish x = not (isUpper x || isDigit x)
 
 stopWords :: Set Text
 stopWords = S.fromList (T.words "a an the of to in on at by for from with as is are be it its this that these those and or not no so than then into when which only can each per has have was were will should would there their they")
