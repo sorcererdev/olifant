@@ -20,6 +20,7 @@ import Olifant.Process (gitStateStamp)
 import Olifant.Server (ServerState, newServerState, projectFor)
 import Olifant.Server.Plans
 import Olifant.Server.Claims (Check (..), ClaimEntry (..))
+import Olifant.Server.Errand (Belief (..), BeliefCheck (..))
 import Olifant.Server.Resolve (UnitRef (..))
 import Olifant.Server.Unit (Named (..))
 import Olifant.Workspace (memoryWorkspace)
@@ -174,6 +175,16 @@ spec = describe "Olifant.Server.Plans (anchors in the server)" $ do
           store = M.fromList [("right one", e (Just CheckRight)), ("wrong one", e (Just (CheckWrong "no"))), ("open one", e Nothing)]
           mods = [(ptRow t, ptMods t) | t <- planTokensWith store M.empty (parsePlan "- right one\n- wrong one\n- open one\n- other\n"), ptType t == "planClaim"]
       mods `shouldBe` [(0, ["checked"]), (1, ["wrong"]), (2, ["resolved"]), (3, [])]
+  describe "beliefsUnder" $
+    it "an ask's beliefs are its question's bare claims, once one of them has a verdict" $ do
+      let at0 = UTCTime (fromGregorian 2026 11 7) 0
+          u = UnitRef "src/a.py" "Foo"
+          ls = parsePlan "- ? how\n  - it reads D\n  - grounded @src/a.py:Foo ✓ 0123456\n  - it is fast\n- other\n"
+          q = ls !! 0
+          checked = M.fromList [("it reads D", ClaimEntry (Just u) "jev-1" [u] 0.9 (Just (CheckWrong "it drops D")) Nothing at0)]
+      beliefsUnder checked ls q `shouldBe` [Belief "it reads D" (BelievedWrong "it drops D" "src/a.py:Foo"), Belief "it is fast" NotChecked]
+      beliefsUnder M.empty ls q `shouldBe` []
+      beliefsUnder checked ls (ls !! 4) `shouldBe` []
   describe "planFolds" $ do
     let folds = planFolds S.empty . parsePlan . T.unlines
     it "a ticked step with children folds to its last descendant" $

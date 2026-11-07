@@ -145,6 +145,12 @@ spec = describe "Olifant.Server.Errand (the claude -p runner)" $ do
       projectUnitWords [py, rs] `shouldBe` defaultUnitWords
       projectUnitWords [] `shouldBe` defaultUnitWords
       errandPrompt Ask (projectUnitWords [hs]) Nothing plan ls q [] `shouldSatisfy` T.isInfixOf "a name bound in its where"
+    it "an ask carries the author's checked beliefs under its question; none, the prompt as before" $ do
+      let beliefs = [Belief "it reads D" (BelievedRight "src/a.py:Foo"), Belief "it keeps R" (BelievedWrong "it drops R" "src/a.py:Foo"), Belief "it is fast" NotChecked]
+          with = errandPromptWith beliefs Ask pyWords Nothing plan ls q []
+      with `shouldSatisfy` T.isInfixOf (T.intercalate "\n" ["THE AUTHOR'S BELIEFS, ALREADY CHECKED:", "- it reads D — right, about src/a.py:Foo", "- it keeps R — wrong (it drops R), about src/a.py:Foo", "- it is fast — not checked", "Answer what these miss; do not repeat what they say."])
+      errandPromptWith [] Ask pyWords Nothing plan ls q [] `shouldBe` errandPrompt Ask pyWords Nothing plan ls q []
+      errandPrompt Ask pyWords Nothing plan ls q [] `shouldSatisfy` (not . T.isInfixOf "BELIEFS")
     it "the prompt carries the plan, the units and the marker" $ do
       let p = errandPrompt Ask pyWords Nothing plan ls q [Grounded (Anchor "src/a.py" "Foo" 0 0) "class Foo:" "class Foo:\n    pass"]
       p `shouldSatisfy` T.isInfixOf "<doc>\n"
