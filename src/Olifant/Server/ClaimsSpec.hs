@@ -1,6 +1,7 @@
 module Olifant.Server.ClaimsSpec (spec) where
 
 import Control.Monad (forM)
+import Data.IORef (modifyIORef, newIORef, readIORef)
 import Data.Map.Strict qualified as M
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -101,6 +102,26 @@ spec = describe "Olifant.Server.Claims" $ describe "Claims" $ do
     readClaims (ssPorts s) "/r1" "plans/none.md" `shouldReturn` M.empty
     writeText (pFiles (ssPorts s)) (claimsPath "/r1" "plans/t.md") "{not json"
     readClaims (ssPorts s) "/r1" "plans/t.md" `shouldReturn` M.empty
+  it "(g) a store is written whole or not at all: to a temporary file, then renamed over" $ do
+    (s, _) <- claimsServer "" Nothing
+    wrote <- newIORef []
+    let ws = pFiles (ssPorts s)
+        ports = (ssPorts s) {pFiles = ws {writeText = \p x -> modifyIORef wrote (p :) >> writeText ws p x}}
+        store = M.fromList [("a", ClaimEntry Nothing "none" [] 0 Nothing Nothing at0)]
+    writeClaims ports "/r1" "plans/t.md" store
+    readIORef wrote `shouldReturn` [claimsPath "/r1" "plans/t.md" <> ".tmp"]
+    readClaims ports "/r1" "plans/t.md" `shouldReturn` store
+    fileExists ws (claimsPath "/r1" "plans/t.md" <> ".tmp") `shouldReturn` False
+  it "(h) pruneOrphanClaims removes the stores of plans that no longer exist" $ do
+    (s, _) <- claimsServer "" Nothing
+    let store = M.fromList [("a", ClaimEntry Nothing "none" [] 0 Nothing Nothing at0)]
+    writeClaims (ssPorts s) "/r1" "plans/t.md" store
+    writeClaims (ssPorts s) "/r1" "plans/gone.md" store
+    writeClaims (ssPorts s) "/r1" "plans/sub/deeper.md" store
+    pruneOrphanClaims (ssPorts s) "/r1"
+    fileExists (pFiles (ssPorts s)) (claimsPath "/r1" "plans/t.md") `shouldReturn` True
+    fileExists (pFiles (ssPorts s)) (claimsPath "/r1" "plans/gone.md") `shouldReturn` False
+    fileExists (pFiles (ssPorts s)) (claimsPath "/r1" "plans/sub/deeper.md") `shouldReturn` False
   it "(c) claimKey drops indentation, the dash, a checkbox, the anchor and its verdict" $ do
     map claimKey (parsePlan "- foo   @a.py:f ✓ abc1234\n  - foo\n- [ ] foo @a.py:f\n") `shouldBe` ["foo", "foo", "foo"]
   it "(d) a recorded wrong check on an auto rung is CheckWrong with its why" $

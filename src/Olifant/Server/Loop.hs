@@ -77,7 +77,7 @@ import Olifant.Server.LoopTypes
 import Olifant.Server.Plans (Resolved (..), confined, currentBranch, gitOut, gitText, resolveAnchor, safely)
 import Olifant.Server.State (ServerState (..), appendStepLine, projectFor)
 import Olifant.Server.Telemetry (Decision (..), OutcomeRecord (..), ReconcileRecord (..), Record (..), ResolveRecord (..), appendRecord, errandId, readRecords, recordsPath)
-import Olifant.Server.Claims (Check (..), ClaimEntry (..), ClaimStore, Work (..), checkClaim, claimKey, claimsOf, passWork, pruneClaims, storeClaims)
+import Olifant.Server.Claims (Check (..), ClaimEntry (..), ClaimStore, Work (..), checkClaim, claimKey, claimsOf, passWork, pruneClaims, pruneOrphanClaims, storeClaims)
 import Olifant.Server.Resolve qualified as R
 import Olifant.Server.Resolve (LineContext (..), UnitRef (..), candidates, lineContext, projectIndex, resolveLine, roundName, upRef)
 import Olifant.Server.Unit (Named (..), fingerprint, unitsOf)
@@ -607,6 +607,7 @@ claimPass token path s0 = do
           pure (s, Right (PassAnswer [] store Nothing))
         Just jev -> do
           store0 <- claimsOf s root path
+          pruneOrphanClaims (ssPorts s) root
           now <- pNow (ssPorts s)
           let work = passWork (retryCutoff now rungs) ls store0
           -- no work: no index to read

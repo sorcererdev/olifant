@@ -346,7 +346,9 @@ is the whole of it:
    fact; a moved or gone unit drops the entry, so the next pass resolves and checks it again.
 6. **End.** The budget (`[plans] pass_budget`, `pcPassBudget`, default 30 s) is asked before
    each item and each Jev call; work not reached is `rvMore`. Then `pruneClaims` drops words no
-   longer in the plan, `storeClaims` keeps the store (memory and disk), and a `resolve` record
+   longer in the plan, `storeClaims` keeps the store (memory, and disk by `writeClaims`: to `<file>.tmp`, then
+   `Workspace.renameFile`, so a crash leaves the old store; `pruneOrphanClaims`, at the start of a
+   pass, removes stores whose plan is gone), and a `resolve` record
    (`Telemetry.ResolveRecord`) is appended when any model call ran. A tripped token answers
    `Left "cancelled"`, but `claimPass` first prunes and stores the tally so far (`step`'s `Left`
    carries it), so the verdicts a pass earned are not asked again; no facts, no record. `passWork`

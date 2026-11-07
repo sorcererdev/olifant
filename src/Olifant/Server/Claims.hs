@@ -12,6 +12,7 @@ module Olifant.Server.Claims
   , claimsPath
   , readClaims
   , writeClaims
+  , pruneOrphanClaims
   , checkQuestion
   , checkClaim
   , Work (..)
@@ -25,7 +26,7 @@ module Olifant.Server.Claims
 
 import Control.Concurrent.MVar (MVar, newMVar, withMVar)
 import Control.Exception (SomeException, evaluate, try)
-import Control.Monad (void)
+import Control.Monad (forM_, unless, void)
 import Data.Aeson (Value (..), decodeStrict, encode, object, (.:), (.:?), (.=))
 import Data.Aeson.Key qualified as K
 import Data.Aeson.KeyMap qualified as KM
@@ -52,7 +53,7 @@ import Olifant.Server.LoopQuestions (Rungs (..), accepted, decideOver)
 import Olifant.Server.Resolve (LineContext (..), UnitRef (..), bareLine, refText)
 import Olifant.Server.Telemetry (Decision (..))
 import Olifant.Workspace (Workspace (..), normalisePath)
-import System.FilePath (dropExtension, isAbsolute, makeRelative, (</>))
+import System.FilePath (dropExtension, isAbsolute, makeRelative, takeExtension, (</>))
 import System.IO.Unsafe (unsafePerformIO)
 
 -- | A claim checked against its unit: right, wrong (and why), or about some
@@ -110,7 +111,21 @@ writeClaims :: Ports -> FilePath -> FilePath -> ClaimStore -> IO ()
 writeClaims ports root plan cs =
   void . (try :: IO () -> IO (Either SomeException ())) . withMVar claimsLock $ \() -> do
     let body = TE.decodeUtf8 (BL.toStrict (encode (object ["version" .= (1 :: Int), "claims" .= Object (KM.fromList [(K.fromText k, entryJson e) | (k, e) <- M.toList cs])]))) <> "\n"
-    writeText (pFiles ports) (claimsPath root plan) body
+    -- whole or not at all: a crash mid-write must not leave half a store
+    let file = claimsPath root plan
+    writeText (pFiles ports) (file <> ".tmp") body
+    renameFile (pFiles ports) (file <> ".tmp") file
+
+-- | Remove the stores of plans that no longer exist under ROOT (renamed or
+-- deleted; their lines would be asked again under the new name anyway).
+pruneOrphanClaims :: Ports -> FilePath -> IO ()
+pruneOrphanClaims ports root =
+  void . (try :: IO () -> IO (Either SomeException ())) $ do
+    let dir = root </> ".olifant/state/claims"
+    files <- listAllFiles (pFiles ports) dir
+    forM_ [f | f <- files, takeExtension f == ".json"] $ \f -> do
+      there <- fileExists (pFiles ports) (root </> dropExtension f <> ".md")
+      unless there (removeFile (pFiles ports) (dir </> f))
 
 {-# NOINLINE claimsLock #-}
 claimsLock :: MVar ()

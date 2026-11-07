@@ -42,6 +42,12 @@ data Workspace m = Workspace
   , inspectPath :: FilePath -> m PathState
   , removeFile :: FilePath -> m ()
   -- ^ Delete a file if it exists (blessing snapshots; generation never deletes).
+  , renameFile :: FilePath -> FilePath -> m ()
+  -- ^ Move a file over another (the second may exist): a write that is
+  -- whole or not at all.
+  , listAllFiles :: FilePath -> m [FilePath]
+  -- ^ Every file under a folder, git's ignores not applied (state folders
+  -- are ignored by git); paths relative to the folder.
   }
 
 -- | What is at a path. 'Unreadable' means a file exists but is not UTF-8
@@ -74,6 +80,8 @@ memoryWorkspace initial = do
                   | any (prefix `isPrefixOf`) (M.keys files) -> Directory
                   | otherwise -> Absent
           , removeFile = \p -> modifyIORef' ref (M.delete (normalisePath p))
+          , renameFile = \from to -> modifyIORef' ref (\m -> maybe m (\x -> M.insert (normalisePath to) x (M.delete (normalisePath from) m)) (M.lookup (normalisePath from) m))
+          , listAllFiles = listFiles ws
           }
   pure (ws, readIORef ref)
 
@@ -102,6 +110,11 @@ diskWorkspace root =
         let full = root </> p
         exists <- doesFileExist full
         if exists then Dir.removeFile full else pure ()
+    , renameFile = \from to -> Dir.renameFile (root </> from) (root </> to)
+    , listAllFiles = \dir -> do
+        let base = root </> dir
+        isDir <- doesDirectoryExist base
+        if isDir then sort <$> walk [] base "" else pure []
     }
   where
     -- Inside a git work tree, the project is what git says it is: tracked and
@@ -197,6 +210,8 @@ within dir ws =
     , listFilesSkipping = \names -> listFilesSkipping ws names . inside
     , inspectPath = inspectPath ws . inside
     , removeFile = removeFile ws . inside
+    , renameFile = \from to -> renameFile ws (inside from) (inside to)
+    , listAllFiles = listAllFiles ws . inside
     }
   where
     inside p = normalisePath (dir </> p)
