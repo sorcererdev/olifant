@@ -46,7 +46,7 @@ module Olifant.Server.Loop
   , claimPass
   ) where
 
-import Control.Monad (forM, join)
+import Control.Monad (forM, join, unless)
 import Data.Aeson (Value, object, (.=))
 import Data.Bifunctor (bimap)
 import Data.Containers.ListUtils (nubOrd, nubOrdOn)
@@ -605,10 +605,11 @@ claimPass token path s0 = do
           pure (s, Right (PassAnswer [] store Nothing))
         Just jev -> do
           store0 <- claimsOf s root path
-          index <- projectIndex s p
-          now <- pNow (ssPorts s)
           let work = passWork ls store0
-              left = do
+          -- no work: no index to read
+          index <- if null work then pure [] else projectIndex s p
+          now <- pNow (ssPorts s)
+          let left = do
                 t <- getMonotonicTime
                 stop <- cancelled token
                 pure (not stop && t - start < budget)
@@ -697,7 +698,8 @@ claimPass token path s0 = do
                       , rvByRung = M.toList (tByRung t), rvChecked = tChecked t, rvRight = tRight t, rvWrong = tWrong t
                       , rvElsewhere = tElsewhere t, rvMore = more, rvSeconds = end - start
                       , rvCalls = length (tDecisions t), rvDecisions = tDecisions t }
-              storeClaims s root path store
+              -- nothing to do and nothing pruned: the store on disk is already right
+              unless (null work && store == store0) (storeClaims s root path store)
               if null (tDecisions t) then pure () else appendRecord (ssPorts s) root (AResolve rec)
               pure (s, Right (PassAnswer (tFacts t) store (Just rec)))
 

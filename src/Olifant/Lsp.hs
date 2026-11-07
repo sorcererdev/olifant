@@ -1740,7 +1740,7 @@ startPass env path =
     Just (p, _, text) | isPlanPath p path -> do
       lspEnv <- getLspEnv
       (token, trip) <- liftIO newCancel
-      n <- liftIO $ do
+      (n, keys) <- liftIO $ do
         (n, old) <- atomicModifyIORef' (envPasses env) (\(i, m) -> ((i + 1, M.insert path (i + 1, trip) m), (i + 1, M.lookup path m)))
         maybe (pure ()) snd old
         -- the lines it works on show as being checked
@@ -1748,10 +1748,12 @@ startPass env path =
         store <- claimsOf st (prRoot p) path
         let keys = S.fromList [claimKey (Claims.workLine w) | w <- passWork (parsePlan text) store]
         atomicModifyIORef' (ssChecking st) (\m -> (M.insert (normalisePath path) keys m, ()))
-        pure n
+        pure (n, keys)
       -- the client may cancel its progress: the pass stops, the margin clears
       void . liftIO . forkIO . (`catch` \(_ :: SomeException) -> trip >> runLspT lspEnv claimsChanged) . runLspT lspEnv $ do
-        answered <- planProgress "checking" (\_ -> try (withSnapshotState env {envCancel = token} (claimPass token path)) :: IO (Either SomeException (ServerState, Either T.Text PassAnswer)))
+        let run _ = try (withSnapshotState env {envCancel = token} (claimPass token path)) :: IO (Either SomeException (ServerState, Either T.Text PassAnswer))
+        -- nothing to work on: no "checking" in the editor
+        answered <- if S.null keys then liftIO (run ()) else planProgress "checking" run
         stopped <- liftIO (cancelled token)
         mine <- liftIO $ do
           mine <- atomicModifyIORef' (envPasses env) (\(i, m) -> case M.lookup path m of

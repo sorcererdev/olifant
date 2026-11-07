@@ -62,6 +62,7 @@ import Olifant.Doctor (DoctorPorts (..))
 import Olifant.Workspace (Workspace (listFiles, listFilesSkipping, readText), diskWorkspace)
 import System.Environment (lookupEnv, setEnv, unsetEnv)
 import System.Directory (findExecutable, canonicalizePath, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getTemporaryDirectory, listDirectory, removeDirectory, removeFile, renameFile)
+import Olifant.Server.Claims (claimsPath)
 import System.FilePath (makeRelative, normalise, takeDirectory, (</>), splitDirectories)
 import Olifant.Language.AstGrep (astGrepSyntax)
 import System.IO.Temp (withSystemTempDirectory)
@@ -4247,3 +4248,15 @@ claimPassSpec = describe "plans claim pass" $ do
         refreshed
         (n1,) <$> askedIn f
       (n1, n2) `shouldBe` (2, 2)
+  it "(e) an idle with nothing to check shows no progress and writes no store" $
+    withPass wrong $ \ports dir f cfg -> do
+      let seen = (message SMethod_WindowWorkDoneProgressCreate >> pure True) <|> (refreshed >> pure False) <|> (anyMessage >> seen)
+      ((first, again), _) <- inProcessWithConfig cfg ports dir $ do
+        p <- openDoc "plans/t.md" "markdown"
+        first <- seen
+        refreshed
+        liftIO (removeFile (claimsPath dir "plans/t.md"))
+        sendNotification (SMethod_CustomMethod (Proxy :: Proxy "olifant/plans/idle")) (object ["textDocument" .= object ["uri" .= (p ^. L.uri)]])
+        (first,) <$> seen
+      (first, again) `shouldBe` (True, False)
+      doesFileExist (claimsPath dir "plans/t.md") `shouldReturn` False

@@ -346,7 +346,9 @@ is the whole of it:
    longer in the plan, `storeClaims` keeps the store (memory and disk), and a `resolve` record
    (`Telemetry.ResolveRecord`) is appended when any model call ran. A tripped token answers
    `Left "cancelled"`, but `claimPass` first prunes and stores the tally so far (`step`'s `Left`
-   carries it), so the verdicts a pass earned are not asked again; no facts, no record.
+   carries it), so the verdicts a pass earned are not asked again; no facts, no record. `passWork`
+   is computed before the index: a pass with no work reads no project files, writes the store only
+   when `pruneClaims` removed words, and `startPass` shows no `checking` progress for it.
 
 **In `Lsp`.** `startPass` runs it in the background under `planProgress "checking"`, on
 `didOpen` and `didSave` of a plan and on the client's `olifant/plans/idle` notification.
