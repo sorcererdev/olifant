@@ -21,6 +21,7 @@ import Olifant.Server.Claims
 import Olifant.Server.LoopQuestions (Rungs (..), rungsFor)
 import Olifant.Server.Resolve (LineContext (..), UnitRef (..))
 import Olifant.Server.State (ServerConfig (..), ServerState (..))
+import Olifant.Server.Telemetry (Decision (..))
 import Olifant.Workspace (Workspace (..), memoryWorkspace)
 import System.Directory (canonicalizePath, doesDirectoryExist, doesFileExist, listDirectory)
 import System.FilePath (makeRelative, (</>))
@@ -137,6 +138,13 @@ spec = describe "Olifant.Server.Claims" $ describe "Claims" $ do
     withAnswers "{\"answers\": {\"plan-check\": {\"choice\": \"wrong\", \"confidence\": 0.9}}}" $ \file -> do
       let rungs = Rungs Nothing [(Rung "local" EscalateAuto, OpenAICompatible "http://127.0.0.1:1/v1" "x")] "jev" (Just (\_ -> recordedDecider file neverCancel))
       fst <$> checkClaim neverCancel 5 rungs ctx unit "def f(): pass\n" `shouldReturn` Just (CheckWrong "no reason given")
+  it "(i) every chat rung asked is a decision; only the last can have chosen" $
+    withAnswers "{\"answers\": {\"plan-check\": {\"choice\": \"right\", \"confidence\": 0.1}}}" $ \file -> do
+      let rungs = Rungs Nothing [(Rung "local" EscalateAuto, OpenAICompatible "http://127.0.0.1:1/v1" "x"), (Rung "big" EscalateAuto, OpenAICompatible "http://127.0.0.1:1/v1" "y")] "jev" (Just (\_ -> recordedDecider file neverCancel))
+      (check, ds) <- checkClaim neverCancel 5 rungs ctx unit "def f(): pass\n"
+      check `shouldBe` Nothing
+      map dcRung ds `shouldBe` ["local", "big"]
+      map dcChosen ds `shouldBe` [Nothing, Just "right"]
   it "(f) an ask rung, unforced, asks nothing" $
     withAnswers "{\"answers\": {\"plan-check\": {\"choice\": \"right\", \"confidence\": 0.9}}}" $ \file -> do
       (s, p) <- claimsServer "[model.backends.local]\nkind = \"openai-compatible\"\nurl = \"http://127.0.0.1:1/v1\"\nmodel = \"x\"\nescalate = \"ask\"\n[plans]\nladder = [\"local\"]\n" (Just file)

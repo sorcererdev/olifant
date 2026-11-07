@@ -396,7 +396,8 @@ view. The columns:
 
 A claim pass that called a model appends a `resolve` record: `id`, `at`, `plan`, `seen` (the lines
 it worked on), `by_rung` (how many resolved in each round, `jev-1`, `jev-2`, `jev-3`, or `none`),
-`checked`, `right`, `wrong`, `elsewhere`, `more` (lines left for the budget), `seconds`, `calls` and
+`checked`, `right`, `wrong`, `elsewhere`, `more` (lines left for the budget), `seconds`, `calls` (every Jev round and every chat rung asked, one
+`decisions` entry each; a rung that did not answer at the gate has no choice) and
 `decisions`. `plans cost` leaves them out of its tables; the `elsewhere` rate is the one to read in
 use, as how often Jev's unit was the wrong one.
 

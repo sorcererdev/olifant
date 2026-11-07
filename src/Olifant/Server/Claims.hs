@@ -191,7 +191,9 @@ checkClaim token timeout rungs c u code
   | otherwise = do
       let q = checkQuestion c u code
       (a, climbs) <- decideOver token timeout rungs {rgJev = Nothing} q
-      let decided = [Decision (D.qKind q) (qOptions q) (chosen a) (confOf a) name | Just (name, _) <- [listToMaybe (reverse climbs)]]
+      -- each rung asked is a call; the answer (and its confidence) is the last rung's
+      let lastName = fst <$> listToMaybe (reverse climbs)
+          decided = [Decision (D.qKind q) (qOptions q) (if Just name == lastName then chosen a else Nothing) (if Just name == lastName then confOf a else Nothing) name | (name, _) <- climbs]
           check = case a of
             Chosen "right" _ _ | accepted q a -> Just CheckRight
             Chosen "wrong" fs _ | accepted q a -> Just (CheckWrong (let w = T.strip (fromMaybe "" (lookup "why" fs)) in if T.null w then "no reason given" else w))
