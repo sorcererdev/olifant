@@ -11,13 +11,13 @@ import Data.Maybe (fromMaybe)
 import Data.Text.Encoding qualified as TE
 import Data.Time (getCurrentTime)
 import Olifant.Decide (Question (..), Shape (..))
-import Olifant.Process (newCancel, neverCancel)
+import Olifant.Process (cancelAfter, newCancel, neverCancel)
 import Olifant.Server.Edits (FileEdit (..))
 import Olifant.Server.Errand (Block (..), Ghost (..))
 import Olifant.Server.Stub (StubAnswer (..))
 import Olifant.Server.State (ServerConfig (..), ServerState (..))
 import Olifant.Server.Telemetry (OutcomeRecord (..), ReconcileRecord (..), Record (..), ResolveRecord (..), appendRecord, readRecords, recordsPath)
-import Olifant.Server.Claims (Check (..), ClaimEntry (..), claimsPath)
+import Olifant.Server.Claims (Check (..), ClaimEntry (..), claimsPath, readClaims)
 import Olifant.Server.Resolve (UnitRef (..))
 import System.Directory (doesDirectoryExist)
 import System.Directory (doesFileExist)
@@ -1044,3 +1044,13 @@ claimPassSpec = describe "Olifant.Server.Loop (claimPass)" $ describe "claimPass
       fmap (\e -> (ceUnit e, ceRung e, helperRef `elem` ceCandidates e)) (entryOf a) `shouldBe` Just (Nothing, "elsewhere", False)
       map rvElsewhere <$> resolves dir `shouldReturn` [1]
       doesFileExist (claimsPath dir "plans/t.md") `shouldReturn` True
+  it "(j) a pass cancelled partway keeps the verdicts it earned in the store" $ do
+    let many = "# T\n\n" <> T.unlines ["- claim number " <> T.pack (show n) <> " holds" | n <- [1 .. 40 :: Int]]
+    withReconcile many [] (chat "auto" []) (Just right) $ \dir s0 -> do
+      let s = s0 {ssConfig = (ssConfig s0) {scChatAnswers = Just (answersFile dir)}}
+      -- trips a few items in
+      token <- cancelAfter 12
+      (_, r) <- claimPass token (dir </> "plans/t.md") s
+      either id (const "answered") r `shouldBe` "cancelled"
+      stored <- readClaims (ssPorts s) dir "plans/t.md"
+      M.member "claim number 1 holds" stored `shouldBe` True

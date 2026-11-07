@@ -582,7 +582,8 @@ data PassAnswer = PassAnswer {paFacts :: [Fact], paStore :: ClaimStore, paRecord
 -- writes `@path:Unit ✓ <fp>` (the fingerprint read at the check); a unit
 -- changed since (its fingerprint) writes nothing and is checked again next
 -- pass; a check about other code leaves the line unresolved, that unit out
--- of its candidates. No decide model: nothing runs. Cancelled: Left.
+-- of its candidates. No decide model: nothing runs. Cancelled: Left, the
+-- store keeping what the pass had earned.
 claimPass :: Cancel -> FilePath -> ServerState -> IO (ServerState, Either Text PassAnswer)
 claimPass token path s0 = do
   start <- getMonotonicTime
@@ -627,14 +628,14 @@ claimPass token path s0 = do
               step acc [] = pure (Right (acc, 0 :: Int))
               step acc (w : rest) =
                 cancelled token >>= \case
-                  True -> pure (Left "cancelled")
+                  True -> pure (Left acc)
                   False ->
                     left >>= \case
                       False -> pure (Right (acc, length (w : rest)))
                       True -> do
                         acc' <- item acc w
                         cancelled token >>= \case
-                          True -> pure (Left "cancelled")
+                          True -> pure (Left acc')
                           False -> step acc' rest
               entryOf r = case r of
                 R.Resolved u rd x -> ClaimEntry (Just u) (roundName rd) [] x Nothing Nothing now
@@ -682,7 +683,11 @@ claimPass token path s0 = do
                   , tElsewhere = tElsewhere tally + (if check == Just CheckElsewhere then 1 else 0)
                   }
           step (Tally [] store0 [] M.empty 0 0 0 0) work >>= \case
-            Left why -> pure (s, Left why)
+            -- cancelled: the verdicts earned so far are kept (each is valid
+            -- whatever was typed since); no facts, no record
+            Left t -> do
+              storeClaims s root path (pruneClaims ls (tStore t))
+              pure (s, Left "cancelled")
             Right (t, more) -> do
               end <- getMonotonicTime
               let store = pruneClaims ls (tStore t)

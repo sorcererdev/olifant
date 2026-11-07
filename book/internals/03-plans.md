@@ -345,7 +345,8 @@ is the whole of it:
    each item and each Jev call; work not reached is `rvMore`. Then `pruneClaims` drops words no
    longer in the plan, `storeClaims` keeps the store (memory and disk), and a `resolve` record
    (`Telemetry.ResolveRecord`) is appended when any model call ran. A tripped token answers
-   `Left "cancelled"` and keeps nothing.
+   `Left "cancelled"`, but `claimPass` first prunes and stores the tally so far (`step`'s `Left`
+   carries it), so the verdicts a pass earned are not asked again; no facts, no record.
 
 **In `Lsp`.** `startPass` runs it in the background under `planProgress "checking"`, on
 `didOpen` and `didSave` of a plan and on the client's `olifant/plans/idle` notification.
