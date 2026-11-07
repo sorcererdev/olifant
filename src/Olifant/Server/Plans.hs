@@ -12,6 +12,8 @@ module Olifant.Server.Plans
   , planTokenTypes
   , planTokenModifiers
   , planTokens
+  , planTokensWith
+  , claimHover
   , planFolds
   , anchorItems
   , newStepSnippet
@@ -60,7 +62,8 @@ import Olifant.Language.Adapter (languageFor)
 import Olifant.Plans (Anchor (..), Line (..), Section (..), Verdict (..), parsePlan, sectionOf)
 import Olifant.Server.State (ServerState (..))
 import Olifant.Server.Confine (confined, safely)
-import Olifant.Server.Claims (claimKey)
+import Olifant.Server.Claims (Check (..), ClaimEntry (..), ClaimStore, claimKey, claimsOf)
+import Olifant.Server.Resolve (UnitRef (..), refText)
 import Data.Set (Set)
 import Data.Set qualified as S
 import Olifant.Server.Unit (Named (..), fingerprint, unitLookupIn, unitsOf, unitsWithKinds)
@@ -116,12 +119,14 @@ key a = (anPath a, anUnit a)
 -- a ticked step. Steps raise no changed-since. With them, the fingerprints
 -- read: every resolved anchor's, Nothing for a unit not found.
 planDiagnostics :: ServerState -> Project -> FilePath -> Text -> IO ([Diagnostic], AnchorPrints)
-planDiagnostics s p _ text = do
+planDiagnostics s p path text = do
   let ls = parsePlan text
       anchored = [(l, a) | l <- ls, Just a <- [lnAnchor l]]
   resolved <- resolveAll s p (map snd anchored)
+  store <- claimsOf s (prRoot p) path
+  checking <- M.findWithDefault S.empty (normalisePath path) <$> readIORef (ssChecking s)
   pure
-    ( mapMaybe (\(l, a) -> diagnose ls l a =<< M.lookup (key a) resolved) anchored
+    ( mapMaybe (\(l, a) -> diagnose ls l a =<< M.lookup (key a) resolved) anchored ++ claimHints store checking ls
     , M.map (\r -> rsFingerprint r <* rsUnit r) resolved )
   where
     diagnose ls l a r = case (rsUnit r, lnVerdict l, rsFingerprint r) of
@@ -134,6 +139,51 @@ planDiagnostics s p _ text = do
       let row = fromIntegral (lnRow l)
           col n = fromIntegral (utf16Length (T.take n (lnText l)))
        in Range (Position row (col (anStart a))) (Position row (col (anEnd a)))
+
+-- | The claim pass's margin: per bare claim or step with an entry (or in
+-- the running pass's work), one hint (source `olifant-plan`): `claim-checking`
+-- (…), `claim-right` (✓, until its anchor lands), `claim-wrong` (✗ and why),
+-- `claim-resolved` (→ its unit), `claim-unsure` (?: no unit, but a
+-- candidate Jev gave at least 0.2, or candidates left after its check
+-- said the code is elsewhere). Nothing for a line with no plausible unit.
+claimHints :: ClaimStore -> S.Set Text -> [Line] -> [Diagnostic]
+claimHints store checking ls = concatMap hint ls
+  where
+    hint l
+      | lnAnchor l /= Nothing || not (listLine l) = []
+      | claimKey l `S.member` checking = [at l "claim-checking" "…"]
+      | otherwise = case M.lookup (claimKey l) store of
+          Nothing -> []
+          Just e -> case (ceUnit e, ceCheck e) of
+            (Just u, Just CheckRight) -> [at l "claim-right" ("✓ " <> named u)]
+            (Just u, Just (CheckWrong why)) -> [at l "claim-wrong" ("✗ " <> why <> " — " <> named u)]
+            (Just u, _) -> [at l "claim-resolved" ("→ " <> named u)]
+            (Nothing, Just CheckElsewhere) -> [at l "claim-unsure" "?" | not (null (ceCandidates e))]
+            (Nothing, _) -> [at l "claim-unsure" "?" | ceTop e >= 0.2]
+    listLine l = case lnKind l of
+      Claim -> True
+      Step _ -> True
+      _ -> False
+    named u = urName u <> " (" <> T.pack (urPath u) <> ")"
+    at l code msg =
+      let row = fromIntegral (lnRow l)
+          start = fromIntegral (lnIndent l)
+          end = fromIntegral (utf16Length (T.stripEnd (lnText l)))
+       in Diagnostic (Range (Position row start) (Position row end)) (Just DiagnosticSeverity_Hint) (Just (InR code)) Nothing (Just "olifant-plan") msg Nothing Nothing Nothing
+
+-- | What a bare line's entry says, for its hover: its unit as `path:Unit`,
+-- the check, and why.
+claimHover :: ClaimStore -> Line -> Maybe Text
+claimHover store l = case (lnAnchor l, M.lookup (claimKey l) store) of
+  (Nothing, Just e) ->
+    Just . T.intercalate "\n\n" $
+      [maybe "No unit found for this line." (\u -> "`" <> refText u <> "`") (ceUnit e)]
+        ++ case ceCheck e of
+          Just CheckRight -> ["✓ right about this code"]
+          Just (CheckWrong why) -> ["✗ wrong: " <> why]
+          Just CheckElsewhere -> ["This line is about other code than its first unit."]
+          Nothing -> ["Not checked yet."]
+  _ -> Nothing
 
 -- | (path, unit) -> the unit's fingerprint now; Nothing = not found. A key
 -- that is absent has not been read yet.
@@ -149,7 +199,7 @@ planTokenTypes, planTokenModifiers :: [Text]
 planTokenTypes =
   [ "planMarker", "planStep", "planStepDone", "planQuestion", "planEvidence", "planClaim", "planTest"
   , "planAlso", "planJournal", "planAnchorPath", "planAnchorUnit", "planVerdict", "planFingerprint" ]
-planTokenModifiers = ["done", "stale", "notFound"]
+planTokenModifiers = ["done", "stale", "notFound", "checked", "wrong", "resolved"]
 
 -- | What every span of a plan is, from the parser's lines alone (no I/O):
 -- markers, each kind's text, and an anchor's path, unit, verdict and
@@ -157,8 +207,21 @@ planTokenModifiers = ["done", "stale", "notFound"]
 -- `notFound` come from the fingerprints the diagnostics pass last read
 -- (a key absent from them is neither). Ascending and never overlapping.
 planTokens :: AnchorPrints -> [Line] -> [PlanToken]
-planTokens prints ls = concatMap tokensOf ls
+planTokens = planTokensWith M.empty
+
+-- | 'planTokens', with a bare line's text marked by its claim entry:
+-- `checked` (right, until its anchor is written), `wrong`, or `resolved`
+-- (a unit, not checked).
+planTokensWith :: ClaimStore -> AnchorPrints -> [Line] -> [PlanToken]
+planTokensWith store prints ls = concatMap tokensOf ls
   where
+    claimMods l = case (lnAnchor l, M.lookup (claimKey l) store) of
+      (Nothing, Just e) -> case (ceUnit e, ceCheck e) of
+        (Just _, Just CheckRight) -> ["checked"]
+        (Just _, Just (CheckWrong _)) -> ["wrong"]
+        (Just _, Nothing) -> ["resolved"]
+        _ -> []
+      _ -> []
     parentOf = parentIn ls
     ancestors = ancestorsIn ls
     below l = any (\a -> lnKind a == Step True) (ancestors l)
@@ -194,7 +257,7 @@ planTokens prints ls = concatMap tokensOf ls
               Evidence -> "planEvidence"
               Claim | Just _ <- lnAnchor l, Just p <- parentOf l, lnKind p == Question -> "planEvidence"
               _ -> "planClaim"
-            piece from to = [(from, n, textType, []) | let n = T.length (T.stripEnd (T.take (to - from) (T.drop from txt))), to > from, n > 0]
+            piece from to = [(from, n, textType, claimMods l) | let n = T.length (T.stripEnd (T.take (to - from) (T.drop from txt))), to > from, n > 0]
             anchored = case lnAnchor l of
               Nothing -> piece afterMarker textEnd
               Just a ->

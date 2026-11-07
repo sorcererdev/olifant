@@ -10,7 +10,7 @@ module Olifant.Lsp (runLsp, runLspWithHandles, serverDefinition) where
 import Data.Char (isSpace)
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar, readMVar, tryPutMVar, tryTakeMVar)
-import Control.Exception (SomeAsyncException, SomeException, catch, displayException, finally, fromException, throwIO)
+import Control.Exception (SomeAsyncException, SomeException, catch, displayException, finally, fromException, throwIO, try)
 import Olifant.Language.Grammar (GrammarUnavailable (..))
 import Olifant.Process (Cancel, cancelled, neverCancel, newCancel)
 import Olifant.Recognize qualified as Recognize
@@ -33,7 +33,9 @@ import Data.Aeson.KeyMap qualified as KM
 import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe, mapMaybe)
 import Olifant.Plans (Anchor (..), Kind (..), Line (..), Verdict (..), anchorText, childrenOf, excerptInfo, excerptSpans, parsePlan, stepDone, testState, withVerdict)
 import Olifant.Server.Unit (Named (..))
-import Olifant.Server.Claims (checkedKeys, claimsOf)
+import Olifant.Server.Claims (checkedKeys, claimKey, claimsOf, passWork)
+import Olifant.Server.Claims qualified as Claims
+import Olifant.Server.Loop (PassAnswer (..), claimPass)
 import Data.Text qualified as T
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (find, isInfixOf, nub)
@@ -61,7 +63,7 @@ import Olifant.Transcripts (slugOf)
 import Data.Time (getCurrentTimeZone)
 import System.Directory (getHomeDirectory)
 import Olifant.Server.LoopTypes (Fact (..))
-import Olifant.Server.Plans (Reopen (..))
+import Olifant.Server.Plans (Reopen (..), claimHover, planTokensWith)
 import System.FilePath (makeRelative, takeFileName, (</>))
 import Olifant.Generation (Plan (..), ProgressEvent)
 import Olifant.Output (doctorJson, fileActionsJson, listJson, planJson, showJson)
@@ -105,6 +107,9 @@ data Env = Env
     envPlanPrints :: IORef (M.Map FilePath AnchorPrints)
   , -- | the grammar stops already shown in a message: once per text per session
     envStops :: IORef (S.Set T.Text)
+  , -- | each plan's running claim pass (its number and how to cancel it),
+    -- and the last number given
+    envPasses :: IORef (Int, M.Map FilePath (Int, IO ()))
   }
 
 -- | A suggestion's plan, for the document version it was planned against.
@@ -158,7 +163,7 @@ serverDefinition ports = do
   -- a conjure asks the document's version as the editor has it now, not as
   -- its snapshot saw it, before its edits land
   modifyMVar_ state (\s -> pure s {ssLiveDoc = Just (\path -> M.lookup path . ssDocs <$> readMVar state)})
-  env <- Env ports state <$> newJobs <*> newIORef (0, M.empty) <*> newIORef False <*> newIORef S.empty <*> newIORef M.empty <*> newIORef M.empty <*> pure neverCancel <*> newMVar () <*> newIORef M.empty <*> newIORef S.empty
+  env <- Env ports state <$> newJobs <*> newIORef (0, M.empty) <*> newIORef False <*> newIORef S.empty <*> newIORef M.empty <*> newIORef M.empty <*> pure neverCancel <*> newMVar () <*> newIORef M.empty <*> newIORef S.empty <*> newIORef (0, M.empty)
   pure
     ServerDefinition
       { parseConfig = \_ _ -> Right ()
@@ -278,7 +283,7 @@ handlers env =
           -- a plan's journal lines left pending while it was closed land now
           -- (only when there are any: the edit moves the plan's version)
           case found of
-            Just (_, p) | isPlanPath p path -> flushJournal env path
+            Just (_, p) | isPlanPath p path -> flushJournal env path >> startPass env path
             _ -> pure ()
     , notificationHandler SMethod_TextDocumentDidChange $ \msg -> do
         let uri = msg ^. L.params . L.textDocument . L.uri
@@ -287,12 +292,19 @@ handlers env =
           Just vf -> atPath uri $ \path -> do
             let version = fromIntegral (virtualFileVersion vf)
             update env (changeDoc path version (virtualFileText vf))
+            -- the plan's claim pass stops: the user is typing in it
+            liftIO (stopPass env path)
             -- what follows from this edit, once typing settles
             case lastEditedLine (msg ^. L.params . L.contentChanges) of
               Nothing -> pure ()
               Just line -> do
                 lspEnv <- getLspEnv
                 liftIO (suggestLater env lspEnv path version line)
+    , -- the editor saw a plan go quiet (out of insert mode, a second since the last change)
+      notificationHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/plans/idle")) $ \msg ->
+        case documentPath (msg ^. L.params) of
+          Just path -> startPass env path
+          Nothing -> pure ()
     , notificationHandler SMethod_TextDocumentDidClose $ \msg ->
         atPath (msg ^. L.params . L.textDocument . L.uri) (update env . closeDoc)
     , -- regions follow a save: the other files' through applyEdit (the saved
@@ -300,6 +312,7 @@ handlers env =
       notificationHandler SMethod_TextDocumentDidSave $ \msg ->
         atPath (msg ^. L.params . L.textDocument . L.uri) $ \path -> do
           update env fileSaved
+          startPass env path
           worked <- liftIO (atomicModifyIORef' (envSaving env) (\m -> (M.delete path m, M.lookup path m)))
           lspEnv <- getLspEnv
           -- what willSaveWaitUntil worked out, else (a client without it)
@@ -763,7 +776,8 @@ handlers env =
           Just path -> liftIO $ planContext env path >>= \case
             Just (p, _, text) | isPlanPath p path -> do
               prints <- M.findWithDefault M.empty path <$> readIORef (envPlanPrints env)
-              pure (encodePlanTokens (planTokens prints (parsePlan text)))
+              store <- readMVar (envState env) >>= \s -> claimsOf s (prRoot p) path
+              pure (encodePlanTokens (planTokensWith store prints (parsePlan text)))
             _ -> pure []
         respond (Right (InL (SemanticTokens Nothing encoded)))
     , -- a plan's excerpts, ticked steps and answered questions fold
@@ -1585,7 +1599,12 @@ planHover env project path (Position l c) = do
   let col = T.length (takeUtf16 (fromIntegral c) (lineAt (T.splitOn "\n" text) (fromIntegral l)))
   case [a | ln <- parsePlan text, lnRow ln == fromIntegral l, Just a <- [lnAnchor ln], anStart a <= col, col <= anEnd a] of
     a : _ -> withSnapshot env (\s -> (s,) <$> unitHover s project a) <&> fmap (\md -> Hover (InL (MarkupContent MarkupKind_Markdown md)) Nothing)
-    [] -> pure Nothing
+    [] -> do
+      -- a bare line: what the claim pass found for it
+      store <- readMVar (envState env) >>= \s -> claimsOf s (prRoot project) path
+      pure $ case [ln | ln <- parsePlan text, lnRow ln == fromIntegral l] of
+        ln : _ | Just md <- claimHover store ln -> Just (Hover (InL (MarkupContent MarkupKind_Markdown md)) Nothing)
+        _ -> Nothing
 
 -- | The start of a line, up to a UTF-16 column.
 takeUtf16 :: Int -> T.Text -> T.Text
@@ -1710,6 +1729,59 @@ inBackground env req respond work = do
           Nothing -> runLspT lspEnv (respond (Left (TResponseError (InR ErrorCodes_InternalError) ("olifant lsp: " <> T.pack (displayException e)) Nothing)))
     )
       `finally` atomicModifyIORef' (envRunning env) (\m -> (M.delete key m, ()))
+
+-- | The claim pass on the plan at PATH, in the background under "checking":
+-- one per plan (a new one cancels the running one; an edit cancels it too).
+-- Its anchors land by applyEdit only at the version it read; then the
+-- diagnostics and tokens are pulled again.
+startPass :: Env -> FilePath -> LspM () ()
+startPass env path =
+  liftIO (planContext env path) >>= \case
+    Just (p, _, text) | isPlanPath p path -> do
+      lspEnv <- getLspEnv
+      (token, trip) <- liftIO newCancel
+      n <- liftIO $ do
+        (n, old) <- atomicModifyIORef' (envPasses env) (\(i, m) -> ((i + 1, M.insert path (i + 1, trip) m), (i + 1, M.lookup path m)))
+        maybe (pure ()) snd old
+        -- the lines it works on show as being checked
+        st <- readMVar (envState env)
+        store <- claimsOf st (prRoot p) path
+        let keys = S.fromList [claimKey (workLine w) | w <- passWork (parsePlan text) store]
+        atomicModifyIORef' (ssChecking st) (\m -> (M.insert (normalisePath path) keys m, ()))
+        pure n
+      -- the client may cancel its progress: the pass stops, the margin clears
+      void . liftIO . forkIO . (`catch` \(_ :: SomeException) -> trip >> runLspT lspEnv claimsChanged) . runLspT lspEnv $ do
+        answered <- planProgress "checking" (\_ -> try (withSnapshotState env {envCancel = token} (claimPass token path)) :: IO (Either SomeException (ServerState, Either T.Text PassAnswer)))
+        stopped <- liftIO (cancelled token)
+        mine <- liftIO $ do
+          mine <- atomicModifyIORef' (envPasses env) (\(i, m) -> case M.lookup path m of
+            Just (j, _) | j == n -> ((i, M.delete path m), True)
+            _ -> ((i, m), False))
+          st <- readMVar (envState env)
+          when mine (atomicModifyIORef' (ssChecking st) (\m -> (M.delete (normalisePath path) m, ())))
+          pure mine
+        case answered of
+          Right (read', Right a) | not stopped -> do
+            now <- liftIO (M.lookup path . ssDocs <$> readMVar (envState env))
+            case (fst <$> M.lookup path (ssDocs read'), now) of
+              (Just v, Just (v', current)) | v == v', not (null (paFacts a)) ->
+                void (sendRequest SMethod_WorkspaceApplyEdit (ApplyWorkspaceEditParams (Just "Olifant: checked") (factsEdit path (Just v) current (paFacts a))) (\_ -> pure ()))
+              _ -> pure ()
+            claimsChanged
+          _ -> when mine claimsChanged
+    _ -> pure ()
+  where
+    workLine = \case
+      Claims.ResolveAndCheck l -> l
+      Claims.ResolveOnly l -> l
+      Claims.WriteAnchor l _ -> l
+    claimsChanged = do
+      void (sendRequest SMethod_WorkspaceDiagnosticRefresh Nothing (\_ -> pure ()))
+      semanticTokensChanged
+
+-- | Cancel the claim pass running on the plan at PATH, if any.
+stopPass :: Env -> FilePath -> IO ()
+stopPass env path = readIORef (envPasses env) >>= \(_, m) -> maybe (pure ()) snd (M.lookup path m)
 
 -- | `olifant/plans/<verb>` (params: textDocument, line): the errand in the
 -- background under a progress TITLE. A `do` runs alone: a second while one

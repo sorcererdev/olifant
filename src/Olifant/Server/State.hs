@@ -134,6 +134,9 @@ data ServerState = ServerState
   , -- | per plan (absolute path): its claim store (an
     -- 'Olifant.Server.Claims.ClaimStore'), loaded on first use
     ssClaims :: IORef (Map FilePath Dynamic)
+  , -- | per plan (absolute path): the keys of the lines its running claim
+    -- pass works on (the margin shows them as being checked)
+    ssChecking :: IORef (Map FilePath (Set Text))
   }
 
 newServerState :: Ports -> IO ServerState
@@ -146,7 +149,8 @@ newServerState ports = do
   units <- newIORef M.empty
   index <- newIORef M.empty
   claims <- newIORef M.empty
-  pure (ServerState ports M.empty M.empty cache defaultServerConfig M.empty 0 0 M.empty M.empty neverCancel M.empty M.empty M.empty M.empty bases decisions onDecided Nothing Nothing paused M.empty units index claims)
+  checking <- newIORef M.empty
+  pure (ServerState ports M.empty M.empty cache defaultServerConfig M.empty 0 0 M.empty M.empty neverCancel M.empty M.empty M.empty M.empty bases decisions onDecided Nothing Nothing paused M.empty units index claims checking)
 
 -- | A file's base text, from the cache while no file changed since.
 cachedBase :: ServerState -> FilePath -> Text -> FilePath -> IO (Either Text (Text, Maybe Text))

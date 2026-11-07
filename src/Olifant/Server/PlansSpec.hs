@@ -19,6 +19,8 @@ import Olifant.Plans (Anchor (..), parsePlan)
 import Olifant.Process (gitStateStamp)
 import Olifant.Server (ServerState, newServerState, projectFor)
 import Olifant.Server.Plans
+import Olifant.Server.Claims (Check (..), ClaimEntry (..))
+import Olifant.Server.Resolve (UnitRef (..))
 import Olifant.Server.Unit (Named (..))
 import Olifant.Workspace (memoryWorkspace)
 import System.Directory (canonicalizePath, doesDirectoryExist, listDirectory)
@@ -164,6 +166,14 @@ spec = describe "Olifant.Server.Plans (anchors in the server)" $ do
           ends = [(ptRow t, ptCol t, ptCol t + ptLen t) | t <- ts]
       and [(r, c) < (r', c') && (r < r' || e <= c') | ((r, c, e), (r', c', _)) <- zip ends (drop 1 ends)] `shouldBe` True
 
+  describe "planTokensWith (claim modifiers)" $
+    it "a bare line's text carries checked, wrong or resolved from its entry" $ do
+      let at0 = UTCTime (fromGregorian 2026 11 7) 0
+          u = UnitRef "src/a.py" "Foo"
+          e c = ClaimEntry (Just u) "jev-1" [u] 0.9 c Nothing at0
+          store = M.fromList [("right one", e (Just CheckRight)), ("wrong one", e (Just (CheckWrong "no"))), ("open one", e Nothing)]
+          mods = [(ptRow t, ptMods t) | t <- planTokensWith store M.empty (parsePlan "- right one\n- wrong one\n- open one\n- other\n"), ptType t == "planClaim"]
+      mods `shouldBe` [(0, ["checked"]), (1, ["wrong"]), (2, ["resolved"]), (3, [])]
   describe "planFolds" $ do
     let folds = planFolds S.empty . parsePlan . T.unlines
     it "a ticked step with children folds to its last descendant" $
