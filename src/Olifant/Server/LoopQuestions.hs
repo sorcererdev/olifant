@@ -32,7 +32,7 @@ import Olifant.Model (Backend (..), Escalate (..), ModelConfig (..), Rung (..), 
 import Olifant.Plans (Kind (..), Line (..), Section (..), TestState (..), childrenOf, excerptRows, sectionOf, sections, testState)
 import Olifant.Process (Cancel, cancelled)
 import Olifant.Server.LoopTypes (Change (..), ChangedUnit (..))
-import Olifant.Server.Plans (safely)
+import Olifant.Server.Confine (safely)
 import Olifant.Server.State (ServerState (..), deciderUnder)
 
 -- | Which open step a file's change is for: one option per open step
