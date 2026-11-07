@@ -25,9 +25,16 @@ module Olifant.Decide
   , jevWeighed
   , jevDecider
   , recordedDecider
+  , questionKey
+  , replayDecider
   ) where
 
 import Control.Concurrent (threadDelay)
+import Control.Exception (SomeException, try)
+import Data.Bits (xor)
+import Data.Word (Word64)
+import Numeric (showHex)
+import System.Directory (doesFileExist)
 import Data.Aeson (Value (..), eitherDecodeStrict, encode, object, (.=))
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KM
@@ -320,3 +327,63 @@ recordedDecider file token = weighed $ \q -> do
     probabilities = \case
       Object a | Just (Object ps) <- KM.lookup "probabilities" a -> byWeight [(Key.toText k, toRealFloat n) | (k, Number n) <- KM.toList ps]
       _ -> []
+
+-- | A question's identity for a recording: 16 hex digits of FNV-1a 64 over
+-- its Jev body (kind, instructions, options with their descriptions, context).
+questionKey :: Question -> Text
+questionKey q = T.pack (pad (showHex (BL.foldl' step offset (encode (jevBody [q]))) ""))
+  where
+    offset = 14695981039346656037 :: Word64
+    step h b = (h `xor` fromIntegral b) * 1099511628211
+    pad s = replicate (16 - length s) '0' ++ s
+
+-- | A recorded Jev keyed by the question's content (tests, the corpus spec):
+-- `{"answers": {KEY: {"choice": C, "confidence": P, "probabilities": {OPTION: P}}}}`.
+-- With no live decider it replays: a key not in the file is unsure and the
+-- key is appended to FILE.missed. With one it records: the live answer is
+-- written under the key (the file created, keys sorted) and returned.
+replayDecider :: FilePath -> Maybe (Decider IO) -> Decider IO
+replayDecider file live = weighed $ \q -> do
+  let key = questionKey q
+  recorded <- readRecording file
+  case live of
+    Nothing -> case KM.lookup (Key.fromText key) recorded of
+      Just v -> pure (validated q (fromValue v), probabilities v)
+      Nothing -> (Unsure, []) <$ appendFile (file <> ".missed") (T.unpack key <> "\n")
+    Just d -> do
+      (a, ps) <- weigh d q
+      let entry = answerValue a ps
+          answers = KM.insert (Key.fromText key) entry recorded
+      BL.writeFile file (encode (object ["answers" .= Object answers]) <> "\n")
+      pure (a, ps)
+  where
+    probabilities = \case
+      Object a | Just (Object ps) <- KM.lookup "probabilities" a -> byWeight [(Key.toText k, toRealFloat n) | (k, Number n) <- KM.toList ps]
+      _ -> []
+
+-- | A recording's answers; a missing or unreadable file has none.
+readRecording :: FilePath -> IO (KM.KeyMap Value)
+readRecording file = do
+  exists <- doesFileExist file
+  if not exists
+    then pure KM.empty
+    else
+      try (BL.readFile file >>= \raw -> BL.length raw `seq` pure raw) >>= \case
+        Left (_ :: SomeException) -> pure KM.empty
+        Right raw -> case eitherDecodeStrict (BL.toStrict raw) of
+          Right (Object o) | Just (Object as) <- KM.lookup "answers" o -> pure as
+          _ -> pure KM.empty
+
+-- | An answer as a recording holds it (read back by 'fromValue').
+answerValue :: Answer -> [(Text, Double)] -> Value
+answerValue a ps = object (base ++ ["probabilities" .= Object (KM.fromList [(Key.fromText o, Number (realToFrac p)) | (o, p) <- ps]) | not (null ps)])
+  where
+    conf = \case
+      Confidence c -> ["confidence" .= c]
+      Unknown -> []
+    base = case a of
+      Chosen c fs k -> ["choice" .= c] ++ ["fields" .= Object (KM.fromList [(Key.fromText f, String v) | (f, v) <- fs]) | not (null fs)] ++ conf k
+      Yes k -> ["choice" .= True] ++ conf k
+      No k -> ["choice" .= False] ++ conf k
+      Level n _ k -> ["choice" .= n] ++ conf k
+      Unsure -> ["choice" .= ("unsure" :: Text)]

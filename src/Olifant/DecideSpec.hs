@@ -52,6 +52,29 @@ spec = describe "Olifant.Decide" $ do
         (token, trip) <- newCancel
         _ <- forkIO (threadDelay 200000 >> trip)
         timeout 5000000 (ask (recordedDecider file token) commandOrQuery) `shouldReturn` Just Unsure
+  describe "replayDecider" $ do
+    let unitQ line = choice "plan-unit" "Which unit" [("u1", "first"), ("u2", "second")] [("line", line)]
+        stub = Decider (fmap fst . pick) (traverse (fmap fst . pick)) pick
+        pick :: Question -> IO (Answer, [(T.Text, Double)])
+        pick q = pure $ case lookup "line" (qContext q) of
+          Just "x" -> (Chosen "u1" [] (Confidence 0.9), [("u1", 0.9), ("u2", 0.1)])
+          _ -> (Chosen "u2" [] (Confidence 0.7), [("u2", 0.7), ("u1", 0.3)])
+    it "(a) two questions of one kind with different context replay different answers" $
+      withSystemTempDirectory "olifant-decide" $ \dir -> do
+        let file = dir </> "jev.json"
+        _ <- weigh (replayDecider file (Just stub)) (unitQ "x")
+        _ <- weigh (replayDecider file (Just stub)) (unitQ "y")
+        weigh (replayDecider file Nothing) (unitQ "x") `shouldReturn` (Chosen "u1" [] (Confidence 0.9), [("u1", 0.9), ("u2", 0.1)])
+        fmap fst (weigh (replayDecider file Nothing) (unitQ "y")) `shouldReturn` Chosen "u2" [] (Confidence 0.7)
+    it "(b) a question not in the file is unsure and noted in FILE.missed" $
+      withSystemTempDirectory "olifant-decide" $ \dir -> do
+        let file = dir </> "jev.json"
+        _ <- weigh (replayDecider file (Just stub)) (unitQ "x")
+        weigh (replayDecider file Nothing) (unitQ "z") `shouldReturn` (Unsure, [])
+        missed <- readFile (file <> ".missed")
+        missed `shouldContain` T.unpack (questionKey (unitQ "z"))
+    it "(c) questionKey changes with the options' descriptions" $
+      questionKey (choice "k" "i" [("a", "h1")] []) `shouldNotBe` questionKey (choice "k" "i" [("a", "h2")] [])
   describe "shapes and confidence" $ do
     it "(a2) a Noul takes a yes or a no, not a choice; a Score takes a level in range" $ do
       validated equivalence (Yes Unknown) `shouldBe` Yes Unknown
