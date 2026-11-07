@@ -28,11 +28,9 @@ module Olifant.Server.Plans
   , safely
   ) where
 
-import Olifant.Language.Grammar (GrammarUnavailable)
 import Control.Lens ((&), (?~))
 import Control.Monad (filterM, when)
 import Language.LSP.Protocol.Lens qualified as L
-import Control.Exception (SomeAsyncException, SomeException, fromException, throwIO, try)
 import Data.Functor ((<&>))
 import Data.Dynamic (fromDynamic, toDyn)
 import Data.IORef (modifyIORef', readIORef)
@@ -61,9 +59,10 @@ import Olifant.Catalog (Catalog (..), PlansConfig (..))
 import Olifant.Language.Adapter (languageFor)
 import Olifant.Plans (Anchor (..), Line (..), Section (..), Verdict (..), parsePlan, sectionOf)
 import Olifant.Server.State (ServerState (..))
+import Olifant.Server.Confine (confined, safely)
 import Olifant.Server.Unit (Named (..), fingerprint, unitLookupIn, unitsOf, unitsWithKinds)
 import Olifant.Workspace (Workspace (..), normalisePath)
-import System.FilePath (isAbsolute, takeExtension, (</>))
+import System.FilePath (takeExtension, (</>))
 
 -- | An absolute path under the project's plans folder, ending `.md`.
 isPlanPath :: Project -> FilePath -> Bool
@@ -97,29 +96,6 @@ resolveAnchor s p a = do
   pure (Resolved rel (normalisePath (prRoot p </> rel)) unit (fingerprint <$> text <*> fmap namedLines unit) text (either id (const Nothing) found))
   where
     rel = normalisePath (anPath a)
-
--- | An anchor's path as one inside the project (normalised, relative), or
--- Nothing: an absolute path, or one that climbs out of the root, is never
--- read. The one place anchors are confined (a later allowlist of sibling
--- roots widens only this).
-confined :: FilePath -> Maybe FilePath
-confined path
-  | isAbsolute path = Nothing
-  | rel == ".." || "../" `isPrefixOf` rel = Nothing
-  | otherwise = Just rel
-  where
-    rel = normalisePath path
-
--- | IO that cannot fail the caller: an exception (not an async one, nor a
--- grammar that cannot load: that stops the request) is the default.
-safely :: a -> IO a -> IO a
-safely def io =
-  try io >>= \case
-    Right v -> pure v
-    Left (e :: SomeException)
-      | Just (_ :: SomeAsyncException) <- fromException e -> throwIO e
-      | Just (_ :: GrammarUnavailable) <- fromException e -> throwIO e
-      | otherwise -> pure def
 
 -- | Each anchor resolved once, by its path and unit.
 resolveAll :: ServerState -> Project -> [Anchor] -> IO (M.Map (FilePath, Text) Resolved)

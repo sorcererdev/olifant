@@ -126,6 +126,9 @@ data ServerState = ServerState
   , -- | per (language, path): the units found in a text, kept while the file's
     -- text is the same (anchor completion asks for many files per keystroke)
     ssUnitCache :: IORef (Map (Text, FilePath) (Text, Dynamic))
+  , -- | per absolute path: the resolver's unit profiles of a file (a
+    -- 'Olifant.Server.Resolve.UnitProfile' list), kept while its text is the same
+    ssIndexCache :: IORef (Map FilePath (Text, Dynamic))
   }
 
 newServerState :: Ports -> IO ServerState
@@ -136,7 +139,8 @@ newServerState ports = do
   onDecided <- newIORef (pure ())
   paused <- newIORef (0, M.empty)
   units <- newIORef M.empty
-  pure (ServerState ports M.empty M.empty cache defaultServerConfig M.empty 0 0 M.empty M.empty neverCancel M.empty M.empty M.empty M.empty bases decisions onDecided Nothing Nothing paused M.empty units)
+  index <- newIORef M.empty
+  pure (ServerState ports M.empty M.empty cache defaultServerConfig M.empty 0 0 M.empty M.empty neverCancel M.empty M.empty M.empty M.empty bases decisions onDecided Nothing Nothing paused M.empty units index)
 
 -- | A file's base text, from the cache while no file changed since.
 cachedBase :: ServerState -> FilePath -> Text -> FilePath -> IO (Either Text (Text, Maybe Text))
