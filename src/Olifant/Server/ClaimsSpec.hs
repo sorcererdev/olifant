@@ -70,6 +70,9 @@ spec = describe "Olifant.Server.Claims" $ describe "Claims" $ do
     it "(j) pruneClaims drops a renamed line's old key" $ do
       let store = M.fromList [("the loader keeps D", entry Nothing), ("the loader kept D", entry Nothing)]
       M.keys (pruneClaims (parsePlan "- the loader keeps D\n") store) `shouldBe` ["the loader keeps D"]
+    it "(k) lines sharing a key are one piece of work: the first" $
+      map summary (passWork (parsePlan "# T\n- same words\n- [ ] same words\n  - same words\n- other\n") M.empty)
+        `shouldBe` [("check", 1), ("check", 4)]
   it "(a) a store round-trips through writeClaims and readClaims" $ do
     (s, _) <- claimsServer "" Nothing
     let store =

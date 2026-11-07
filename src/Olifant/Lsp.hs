@@ -1746,7 +1746,7 @@ startPass env path =
         -- the lines it works on show as being checked
         st <- readMVar (envState env)
         store <- claimsOf st (prRoot p) path
-        let keys = S.fromList [claimKey (workLine w) | w <- passWork (parsePlan text) store]
+        let keys = S.fromList [claimKey (Claims.workLine w) | w <- passWork (parsePlan text) store]
         atomicModifyIORef' (ssChecking st) (\m -> (M.insert (normalisePath path) keys m, ()))
         pure n
       -- the client may cancel its progress: the pass stops, the margin clears
@@ -1771,10 +1771,6 @@ startPass env path =
           _ -> when mine claimsChanged
     _ -> pure ()
   where
-    workLine = \case
-      Claims.ResolveAndCheck l -> l
-      Claims.ResolveOnly l -> l
-      Claims.WriteAnchor l _ -> l
     claimsChanged = do
       void (sendRequest SMethod_WorkspaceDiagnosticRefresh Nothing (\_ -> pure ()))
       semanticTokensChanged

@@ -15,6 +15,7 @@ module Olifant.Server.Claims
   , checkQuestion
   , checkClaim
   , Work (..)
+  , workLine
   , passWork
   , pruneClaims
   , checkedKeys
@@ -201,7 +202,7 @@ data Work = ResolveAndCheck Line | ResolveOnly Line | WriteAnchor Line ClaimEntr
 -- fingerprint. A bare claim beside an anchored claim or evidence under a
 -- question is that answer's conclusion, not a belief: never work.
 passWork :: [Line] -> ClaimStore -> [Work]
-passWork ls store = concatMap work ls
+passWork ls store = firstPerKey (concatMap work ls)
   where
     work l
       | lnAnchor l /= Nothing || T.null key = []
@@ -217,6 +218,15 @@ passWork ls store = concatMap work ls
           Claim -> True
           Step _ -> True
           _ -> False
+    -- one key is one question: lines with the same words share it
+    firstPerKey = go S.empty
+      where
+        go _ [] = []
+        go seen (w : ws)
+          | k `S.member` seen = go seen ws
+          | otherwise = w : go (S.insert k seen) ws
+          where
+            k = claimKey (workLine w)
     conclusion l = case parentOf l of
       Just q
         | lnKind q == Question ->
@@ -224,6 +234,13 @@ passWork ls store = concatMap work ls
       _ -> False
     parentOf l = listToMaybe [p | p <- reverse (take (lnRow l) ls), lnIndent p < lnIndent l, lnKind p /= Prose]
     directKids q = [c | c <- childrenOf ls (lnRow q), lnIndent c == lnIndent q + 2]
+
+-- | The line a piece of work is about.
+workLine :: Work -> Line
+workLine = \case
+  ResolveAndCheck l -> l
+  ResolveOnly l -> l
+  WriteAnchor l _ -> l
 
 -- | The store without keys no line of the plan has (an edited line's old
 -- words).
