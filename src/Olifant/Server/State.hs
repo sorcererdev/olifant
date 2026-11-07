@@ -63,12 +63,14 @@ import System.FilePath (splitDirectories, takeDirectory, (</>))
 -- use @scFills@).
 -- @scTestScript@: a file of scripted test verdicts, which the server's
 -- test runner answers from instead of running anything (tests).
+-- @scChatAnswers@: a file of recorded decisions the chat rungs answer
+-- from instead of calling their backends (tests).
 -- @scKeys@: the editor's keys by name (`plan_review`: "<leader>mpr"), which
 -- the lenses that offer them name.
-data ServerConfig = ServerConfig {scDebounceMs :: Int, scModel :: Maybe Text, scFills :: Maybe FilePath, scDecideAnswers :: Maybe FilePath, scTestScript :: Maybe FilePath, scKeys :: [(Text, Text)]}
+data ServerConfig = ServerConfig {scDebounceMs :: Int, scModel :: Maybe Text, scFills :: Maybe FilePath, scDecideAnswers :: Maybe FilePath, scTestScript :: Maybe FilePath, scKeys :: [(Text, Text)], scChatAnswers :: Maybe FilePath}
 
 defaultServerConfig :: ServerConfig
-defaultServerConfig = ServerConfig 300 Nothing Nothing Nothing Nothing []
+defaultServerConfig = ServerConfig 300 Nothing Nothing Nothing Nothing [] Nothing
 
 -- | A project as loaded: its catalog, or why it no longer loads (with the
 -- last good one, still served).
@@ -129,6 +131,9 @@ data ServerState = ServerState
   , -- | per absolute path: the resolver's unit profiles of a file (a
     -- 'Olifant.Server.Resolve.UnitProfile' list), kept while its text is the same
     ssIndexCache :: IORef (Map FilePath (Text, Dynamic))
+  , -- | per plan (absolute path): its claim store (an
+    -- 'Olifant.Server.Claims.ClaimStore'), loaded on first use
+    ssClaims :: IORef (Map FilePath Dynamic)
   }
 
 newServerState :: Ports -> IO ServerState
@@ -140,7 +145,8 @@ newServerState ports = do
   paused <- newIORef (0, M.empty)
   units <- newIORef M.empty
   index <- newIORef M.empty
-  pure (ServerState ports M.empty M.empty cache defaultServerConfig M.empty 0 0 M.empty M.empty neverCancel M.empty M.empty M.empty M.empty bases decisions onDecided Nothing Nothing paused M.empty units index)
+  claims <- newIORef M.empty
+  pure (ServerState ports M.empty M.empty cache defaultServerConfig M.empty 0 0 M.empty M.empty neverCancel M.empty M.empty M.empty M.empty bases decisions onDecided Nothing Nothing paused M.empty units index claims)
 
 -- | A file's base text, from the cache while no file changed since.
 cachedBase :: ServerState -> FilePath -> Text -> FilePath -> IO (Either Text (Text, Maybe Text))

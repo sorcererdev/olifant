@@ -193,6 +193,10 @@ configure env = \case
                     (_, Just (String f)) -> Just (T.unpack f)
                     _ -> scDecideAnswers (ssConfig s)
                 , scTestScript = script s
+                , -- chat_answers: a file of recorded answers the chat rungs give (tests)
+                  scChatAnswers = case KM.lookup "chat_answers" o of
+                    Just (String f) -> Just (T.unpack f)
+                    _ -> scChatAnswers (ssConfig s)
                 , scKeys = case KM.lookup "keys" o of
                     Just (Object ks) -> [(Key.toText k, v) | (k, String v) <- KM.toList ks]
                     _ -> scKeys (ssConfig s)

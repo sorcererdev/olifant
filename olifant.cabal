@@ -140,6 +140,7 @@ library
     Olifant.Server
     Olifant.Server.Actions
     Olifant.Server.Anticipate
+    Olifant.Server.Claims
     Olifant.Server.Completion
     Olifant.Server.Confine
     Olifant.Server.Conjure
@@ -348,6 +349,8 @@ test-suite spec
     Olifant.Server.Actions
     Olifant.Server.Anticipate
     Olifant.Server.AnticipateSpec
+    Olifant.Server.Claims
+    Olifant.Server.ClaimsSpec
     Olifant.Server.Completion
     Olifant.Server.Confine
     Olifant.Server.Conjure
