@@ -364,7 +364,8 @@ After it, `workspace/diagnostic/refresh` and `semanticTokens/refresh`. The margi
 `Server/Plans.claimHints` (inside `planDiagnostics`), `planTokensWith` (the `checked`, `wrong`,
 `resolved` modifiers) and `claimHover` (called by `Lsp.planHover` on a line with no anchor under
 the cursor). `planFolds` takes `checkedKeys` of the store, so a belief folds its question only
-once it has a verdict. An `ask` carries the checked beliefs under its question
+once it has a verdict; the shape `passWork` skips as an `ask`'s conclusion (grounded claims of
+any verdict plus a bare claim) folds too. An `ask` carries the checked beliefs under its question
 (`Plans.beliefsUnder` to `Errand.errandPromptWith`).
 
 ## What is in `Lsp`

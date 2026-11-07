@@ -66,7 +66,8 @@ durandal.nvim, off the cursor line:
   stands out. A `✓` whose unit has changed since is dimmer still.
 - **Done work folds.** A ticked step with children and an answered question are closed when you
   enter the plan. A question is answered when a line directly under it is evidence (`- ✓`, `- ✗`),
-  a verified anchored claim (an `ask`'s answer), or a belief of yours that the claim pass has
+  a verified anchored claim, an `ask`'s answer (anchored claims, whatever their verdicts, then a
+  bare conclusion), or a belief of yours that the claim pass has
   checked, right or wrong. A bare line you write under a question is a belief awaiting its check,
   so the question stays open until the check lands. A question's fold line is the question, ` — `,
   and its conclusion (the last unanchored child, so a note you add later wins), cut to the window,

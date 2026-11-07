@@ -198,6 +198,10 @@ spec = describe "Olifant.Server.Plans (anchors in the server)" $ do
     it "a bare belief keeps its question open until it is checked" $ do
       folds ["- ? q", "  - I think x"] `shouldBe` []
       planFolds (S.fromList ["I think x"]) (parsePlan (T.unlines ["- ? q", "  - I think x"])) `shouldBe` [(0, 1)]
+    it "an ask's answer folds whatever its anchors' verdicts: anchored claims plus a bare conclusion" $ do
+      folds ["- ? q", "  - grounded @src/a.py:Foo", "  - so it keeps D"] `shouldBe` [(0, 2)]
+      folds ["- ? q", "  - grounded @src/a.py:Foo"] `shouldBe` []
+      folds ["- ? q", "  - I think x", "  - so it keeps D"] `shouldBe` []
     it "a question under a ticked step folds inside it" $
       planFolds (S.fromList ["the answer"]) (parsePlan (T.unlines ["- [x] a", "  - ? q", "    - the answer", "  - 25 Oct 21:31 · did"])) `shouldBe` [(0, 3), (1, 2)]
 

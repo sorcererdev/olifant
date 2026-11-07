@@ -298,7 +298,8 @@ ancestorsIn ls l = maybe [] (\p -> p : ancestorsIn ls p) (parentIn ls l)
 -- | The ranges a plan folds besides its excerpts: a ticked step with
 -- children, and an answered question (a direct child that is evidence, a
 -- verified anchored claim, or a claim whose key is in CHECKED: a belief
--- with a stored check; a bare belief alone keeps it open), each from its
+-- with a stored check; a bare belief alone keeps it open; an ask's answer,
+-- grounded claims of any verdict and a bare conclusion, folds), each from its
 -- row to its last descendant (start, end; inclusive).
 planFolds :: Set Text -> [Line] -> [(Int, Int)]
 planFolds checked ls =
@@ -308,11 +309,16 @@ planFolds checked ls =
   , not (null kids)
   , case lnKind l of
       Step True -> True
-      Question -> any answers [c | c <- kids, lnIndent c == lnIndent l + 2]
+      Question ->
+        let direct = [c | c <- kids, lnIndent c == lnIndent l + 2]
+         in any answers direct || (any grounded direct && any bare direct)
       _ -> False
   ]
 
   where
+    -- an ask's answer: anchored claims, whatever their verdicts, then a bare conclusion
+    grounded c = lnKind c == Evidence || (lnKind c == Claim && lnAnchor c /= Nothing)
+    bare c = lnKind c == Claim && lnAnchor c == Nothing
     -- evidence, a verified anchored claim, or a belief whose check is stored
     answers c = case lnKind c of
       Evidence -> True
