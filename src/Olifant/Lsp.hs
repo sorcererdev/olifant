@@ -33,6 +33,7 @@ import Data.Aeson.KeyMap qualified as KM
 import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe, mapMaybe)
 import Olifant.Plans (Anchor (..), Kind (..), Line (..), Verdict (..), anchorText, childrenOf, excerptInfo, excerptSpans, parsePlan, stepDone, testState, withVerdict)
 import Olifant.Server.Unit (Named (..))
+import Olifant.Server.Claims (checkedKeys, claimsOf)
 import Data.Text qualified as T
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (find, isInfixOf, nub)
@@ -769,12 +770,14 @@ handlers env =
       requestHandler SMethod_TextDocumentFoldingRange $ \req respond -> do
         ranges <- case uriToFilePath (req ^. L.params . L.textDocument . L.uri) of
           Nothing -> pure []
-          Just path -> liftIO (planContext env path) <&> \case
-            Just (p, _, text) | isPlanPath p path ->
+          Just path -> liftIO $ planContext env path >>= \case
+            Just (p, _, text) | isPlanPath p path -> do
+              -- a belief folds its question once its check is stored
+              checked <- readMVar (envState env) >>= \s -> checkedKeys <$> claimsOf s (prRoot p) path
               let ls = parsePlan text
                   region o c = FoldingRange (fromIntegral o) Nothing (fromIntegral c) Nothing (Just FoldingRangeKind_Region) Nothing
-               in [region o c | (_, o, c) <- excerptSpans ls] ++ [region o c | (o, c) <- planFolds ls]
-            _ -> []
+              pure ([region o c | (_, o, c) <- excerptSpans ls] ++ [region o c | (o, c) <- planFolds checked ls])
+            _ -> pure []
         respond (Right (InL ranges))
     , -- a plan against the work: facts to apply, ghost blocks to place
       requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/plans/reconcile")) $ \req respond ->

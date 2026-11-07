@@ -60,6 +60,9 @@ import Olifant.Language.Adapter (languageFor)
 import Olifant.Plans (Anchor (..), Line (..), Section (..), Verdict (..), parsePlan, sectionOf)
 import Olifant.Server.State (ServerState (..))
 import Olifant.Server.Confine (confined, safely)
+import Olifant.Server.Claims (claimKey)
+import Data.Set (Set)
+import Data.Set qualified as S
 import Olifant.Server.Unit (Named (..), fingerprint, unitLookupIn, unitsOf, unitsWithKinds)
 import Olifant.Workspace (Workspace (..), normalisePath)
 import System.FilePath (takeExtension, (</>))
@@ -229,19 +232,30 @@ ancestorsIn :: [Line] -> Line -> [Line]
 ancestorsIn ls l = maybe [] (\p -> p : ancestorsIn ls p) (parentIn ls l)
 
 -- | The ranges a plan folds besides its excerpts: a ticked step with
--- children, and a question with an unanchored claim directly under it,
--- each from its row to its last descendant (start, end; inclusive).
-planFolds :: [Line] -> [(Int, Int)]
-planFolds ls =
+-- children, and an answered question (a direct child that is evidence, a
+-- verified anchored claim, or a claim whose key is in CHECKED: a belief
+-- with a stored check; a bare belief alone keeps it open), each from its
+-- row to its last descendant (start, end; inclusive).
+planFolds :: Set Text -> [Line] -> [(Int, Int)]
+planFolds checked ls =
   [ (lnRow l, lnRow (last kids))
   | l <- ls
   , let kids = childrenOf ls (lnRow l)
   , not (null kids)
   , case lnKind l of
       Step True -> True
-      Question -> any (\c -> lnKind c == Claim && lnAnchor c == Nothing) [c | c <- kids, lnIndent c == lnIndent l + 2]
+      Question -> any answers [c | c <- kids, lnIndent c == lnIndent l + 2]
       _ -> False
   ]
+
+  where
+    -- evidence, a verified anchored claim, or a belief whose check is stored
+    answers c = case lnKind c of
+      Evidence -> True
+      Claim
+        | Just _ <- lnAnchor c -> case lnVerdict c of Verified _ -> True; _ -> False
+        | otherwise -> claimKey c `S.member` checked
+      _ -> False
 
 utf16Length :: Text -> Int
 utf16Length = T.foldl' (\n c -> n + if fromEnum c > 0xFFFF then 2 else 1) 0

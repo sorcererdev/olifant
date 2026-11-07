@@ -4,6 +4,7 @@ import Olifant.Language.Grammar (GrammarFailure (NoSource))
 import Control.Lens ((^.))
 import Control.Monad (forM)
 import Data.Map.Strict qualified as M
+import Data.Set qualified as S
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
@@ -164,16 +165,20 @@ spec = describe "Olifant.Server.Plans (anchors in the server)" $ do
       and [(r, c) < (r', c') && (r < r' || e <= c') | ((r, c, e), (r', c', _)) <- zip ends (drop 1 ends)] `shouldBe` True
 
   describe "planFolds" $ do
-    let folds = planFolds . parsePlan . T.unlines
+    let folds = planFolds S.empty . parsePlan . T.unlines
     it "a ticked step with children folds to its last descendant" $
       folds ["- [x] a", "  - 25 Oct 21:31 · did", "  - also @src/a.py:Foo", "- [ ] b"] `shouldBe` [(0, 2)]
     it "a ticked step without children, and an open step, do not fold" $
       folds ["- [x] a", "- [ ] b", "  - 25 Oct 21:31 · did"] `shouldBe` []
-    it "an answered question folds; one with evidence only does not" $ do
-      folds ["- ? q", "  - ev @src/a.py:Foo ✓ 0123456", "  - the answer", "- ? r", "  - ev @src/a.py:Foo ✓ 0123456"] `shouldBe` [(0, 2)]
+    it "an answered question folds: a verified claim or evidence under it; a bare question does not" $ do
+      folds ["- ? q", "  - ev @src/a.py:Foo ✓ 0123456", "  - the answer", "- ? r", "  - ev @src/a.py:Foo ✓ 0123456"] `shouldBe` [(0, 2), (3, 4)]
+      folds ["- ? q", "  - ✓ it is @src/a.py:Foo ✓ 0123456"] `shouldBe` [(0, 1)]
       folds ["- ? q"] `shouldBe` []
+    it "a bare belief keeps its question open until it is checked" $ do
+      folds ["- ? q", "  - I think x"] `shouldBe` []
+      planFolds (S.fromList ["I think x"]) (parsePlan (T.unlines ["- ? q", "  - I think x"])) `shouldBe` [(0, 1)]
     it "a question under a ticked step folds inside it" $
-      folds ["- [x] a", "  - ? q", "    - the answer", "  - 25 Oct 21:31 · did"] `shouldBe` [(0, 3), (1, 2)]
+      planFolds (S.fromList ["the answer"]) (parsePlan (T.unlines ["- [x] a", "  - ? q", "    - the answer", "  - 25 Oct 21:31 · did"])) `shouldBe` [(0, 3), (1, 2)]
 
 -- | /r1 with the python pack, `src/a.py` (class Foo with def bar) and a
 -- plan; a syntax whose units are Foo (lines 0-2) and Foo.bar (1-2).

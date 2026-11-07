@@ -14,6 +14,12 @@ module Olifant.Server.Claims
   , writeClaims
   , checkQuestion
   , checkClaim
+  , Work (..)
+  , passWork
+  , pruneClaims
+  , checkedKeys
+  , claimsOf
+  , storeClaims
   ) where
 
 import Control.Concurrent.MVar (MVar, newMVar, withMVar)
@@ -31,9 +37,15 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Time (UTCTime)
+import Data.Dynamic (fromDynamic, toDyn)
+import Data.IORef (modifyIORef', readIORef)
 import Olifant.App (Ports (..))
-import Olifant.Decide (Answer (..), Confidence (..), Question (..), choice, qOptions)
-import Olifant.Plans (Line (..))
+import Olifant.Server.State (ServerState (..))
+import Olifant.Decide (Answer (..), Confidence (..), choice, qOptions)
+import Olifant.Decide qualified as D
+import Data.Set (Set)
+import Data.Set qualified as S
+import Olifant.Plans (Kind (..), Line (..), childrenOf)
 import Olifant.Process (Cancel)
 import Olifant.Server.LoopQuestions (Rungs (..), accepted, decideOver)
 import Olifant.Server.Resolve (LineContext (..), UnitRef (..), bareLine, refText)
@@ -142,9 +154,9 @@ entry = withObject "entry" $ \o ->
 
 -- | Is this plan line right about this unit's code? Right, wrong (why, in
 -- one short sentence), or about other code.
-checkQuestion :: LineContext -> UnitRef -> Text -> Question
+checkQuestion :: LineContext -> UnitRef -> Text -> D.Question
 checkQuestion c u code =
-  (choice "plan-check" "Is this plan line right about this code? If wrong, say why in one short sentence." options context) {qFields = [("why", "text")]}
+  (choice "plan-check" "Is this plan line right about this code? If wrong, say why in one short sentence." options context) {D.qFields = [("why", "text")]}
   where
     options =
       [ ("right", "the code does what the line says")
@@ -163,7 +175,7 @@ checkClaim token timeout rungs c u code
   | otherwise = do
       let q = checkQuestion c u code
       (a, climbs) <- decideOver token timeout rungs {rgJev = Nothing} q
-      let decided = [Decision (qKind q) (qOptions q) (chosen a) (confOf a) name | Just (name, _) <- [listToMaybe (reverse climbs)]]
+      let decided = [Decision (D.qKind q) (qOptions q) (chosen a) (confOf a) name | Just (name, _) <- [listToMaybe (reverse climbs)]]
           check = case a of
             Chosen "right" _ _ | accepted q a -> Just CheckRight
             Chosen "wrong" fs _ | accepted q a -> Just (CheckWrong (let w = T.strip (fromMaybe "" (lookup "why" fs)) in if T.null w then "no reason given" else w))
@@ -177,3 +189,70 @@ checkClaim token timeout rungs c u code
     confOf = \case
       Chosen _ _ (Confidence x) -> Just x
       _ -> Nothing
+
+-- | What the pass does for a line: resolve it and check it (a claim),
+-- resolve it only (a step), or write the anchor its right check earned (a
+-- write that did not land last time).
+data Work = ResolveAndCheck Line | ResolveOnly Line | WriteAnchor Line ClaimEntry
+  deriving stock (Eq, Show)
+
+-- | The pass's work in plan order: each unanchored claim and step not in the
+-- store; each unanchored line whose entry is right, with a unit and a
+-- fingerprint. A bare claim beside an anchored claim or evidence under a
+-- question is that answer's conclusion, not a belief: never work.
+passWork :: [Line] -> ClaimStore -> [Work]
+passWork ls store = concatMap work ls
+  where
+    work l
+      | lnAnchor l /= Nothing || T.null key = []
+      | Just e <- M.lookup key store = case e of
+          ClaimEntry {ceCheck = Just CheckRight, ceUnit = Just _, ceFingerprint = Just _} | listLine -> [WriteAnchor l e]
+          _ -> []
+      | lnKind l == Claim, not (conclusion l) = [ResolveAndCheck l]
+      | Step _ <- lnKind l = [ResolveOnly l]
+      | otherwise = []
+      where
+        key = claimKey l
+        listLine = case lnKind l of
+          Claim -> True
+          Step _ -> True
+          _ -> False
+    conclusion l = case parentOf l of
+      Just q
+        | lnKind q == Question ->
+            any (\c -> lnKind c == Evidence || (lnKind c == Claim && lnAnchor c /= Nothing)) (directKids q)
+      _ -> False
+    parentOf l = listToMaybe [p | p <- reverse (take (lnRow l) ls), lnIndent p < lnIndent l, lnKind p /= Prose]
+    directKids q = [c | c <- childrenOf ls (lnRow q), lnIndent c == lnIndent q + 2]
+
+-- | The store without keys no line of the plan has (an edited line's old
+-- words).
+pruneClaims :: [Line] -> ClaimStore -> ClaimStore
+pruneClaims ls store = M.restrictKeys store (S.fromList (map claimKey ls))
+
+-- | The keys whose lines have a stored check (a checked belief answers its
+-- question).
+checkedKeys :: ClaimStore -> Set Text
+checkedKeys = M.keysSet . M.filter (\e -> ceCheck e /= Nothing)
+
+-- | A plan's store as the server holds it (ROOT, the plan's path): read
+-- from disk on first use.
+claimsOf :: ServerState -> FilePath -> FilePath -> IO ClaimStore
+claimsOf s root plan = do
+  known <- M.lookup (heldAt root plan) <$> readIORef (ssClaims s)
+  case known >>= fromDynamic of
+    Just cs -> pure cs
+    Nothing -> do
+      cs <- readClaims (ssPorts s) root plan
+      modifyIORef' (ssClaims s) (M.insert (heldAt root plan) (toDyn cs))
+      pure cs
+
+-- | A plan's store kept by the server and written to disk.
+storeClaims :: ServerState -> FilePath -> FilePath -> ClaimStore -> IO ()
+storeClaims s root plan cs = do
+  modifyIORef' (ssClaims s) (M.insert (heldAt root plan) (toDyn cs))
+  writeClaims (ssPorts s) root plan cs
+
+-- | A plan's absolute path, the server's key for its store.
+heldAt :: FilePath -> FilePath -> FilePath
+heldAt root plan = normalisePath (if isAbsolute plan then plan else root </> plan)

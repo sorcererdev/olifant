@@ -3,6 +3,7 @@ module Olifant.Server.ClaimsSpec (spec) where
 import Control.Monad (forM)
 import Data.Map.Strict qualified as M
 import Data.Text (Text)
+import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
 import Data.Time (UTCTime (..), fromGregorian)
 import Olifant.App (Ports (..), Project)
@@ -12,7 +13,7 @@ import Olifant.Language (Match (..), noChecker, noRunner, querying)
 import Olifant.Language.Check (noVerifier)
 import Olifant.Language.Grammar (GrammarFailure (NoSource))
 import Olifant.Model (Backend (..), Escalate (..), Rung (..))
-import Olifant.Plans (parsePlan)
+import Olifant.Plans (Line (..), parsePlan)
 import Olifant.Process (gitStateStamp, neverCancel)
 import Olifant.Server (ServerState, newServerState, projectFor)
 import Olifant.Server.Claims
@@ -36,6 +37,39 @@ unit = UnitRef "app/x.py" "f"
 
 spec :: Spec
 spec = describe "Olifant.Server.Claims" $ describe "Claims" $ do
+  describe "passWork" $ do
+    let entry check = ClaimEntry (Just unit) "jev-1" [unit] 0.9 check (Just "abc1234") at0
+        work store = map summary . passWork (parsePlan (T.unlines plan)) . M.fromList $ store
+        summary = \case
+          ResolveAndCheck l -> ("check", lnRow l)
+          ResolveOnly l -> ("resolve", lnRow l)
+          WriteAnchor l _ -> ("write", lnRow l)
+        plan =
+          [ "# T"
+          , "- the loader keeps D"
+          , "- [ ] add a column"
+          , "- anchored @app/x.py:f"
+          , "- ? how is it read"
+          , "  - I think it reads D"
+          , "- ? what does the ask say"
+          , "  - grounded @app/x.py:f ✓ abc1234"
+          , "  - so it keeps D"
+          , "- ? evidence only"
+          , "  - ✓ it is @app/x.py:f ✓ abc1234"
+          , "  - the conclusion"
+          , "Some prose."
+          , "- 25 Oct 21:31 · did"
+          , "- [x] done step" ]
+    it "(g) an unanchored claim not in the store is resolved and checked; a belief under a bare question too" $
+      work [] `shouldBe` [("check", 1), ("resolve", 2), ("check", 5), ("resolve", 14)]
+    it "(h) a claim or step already in the store is not work again" $
+      work [("the loader keeps D", entry Nothing), ("add a column", entry Nothing)] `shouldBe` [("check", 5), ("resolve", 14)]
+    it "(i) an entry checked right with a unit and a fingerprint, its line still bare, is a write" $
+      work [("the loader keeps D", entry (Just CheckRight)), ("add a column", entry (Just CheckRight)), ("I think it reads D", entry (Just (CheckWrong "no"))), ("done step", entry Nothing)]
+        `shouldBe` [("write", 1), ("write", 2)]
+    it "(j) pruneClaims drops a renamed line's old key" $ do
+      let store = M.fromList [("the loader keeps D", entry Nothing), ("the loader kept D", entry Nothing)]
+      M.keys (pruneClaims (parsePlan "- the loader keeps D\n") store) `shouldBe` ["the loader keeps D"]
   it "(a) a store round-trips through writeClaims and readClaims" $ do
     (s, _) <- claimsServer "" Nothing
     let store =

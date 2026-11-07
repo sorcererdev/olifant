@@ -2174,7 +2174,7 @@ planReadingSpec = describe "how a plan reads" $ do
       (ds, _) <- inProcessWith ports dir $ openDoc "src/x.py" "python" >>= tokensOf
       ds `shouldBe` Right []
   it "foldingRange answers a ticked step and an answered question" $
-    withPython [("plans/t.md", "- [x] s\n  - 25 Oct 21:31 · did\n- ? q\n  - the answer\n- [ ] open\n")] $ \ports dir -> do
+    withPython [("plans/t.md", "- [x] s\n  - 25 Oct 21:31 · did\n- ? q\n  - ✓ the answer\n- [ ] open\n")] $ \ports dir -> do
       (ranges, _) <- inProcessWith ports dir $ do
         p <- openDoc "plans/t.md" "markdown"
         request SMethod_TextDocumentFoldingRange (FoldingRangeParams Nothing Nothing p) <&> \(TResponseMessage _ _ r) -> r
