@@ -244,7 +244,8 @@ checked and nothing is written.
 **The check.** A resolved claim is checked by `plan-check`, a typed question on the plan's chat
 ladder (`[plans] ladder`, else `[model] ladder`, without Jev): `right`, `wrong` (with why), or
 `elsewhere` (this code is not what the line is about). Unprompted, only an `auto` rung is asked:
-with none, claims resolve and show their unit, unchecked. On `right` the engine writes
+with none, claims resolve and show their unit, unchecked; add an `auto` rung (or a check that
+got no answer) and the next pass after ten minutes checks them. On `right` the engine writes
 `@path:Unit ✓ <fp>` into the line, as it writes a test's `●`, by `workspace/applyEdit` at the
 plan version it read (a plan that moved on meanwhile keeps the verdict, and the next pass writes
 it). On `wrong` nothing is written: the why is in the margin and in hover (`K`). On `elsewhere`

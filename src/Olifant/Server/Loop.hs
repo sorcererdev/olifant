@@ -44,8 +44,10 @@ module Olifant.Server.Loop
     -- * the claim pass
   , PassAnswer (..)
   , claimPass
+  , retryCutoff
   ) where
 
+import Data.Time (UTCTime, addUTCTime)
 import Control.Monad (forM, join, unless)
 import Data.Aeson (Value, object, (.=))
 import Data.Bifunctor (bimap)
@@ -605,10 +607,10 @@ claimPass token path s0 = do
           pure (s, Right (PassAnswer [] store Nothing))
         Just jev -> do
           store0 <- claimsOf s root path
-          let work = passWork ls store0
+          now <- pNow (ssPorts s)
+          let work = passWork (retryCutoff now rungs) ls store0
           -- no work: no index to read
           index <- if null work then pure [] else projectIndex s p
-          now <- pNow (ssPorts s)
           let left = do
                 t <- getMonotonicTime
                 stop <- cancelled token
@@ -650,18 +652,12 @@ claimPass token path s0 = do
                   (c, cands, r, ds) <- resolved l
                   let e0 = withCands cands (entryOf r)
                   case r of
-                    R.Resolved u _ _ ->
-                      unitNow u >>= \case
-                        Nothing -> pure (record l e0 [] ds (rungOf r) Nothing tally)
-                        Just (code, fp) -> do
-                          (check, ds2) <- checkClaim token (mcTimeout models) rungs c u code
-                          let e = case check of
-                                Just CheckElsewhere -> e0 {ceUnit = Nothing, ceRung = "elsewhere", ceCandidates = filter (/= u) (ceCandidates e0), ceCheck = Just CheckElsewhere}
-                                Just v -> e0 {ceCheck = Just v, ceFingerprint = Just fp}
-                                Nothing -> e0
-                              facts = [written l u fp | check == Just CheckRight]
-                          pure (record l e facts (ds ++ ds2) (rungOf r) check tally)
+                    R.Resolved u _ _ -> checked tally l c e0 u ds (rungOf r)
                     _ -> pure (record l e0 [] ds (rungOf r) Nothing tally)
+                -- the unit stays; only the check is asked again
+                CheckAgain l e -> case ceUnit e of
+                  Just u -> checked tally l (lineContext ls l) e {ceAt = now} u [] (ceRung e)
+                  Nothing -> pure tally
                 WriteAnchor l e -> case (ceUnit e, ceFingerprint e) of
                   (Just u, Just fp) ->
                     unitNow u <&> \case
@@ -669,6 +665,18 @@ claimPass token path s0 = do
                       -- moved or gone since its check: checked again next pass
                       _ -> tally {tStore = M.delete (claimKey l) (tStore tally)}
                   _ -> pure tally
+              -- check the line against its resolved unit's code now
+              checked tally l c e0 u ds rung =
+                unitNow u >>= \case
+                  Nothing -> pure (record l e0 [] ds rung Nothing tally)
+                  Just (code, fp) -> do
+                    (check, ds2) <- checkClaim token (mcTimeout models) rungs c u code
+                    let e = case check of
+                          Just CheckElsewhere -> e0 {ceUnit = Nothing, ceRung = "elsewhere", ceCandidates = filter (/= u) (ceCandidates e0), ceCheck = Just CheckElsewhere}
+                          Just v -> e0 {ceCheck = Just v, ceFingerprint = Just fp}
+                          Nothing -> e0
+                        facts = [written l u fp | check == Just CheckRight]
+                    pure (record l e facts (ds ++ ds2) rung check tally)
               rungOf = \case
                 R.Resolved _ rd _ -> roundName rd
                 R.Unresolved _ _ -> "none"
@@ -702,6 +710,11 @@ claimPass token path s0 = do
               unless (null work && store == store0) (storeClaims s root path store)
               if null (tDecisions t) then pure () else appendRecord (ssPorts s) root (AResolve rec)
               pure (s, Right (PassAnswer (tFacts t) store (Just rec)))
+
+-- | Claims resolved but left unchecked are checked again once their entry is
+-- ten minutes old, when a chat rung can check at all.
+retryCutoff :: UTCTime -> Rungs -> Maybe UTCTime
+retryCutoff now rungs = if null (rgChat rungs) then Nothing else Just (addUTCTime (-600) now)
 
 -- | What a claim pass has done so far.
 data Tally = Tally

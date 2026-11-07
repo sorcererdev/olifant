@@ -9,7 +9,7 @@ import Data.List (find, isSuffixOf, sort)
 import Data.Map.Strict qualified as M
 import Data.Maybe (fromMaybe)
 import Data.Text.Encoding qualified as TE
-import Data.Time (getCurrentTime)
+import Data.Time (UTCTime (..), fromGregorian, getCurrentTime)
 import Olifant.Decide (Question (..), Shape (..))
 import Olifant.Process (cancelAfter, newCancel, neverCancel)
 import Olifant.Server.Edits (FileEdit (..))
@@ -17,7 +17,7 @@ import Olifant.Server.Errand (Block (..), Ghost (..))
 import Olifant.Server.Stub (StubAnswer (..))
 import Olifant.Server.State (ServerConfig (..), ServerState (..))
 import Olifant.Server.Telemetry (OutcomeRecord (..), ReconcileRecord (..), Record (..), ResolveRecord (..), appendRecord, readRecords, recordsPath)
-import Olifant.Server.Claims (Check (..), ClaimEntry (..), claimsPath, readClaims)
+import Olifant.Server.Claims (Check (..), ClaimEntry (..), claimsPath, readClaims, storeClaims)
 import Olifant.Server.Resolve (UnitRef (..))
 import System.Directory (doesDirectoryExist)
 import System.Directory (doesFileExist)
@@ -1044,6 +1044,15 @@ claimPassSpec = describe "Olifant.Server.Loop (claimPass)" $ describe "claimPass
       fmap (\e -> (ceUnit e, ceRung e, helperRef `elem` ceCandidates e)) (entryOf a) `shouldBe` Just (Nothing, "elsewhere", False)
       map rvElsewhere <$> resolves dir `shouldReturn` [1]
       doesFileExist (claimsPath dir "plans/t.md") `shouldReturn` True
+  it "(k) a resolved claim left unchecked is checked on a later pass once its entry is old, resolving nothing again" $
+    withPass (chat "auto" []) right $ \dir s -> do
+      let stale = ClaimEntry (Just helperRef) "jev-1" [helperRef] 0.9 Nothing Nothing (UTCTime (fromGregorian 2020 1 1) 0)
+      storeClaims s dir (dir </> "plans/t.md") (M.fromList [("the helper returns one", stale)])
+      (_, a) <- pass dir s
+      fp <- fpNow dir s "helper"
+      asked dir `shouldReturn` ["plan-check"]
+      fmap (\e -> (ceCheck e, ceFingerprint e)) (entryOf a) `shouldBe` Just (Just CheckRight, Just fp)
+      length (paFacts a) `shouldBe` 1
   it "(j) a pass cancelled partway keeps the verdicts it earned in the store" $ do
     let many = "# T\n\n" <> T.unlines ["- claim number " <> T.pack (show n) <> " holds" | n <- [1 .. 40 :: Int]]
     withReconcile many [] (chat "auto" []) (Just right) $ \dir s0 -> do

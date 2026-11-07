@@ -193,21 +193,27 @@ checkClaim token timeout rungs c u code
 
 -- | What the pass does for a line: resolve it and check it (a claim),
 -- resolve it only (a step), or write the anchor its right check earned (a
--- write that did not land last time).
-data Work = ResolveAndCheck Line | ResolveOnly Line | WriteAnchor Line ClaimEntry
+-- write that did not land last time), or check a resolved claim again (its
+-- last check got no answer).
+data Work = ResolveAndCheck Line | ResolveOnly Line | WriteAnchor Line ClaimEntry | CheckAgain Line ClaimEntry
   deriving stock (Eq, Show)
 
 -- | The pass's work in plan order: each unanchored claim and step not in the
 -- store; each unanchored line whose entry is right, with a unit and a
 -- fingerprint. A bare claim beside an anchored claim or evidence under a
--- question is that answer's conclusion, not a belief: never work.
-passWork :: [Line] -> ClaimStore -> [Work]
-passWork ls store = firstPerKey (concatMap work ls)
+-- question is that answer's conclusion, not a belief: never work. With a
+-- RETRY cutoff (given when a chat rung can check), a claim whose entry holds
+-- a unit and no check, stamped before the cutoff, is checked again: its last
+-- check got no answer.
+passWork :: Maybe UTCTime -> [Line] -> ClaimStore -> [Work]
+passWork retry ls store = firstPerKey (concatMap work ls)
   where
     work l
       | lnAnchor l /= Nothing || T.null key = []
       | Just e <- M.lookup key store = case e of
           ClaimEntry {ceCheck = Just CheckRight, ceUnit = Just _, ceFingerprint = Just _} | listLine -> [WriteAnchor l e]
+          ClaimEntry {ceCheck = Nothing, ceUnit = Just _, ceAt = at}
+            | lnKind l == Claim, Just cutoff <- retry, at < cutoff, not (conclusion l) -> [CheckAgain l e]
           _ -> []
       | lnKind l == Claim, not (conclusion l) = [ResolveAndCheck l]
       | Step _ <- lnKind l = [ResolveOnly l]
@@ -241,6 +247,7 @@ workLine = \case
   ResolveAndCheck l -> l
   ResolveOnly l -> l
   WriteAnchor l _ -> l
+  CheckAgain l _ -> l
 
 -- | The store without keys no line of the plan has (an edited line's old
 -- words).

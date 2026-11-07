@@ -39,11 +39,12 @@ spec :: Spec
 spec = describe "Olifant.Server.Claims" $ describe "Claims" $ do
   describe "passWork" $ do
     let entry check = ClaimEntry (Just unit) "jev-1" [unit] 0.9 check (Just "abc1234") at0
-        work store = map summary . passWork (parsePlan (T.unlines plan)) . M.fromList $ store
+        work store = map summary . passWork Nothing (parsePlan (T.unlines plan)) . M.fromList $ store
         summary = \case
           ResolveAndCheck l -> ("check", lnRow l)
           ResolveOnly l -> ("resolve", lnRow l)
           WriteAnchor l _ -> ("write", lnRow l)
+          CheckAgain l _ -> ("again", lnRow l)
         plan =
           [ "# T"
           , "- the loader keeps D"
@@ -71,8 +72,19 @@ spec = describe "Olifant.Server.Claims" $ describe "Claims" $ do
       let store = M.fromList [("the loader keeps D", entry Nothing), ("the loader kept D", entry Nothing)]
       M.keys (pruneClaims (parsePlan "- the loader keeps D\n") store) `shouldBe` ["the loader keeps D"]
     it "(k) lines sharing a key are one piece of work: the first" $
-      map summary (passWork (parsePlan "# T\n- same words\n- [ ] same words\n  - same words\n- other\n") M.empty)
+      map summary (passWork Nothing (parsePlan "# T\n- same words\n- [ ] same words\n  - same words\n- other\n") M.empty)
         `shouldBe` [("check", 1), ("check", 4)]
+    it "(l) a resolved, unchecked claim is checked again once its entry is older than the cutoff, and no sooner" $ do
+      let store = [("the loader keeps D", entry Nothing)]
+          ls = parsePlan "# T\n- the loader keeps D\n"
+          cutoff = UTCTime (fromGregorian 2026 11 7) 600
+      map summary (passWork (Just cutoff) ls (M.fromList store)) `shouldBe` [("again", 1)]
+      map summary (passWork (Just at0) ls (M.fromList store)) `shouldBe` []
+      map summary (passWork Nothing ls (M.fromList store)) `shouldBe` []
+      -- a step is only resolved, never checked
+      map summary (passWork (Just cutoff) (parsePlan "# T\n- [ ] add a column\n") (M.fromList [("add a column", entry Nothing)])) `shouldBe` []
+      -- one without a unit is unresolved, not unchecked
+      map summary (passWork (Just cutoff) ls (M.fromList [("the loader keeps D", (entry Nothing) {ceUnit = Nothing})])) `shouldBe` []
   it "(a) a store round-trips through writeClaims and readClaims" $ do
     (s, _) <- claimsServer "" Nothing
     let store =

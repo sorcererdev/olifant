@@ -325,7 +325,10 @@ is the whole of it:
 2. **What to do.** `Claims.passWork` over the parsed lines and the store: `ResolveAndCheck` an
    unanchored claim it has not seen (not an `ask`'s conclusion: a bare claim beside an anchored
    claim or evidence under a question), `ResolveOnly` such a step, `WriteAnchor` a line whose
-   entry is right but whose anchor has not landed. A line is its `claimKey` (its words without
+   entry is right but whose anchor has not landed, `CheckAgain` a claim stored resolved but unchecked
+   (its check got no answer) once its entry is ten minutes old (`retryCutoff`, given only when
+   an `auto` chat rung exists; the retry restamps `ceAt`, so it is one try per ten minutes). One
+   key is one piece of work: a second line with the same words is skipped. A line is its `claimKey` (its words without
    indent, dash, checkbox, anchor and verdict), so an edit is new work.
 3. **Resolve.** `Resolve.projectIndex` (every unit of every file with a language, its words
    cached per file while its text is unchanged), `candidates` for the line's words (the top 8 by

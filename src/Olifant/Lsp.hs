@@ -35,7 +35,7 @@ import Olifant.Plans (Anchor (..), Kind (..), Line (..), Verdict (..), anchorTex
 import Olifant.Server.Unit (Named (..))
 import Olifant.Server.Claims (checkedKeys, claimKey, claimsOf, passWork)
 import Olifant.Server.Claims qualified as Claims
-import Olifant.Server.Loop (PassAnswer (..), claimPass)
+import Olifant.Server.Loop (PassAnswer (..), claimPass, retryCutoff, rungsFor)
 import Data.Text qualified as T
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (find, isInfixOf, nub)
@@ -1746,7 +1746,8 @@ startPass env path =
         -- the lines it works on show as being checked
         st <- readMVar (envState env)
         store <- claimsOf st (prRoot p) path
-        let keys = S.fromList [claimKey (Claims.workLine w) | w <- passWork (parsePlan text) store]
+        now <- pNow (envPorts env)
+        let keys = S.fromList [claimKey (Claims.workLine w) | w <- passWork (retryCutoff now (rungsFor st p False)) (parsePlan text) store]
         atomicModifyIORef' (ssChecking st) (\m -> (M.insert (normalisePath path) keys m, ()))
         pure (n, keys)
       -- the client may cancel its progress: the pass stops, the margin clears
