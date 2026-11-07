@@ -2350,7 +2350,7 @@ does not parse joins `catalogBrokenRules`) and parsed by `Migration.parseStrangl
   as NAME", setting `[extract] file`.
 - **Decisions** (`Decide`; `Server/State.deciderFor`, from `[decide] model` or its alias
   `[recognize] model`; in tests one answers file, `decide_answers`, with `recognize_answers` its
-  alias): asked once per question in the background, the answer cached in `ssDecisions`; the
+  alias; `chat_answers` is the file the plan ladder's chat rungs answer from, `Rungs.rgChatDecider`): asked once per question in the background, the answer cached in `ssDecisions`; the
   deterministic answer stands meanwhile. Three kinds: `bug-or-new` (a big change in a legacy
   function, `Server/Fixes.decided`; "new behaviour" makes it the `bug_fix_only` rule's finding),
   decision 2 (when `extractKind` finds no `signs`, `Server/Actions.extractOrder`; its id and

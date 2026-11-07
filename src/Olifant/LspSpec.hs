@@ -62,6 +62,7 @@ import Olifant.Doctor (DoctorPorts (..))
 import Olifant.Workspace (Workspace (listFiles, listFilesSkipping, readText), diskWorkspace)
 import System.Environment (lookupEnv, setEnv, unsetEnv)
 import System.Directory (findExecutable, canonicalizePath, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getTemporaryDirectory, listDirectory, removeDirectory, removeFile, renameFile)
+import Olifant.Server.Claims (claimsPath)
 import System.FilePath (makeRelative, normalise, takeDirectory, (</>), splitDirectories)
 import Olifant.Language.AstGrep (astGrepSyntax)
 import System.IO.Temp (withSystemTempDirectory)
@@ -107,6 +108,7 @@ spec = describe "Olifant.Lsp (olifant lsp over stdio)" $ do
   doReviewSpec
   plansLoopSpec
   planReadingSpec
+  claimPassSpec
   it "is the `olifant lsp` command: the built binary initialises and opens a document" $ do
     (built, out, _) <- readCreateProcessWithExitCode (proc "cabal" ["list-bin", "-v0", "olifant"]) ""
     if built /= ExitSuccess then pendingWith "cabal list-bin olifant failed" else
@@ -2174,7 +2176,7 @@ planReadingSpec = describe "how a plan reads" $ do
       (ds, _) <- inProcessWith ports dir $ openDoc "src/x.py" "python" >>= tokensOf
       ds `shouldBe` Right []
   it "foldingRange answers a ticked step and an answered question" $
-    withPython [("plans/t.md", "- [x] s\n  - 25 Oct 21:31 · did\n- ? q\n  - the answer\n- [ ] open\n")] $ \ports dir -> do
+    withPython [("plans/t.md", "- [x] s\n  - 25 Oct 21:31 · did\n- ? q\n  - ✓ the answer\n- [ ] open\n")] $ \ports dir -> do
       (ranges, _) <- inProcessWith ports dir $ do
         p <- openDoc "plans/t.md" "markdown"
         request SMethod_TextDocumentFoldingRange (FoldingRangeParams Nothing Nothing p) <&> \(TResponseMessage _ _ r) -> r
@@ -4193,3 +4195,68 @@ anticipationSpec = describe "anticipation: asked after the deterministic push, p
       asked `shouldBe` "anticipate\n"
       (any (offerFor 1) ps, any (offerFor 2) ps) `shouldBe` (True, True)
       logged `shouldBe` replicate 2 "anticipate\tpython-htmx/command\t0.97\tshown"
+
+claimPassSpec :: Spec
+claimPassSpec = describe "plans claim pass" $ do
+  let table = "src/bistro/booking/models/table.py"
+      tableText = T.unlines ["def helper() -> int:", "    return 1"]
+      config = T.unlines ["", "[decide]", "model = \"jev\"", "[model.backends.jev]", "kind = \"jev\"", "[model.backends.local]", "kind = \"openai-compatible\"", "url = \"http://127.0.0.1:1/v1\"", "model = \"x\"", "escalate = \"auto\"", "[plans]", "ladder = [\"local\"]"]
+      answersWith check = "{\"answers\": {\"plan-unit\": {\"choice\": \"" <> T.pack table <> ":helper\", \"confidence\": 0.9}, \"plan-check\": " <> check <> "}}"
+      right = answersWith "{\"choice\": \"right\", \"confidence\": 0.9}"
+      wrong = answersWith "{\"choice\": \"wrong\", \"fields\": {\"why\": \"it returns two\"}, \"confidence\": 0.9}"
+      withPass answers act = withPython [("plans/t.md", "- the helper returns one\n"), (table, tableText)] $ \ports dir -> do
+        TIO.appendFile (dir </> ".olifant/config.toml") config
+        let f = dir </> "answers.json"
+        TIO.writeFile f answers
+        act ports dir f [("decide_answers", String (T.pack f)), ("chat_answers", String (T.pack f))]
+      refreshed = (() <$ message SMethod_WorkspaceDiagnosticRefresh) <|> (anyMessage >> refreshed)
+      edited = message SMethod_WorkspaceApplyEdit <|> (anyMessage >> edited)
+      askedIn f = liftIO (doesFileExist (f <> ".asked") >>= \case True -> length . T.lines <$> TIO.readFile (f <> ".asked"); False -> pure 0)
+      waitFor cond = liftIO (let go n = cond >>= \ok -> if ok || n <= (0 :: Int) then pure ok else threadDelay 50000 >> go (n - 1) in go 200)
+      toE = \case InL x -> Left x; InR y -> Right y
+      hints = map (\d -> (d ^. L.code, d ^. L.message, d ^. L.range . L.start . L.line)) . filter ((== Just "olifant-plan") . (^. L.source))
+  it "(a) opening a plan with one bare claim checked right lands its anchor by applyEdit" $
+    withPass right $ \ports dir _ cfg -> do
+      (texts, _) <- inProcessWithConfig cfg ports dir $ do
+        _ <- openDoc "plans/t.md" "markdown"
+        TRequestMessage _ _ _ params <- edited
+        pure [either (^. L.newText) (^. L.newText) (toE t) | Just cs <- [params ^. L.edit . L.documentChanges], InL te <- cs, t <- te ^. L.edits]
+      texts `shouldSatisfy` any (\t -> ("@" <> T.pack table <> ":helper ✓ ") `T.isInfixOf` t)
+  it "(b) checked wrong: no edit, a claim-wrong hint on its row, and hover shows why" $
+    withPass wrong $ \ports dir _ cfg -> do
+      ((ds, hover), _) <- inProcessWithConfig cfg ports dir $ do
+        p <- openDoc "plans/t.md" "markdown"
+        refreshed
+        (,) <$> pullDiagnostics p <*> getHover p (Position 0 4)
+      hints ds `shouldBe` [(Just (InR "claim-wrong"), "✗ it returns two — helper (" <> T.pack table <> ")", 0)]
+      fmap (\h -> case h ^. L.contents of InL (MarkupContent _ md) -> "it returns two" `T.isInfixOf` md; _ -> False) hover `shouldBe` Just True
+  it "(c) an edit while the pass waits on the decider cancels it" $
+    withPass "wait" $ \ports dir f cfg -> do
+      (stopped, _) <- inProcessWithConfig cfg ports dir $ do
+        p <- openDoc "plans/t.md" "markdown"
+        _ <- waitFor (doesFileExist (f <> ".asked"))
+        changeDoc p [TextDocumentContentChangeEvent (InL (TextDocumentContentChangePartial (Range (Position 0 0) (Position 0 0)) Nothing "x"))]
+        waitFor (doesFileExist (f <> ".cancelled"))
+      stopped `shouldBe` True
+  it "(d) olifant/plans/idle on an unchanged plan asks nothing new" $
+    withPass wrong $ \ports dir f cfg -> do
+      ((n1, n2), _) <- inProcessWithConfig cfg ports dir $ do
+        p <- openDoc "plans/t.md" "markdown"
+        refreshed
+        n1 <- askedIn f
+        sendNotification (SMethod_CustomMethod (Proxy :: Proxy "olifant/plans/idle")) (object ["textDocument" .= object ["uri" .= (p ^. L.uri)]])
+        refreshed
+        (n1,) <$> askedIn f
+      (n1, n2) `shouldBe` (2, 2)
+  it "(e) an idle with nothing to check shows no progress and writes no store" $
+    withPass wrong $ \ports dir f cfg -> do
+      let seen = (message SMethod_WindowWorkDoneProgressCreate >> pure True) <|> (refreshed >> pure False) <|> (anyMessage >> seen)
+      ((first, again), _) <- inProcessWithConfig cfg ports dir $ do
+        p <- openDoc "plans/t.md" "markdown"
+        first <- seen
+        refreshed
+        liftIO (removeFile (claimsPath dir "plans/t.md"))
+        sendNotification (SMethod_CustomMethod (Proxy :: Proxy "olifant/plans/idle")) (object ["textDocument" .= object ["uri" .= (p ^. L.uri)]])
+        (first,) <$> seen
+      (first, again) `shouldBe` (True, False)
+      doesFileExist (claimsPath dir "plans/t.md") `shouldReturn` False

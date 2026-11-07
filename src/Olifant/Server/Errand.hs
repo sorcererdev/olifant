@@ -6,7 +6,7 @@ module Olifant.Server.Errand
   , Denial (..), denialsIn
   , statusName, runnerArgs, runClaude
   , Grounded (..), Ghost (..), Block (..)
-  , errandPrompt, anchorRule, projectUnitWords, defaultUnitWords, doTestCommand, doTestTools, testWords, parseAnswer, doAnswered, groundingLimit, cutBody
+  , errandPrompt, errandPromptWith, Belief (..), BeliefCheck (..), anchorRule, projectUnitWords, defaultUnitWords, doTestCommand, doTestTools, testWords, parseAnswer, doAnswered, groundingLimit, cutBody
   ) where
 
 import Data.Aeson (Value (..), decodeStrict)
@@ -216,7 +216,21 @@ withoutExcerpts t = T.intercalate "\n" [l | (i, l) <- zip [0 ..] (T.splitOn "\n"
 -- ('projectUnitWords'); @testCmd@ is the project's test command for a 'Do'
 -- ('doTestCommand').
 errandPrompt :: Verb -> Text -> Maybe Text -> Text -> [Line] -> Line -> [Grounded] -> Text
-errandPrompt verb unitWords testCmd plan ls target grounded =
+errandPrompt = errandPromptWith []
+
+-- | A belief the author wrote under a question (its words), and what its
+-- check found: right or wrong (why) about a unit (`path:Unit`), or nothing yet.
+data Belief = Belief Text BeliefCheck
+  deriving stock (Eq, Show)
+
+data BeliefCheck = BelievedRight Text | BelievedWrong Text Text | NotChecked
+  deriving stock (Eq, Show)
+
+-- | 'errandPrompt', an ask's question followed by the author's beliefs
+-- under it and their checks, so the answer adds what they miss (none: as
+-- 'errandPrompt').
+errandPromptWith :: [Belief] -> Verb -> Text -> Maybe Text -> Text -> [Line] -> Line -> [Grounded] -> Text
+errandPromptWith beliefs verb unitWords testCmd plan ls target grounded =
   T.intercalate "\n" $
     ["<doc>", withoutExcerpts plan, "</doc>", ""]
       ++ ["<units>"] ++ concatMap unit grounded ++ ["</units>", ""]
@@ -238,7 +252,14 @@ errandPrompt verb unitWords testCmd plan ls target grounded =
         T.intercalate "\n" $
           ["Do this STEP of the plan above in this repository.", "", "STEP: " <> T.strip (T.drop 5 body)]
             ++ [lnText c | c <- childrenOf ls (lnRow target), lnRow c `notElem` excerptRows ls]
-      (Ask, _) -> "Answer the question below about this repository; read the code you need.\n\nQUESTION: " <> T.strip (T.drop 1 (T.dropWhile (/= '?') body))
+      (Ask, _) -> "Answer the question below about this repository; read the code you need.\n\nQUESTION: " <> T.strip (T.drop 1 (T.dropWhile (/= '?') body)) <> believed
+    believed
+      | null beliefs = ""
+      | otherwise = T.intercalate "\n" (["", "", "THE AUTHOR'S BELIEFS, ALREADY CHECKED:"] ++ map belief beliefs ++ ["Answer what these miss; do not repeat what they say."])
+    belief (Belief b c) = "- " <> b <> " — " <> case c of
+      BelievedRight u -> "right, about " <> u
+      BelievedWrong why u -> "wrong (" <> why <> "), about " <> u
+      NotChecked -> "not checked"
     contract = T.intercalate "\n" $ case verb of
       Ask ->
         [ "Answer with 1 to 5 claim lines, each exactly:"

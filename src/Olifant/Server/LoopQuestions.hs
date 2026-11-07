@@ -27,13 +27,13 @@ import Data.Text qualified as T
 import GHC.Clock (getMonotonicTime)
 import Olifant.App (Project (..))
 import Olifant.Catalog (Catalog (..), PlansConfig (..))
-import Olifant.Decide (Answer (..), Decider (..), Question, choice, confident, curlDecider, qOptions)
+import Olifant.Decide (Answer (..), Decider (..), Question, choice, confident, curlDecider, qOptions, recordedDecider)
 import Olifant.Model (Backend (..), Escalate (..), ModelConfig (..), Rung (..), askBackend)
 import Olifant.Plans (Kind (..), Line (..), Section (..), TestState (..), childrenOf, excerptRows, sectionOf, sections, testState)
 import Olifant.Process (Cancel, cancelled)
 import Olifant.Server.LoopTypes (Change (..), ChangedUnit (..))
-import Olifant.Server.Plans (safely)
-import Olifant.Server.State (ServerState (..), deciderUnder)
+import Olifant.Server.Confine (safely)
+import Olifant.Server.State (ServerConfig (..), ServerState (..), deciderUnder)
 
 -- | Which open step a file's change is for: one option per open step
 -- (`s<row>`, the current branch's section's first), or none. Its context
@@ -149,12 +149,13 @@ parseWords n reply = [M.lookup i found | i <- [1 .. n]]
 -- | The rungs a reconcile may ask: the decide model (Jev), and the chat
 -- ladder (`[plans] ladder`, else `[model] ladder`) without Jev backends or
 -- the decide model itself, keeping `auto` rungs, and `ask` ones when forced;
--- the decide model's name (its rung in the record).
-data Rungs = Rungs {rgJev :: Maybe (Decider IO), rgChat :: [(Rung, Backend)], rgJevName :: Text}
+-- the decide model's name (its rung in the record); and what answers for a
+-- chat backend when not the backend itself (tests: recorded answers).
+data Rungs = Rungs {rgJev :: Maybe (Decider IO), rgChat :: [(Rung, Backend)], rgJevName :: Text, rgChatDecider :: Maybe (Backend -> Decider IO)}
 
 -- | The rungs for a project, under the state's token; FORCED allows `ask` rungs.
 rungsFor :: ServerState -> Project -> Bool -> Rungs
-rungsFor s p forced = Rungs (deciderUnder (ssCancel s) s p) chat (fromMaybe "decide" (catalogDecideModel cat))
+rungsFor s p forced = Rungs (deciderUnder (ssCancel s) s p) chat (fromMaybe "decide" (catalogDecideModel cat)) ((\f -> const (recordedDecider f (ssCancel s))) <$> scChatAnswers (ssConfig s))
   where
     cat = prCatalog p
     m = catalogModel cat
@@ -184,7 +185,7 @@ accepted q a = case a of
 -- | Ask Jev, then each chat rung, until one answers at the gate (or the
 -- work is cancelled): the last answer, and each rung asked with its seconds.
 decideOver :: Cancel -> Int -> Rungs -> Question -> IO (Answer, [(Text, Double)])
-decideOver token timeout rungs q = go ([(rgJevName rungs, d) | Just d <- [rgJev rungs]] ++ [(rungName r, curlDecider token timeout b) | (r, b) <- rgChat rungs]) Unsure []
+decideOver token timeout rungs q = go ([(rgJevName rungs, d) | Just d <- [rgJev rungs]] ++ [(rungName r, maybe (curlDecider token timeout) id (rgChatDecider rungs) b) | (r, b) <- rgChat rungs]) Unsure []
   where
     go [] a climbs = pure (a, reverse climbs)
     go ((name, d) : rest) a0 climbs =

@@ -9,14 +9,17 @@ import Data.List (find, isSuffixOf, sort)
 import Data.Map.Strict qualified as M
 import Data.Maybe (fromMaybe)
 import Data.Text.Encoding qualified as TE
-import Data.Time (getCurrentTime)
+import Data.Time (UTCTime (..), fromGregorian, getCurrentTime)
 import Olifant.Decide (Question (..), Shape (..))
-import Olifant.Process (newCancel, neverCancel)
+import Olifant.Process (cancelAfter, newCancel, neverCancel)
 import Olifant.Server.Edits (FileEdit (..))
 import Olifant.Server.Errand (Block (..), Ghost (..))
 import Olifant.Server.Stub (StubAnswer (..))
 import Olifant.Server.State (ServerConfig (..), ServerState (..))
-import Olifant.Server.Telemetry (OutcomeRecord (..), ReconcileRecord (..), Record (..), appendRecord, readRecords, recordsPath)
+import Olifant.Server.Telemetry (OutcomeRecord (..), ReconcileRecord (..), Record (..), ResolveRecord (..), appendRecord, readRecords, recordsPath)
+import Olifant.Server.Claims (Check (..), ClaimEntry (..), claimsPath, readClaims, storeClaims)
+import Olifant.Server.Resolve (UnitRef (..))
+import System.Directory (doesDirectoryExist)
 import System.Directory (doesFileExist)
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -45,7 +48,7 @@ import System.Timeout (timeout)
 import Test.Hspec
 
 spec :: Spec
-spec = factsSpec >> workSetSpec >> questionsSpec >> reconcileSpec >> stepTestsSpec >> haskellStubSpec >> rustStubSpec >> conjureFloorSpec >> excerptsSpec
+spec = claimPassSpec >> factsSpec >> workSetSpec >> questionsSpec >> reconcileSpec >> stepTestsSpec >> haskellStubSpec >> rustStubSpec >> conjureFloorSpec >> excerptsSpec
 
 workSetSpec :: Spec
 workSetSpec = describe "Olifant.Server.Loop (the work set)" $ do
@@ -961,3 +964,102 @@ excerptsSpec = describe "Olifant.Server.Loop (excerpts)" $ do
     withReconcile (planOf "[ ]" False helperNow) [(table, T.replace helper "" tableText)] jevConfig answers $ \dir s -> do
       (_, facts) <- reconcileOnce dir s
       [() | ReplaceRows {} <- facts] `shouldBe` []
+
+claimPassSpec :: Spec
+claimPassSpec = describe "Olifant.Server.Loop (claimPass)" $ describe "claimPass" $ do
+  let plan = "# T\n\n- the helper returns one\n"
+      helperRef = UnitRef table "helper"
+      chat escalate extra = jevConfig <> T.unlines (["[model.backends.local]", "kind = \"openai-compatible\"", "url = \"http://127.0.0.1:1/v1\"", "model = \"x\"", "escalate = \"" <> escalate <> "\"", "[plans]", "ladder = [\"local\"]"] ++ extra)
+      answers check = "{\"answers\": {\"plan-unit\": {\"choice\": \"" <> T.pack table <> ":helper\", \"confidence\": 0.9}, \"plan-check\": " <> check <> "}}"
+      right = answers "{\"choice\": \"right\", \"confidence\": 0.9}"
+      wrong = answers "{\"choice\": \"wrong\", \"fields\": {\"why\": \"it returns two\"}, \"confidence\": 0.8}"
+      elsewhere = answers "{\"choice\": \"elsewhere\", \"confidence\": 0.9}"
+      withPass config ans act = withReconcile plan [] config (Just ans) $ \dir s -> act dir s {ssConfig = (ssConfig s) {scChatAnswers = Just (answersFile dir)}}
+      pass dir s =
+        claimPass neverCancel (dir </> "plans/t.md") s >>= \case
+          (s', Right a) -> pure (s', a)
+          (_, Left e) -> fail (T.unpack e)
+      entryOf a = M.lookup "the helper returns one" (paStore a)
+      resolves dir = do
+        there <- doesFileExist (recordsPath dir)
+        rs <- if there then fst . readRecords <$> TIO.readFile (recordsPath dir) else pure []
+        pure [r | AResolve r <- rs]
+  it "(a) a bare claim resolved and checked right becomes one write, stored, with one resolve record" $
+    withPass (chat "auto" []) right $ \dir s -> do
+      (_, a) <- pass dir s
+      fp <- fpNow dir s "helper"
+      paFacts a `shouldBe` [Replace 2 ("- the helper returns one   @" <> T.pack table <> ":helper ✓ " <> fp)]
+      fmap (\e -> (ceUnit e, ceCheck e, ceFingerprint e)) (entryOf a) `shouldBe` Just (Just helperRef, Just CheckRight, Just fp)
+      map (\r -> (rvSeen r, rvRight r, rvByRung r)) <$> resolves dir `shouldReturn` [(1, 1, [("jev-1", 1)])]
+      asked dir `shouldReturn` ["plan-unit", "plan-check"]
+  it "(b) checked wrong: no write, the store holds why" $
+    withPass (chat "auto" []) wrong $ \dir s -> do
+      (_, a) <- pass dir s
+      paFacts a `shouldBe` []
+      (entryOf a >>= ceCheck) `shouldBe` Just (CheckWrong "it returns two")
+  it "(c) with the chat rung at ask: resolved, not checked, nothing written" $
+    withPass (chat "ask" []) right $ \dir s -> do
+      (_, a) <- pass dir s
+      paFacts a `shouldBe` []
+      fmap (\e -> (ceUnit e, ceCheck e)) (entryOf a) `shouldBe` Just (Just helperRef, Nothing)
+      asked dir `shouldReturn` ["plan-unit"]
+  it "(d) a second pass over the same text asks nothing" $
+    withPass (chat "auto" []) wrong $ \dir s -> do
+      (s1, _) <- pass dir s
+      before <- asked dir
+      (_, a2) <- pass dir s1
+      asked dir `shouldReturn` before
+      paFacts a2 `shouldBe` []
+  it "(e) pass_budget = 0: nothing asked, the work left counted" $
+    withPass (chat "auto" ["pass_budget = 0"]) right $ \dir s -> do
+      (_, a) <- pass dir s
+      asked dir `shouldReturn` []
+      fmap rvMore (paRecord a) `shouldBe` Just 1
+      resolves dir `shouldReturn` []
+  it "(f) a cancelled token stops before the next call" $
+    withPass (chat "auto" []) right $ \dir s -> do
+      (token, trip) <- newCancel
+      trip
+      (_, r) <- claimPass token (dir </> "plans/t.md") s
+      either id (const "answered") r `shouldBe` "cancelled"
+      asked dir `shouldReturn` []
+  it "(g) no [decide] model: no write, no record, no store" $
+    withReconcile plan [] "" Nothing $ \dir s -> do
+      (_, a) <- pass dir s
+      paFacts a `shouldBe` []
+      paRecord a `shouldBe` Nothing
+      doesDirectoryExist (dir </> ".olifant/state/claims") `shouldReturn` False
+  it "(h) the unit edited between check and write: no write, the check cleared" $
+    withPass (chat "auto" []) right $ \dir s -> do
+      (s1, a1) <- pass dir s
+      length (paFacts a1) `shouldBe` 1
+      write dir table (T.replace "return 1" "return 2" tableText)
+      (_, a2) <- pass dir s1
+      paFacts a2 `shouldBe` []
+      (entryOf a2 >>= ceCheck) `shouldBe` Nothing
+  it "(i) checked elsewhere: no write, unresolved, the rejected unit out of its candidates" $
+    withPass (chat "auto" []) elsewhere $ \dir s -> do
+      (_, a) <- pass dir s
+      paFacts a `shouldBe` []
+      fmap (\e -> (ceUnit e, ceRung e, helperRef `elem` ceCandidates e)) (entryOf a) `shouldBe` Just (Nothing, "elsewhere", False)
+      map rvElsewhere <$> resolves dir `shouldReturn` [1]
+      doesFileExist (claimsPath dir "plans/t.md") `shouldReturn` True
+  it "(k) a resolved claim left unchecked is checked on a later pass once its entry is old, resolving nothing again" $
+    withPass (chat "auto" []) right $ \dir s -> do
+      let stale = ClaimEntry (Just helperRef) "jev-1" [helperRef] 0.9 Nothing Nothing (UTCTime (fromGregorian 2020 1 1) 0)
+      storeClaims s dir (dir </> "plans/t.md") (M.fromList [("the helper returns one", stale)])
+      (_, a) <- pass dir s
+      fp <- fpNow dir s "helper"
+      asked dir `shouldReturn` ["plan-check"]
+      fmap (\e -> (ceCheck e, ceFingerprint e)) (entryOf a) `shouldBe` Just (Just CheckRight, Just fp)
+      length (paFacts a) `shouldBe` 1
+  it "(j) a pass cancelled partway keeps the verdicts it earned in the store" $ do
+    let many = "# T\n\n" <> T.unlines ["- claim number " <> T.pack (show n) <> " holds" | n <- [1 .. 40 :: Int]]
+    withReconcile many [] (chat "auto" []) (Just right) $ \dir s0 -> do
+      let s = s0 {ssConfig = (ssConfig s0) {scChatAnswers = Just (answersFile dir)}}
+      -- trips a few items in
+      token <- cancelAfter 12
+      (_, r) <- claimPass token (dir </> "plans/t.md") s
+      either id (const "answered") r `shouldBe` "cancelled"
+      stored <- readClaims (ssPorts s) dir "plans/t.md"
+      M.member "claim number 1 holds" stored `shouldBe` True

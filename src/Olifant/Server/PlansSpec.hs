@@ -4,6 +4,7 @@ import Olifant.Language.Grammar (GrammarFailure (NoSource))
 import Control.Lens ((^.))
 import Control.Monad (forM)
 import Data.Map.Strict qualified as M
+import Data.Set qualified as S
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
@@ -18,6 +19,9 @@ import Olifant.Plans (Anchor (..), parsePlan)
 import Olifant.Process (gitStateStamp)
 import Olifant.Server (ServerState, newServerState, projectFor)
 import Olifant.Server.Plans
+import Olifant.Server.Claims (Check (..), ClaimEntry (..))
+import Olifant.Server.Errand (Belief (..), BeliefCheck (..))
+import Olifant.Server.Resolve (UnitRef (..))
 import Olifant.Server.Unit (Named (..))
 import Olifant.Workspace (memoryWorkspace)
 import System.Directory (canonicalizePath, doesDirectoryExist, listDirectory)
@@ -163,17 +167,43 @@ spec = describe "Olifant.Server.Plans (anchors in the server)" $ do
           ends = [(ptRow t, ptCol t, ptCol t + ptLen t) | t <- ts]
       and [(r, c) < (r', c') && (r < r' || e <= c') | ((r, c, e), (r', c', _)) <- zip ends (drop 1 ends)] `shouldBe` True
 
+  describe "planTokensWith (claim modifiers)" $
+    it "a bare line's text carries checked, wrong or resolved from its entry" $ do
+      let at0 = UTCTime (fromGregorian 2026 11 7) 0
+          u = UnitRef "src/a.py" "Foo"
+          e c = ClaimEntry (Just u) "jev-1" [u] 0.9 c Nothing at0
+          store = M.fromList [("right one", e (Just CheckRight)), ("wrong one", e (Just (CheckWrong "no"))), ("open one", e Nothing)]
+          mods = [(ptRow t, ptMods t) | t <- planTokensWith store M.empty (parsePlan "- right one\n- wrong one\n- open one\n- other\n"), ptType t == "planClaim"]
+      mods `shouldBe` [(0, ["checked"]), (1, ["wrong"]), (2, ["resolved"]), (3, [])]
+  describe "beliefsUnder" $
+    it "an ask's beliefs are its question's bare claims, once one of them has a verdict" $ do
+      let at0 = UTCTime (fromGregorian 2026 11 7) 0
+          u = UnitRef "src/a.py" "Foo"
+          ls = parsePlan "- ? how\n  - it reads D\n  - grounded @src/a.py:Foo ✓ 0123456\n  - it is fast\n- other\n"
+          q = ls !! 0
+          checked = M.fromList [("it reads D", ClaimEntry (Just u) "jev-1" [u] 0.9 (Just (CheckWrong "it drops D")) Nothing at0)]
+      beliefsUnder checked ls q `shouldBe` [Belief "it reads D" (BelievedWrong "it drops D" "src/a.py:Foo"), Belief "it is fast" NotChecked]
+      beliefsUnder M.empty ls q `shouldBe` []
+      beliefsUnder checked ls (ls !! 4) `shouldBe` []
   describe "planFolds" $ do
-    let folds = planFolds . parsePlan . T.unlines
+    let folds = planFolds S.empty . parsePlan . T.unlines
     it "a ticked step with children folds to its last descendant" $
       folds ["- [x] a", "  - 25 Oct 21:31 · did", "  - also @src/a.py:Foo", "- [ ] b"] `shouldBe` [(0, 2)]
     it "a ticked step without children, and an open step, do not fold" $
       folds ["- [x] a", "- [ ] b", "  - 25 Oct 21:31 · did"] `shouldBe` []
-    it "an answered question folds; one with evidence only does not" $ do
-      folds ["- ? q", "  - ev @src/a.py:Foo ✓ 0123456", "  - the answer", "- ? r", "  - ev @src/a.py:Foo ✓ 0123456"] `shouldBe` [(0, 2)]
+    it "an answered question folds: a verified claim or evidence under it; a bare question does not" $ do
+      folds ["- ? q", "  - ev @src/a.py:Foo ✓ 0123456", "  - the answer", "- ? r", "  - ev @src/a.py:Foo ✓ 0123456"] `shouldBe` [(0, 2), (3, 4)]
+      folds ["- ? q", "  - ✓ it is @src/a.py:Foo ✓ 0123456"] `shouldBe` [(0, 1)]
       folds ["- ? q"] `shouldBe` []
+    it "a bare belief keeps its question open until it is checked" $ do
+      folds ["- ? q", "  - I think x"] `shouldBe` []
+      planFolds (S.fromList ["I think x"]) (parsePlan (T.unlines ["- ? q", "  - I think x"])) `shouldBe` [(0, 1)]
+    it "an ask's answer folds whatever its anchors' verdicts: anchored claims plus a bare conclusion" $ do
+      folds ["- ? q", "  - grounded @src/a.py:Foo", "  - so it keeps D"] `shouldBe` [(0, 2)]
+      folds ["- ? q", "  - grounded @src/a.py:Foo"] `shouldBe` []
+      folds ["- ? q", "  - I think x", "  - so it keeps D"] `shouldBe` []
     it "a question under a ticked step folds inside it" $
-      folds ["- [x] a", "  - ? q", "    - the answer", "  - 25 Oct 21:31 · did"] `shouldBe` [(0, 3), (1, 2)]
+      planFolds (S.fromList ["the answer"]) (parsePlan (T.unlines ["- [x] a", "  - ? q", "    - the answer", "  - 25 Oct 21:31 · did"])) `shouldBe` [(0, 3), (1, 2)]
 
 -- | /r1 with the python pack, `src/a.py` (class Foo with def bar) and a
 -- plan; a syntax whose units are Foo (lines 0-2) and Foo.bar (1-2).

@@ -23,6 +23,11 @@ Prose is ignored. Lines are read by prefix:
 | gone child | `  - ✗ gone: @path:Unit no longer exists` |
 | red-again child | `  - ✗ <test> red again` |
 
+A claim or a step needs no anchor. Write it as you would to a colleague (`- the loader keeps only
+the total`) and the engine finds the unit a reader would open to check it, checks the line
+against that unit, and writes `@path:Unit ✓ <fp>` into the line when the check says it is right
+([Checked as you go](#checked-as-you-go)). An anchor you type yourself is read as before.
+
 An anchor is `@path:Unit`: a path relative to the project root, and a `Name` or `Class.method`.
 Python and Haskell units resolve. A path that is absolute or leaves the project is never read: it
 is `? not found`. The fingerprint is a short hash of the unit's text, blind to formatting: indentation, blank
@@ -59,12 +64,15 @@ durandal.nvim, off the cursor line:
 - **Evidence recedes.** Evidence under a question (an anchored claim), `also` lines and journal
   lines are dim; a conclusion (an unanchored claim under a question) is plain text; a question
   stands out. A `✓` whose unit has changed since is dimmer still.
-- **Done work folds.** A ticked step with children and an answered question (one with an
-  unanchored child under it) are closed when you enter the plan. A question's fold line is the
-  question, ` — `, and its conclusion (the last unanchored child, so a note you add later wins),
-  cut to the window, then `▸ N` hidden lines; a ticked step's is `☑`, its text, its unit and `✓`.
-  A question with only evidence has no conclusion yet, so it stays open. Open steps always read in
-  full. Folds close on entry only: one that forms while you look (an answer landing under a
+- **Done work folds.** A ticked step with children and an answered question are closed when you
+  enter the plan. A question is answered when a line directly under it is evidence (`- ✓`, `- ✗`),
+  a verified anchored claim, an `ask`'s answer (anchored claims, whatever their verdicts, then a
+  bare conclusion), or a belief of yours that the claim pass has
+  checked, right or wrong. A bare line you write under a question is a belief awaiting its check,
+  so the question stays open until the check lands. A question's fold line is the question, ` — `,
+  and its conclusion (the last unanchored child, so a note you add later wins), cut to the window,
+  then `▸ N` hidden lines (the question alone when it has no conclusion); a ticked step's is `☑`,
+  its text, its unit and `✓`. Open steps always read in full. Folds close on entry only: one that forms while you look (an answer landing under a
   question, a `do`'s journal lines, a tick, a review's `a`) starts open and stays open until you
   next enter the plan. `zo` opens a fold, `zR` opens all, and `<leader>mpe` toggles the fold under
   the cursor.
@@ -92,7 +100,8 @@ wins: `planEvidence`, `planAlso` and `planJournal` to `Comment`, `planQuestion` 
 ## What the server does
 
 - Diagnostics: a missing anchor (`? not found`), and `changed since this was verified` on a claim
-  of your own whose unit has changed. Evidence an `ask` left under a question, and steps, raise no
+  of your own whose unit has changed; and the claim pass's hints on lines without an anchor
+  ([Checked as you go](#checked-as-you-go)). Evidence an `ask` left under a question, and steps, raise no
   `changed since`: the evidence's `✓` is dimmed instead and the step answers with the loop below.
 - `@` completes files, then units. `gd` on an anchor goes to the unit (`textDocument/definition`).
 - Three errands, each one `claude -p` run from the project root, never more than one `do` at a time:
@@ -133,6 +142,7 @@ In `.olifant/config.toml`, all optional:
 | `timeout` | `300` | seconds before an errand is killed |
 | `do_tools` | `[]` | extra `--allowedTools` entries for `do` (beyond Read, Grep, Glob, Edit, Write and the test command) |
 | `ladder` | `[model] ladder` without Jev | the backends a reconcile climbs when Jev is unsure, in order, each with its `escalate` policy |
+| `pass_budget` | `30` | seconds per claim pass ([below](#checked-as-you-go)), counted from its start and checked before each line and each Jev call; `0` asks nothing. The lines it did not reach wait for the next pass |
 | `budget` | `[model] budget` (180) | seconds per reconcile, counted from its start and checked before each question; past it, the units not yet asked about are only counted (`more` in the reconcile's answer and its record) and the next reconcile asks again |
 | `prices` | the current models at list price | `[plans.prices."<model id>"]` rows for `plans cost`, below |
 
@@ -201,6 +211,69 @@ them only afterwards).
 `at`, `plan`, `branch`, `baseline`, `forced`, `changed`, `unaccounted`, `more`, `facts`, `seconds`,
 `climbs` (rung and seconds), `decisions` and `blocks`. The accept or reject outcome of a reading or of an errand's ghost block refers to
 the reconcile's `blocks` by index.
+
+## Checked as you go
+
+A line without an anchor is resolved and checked by the **claim pass**, which runs on entering a
+plan, on a save of it, and when the editor says the plan went quiet (`olifant/plans/idle`;
+durandal.nvim sends it a second after your last change, never while you are in insert mode). An
+editor that sends no idle gets the pass on save only. One pass runs per plan; a new one cancels
+the running one, and an edit to the plan cancels it too (the verdicts it had earned are kept), so
+it never writes into a line you are typing. In insert or replace mode durandal.nvim refuses the
+pass's write; the verdict stays in the store and the next pass writes it.
+
+**What it works on.** Each list line of the plan whose words it has not seen:
+
+| line | the pass |
+|---|---|
+| a claim with no anchor (`- <text>`), also a belief under a `- ?` | finds its unit, then checks the line against that unit's code |
+| a step with no anchor | finds its unit only (the loop answers steps) |
+| a claim beside an anchored claim or evidence under a question (an `ask`'s conclusion) | nothing: it is an answer, not a belief |
+| an anchored line, a question, prose, a journal, test or also line | nothing |
+
+A line is known by its words, so an edited line is new work, and words no longer in the plan are
+forgotten at the next pass. What the pass found is kept in `.olifant/state/claims/<plan>.json`
+(ignored by git), never in the plan, until a check says the line is right.
+
+**Finding the unit.** The engine ranks the project's units by the line's words (a unit's name and
+file, its header, its path, its body; a name you put in backticks, or one in `snake_case`,
+`CamelCase` or with a digit, counts most; a test ranks low unless the line says test or stub) and
+asks Jev (`[decide] model`) which of the top 8 a reader would open. When Jev is unsure (below 0.6)
+it asks again with the first lines of each unit's code, then once more with the plan lines around
+yours: at most three calls a line. Without a `[decide] model` nothing is resolved, nothing is
+checked and nothing is written.
+
+**The check.** A resolved claim is checked by `plan-check`, a typed question on the plan's chat
+ladder (`[plans] ladder`, else `[model] ladder`, without Jev): `right`, `wrong` (with why), or
+`elsewhere` (this code is not what the line is about). Unprompted, only an `auto` rung is asked:
+with none, claims resolve and show their unit, unchecked; add an `auto` rung (or a check that
+got no answer) and the next pass after ten minutes checks them. On `right` the engine writes
+`@path:Unit ✓ <fp>` into the line, as it writes a test's `●`, by `workspace/applyEdit` at the
+plan version it read (a plan that moved on meanwhile keeps the verdict, and the next pass writes
+it). On `wrong` nothing is written: the why is in the margin and in hover (`K`). On `elsewhere`
+the check has rejected the unit: the line is left unresolved, that unit out of its candidates,
+and nothing is written. Measured on a real plan, Jev picks the anchor its author chose for 34 of
+76 lines and another unit, confidently, for 18, many of them defensible (a method for its class,
+the other unit a line names); the check is the guard against a wrong unit, so no anchor lands
+without one.
+
+**The margin.** One hint (source `olifant-plan`, severity hint) per line without an anchor:
+
+| code | shows | when |
+|---|---|---|
+| `claim-checking` | `…` | the running pass will work on the line (every line in its work list shows it from the start) |
+| `claim-right` | `✓ <unit> (<file>)` | checked right, until the anchor lands |
+| `claim-wrong` | `✗ <why> — <unit> (<file>)` | checked wrong |
+| `claim-resolved` | `→ <unit> (<file>)` | a unit found, not checked |
+| `claim-unsure` | `?` | no unit, but some candidate was plausible (Jev gave it at least 0.2), or candidates are left after the check rejected one |
+
+A line with no plausible unit shows nothing: it reads as prose. The claim's words carry the
+semantic-token modifiers `checked`, `wrong` and `resolved` to match, and hover on the line shows
+the unit as `path:Unit`, the check and why. There is no automatic `ask` and no popup.
+
+**An `ask` under your beliefs.** When a question has beliefs under it with a check, `<leader>mpq`
+sends them along: the prompt lists each with its verdict and the unit it was checked against
+(`not checked` for the rest) and asks the answer to add what they miss rather than repeat them.
 
 ## Reviews and the journal
 
@@ -322,6 +395,13 @@ view. The columns:
   A model with tokens but no price is named on stderr once and counted as $0, so nothing inflates
   silently. A missing transcript directory is a note on stderr; the errand columns still print.
 
+A claim pass that called a model appends a `resolve` record: `id`, `at`, `plan`, `seen` (the lines
+it worked on), `by_rung` (how many resolved in each round, `jev-1`, `jev-2`, `jev-3`, or `none`),
+`checked`, `right`, `wrong`, `elsewhere`, `more` (lines left for the budget), `seconds`, `calls` (every Jev round and every chat rung asked, one
+`decisions` entry each; a rung that did not answer at the gate has no choice) and
+`decisions`. `plans cost` leaves them out of its tables; the `elsewhere` rate is the one to read in
+use, as how often Jev's unit was the wrong one.
+
 Read the passive numbers as suggestive, not as a verdict: errands are a slice of a branch's work
 while a Claude Code session is all of it, and the time spent in the editor costs nothing here.
 The fair comparison is a head-to-head: the same change made both ways.
@@ -343,6 +423,9 @@ The fair comparison is a head-to-head: the same change made both ways.
 | `<leader>mp<CR>` | start a step under this line (the engine's "New step below") |
 | `<leader>mpf` | the plan's files, in the location list |
 | `gd` | on an anchor: go to its unit |
+
+A plan buffer tells the engine it went quiet (`olifant/plans/idle`) one second after a change,
+counted from leaving insert mode, so the claim pass runs while you read, not while you type.
 
 `:Durandal plan` marks the buffer as a plan; `:Durandal plan cancel` cancels the errands running
 in it. A finished `do` opens the files it changed in the quickfix list.

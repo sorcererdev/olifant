@@ -140,7 +140,9 @@ library
     Olifant.Server
     Olifant.Server.Actions
     Olifant.Server.Anticipate
+    Olifant.Server.Claims
     Olifant.Server.Completion
+    Olifant.Server.Confine
     Olifant.Server.Conjure
     Olifant.Server.ConjureNext
     Olifant.Server.ConjureScan
@@ -163,6 +165,7 @@ library
     Olifant.Server.Preview
     Olifant.Server.Recognize
     Olifant.Server.Regions
+    Olifant.Server.Resolve
     Olifant.Server.Review
     Olifant.Server.ReviewReadings
     Olifant.Server.Sibling
@@ -346,7 +349,10 @@ test-suite spec
     Olifant.Server.Actions
     Olifant.Server.Anticipate
     Olifant.Server.AnticipateSpec
+    Olifant.Server.Claims
+    Olifant.Server.ClaimsSpec
     Olifant.Server.Completion
+    Olifant.Server.Confine
     Olifant.Server.Conjure
     Olifant.Server.ConjureNext
     Olifant.Server.ConjureNextSpec
@@ -377,6 +383,9 @@ test-suite spec
     Olifant.Server.Preview
     Olifant.Server.Recognize
     Olifant.Server.Regions
+    Olifant.Server.Resolve
+    Olifant.Server.ResolveCorpusSpec
+    Olifant.Server.ResolveSpec
     Olifant.Server.Review
     Olifant.Server.ReviewReadings
     Olifant.Server.ReviewReadingsSpec

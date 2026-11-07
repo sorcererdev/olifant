@@ -1,9 +1,9 @@
 -- | Internal to Olifant.Process: a cancellation token. Work polls it; the
 -- language server trips it when newer work supersedes it or the client
 -- cancels the request.
-module Olifant.Process.Cancel (Cancel, newCancel, neverCancel, cancelled) where
+module Olifant.Process.Cancel (Cancel, newCancel, neverCancel, cancelAfter, cancelled) where
 
-import Data.IORef (atomicWriteIORef, newIORef, readIORef)
+import Data.IORef (atomicModifyIORef', atomicWriteIORef, newIORef, readIORef)
 
 newtype Cancel = Cancel (IO Bool)
 
@@ -16,6 +16,13 @@ newCancel = do
 -- | Work nobody cancels (the CLI's).
 neverCancel :: Cancel
 neverCancel = Cancel (pure False)
+
+-- | A token that reads as tripped from its N+1th look on (for tests that
+-- stop work at a known point).
+cancelAfter :: Int -> IO Cancel
+cancelAfter n = do
+  looks <- newIORef (0 :: Int)
+  pure (Cancel (atomicModifyIORef' looks (\i -> (i + 1, i >= n))))
 
 cancelled :: Cancel -> IO Bool
 cancelled (Cancel tripped) = tripped

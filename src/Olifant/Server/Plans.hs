@@ -12,6 +12,8 @@ module Olifant.Server.Plans
   , planTokenTypes
   , planTokenModifiers
   , planTokens
+  , planTokensWith
+  , claimHover
   , planFolds
   , anchorItems
   , newStepSnippet
@@ -20,6 +22,7 @@ module Olifant.Server.Plans
   , planFiles
   , ErrandAnswer (..)
   , runErrand
+  , beliefsUnder
   , Reopen (..)
   , currentBranch
   , gitOut
@@ -28,11 +31,9 @@ module Olifant.Server.Plans
   , safely
   ) where
 
-import Olifant.Language.Grammar (GrammarUnavailable)
 import Control.Lens ((&), (?~))
 import Control.Monad (filterM, when)
 import Language.LSP.Protocol.Lens qualified as L
-import Control.Exception (SomeAsyncException, SomeException, fromException, throwIO, try)
 import Data.Functor ((<&>))
 import Data.Dynamic (fromDynamic, toDyn)
 import Data.IORef (modifyIORef', readIORef)
@@ -43,7 +44,7 @@ import Data.Text.Encoding qualified as TE
 import Olifant.Language.Adapter (Language (..), Probe (..), TestDef (..), chooseTestCommand)
 import Olifant.Plans (Kind (..), childrenOf, testState)
 import Olifant.Process (Cancel, runBytes)
-import Olifant.Server.Errand (Block (..), Ghost (..), Grounded (..), RunFailure (..), RunResult (..), Status (..), Verb (..), cutBody, doAnswered, doTestCommand, doTestTools, errandPrompt, projectUnitWords, groundingLimit, parseAnswer, runClaude, statusName)
+import Olifant.Server.Errand (Belief (..), BeliefCheck (..), Block (..), Ghost (..), Grounded (..), RunFailure (..), RunResult (..), Status (..), Verb (..), cutBody, doAnswered, doTestCommand, doTestTools, errandPromptWith, projectUnitWords, groundingLimit, parseAnswer, runClaude, statusName)
 import Olifant.Server.LoopTypes (Fact (..))
 import Data.Time (getCurrentTimeZone)
 import Olifant.Server.Journal (DoEnd (..), doEvent)
@@ -61,9 +62,14 @@ import Olifant.Catalog (Catalog (..), PlansConfig (..))
 import Olifant.Language.Adapter (languageFor)
 import Olifant.Plans (Anchor (..), Line (..), Section (..), Verdict (..), parsePlan, sectionOf)
 import Olifant.Server.State (ServerState (..))
+import Olifant.Server.Confine (confined, safely)
+import Olifant.Server.Claims (Check (..), ClaimEntry (..), ClaimStore, claimKey, claimsOf)
+import Olifant.Server.Resolve (UnitRef (..), refText)
+import Data.Set (Set)
+import Data.Set qualified as S
 import Olifant.Server.Unit (Named (..), fingerprint, unitLookupIn, unitsOf, unitsWithKinds)
 import Olifant.Workspace (Workspace (..), normalisePath)
-import System.FilePath (isAbsolute, takeExtension, (</>))
+import System.FilePath (takeExtension, (</>))
 
 -- | An absolute path under the project's plans folder, ending `.md`.
 isPlanPath :: Project -> FilePath -> Bool
@@ -98,29 +104,6 @@ resolveAnchor s p a = do
   where
     rel = normalisePath (anPath a)
 
--- | An anchor's path as one inside the project (normalised, relative), or
--- Nothing: an absolute path, or one that climbs out of the root, is never
--- read. The one place anchors are confined (a later allowlist of sibling
--- roots widens only this).
-confined :: FilePath -> Maybe FilePath
-confined path
-  | isAbsolute path = Nothing
-  | rel == ".." || "../" `isPrefixOf` rel = Nothing
-  | otherwise = Just rel
-  where
-    rel = normalisePath path
-
--- | IO that cannot fail the caller: an exception (not an async one, nor a
--- grammar that cannot load: that stops the request) is the default.
-safely :: a -> IO a -> IO a
-safely def io =
-  try io >>= \case
-    Right v -> pure v
-    Left (e :: SomeException)
-      | Just (_ :: SomeAsyncException) <- fromException e -> throwIO e
-      | Just (_ :: GrammarUnavailable) <- fromException e -> throwIO e
-      | otherwise -> pure def
-
 -- | Each anchor resolved once, by its path and unit.
 resolveAll :: ServerState -> Project -> [Anchor] -> IO (M.Map (FilePath, Text) Resolved)
 resolveAll s p as = M.fromList <$> mapM (\a -> (key a,) <$> resolveAnchor s p a) (nub' as)
@@ -137,12 +120,14 @@ key a = (anPath a, anUnit a)
 -- a ticked step. Steps raise no changed-since. With them, the fingerprints
 -- read: every resolved anchor's, Nothing for a unit not found.
 planDiagnostics :: ServerState -> Project -> FilePath -> Text -> IO ([Diagnostic], AnchorPrints)
-planDiagnostics s p _ text = do
+planDiagnostics s p path text = do
   let ls = parsePlan text
       anchored = [(l, a) | l <- ls, Just a <- [lnAnchor l]]
   resolved <- resolveAll s p (map snd anchored)
+  store <- claimsOf s (prRoot p) path
+  checking <- M.findWithDefault S.empty (normalisePath path) <$> readIORef (ssChecking s)
   pure
-    ( mapMaybe (\(l, a) -> diagnose ls l a =<< M.lookup (key a) resolved) anchored
+    ( mapMaybe (\(l, a) -> diagnose ls l a =<< M.lookup (key a) resolved) anchored ++ claimHints store checking ls
     , M.map (\r -> rsFingerprint r <* rsUnit r) resolved )
   where
     diagnose ls l a r = case (rsUnit r, lnVerdict l, rsFingerprint r) of
@@ -155,6 +140,51 @@ planDiagnostics s p _ text = do
       let row = fromIntegral (lnRow l)
           col n = fromIntegral (utf16Length (T.take n (lnText l)))
        in Range (Position row (col (anStart a))) (Position row (col (anEnd a)))
+
+-- | The claim pass's margin: per bare claim or step with an entry (or in
+-- the running pass's work), one hint (source `olifant-plan`): `claim-checking`
+-- (…), `claim-right` (✓, until its anchor lands), `claim-wrong` (✗ and why),
+-- `claim-resolved` (→ its unit), `claim-unsure` (?: no unit, but a
+-- candidate Jev gave at least 0.2, or candidates left after its check
+-- said the code is elsewhere). Nothing for a line with no plausible unit.
+claimHints :: ClaimStore -> S.Set Text -> [Line] -> [Diagnostic]
+claimHints store checking ls = concatMap hint ls
+  where
+    hint l
+      | lnAnchor l /= Nothing || not (listLine l) = []
+      | claimKey l `S.member` checking = [at l "claim-checking" "…"]
+      | otherwise = case M.lookup (claimKey l) store of
+          Nothing -> []
+          Just e -> case (ceUnit e, ceCheck e) of
+            (Just u, Just CheckRight) -> [at l "claim-right" ("✓ " <> named u)]
+            (Just u, Just (CheckWrong why)) -> [at l "claim-wrong" ("✗ " <> why <> " — " <> named u)]
+            (Just u, _) -> [at l "claim-resolved" ("→ " <> named u)]
+            (Nothing, Just CheckElsewhere) -> [at l "claim-unsure" "?" | not (null (ceCandidates e))]
+            (Nothing, _) -> [at l "claim-unsure" "?" | ceTop e >= 0.2]
+    listLine l = case lnKind l of
+      Claim -> True
+      Step _ -> True
+      _ -> False
+    named u = urName u <> " (" <> T.pack (urPath u) <> ")"
+    at l code msg =
+      let row = fromIntegral (lnRow l)
+          start = fromIntegral (lnIndent l)
+          end = fromIntegral (utf16Length (T.stripEnd (lnText l)))
+       in Diagnostic (Range (Position row start) (Position row end)) (Just DiagnosticSeverity_Hint) (Just (InR code)) Nothing (Just "olifant-plan") msg Nothing Nothing Nothing
+
+-- | What a bare line's entry says, for its hover: its unit as `path:Unit`,
+-- the check, and why.
+claimHover :: ClaimStore -> Line -> Maybe Text
+claimHover store l = case (lnAnchor l, M.lookup (claimKey l) store) of
+  (Nothing, Just e) ->
+    Just . T.intercalate "\n\n" $
+      [maybe "No unit found for this line." (\u -> "`" <> refText u <> "`") (ceUnit e)]
+        ++ case ceCheck e of
+          Just CheckRight -> ["✓ right about this code"]
+          Just (CheckWrong why) -> ["✗ wrong: " <> why]
+          Just CheckElsewhere -> ["This line is about other code than its first unit."]
+          Nothing -> ["Not checked yet."]
+  _ -> Nothing
 
 -- | (path, unit) -> the unit's fingerprint now; Nothing = not found. A key
 -- that is absent has not been read yet.
@@ -170,7 +200,7 @@ planTokenTypes, planTokenModifiers :: [Text]
 planTokenTypes =
   [ "planMarker", "planStep", "planStepDone", "planQuestion", "planEvidence", "planClaim", "planTest"
   , "planAlso", "planJournal", "planAnchorPath", "planAnchorUnit", "planVerdict", "planFingerprint" ]
-planTokenModifiers = ["done", "stale", "notFound"]
+planTokenModifiers = ["done", "stale", "notFound", "checked", "wrong", "resolved"]
 
 -- | What every span of a plan is, from the parser's lines alone (no I/O):
 -- markers, each kind's text, and an anchor's path, unit, verdict and
@@ -178,8 +208,21 @@ planTokenModifiers = ["done", "stale", "notFound"]
 -- `notFound` come from the fingerprints the diagnostics pass last read
 -- (a key absent from them is neither). Ascending and never overlapping.
 planTokens :: AnchorPrints -> [Line] -> [PlanToken]
-planTokens prints ls = concatMap tokensOf ls
+planTokens = planTokensWith M.empty
+
+-- | 'planTokens', with a bare line's text marked by its claim entry:
+-- `checked` (right, until its anchor is written), `wrong`, or `resolved`
+-- (a unit, not checked).
+planTokensWith :: ClaimStore -> AnchorPrints -> [Line] -> [PlanToken]
+planTokensWith store prints ls = concatMap tokensOf ls
   where
+    claimMods l = case (lnAnchor l, M.lookup (claimKey l) store) of
+      (Nothing, Just e) -> case (ceUnit e, ceCheck e) of
+        (Just _, Just CheckRight) -> ["checked"]
+        (Just _, Just (CheckWrong _)) -> ["wrong"]
+        (Just _, Nothing) -> ["resolved"]
+        _ -> []
+      _ -> []
     parentOf = parentIn ls
     ancestors = ancestorsIn ls
     below l = any (\a -> lnKind a == Step True) (ancestors l)
@@ -215,7 +258,7 @@ planTokens prints ls = concatMap tokensOf ls
               Evidence -> "planEvidence"
               Claim | Just _ <- lnAnchor l, Just p <- parentOf l, lnKind p == Question -> "planEvidence"
               _ -> "planClaim"
-            piece from to = [(from, n, textType, []) | let n = T.length (T.stripEnd (T.take (to - from) (T.drop from txt))), to > from, n > 0]
+            piece from to = [(from, n, textType, claimMods l) | let n = T.length (T.stripEnd (T.take (to - from) (T.drop from txt))), to > from, n > 0]
             anchored = case lnAnchor l of
               Nothing -> piece afterMarker textEnd
               Just a ->
@@ -253,19 +296,36 @@ ancestorsIn :: [Line] -> Line -> [Line]
 ancestorsIn ls l = maybe [] (\p -> p : ancestorsIn ls p) (parentIn ls l)
 
 -- | The ranges a plan folds besides its excerpts: a ticked step with
--- children, and a question with an unanchored claim directly under it,
--- each from its row to its last descendant (start, end; inclusive).
-planFolds :: [Line] -> [(Int, Int)]
-planFolds ls =
+-- children, and an answered question (a direct child that is evidence, a
+-- verified anchored claim, or a claim whose key is in CHECKED: a belief
+-- with a stored check; a bare belief alone keeps it open; an ask's answer,
+-- grounded claims of any verdict and a bare conclusion, folds), each from its
+-- row to its last descendant (start, end; inclusive).
+planFolds :: Set Text -> [Line] -> [(Int, Int)]
+planFolds checked ls =
   [ (lnRow l, lnRow (last kids))
   | l <- ls
   , let kids = childrenOf ls (lnRow l)
   , not (null kids)
   , case lnKind l of
       Step True -> True
-      Question -> any (\c -> lnKind c == Claim && lnAnchor c == Nothing) [c | c <- kids, lnIndent c == lnIndent l + 2]
+      Question ->
+        let direct = [c | c <- kids, lnIndent c == lnIndent l + 2]
+         in any answers direct || (any grounded direct && any bare direct)
       _ -> False
   ]
+
+  where
+    -- an ask's answer: anchored claims, whatever their verdicts, then a bare conclusion
+    grounded c = lnKind c == Evidence || (lnKind c == Claim && lnAnchor c /= Nothing)
+    bare c = lnKind c == Claim && lnAnchor c == Nothing
+    -- evidence, a verified anchored claim, or a belief whose check is stored
+    answers c = case lnKind c of
+      Evidence -> True
+      Claim
+        | Just _ <- lnAnchor c -> case lnVerdict c of Verified _ -> True; _ -> False
+        | otherwise -> claimKey c `S.member` checked
+      _ -> False
 
 utf16Length :: Text -> Int
 utf16Length = T.foldl' (\n c -> n + if fromEnum c > 0xFFFF then 2 else 1) 0
@@ -395,6 +455,21 @@ data ErrandAnswer = ErrandAnswer
 -- in a git repository takes the tree's reference first; one that answered,
 -- or changed the tree however it ended, leaves a review (its id to
 -- REVIEWED, and in the answer).
+-- | The author's beliefs under a question (its bare claims), each with
+-- what its check found; none unless at least one has a verdict.
+beliefsUnder :: ClaimStore -> [Line] -> Line -> [Belief]
+beliefsUnder store ls q
+  | lnKind q /= Question = []
+  | any (\(Belief _ c) -> c /= NotChecked) beliefs = beliefs
+  | otherwise = []
+  where
+    bare = [c | c <- childrenOf ls (lnRow q), lnIndent c == lnIndent q + 2, lnKind c == Claim, lnAnchor c == Nothing]
+    beliefs = [Belief (claimKey c) (checkOf (M.lookup (claimKey c) store)) | c <- bare]
+    checkOf = \case
+      Just ClaimEntry {ceUnit = Just u, ceCheck = Just CheckRight} -> BelievedRight (refText u)
+      Just ClaimEntry {ceUnit = Just u, ceCheck = Just (CheckWrong why)} -> BelievedWrong why (refText u)
+      _ -> NotChecked
+
 -- | A do that continues an earlier one's thread: its id, its session, and
 -- what the user asked for.
 data Reopen = Reopen {roParent :: Text, roSession :: Text, roAsk :: Text}
@@ -422,7 +497,9 @@ runErrand after reviewed reopen token verb path row s0 =
           tests <- projectTests (workspaceProbe (pFiles (ssPorts s)) (prRoot p)) p
           let tools = if verb == Do then testTools p tests else []
               asked = maybe "" (\ro -> "Further change asked: " <> roAsk ro <> "\n\n") reopen
-              prompt = asked <> errandPrompt verb (projectUnitWords (catalogLanguages (prCatalog p))) (if verb == Do then listToMaybe' (mapMaybe doTestCommand tests) else Nothing) text ls target grounded
+          store <- claimsOf s root path
+          let beliefs = if verb == Ask then beliefsUnder store ls target else []
+              prompt = asked <> errandPromptWith beliefs verb (projectUnitWords (catalogLanguages (prCatalog p))) (if verb == Do then listToMaybe' (mapMaybe doTestCommand tests) else Nothing) text ls target grounded
               rel = makeRelative root (normalisePath path)
           branch <- currentBranch root
           now <- pNow (ssPorts s)
