@@ -5,14 +5,14 @@
 -- record per reconcile that asked or answered something. Appending is best-effort and never throws:
 -- telemetry must never fail an errand.
 module Olifant.Server.Telemetry
-  ( ErrandRecord (..), OutcomeRecord (..), ReconcileRecord (..), Decision (..), Record (..)
+  ( ErrandRecord (..), OutcomeRecord (..), ReconcileRecord (..), ResolveRecord (..), Decision (..), Record (..)
   , recordJson, parseRecord, recordsPath, appendRecord, readRecords, errandId
   ) where
 
 import Control.Concurrent.MVar (MVar, newMVar, withMVar)
 import Control.Exception (SomeException, evaluate, try)
 import Control.Monad (void)
-import Data.Aeson (Value (..), decodeStrict, encode, object, (.:), (.:?), (.=))
+import Data.Aeson (Value (..), decodeStrict, encode, object, parseJSON, (.:), (.:?), (.=))
 import Data.Aeson.Key qualified as K
 import Data.Aeson.KeyMap qualified as KM
 import Data.Aeson.Types (Object, Pair, Parser, parseMaybe)
@@ -61,7 +61,17 @@ data ReconcileRecord = ReconcileRecord
   , rcClimbs :: [(Text, Double)], rcDecisions :: [Decision], rcBlocks :: [Maybe (FilePath, Text, Text)] }
   deriving (Eq, Show)
 
-data Record = AnErrand ErrandRecord | AnOutcome OutcomeRecord | AReconcile ReconcileRecord
+-- | One claim pass over a plan: the lines it worked on, how many resolved
+-- in each round (`jev-1`, `jev-2`, `jev-3`, `none`), the checks asked and
+-- their verdicts (right, wrong, about other code), the work left for the
+-- budget, its seconds, its model calls and their decisions.
+data ResolveRecord = ResolveRecord
+  { rvId :: Text, rvAt :: UTCTime, rvPlan :: FilePath, rvSeen :: Int, rvByRung :: [(Text, Int)]
+  , rvChecked :: Int, rvRight :: Int, rvWrong :: Int, rvElsewhere :: Int, rvMore :: Int
+  , rvSeconds :: Double, rvCalls :: Int, rvDecisions :: [Decision] }
+  deriving (Eq, Show)
+
+data Record = AnErrand ErrandRecord | AnOutcome OutcomeRecord | AReconcile ReconcileRecord | AResolve ResolveRecord
   deriving (Eq, Show)
 
 -- | The record as the spec names its fields; absent Maybe fields are omitted.
@@ -90,6 +100,12 @@ recordJson = \case
       , "decisions" .= map decisionJson (rcDecisions r)
       , "blocks" .= [maybe Null (\(path, unit, fp) -> object ["path" .= path, "unit" .= unit, "fp" .= fp]) b | b <- rcBlocks r] ]
         ++ catMaybes [("branch" .=) <$> rcBranch r, ("baseline" .=) <$> rcBaseline r]
+  AResolve r ->
+    object
+      [ "kind" .= ("resolve" :: Text), "id" .= rvId r, "at" .= stamp (rvAt r), "plan" .= rvPlan r, "seen" .= rvSeen r
+      , "by_rung" .= object [K.fromText n .= c | (n, c) <- rvByRung r], "checked" .= rvChecked r, "right" .= rvRight r
+      , "wrong" .= rvWrong r, "elsewhere" .= rvElsewhere r, "more" .= rvMore r, "seconds" .= rvSeconds r
+      , "calls" .= rvCalls r, "decisions" .= map decisionJson (rvDecisions r) ]
   where
     decisionJson d = object ["kind" .= dcKind d, "options" .= dcOptions d, "chosen" .= dcChosen d, "confidence" .= dcConfidence d, "rung" .= dcRung d]
     modelsJson ms = object [K.fromText m .= object (tokensPairs (muTokens u) ++ maybe [] (\c -> ["cost" .= c]) (muCost u)) | (m, u) <- ms]
@@ -108,6 +124,7 @@ parseRecord = parseMaybe $ \case
       ("errand" :: Text) -> AnErrand <$> errandP o
       "outcome" -> AnOutcome <$> (OutcomeRecord <$> o .: "id" <*> o .: "block" <*> o .: "at" <*> o .: "outcome")
       "reconcile" -> AReconcile <$> reconcileP o
+      "resolve" -> AResolve <$> resolveP o
       k -> fail ("unknown kind " <> T.unpack k)
   _ -> fail "not an object"
   where
@@ -132,6 +149,18 @@ parseRecord = parseMaybe $ \case
         <$> o .: "id" <*> o .: "at" <*> o .: "plan" <*> o .:? "branch" <*> o .:? "baseline" <*> o .: "forced"
         <*> o .: "changed" <*> o .: "unaccounted" <*> o .: "more" <*> o .: "facts" <*> o .: "seconds"
         <*> pure climbs <*> pure decisions <*> pure blocks
+    decisionP = \case
+      Object d -> Decision <$> d .: "kind" <*> d .: "options" <*> d .:? "chosen" <*> d .:? "confidence" <*> d .: "rung"
+      _ -> fail "a decision is not an object"
+    resolveP o = do
+      byRung <- o .: "by_rung" >>= \case
+        Object rs -> traverse (\(k, v) -> (K.toText k,) <$> parseJSON v) (KM.toList rs)
+        _ -> fail "by_rung is not an object"
+      decisions <- o .: "decisions" >>= traverse decisionP
+      ResolveRecord
+        <$> o .: "id" <*> o .: "at" <*> o .: "plan" <*> o .: "seen" <*> pure byRung
+        <*> o .: "checked" <*> o .: "right" <*> o .: "wrong" <*> o .: "elsewhere" <*> o .: "more"
+        <*> o .: "seconds" <*> o .: "calls" <*> pure decisions
     modelP = \case
       Object m -> ModelUse <$> tokensP m <*> m .:? "cost"
       _ -> fail "model use is not an object"

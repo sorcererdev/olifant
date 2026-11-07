@@ -90,15 +90,22 @@ spec = describe "catalog" $ do
         _ -> expectationFailure "expected ConfigInvalid naming conjure"
   describe "[plans] (plans, stage 1)" $ do
     it "defaults when absent" $
-      withCatalog [("/proj/.olifant/config.toml", "")] $ \_ cat -> catalogPlans cat `shouldBe` PlansConfig "plans" "claude" "sonnet" 300 [] defaultPrices Nothing Nothing
+      withCatalog [("/proj/.olifant/config.toml", "")] $ \_ cat -> catalogPlans cat `shouldBe` PlansConfig "plans" "claude" "sonnet" 300 [] defaultPrices Nothing Nothing Nothing
     it "reads every key" $
       withCatalog [("/proj/.olifant/config.toml", "[plans]\ndir = \"docs/plans\"\nrunner = \"/tmp/shim\"\nmodel = \"opus\"\ntimeout = 900\ndo_tools = [\"Bash(cabal test*)\"]\n")] $ \_ cat ->
-        catalogPlans cat `shouldBe` PlansConfig "docs/plans" "/tmp/shim" "opus" 900 ["Bash(cabal test*)"] defaultPrices Nothing Nothing
+        catalogPlans cat `shouldBe` PlansConfig "docs/plans" "/tmp/shim" "opus" 900 ["Bash(cabal test*)"] defaultPrices Nothing Nothing Nothing
     it "reads the loop's ladder and budget (stage 2); absent, neither" $ do
       withCatalog [("/proj/.olifant/config.toml", "[plans]\nladder = [\"local\"]\nbudget = 60\n[model.backends.local]\nkind = \"openai-compatible\"\nurl = \"http://x/v1\"\nmodel = \"q\"\n")] $ \_ cat ->
         (pcLadder (catalogPlans cat), pcBudget (catalogPlans cat)) `shouldBe` (Just ["local"], Just 60)
       withCatalog [("/proj/.olifant/config.toml", "[plans]\nmodel = \"opus\"\n")] $ \_ cat ->
         (pcLadder (catalogPlans cat), pcBudget (catalogPlans cat)) `shouldBe` (Nothing, Nothing)
+    it "reads the claim pass's budget; absent, none; below 0, a config error" $ do
+      withCatalog [("/proj/.olifant/config.toml", "[plans]\npass_budget = 0\n")] $ \_ cat -> pcPassBudget (catalogPlans cat) `shouldBe` Just 0
+      withCatalog [("/proj/.olifant/config.toml", "")] $ \_ cat -> pcPassBudget (catalogPlans cat) `shouldBe` Nothing
+      r <- openWith [("/proj/.olifant/config.toml", "[plans]\npass_budget = -1\n")]
+      case r of
+        Left (ConfigInvalid _ e) -> e `shouldSatisfy` T.isInfixOf "pass_budget"
+        _ -> expectationFailure "expected ConfigInvalid naming pass_budget"
     it "a ladder name with no backend is a config error, as [model] ladder's" $ do
       r <- openWith [("/proj/.olifant/config.toml", "[plans]\nladder = [\"gpt\"]\n")]
       case r of

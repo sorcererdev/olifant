@@ -41,6 +41,9 @@ module Olifant.Server.Loop
   , ReconcileAnswer (..)
   , reconcile
   , reconcileJson
+    -- * the claim pass
+  , PassAnswer (..)
+  , claimPass
   ) where
 
 import Control.Monad (forM, join)
@@ -62,7 +65,7 @@ import Olifant.Catalog (Catalog (..), PlansConfig (..))
 import Olifant.Decide (Answer (..), Confidence (..), Question (..), qOptions)
 import Olifant.Language.Adapter (languageFor)
 import Olifant.Model (ModelConfig (..), Rung (..))
-import Olifant.Plans (Anchor (..), Kind (..), Line (..), Section (..), TestState (..), Verdict (..), childrenOf, evidenceTag, parsePlan, sections, stepDone, testState, withTestState, withVerdict)
+import Olifant.Plans (Anchor (..), Kind (..), Line (..), Section (..), TestState (..), Verdict (..), anchorText, childrenOf, evidenceTag, parsePlan, sections, stepDone, testState, withTestState, withVerdict)
 import Olifant.Process (Cancel, cancelled)
 import Olifant.Server.Errand (Block (..), Ghost (..))
 import Olifant.Server.Excerpt (Excerpt (..), excerptFacts, excerptsOf, unitExcerpt)
@@ -71,7 +74,10 @@ import Olifant.Server.LoopTests
 import Olifant.Server.LoopTypes
 import Olifant.Server.Plans (Resolved (..), confined, currentBranch, gitOut, gitText, resolveAnchor, safely)
 import Olifant.Server.State (ServerState (..), appendStepLine, projectFor)
-import Olifant.Server.Telemetry (Decision (..), OutcomeRecord (..), ReconcileRecord (..), Record (..), appendRecord, errandId, readRecords, recordsPath)
+import Olifant.Server.Telemetry (Decision (..), OutcomeRecord (..), ReconcileRecord (..), Record (..), ResolveRecord (..), appendRecord, errandId, readRecords, recordsPath)
+import Olifant.Server.Claims (Check (..), ClaimEntry (..), ClaimStore, Work (..), checkClaim, claimKey, claimsOf, passWork, pruneClaims, storeClaims)
+import Olifant.Server.Resolve qualified as R
+import Olifant.Server.Resolve (LineContext (..), UnitRef (..), candidates, lineContext, projectIndex, resolveLine, roundName, upRef)
 import Olifant.Server.Unit (Named (..), fingerprint, unitsOf)
 import Olifant.Workspace (Workspace (..), normalisePath)
 import System.FilePath (makeRelative, takeExtension, (</>))
@@ -562,3 +568,135 @@ reconcileJson a =
 
 tshow :: Show a => a -> Text
 tshow = T.pack . show
+
+-- | A claim pass's answer: the anchors its right checks earned (as facts),
+-- the plan's store after it, and its record (none without a decide model;
+-- appended only when a model call ran).
+data PassAnswer = PassAnswer {paFacts :: [Fact], paStore :: ClaimStore, paRecord :: Maybe ResolveRecord}
+  deriving stock (Show)
+
+-- | The automatic pass over the plan at PATH (the editor's text, else the
+-- disk's): each new unanchored claim resolved and checked, each new step
+-- resolved, each right check's anchor written, in plan order until the
+-- budget (`[plans] pass_budget`, 30 s) or the token stops it. A right check
+-- writes `@path:Unit ✓ <fp>` (the fingerprint read at the check); a unit
+-- changed since (its fingerprint) writes nothing and is checked again next
+-- pass; a check about other code leaves the line unresolved, that unit out
+-- of its candidates. No decide model: nothing runs. Cancelled: Left.
+claimPass :: Cancel -> FilePath -> ServerState -> IO (ServerState, Either Text PassAnswer)
+claimPass token path s0 = do
+  start <- getMonotonicTime
+  projectFor path s0 >>= \case
+    (s, Nothing) -> pure (s, Left "this plan is in no Olifant project")
+    (s, Just (_, p)) -> do
+      text <- case M.lookup path (ssDocs s) of
+        Just (_, t) -> pure t
+        Nothing -> fromMaybe "" <$> safely Nothing (readText (pFiles (ssPorts s)) path)
+      let ls = parsePlan text
+          root = prRoot p
+          rel = makeRelative root (normalisePath path)
+          rungs = rungsFor s {ssCancel = token} p False
+          models = catalogModel (prCatalog p)
+          budget = fromIntegral (fromMaybe 30 (pcPassBudget (catalogPlans (prCatalog p)))) :: Double
+      case rgJev rungs of
+        Nothing -> do
+          store <- claimsOf s root path
+          pure (s, Right (PassAnswer [] store Nothing))
+        Just jev -> do
+          store0 <- claimsOf s root path
+          index <- projectIndex s p
+          now <- pNow (ssPorts s)
+          let work = passWork ls store0
+              left = do
+                t <- getMonotonicTime
+                stop <- cancelled token
+                pure (not stop && t - start < budget)
+              -- the unit's text and fingerprint now, by its anchor
+              unitNow u = do
+                r <- resolveAnchor s p (Anchor (urPath u) (urName u) 0 0)
+                pure $ case (rsUnit r, rsText r, rsFingerprint r) of
+                  (Just n, Just t, Just fp) -> let (a, z) = namedLines n in Just (T.intercalate "\n" (take (z - a + 1) (drop (a - 1) (T.lines t))), fp)
+                  _ -> Nothing
+              written l u fp = Replace (lnRow l) (withVerdict (T.stripEnd (lnText l) <> "   " <> anchorText (Anchor (urPath u) (urName u) 0 0)) (Verified fp))
+              resolved l = do
+                let c = lineContext ls l
+                    cands = map fst (candidates (lcLine c) index)
+                (r, ds) <- resolveLine jev left c cands
+                pure (c, cands, r, ds)
+              -- one item: (facts, store change, decisions, tally); Nothing when the budget is out before it
+              step acc [] = pure (Right (acc, 0 :: Int))
+              step acc (w : rest) =
+                cancelled token >>= \case
+                  True -> pure (Left "cancelled")
+                  False ->
+                    left >>= \case
+                      False -> pure (Right (acc, length (w : rest)))
+                      True -> do
+                        acc' <- item acc w
+                        cancelled token >>= \case
+                          True -> pure (Left "cancelled")
+                          False -> step acc' rest
+              entryOf r = case r of
+                R.Resolved u rd x -> ClaimEntry (Just u) (roundName rd) [] x Nothing Nothing now
+                R.Unresolved us x -> ClaimEntry Nothing "none" us x Nothing Nothing now
+              withCands cands e = e {ceCandidates = if null (ceCandidates e) then map upRef cands else ceCandidates e}
+              item tally = \case
+                ResolveOnly l -> do
+                  (_, cands, r, ds) <- resolved l
+                  pure (record l (withCands cands (entryOf r)) [] ds (rungOf r) Nothing tally)
+                ResolveAndCheck l -> do
+                  (c, cands, r, ds) <- resolved l
+                  let e0 = withCands cands (entryOf r)
+                  case r of
+                    R.Resolved u _ _ ->
+                      unitNow u >>= \case
+                        Nothing -> pure (record l e0 [] ds (rungOf r) Nothing tally)
+                        Just (code, fp) -> do
+                          (check, ds2) <- checkClaim token (mcTimeout models) rungs c u code
+                          let e = case check of
+                                Just CheckElsewhere -> e0 {ceUnit = Nothing, ceRung = "elsewhere", ceCandidates = filter (/= u) (ceCandidates e0), ceCheck = Just CheckElsewhere}
+                                Just v -> e0 {ceCheck = Just v, ceFingerprint = Just fp}
+                                Nothing -> e0
+                              facts = [written l u fp | check == Just CheckRight]
+                          pure (record l e facts (ds ++ ds2) (rungOf r) check tally)
+                    _ -> pure (record l e0 [] ds (rungOf r) Nothing tally)
+                WriteAnchor l e -> case (ceUnit e, ceFingerprint e) of
+                  (Just u, Just fp) ->
+                    unitNow u <&> \case
+                      Just (_, fpNow) | fpNow == fp -> tally {tFacts = tFacts tally ++ [written l u fp]}
+                      -- moved or gone since its check: checked again next pass
+                      _ -> tally {tStore = M.delete (claimKey l) (tStore tally)}
+                  _ -> pure tally
+              rungOf = \case
+                R.Resolved _ rd _ -> roundName rd
+                R.Unresolved _ _ -> "none"
+              record l e facts ds rung check tally =
+                tally
+                  { tFacts = tFacts tally ++ facts
+                  , tStore = M.insert (claimKey l) e (tStore tally)
+                  , tDecisions = tDecisions tally ++ ds
+                  , tByRung = M.insertWith (+) rung (1 :: Int) (tByRung tally)
+                  , tChecked = tChecked tally + maybe 0 (const 1) check
+                  , tRight = tRight tally + (if check == Just CheckRight then 1 else 0)
+                  , tWrong = tWrong tally + (case check of Just (CheckWrong _) -> 1; _ -> 0)
+                  , tElsewhere = tElsewhere tally + (if check == Just CheckElsewhere then 1 else 0)
+                  }
+          step (Tally [] store0 [] M.empty 0 0 0 0) work >>= \case
+            Left why -> pure (s, Left why)
+            Right (t, more) -> do
+              end <- getMonotonicTime
+              let store = pruneClaims ls (tStore t)
+                  rec =
+                    ResolveRecord
+                      { rvId = errandId now "resolve" rel 0 Nothing, rvAt = now, rvPlan = rel, rvSeen = length work
+                      , rvByRung = M.toList (tByRung t), rvChecked = tChecked t, rvRight = tRight t, rvWrong = tWrong t
+                      , rvElsewhere = tElsewhere t, rvMore = more, rvSeconds = end - start
+                      , rvCalls = length (tDecisions t), rvDecisions = tDecisions t }
+              storeClaims s root path store
+              if null (tDecisions t) then pure () else appendRecord (ssPorts s) root (AResolve rec)
+              pure (s, Right (PassAnswer (tFacts t) store (Just rec)))
+
+-- | What a claim pass has done so far.
+data Tally = Tally
+  { tFacts :: [Fact], tStore :: ClaimStore, tDecisions :: [Decision], tByRung :: M.Map Text Int
+  , tChecked :: Int, tRight :: Int, tWrong :: Int, tElsewhere :: Int }

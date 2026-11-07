@@ -230,10 +230,10 @@ passWork ls store = concatMap work ls
 pruneClaims :: [Line] -> ClaimStore -> ClaimStore
 pruneClaims ls store = M.restrictKeys store (S.fromList (map claimKey ls))
 
--- | The keys whose lines have a stored check (a checked belief answers its
--- question).
+-- | The keys whose lines have a stored verdict, right or wrong (a checked
+-- belief answers its question; one about other code does not).
 checkedKeys :: ClaimStore -> Set Text
-checkedKeys = M.keysSet . M.filter (\e -> ceCheck e /= Nothing)
+checkedKeys = M.keysSet . M.filter (\e -> case ceCheck e of Just CheckRight -> True; Just (CheckWrong _) -> True; _ -> False)
 
 -- | A plan's store as the server holds it (ROOT, the plan's path): read
 -- from disk on first use.

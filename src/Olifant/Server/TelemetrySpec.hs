@@ -54,6 +54,11 @@ spec = describe "Olifant.Server.Telemetry (errand records)" $ do
     parseRecord (recordJson r) `shouldBe` Just r
     let bare = AReconcile sampleReconcile {rcBranch = Nothing, rcBaseline = Nothing, rcClimbs = [], rcDecisions = [], rcBlocks = []}
     parseRecord (recordJson bare) `shouldBe` Just bare
+  it "a resolve record round-trips" $ do
+    let r = AResolve sampleResolve
+    o <- objectOf (recordJson r)
+    KM.lookup "kind" o `shouldBe` Just "resolve"
+    parseRecord (recordJson r) `shouldBe` Just r
   it "an outcome record round-trips" $
     parseRecord (recordJson (AnOutcome (OutcomeRecord "s1" 0 t0 "accepted"))) `shouldBe` Just (AnOutcome (OutcomeRecord "s1" 0 t0 "accepted"))
   it "a record's at is whole-second ISO-8601 UTC, and parses back" $ do
@@ -114,6 +119,14 @@ sampleReconcile =
     , rcSeconds = 1.5, rcClimbs = [("jev", 0.25), ("local", 1.0)]
     , rcDecisions = [Decision "plan-step" ["s7", "none"] (Just "s7") (Just 0.9) "jev", Decision "plan-state" ["done", "in_progress", "diverged"] Nothing Nothing "local"]
     , rcBlocks = [Just ("src/a.py", "F", "abc1234"), Nothing] }
+
+sampleResolve :: ResolveRecord
+sampleResolve =
+  ResolveRecord
+    { rvId = "resolve-plans/x.md:0@2026-11-07T01:00:00Z", rvAt = UTCTime (fromGregorian 2026 11 7) 3600, rvPlan = "plans/x.md"
+    , rvSeen = 4, rvByRung = [("jev-1", 2), ("jev-3", 1), ("none", 1)], rvChecked = 2, rvRight = 1, rvWrong = 1, rvElsewhere = 0
+    , rvMore = 1, rvSeconds = 2.5, rvCalls = 6
+    , rvDecisions = [Decision "plan-unit" ["a.py:f", "a.py:g"] (Just "a.py:f") (Just 0.9) "jev-1"] }
 
 enc :: Record -> Text
 enc = TE.decodeUtf8 . BL.toStrict . encode . recordJson
