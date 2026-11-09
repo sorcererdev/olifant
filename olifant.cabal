@@ -176,6 +176,7 @@ library
     Olifant.Server.Suggest
     Olifant.Server.Telemetry
     Olifant.Server.Tests
+    Olifant.Server.Triage
     Olifant.Server.Unit
     Olifant.Server.Waive
     Olifant.Snippet
@@ -402,6 +403,8 @@ test-suite spec
     Olifant.Server.Telemetry
     Olifant.Server.TelemetrySpec
     Olifant.Server.Tests
+    Olifant.Server.Triage
+    Olifant.Server.TriageSpec
     Olifant.Server.Unit
     Olifant.Server.UnitSpec
     Olifant.Server.Waive
