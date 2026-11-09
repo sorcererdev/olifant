@@ -4,7 +4,7 @@
 module Olifant.Server.Errand
   ( Verb (..), RunResult (..), Tokens (..), ModelUse (..), Status (..), RunFailure (..)
   , Denial (..), denialsIn
-  , statusName, runnerArgs, runClaude
+  , statusName, runnerArgs, runClaude, checkFences
   , Grounded (..), Ghost (..), Block (..)
   , errandPrompt, errandPromptWith, Belief (..), BeliefCheck (..), anchorRule, projectUnitWords, defaultUnitWords, doTestCommand, doTestTools, testWords, parseAnswer, doAnswered, groundingLimit, cutBody
   ) where
@@ -12,7 +12,8 @@ module Olifant.Server.Errand
 import Data.Aeson (Value (..), decodeStrict)
 import Data.ByteString (ByteString)
 import Data.ByteString.Lazy qualified as BL
-import Data.Aeson (encode)
+import Data.Aeson (encode, object, (.=))
+import Data.ByteString.Lazy.Char8 qualified as BLC
 import Data.Maybe (mapMaybe)
 import Data.Aeson.Key qualified as K
 import Data.Aeson.KeyMap qualified as KM
@@ -29,7 +30,9 @@ import Olifant.Process qualified as P
 import System.Exit (ExitCode (..))
 import System.FilePath (dropTrailingPathSeparator)
 
-data Verb = Ask | Validate | Do deriving (Eq, Show)
+-- | 'Check': the plan checker, read-only and fenced off the plans,
+-- `.olifant/` and `[plans] not_evidence`.
+data Verb = Ask | Validate | Do | Check deriving (Eq, Show)
 
 -- | Token counts; @tkCacheWrite@ is the runner's @cache_creation_input_tokens@.
 data Tokens = Tokens {tkInput, tkOutput, tkCacheWrite, tkCacheRead :: Int}
@@ -65,12 +68,30 @@ statusName = \case
 -- | The flags after the runner's name; @testTools@ are the project's test commands (for 'Do').
 runnerArgs :: PlansConfig -> Verb -> [Text] -> Maybe Text -> [String]
 runnerArgs cfg verb testTools resume =
-  ["-p", "--output-format", "json", "--model", T.unpack (pcModel cfg), "--permission-prompts", "none"]
+  ["-p", "--output-format", "json", "--model", T.unpack (if verb == Check then pcCheckModel cfg else pcModel cfg), "--permission-prompts", "none"]
     -- a reopen: the do's thread, in a fork so the run has its own session
     ++ maybe [] (\sid -> ["--resume", T.unpack sid, "--fork-session"]) resume
     ++ case verb of
     Do -> ["--permission-mode", "acceptEdits", "--allowedTools", T.unpack (T.intercalate "," (["Read", "Grep", "Glob", "Edit", "Write"] ++ testTools ++ pcDoTools cfg))]
+    Check ->
+      [ "--allowedTools", "Read,Grep,Glob"
+      -- Read deny rules fence Grep and Glob too (measured 2026-11-08, fence-check/README.md)
+      , "--settings", BLC.unpack (encode (object ["permissions" .= object ["deny" .= [T.pack ("Read(./" <> f <> "/**)") | f <- fs]]]))
+      , "--append-system-prompt", T.unpack (fencePrompt fs) ]
     _ -> ["--allowedTools", "Read,Grep,Glob"]
+  where
+    fs = checkFences cfg
+
+-- | The directories a check may not read: the plans, `.olifant/` (earlier
+-- answers live there) and `[plans] not_evidence`.
+checkFences :: PlansConfig -> [FilePath]
+checkFences cfg = map dropTrailingPathSeparator (pcDir cfg : ".olifant" : pcNotEvidence cfg)
+
+fencePrompt :: [FilePath] -> Text
+fencePrompt fs =
+  "The repository is the current directory. Search and read only inside it: never a parent directory, the home directory or another repository. "
+    <> "These directories are not evidence: " <> T.intercalate ", " [T.pack f <> "/" | f <- fs]
+    <> ". They hold plans and earlier answers, which would only repeat what the writer believes; judge from the code alone."
 
 runClaude :: Cancel -> PlansConfig -> Verb -> [Text] -> Maybe Text -> FilePath -> Text -> IO (Either RunFailure RunResult)
 runClaude token cfg verb testTools resume root prompt =

@@ -5,7 +5,7 @@
 -- record per reconcile that asked or answered something. Appending is best-effort and never throws:
 -- telemetry must never fail an errand.
 module Olifant.Server.Telemetry
-  ( ErrandRecord (..), OutcomeRecord (..), ReconcileRecord (..), ResolveRecord (..), Decision (..), Record (..)
+  ( ErrandRecord (..), OutcomeRecord (..), ReconcileRecord (..), ResolveRecord (..), PassRecord (..), Decision (..), Record (..)
   , recordJson, parseRecord, recordsPath, appendRecord, readRecords, errandId
   ) where
 
@@ -38,7 +38,9 @@ data ErrandRecord = ErrandRecord
   , erCost :: Maybe Double, erModels :: [(Text, ModelUse)], erPromptChars :: Int, erGrounded :: Int
   , erBlocks :: Int, erLines :: Int, erDropped :: Int, erUnresolved :: Int, erChanged :: Int, erDenials :: Int
   , -- | the errand a reopen continued
-    erParent :: Maybe Text }
+    erParent :: Maybe Text
+  , -- | asked by an automatic pass, not the user (`auto`, written only when true)
+    erAuto :: Bool }
   deriving (Eq, Show)
 
 -- | A decision on one ghost block (0-based) of an errand's answer.
@@ -61,7 +63,18 @@ data ReconcileRecord = ReconcileRecord
   , rcClimbs :: [(Text, Double)], rcDecisions :: [Decision], rcBlocks :: [Maybe (FilePath, Text, Text)] }
   deriving (Eq, Show)
 
--- | One claim pass over a plan: the lines it worked on, how many resolved
+-- | One claim pass over a plan (kind `pass`): its mode (idle, open,
+-- save), the plan's sentences and how many it triaged, the store's routes,
+-- the checks it made and their verdicts, the failures, what is left queued,
+-- its seconds, its Jev calls and the checks' cost.
+data PassRecord = PassRecord
+  { prId :: Text, prAt :: UTCTime, prPlan :: FilePath, prMode :: Text
+  , prSentences, prTriaged :: Int, prRoutes :: [(Text, Int)]
+  , prChecked, prRight, prWrong, prCannotTell, prFailed, prQueued :: Int
+  , prSeconds :: Double, prJevCalls :: Int, prCost :: Double }
+  deriving (Eq, Show)
+
+-- | One claim pass of the retired resolver (kind `resolve`; read, no longer written): the lines it worked on, how many resolved
 -- in each round (`jev-1`, `jev-2`, `jev-3`, `none`), the checks asked and
 -- their verdicts (right, wrong, about other code), the work left for the
 -- budget, its seconds, its model calls and their decisions.
@@ -71,7 +84,7 @@ data ResolveRecord = ResolveRecord
   , rvSeconds :: Double, rvCalls :: Int, rvDecisions :: [Decision] }
   deriving (Eq, Show)
 
-data Record = AnErrand ErrandRecord | AnOutcome OutcomeRecord | AReconcile ReconcileRecord | AResolve ResolveRecord
+data Record = AnErrand ErrandRecord | AnOutcome OutcomeRecord | AReconcile ReconcileRecord | AResolve ResolveRecord | APass PassRecord
   deriving (Eq, Show)
 
 -- | The record as the spec names its fields; absent Maybe fields are omitted.
@@ -90,6 +103,7 @@ recordJson = \case
           , ("seconds" .=) <$> erSeconds e, ("turns" .=) <$> erTurns e
           , ("tokens" .=) . object . tokensPairs <$> erTokens e, ("cost" .=) <$> erCost e
           , ("parent" .=) <$> erParent e ]
+        ++ [("auto", Bool True) | erAuto e]
   AnOutcome o ->
     object ["kind" .= ("outcome" :: Text), "id" .= orId o, "block" .= orBlock o, "at" .= stamp (orAt o), "outcome" .= orOutcome o]
   AReconcile r ->
@@ -106,6 +120,12 @@ recordJson = \case
       , "by_rung" .= object [K.fromText n .= c | (n, c) <- rvByRung r], "checked" .= rvChecked r, "right" .= rvRight r
       , "wrong" .= rvWrong r, "elsewhere" .= rvElsewhere r, "more" .= rvMore r, "seconds" .= rvSeconds r
       , "calls" .= rvCalls r, "decisions" .= map decisionJson (rvDecisions r) ]
+  APass r ->
+    object
+      [ "kind" .= ("pass" :: Text), "id" .= prId r, "at" .= stamp (prAt r), "plan" .= prPlan r, "mode" .= prMode r
+      , "sentences" .= prSentences r, "triaged" .= prTriaged r, "routes" .= object [K.fromText n .= c | (n, c) <- prRoutes r]
+      , "checked" .= prChecked r, "right" .= prRight r, "wrong" .= prWrong r, "cannot_tell" .= prCannotTell r
+      , "failed" .= prFailed r, "queued" .= prQueued r, "seconds" .= prSeconds r, "jev_calls" .= prJevCalls r, "cost" .= prCost r ]
   where
     decisionJson d = object ["kind" .= dcKind d, "options" .= dcOptions d, "chosen" .= dcChosen d, "confidence" .= dcConfidence d, "rung" .= dcRung d]
     modelsJson ms = object [K.fromText m .= object (tokensPairs (muTokens u) ++ maybe [] (\c -> ["cost" .= c]) (muCost u)) | (m, u) <- ms]
@@ -125,6 +145,7 @@ parseRecord = parseMaybe $ \case
       "outcome" -> AnOutcome <$> (OutcomeRecord <$> o .: "id" <*> o .: "block" <*> o .: "at" <*> o .: "outcome")
       "reconcile" -> AReconcile <$> reconcileP o
       "resolve" -> AResolve <$> resolveP o
+      "pass" -> APass <$> passP o
       k -> fail ("unknown kind " <> T.unpack k)
   _ -> fail "not an object"
   where
@@ -140,7 +161,7 @@ parseRecord = parseMaybe $ \case
         <*> o .:? "session" <*> o .:? "seconds" <*> o .:? "turns" <*> pure tokens
         <*> o .:? "cost" <*> pure models <*> o .: "prompt_chars" <*> o .: "grounded"
         <*> o .: "blocks" <*> o .: "lines" <*> o .: "dropped" <*> o .: "unresolved" <*> o .: "changed" <*> o .: "denials"
-        <*> o .:? "parent"
+        <*> o .:? "parent" <*> (fromMaybe False <$> o .:? "auto")
     reconcileP o = do
       climbs <- o .: "climbs" >>= traverse (\case Object c -> (,) <$> c .: "rung" <*> c .: "seconds"; _ -> fail "a climb is not an object")
       decisions <- o .: "decisions" >>= traverse (\case Object d -> Decision <$> d .: "kind" <*> d .: "options" <*> d .:? "chosen" <*> d .:? "confidence" <*> d .: "rung"; _ -> fail "a decision is not an object")
@@ -161,6 +182,14 @@ parseRecord = parseMaybe $ \case
         <$> o .: "id" <*> o .: "at" <*> o .: "plan" <*> o .: "seen" <*> pure byRung
         <*> o .: "checked" <*> o .: "right" <*> o .: "wrong" <*> o .: "elsewhere" <*> o .: "more"
         <*> o .: "seconds" <*> o .: "calls" <*> pure decisions
+    passP o = do
+      routes <- o .: "routes" >>= \case
+        Object rs -> traverse (\(k, v) -> (K.toText k,) <$> parseJSON v) (KM.toList rs)
+        _ -> fail "routes is not an object"
+      PassRecord
+        <$> o .: "id" <*> o .: "at" <*> o .: "plan" <*> o .: "mode" <*> o .: "sentences" <*> o .: "triaged" <*> pure routes
+        <*> o .: "checked" <*> o .: "right" <*> o .: "wrong" <*> o .: "cannot_tell" <*> o .: "failed" <*> o .: "queued"
+        <*> o .: "seconds" <*> o .: "jev_calls" <*> o .: "cost"
     modelP = \case
       Object m -> ModelUse <$> tokensP m <*> m .:? "cost"
       _ -> fail "model use is not an object"

@@ -13,6 +13,8 @@ module Olifant.Server.Plans
   , planTokenModifiers
   , planTokens
   , planTokensWith
+  , claimHints
+  , checksCanRun
   , claimHover
   , planFolds
   , anchorItems
@@ -31,7 +33,7 @@ module Olifant.Server.Plans
   , safely
   ) where
 
-import Control.Lens ((&), (?~))
+import Control.Lens ((&), (.~), (?~), (^.))
 import Control.Monad (filterM, when)
 import Language.LSP.Protocol.Lens qualified as L
 import Data.Functor ((<&>))
@@ -61,10 +63,13 @@ import Olifant.App (Ports (..), Project (..))
 import Olifant.Catalog (Catalog (..), PlansConfig (..))
 import Olifant.Language.Adapter (languageFor)
 import Olifant.Plans (Anchor (..), Line (..), Section (..), Verdict (..), parsePlan, sectionOf)
-import Olifant.Server.State (ServerState (..))
+import Olifant.Server.State (ServerConfig (..), ServerState (..))
+import System.Directory (doesFileExist, findExecutable)
 import Olifant.Server.Confine (confined, safely)
-import Olifant.Server.Claims (Check (..), ClaimEntry (..), ClaimStore, claimKey, claimsOf)
-import Olifant.Server.Resolve (UnitRef (..), refText)
+import Olifant.Server.Claims (CheckRecord (..), ClaimStore, SentenceEntry (..), lineKey, claimsOf)
+import Olifant.Server.Triage (Route (..))
+import Olifant.Server.Checker (Confirmed (..), Judgement (..), evidenceText)
+import Olifant.Plans.Sentences (Sentence (..), sentenceKey, sentences)
 import Data.Set (Set)
 import Data.Set qualified as S
 import Olifant.Server.Unit (Named (..), fingerprint, unitLookupIn, unitsOf, unitsWithKinds)
@@ -126,8 +131,14 @@ planDiagnostics s p path text = do
   resolved <- resolveAll s p (map snd anchored)
   store <- claimsOf s (prRoot p) path
   checking <- M.findWithDefault S.empty (normalisePath path) <$> readIORef (ssChecking s)
+  can <- checksCanRun s p
+  let rows = T.splitOn "\n" text
+      utf16At r c = fromIntegral (utf16Length (T.take c (if r < length rows then rows !! r else "")))
+      inUtf16 d =
+        let Range (Position r0 c0) (Position r1 c1) = d ^. L.range
+         in d & L.range .~ Range (Position r0 (utf16At (fromIntegral r0) (fromIntegral c0))) (Position r1 (utf16At (fromIntegral r1) (fromIntegral c1)))
   pure
-    ( mapMaybe (\(l, a) -> diagnose ls l a =<< M.lookup (key a) resolved) anchored ++ claimHints store checking ls
+    ( mapMaybe (\(l, a) -> diagnose ls l a =<< M.lookup (key a) resolved) anchored ++ map inUtf16 (claimHints can store checking (sentences ls))
     , M.map (\r -> rsFingerprint r <* rsUnit r) resolved )
   where
     diagnose ls l a r = case (rsUnit r, lnVerdict l, rsFingerprint r) of
@@ -141,50 +152,62 @@ planDiagnostics s p path text = do
           col n = fromIntegral (utf16Length (T.take n (lnText l)))
        in Range (Position row (col (anStart a))) (Position row (col (anEnd a)))
 
--- | The claim pass's margin: per bare claim or step with an entry (or in
--- the running pass's work), one hint (source `olifant-plan`): `claim-checking`
--- (…), `claim-right` (✓, until its anchor lands), `claim-wrong` (✗ and why),
--- `claim-resolved` (→ its unit), `claim-unsure` (?: no unit, but a
--- candidate Jev gave at least 0.2, or candidates left after its check
--- said the code is elsewhere). Nothing for a line with no plausible unit.
-claimHints :: ClaimStore -> S.Set Text -> [Line] -> [Diagnostic]
-claimHints store checking ls = concatMap hint ls
-  where
-    hint l
-      | lnAnchor l /= Nothing || not (listLine l) = []
-      | claimKey l `S.member` checking = [at l "claim-checking" "…"]
-      | otherwise = case M.lookup (claimKey l) store of
-          Nothing -> []
-          Just e -> case (ceUnit e, ceCheck e) of
-            (Just u, Just CheckRight) -> [at l "claim-right" ("✓ " <> named u)]
-            (Just u, Just (CheckWrong why)) -> [at l "claim-wrong" ("✗ " <> why <> " — " <> named u)]
-            (Just u, _) -> [at l "claim-resolved" ("→ " <> named u)]
-            (Nothing, Just CheckElsewhere) -> [at l "claim-unsure" "?" | not (null (ceCandidates e))]
-            (Nothing, _) -> [at l "claim-unsure" "?" | ceTop e >= 0.2]
-    listLine l = case lnKind l of
-      Claim -> True
-      Step _ -> True
-      _ -> False
-    named u = urName u <> " (" <> T.pack (urPath u) <> ")"
-    at l code msg =
-      let row = fromIntegral (lnRow l)
-          start = fromIntegral (lnIndent l)
-          end = fromIntegral (utf16Length (T.stripEnd (lnText l)))
-       in Diagnostic (Range (Position row start) (Position row end)) (Just DiagnosticSeverity_Hint) (Just (InR code)) Nothing (Just "olifant-plan") msg Nothing Nothing Nothing
+-- | Can the claim pass check at all: the runner is found (or the server
+-- answers checks from a recording), and neither `pass_budget` nor
+-- `pass_cost` is 0.
+checksCanRun :: ServerState -> Project -> IO Bool
+checksCanRun s p = do
+  let cfg = catalogPlans (prCatalog p)
+      runner = pcRunner cfg
+  found <- case scCheckAnswers (ssConfig s) of
+    Just _ -> pure True
+    Nothing
+      | '/' `elem` runner -> doesFileExist runner
+      | otherwise -> isJust <$> findExecutable runner
+  pure (found && maybe True (> 0) (pcPassBudget cfg) && maybe True (> 0) (pcPassCost cfg))
 
--- | What a bare line's entry says, for its hover: its unit as `path:Unit`,
--- the check, and why.
-claimHover :: ClaimStore -> Line -> Maybe Text
-claimHover store l = case (lnAnchor l, M.lookup (claimKey l) store) of
-  (Nothing, Just e) ->
-    Just . T.intercalate "\n\n" $
-      [maybe "No unit found for this line." (\u -> "`" <> refText u <> "`") (ceUnit e)]
-        ++ case ceCheck e of
-          Just CheckRight -> ["✓ right about this code"]
-          Just (CheckWrong why) -> ["✗ wrong: " <> why]
-          Just CheckElsewhere -> ["This line is about other code than its first unit."]
-          Nothing -> ["Not checked yet."]
-  _ -> Nothing
+-- | The claim pass's margin: one diagnostic per sentence (source
+-- `olifant-plan`, over the sentence's range in code points; 'planDiagnostics'
+-- turns them into UTF-16): `claim-checking` (… while its check runs),
+-- `claim-right` (✓), `claim-wrong` (✗, a warning), `claim-unsure` (?: the
+-- checker could not tell, or a citation was not found), and `claim-queued`
+-- (○: routed to a check and not checked yet, or its last check failed) when
+-- checks can run (CAN). Nothing for prose, questions, steps, or a sentence
+-- with no entry.
+claimHints :: Bool -> ClaimStore -> S.Set Text -> [Sentence] -> [Diagnostic]
+claimHints can store checking = mapMaybe hint
+  where
+    hint x = do
+      (code, sev, msg) <- claimLine can store checking x
+      pure (Diagnostic (Range (Position (fromIntegral (snRow x)) (fromIntegral (snCol x))) (Position (fromIntegral (snEndRow x)) (fromIntegral (snEndCol x)))) (Just sev) (Just (InR code)) Nothing (Just "olifant-plan") msg Nothing Nothing Nothing)
+
+-- | A sentence's margin line: its code, severity and message (glyph first).
+claimLine :: Bool -> ClaimStore -> S.Set Text -> Sentence -> Maybe (Text, DiagnosticSeverity, Text)
+claimLine can store checking x
+  | key `S.member` checking = Just ("claim-checking", DiagnosticSeverity_Hint, "… Checking")
+  | otherwise = do
+      e <- M.lookup key store
+      case seCheck e of
+        Just c ->
+          let cf = cjConfirmed c
+              parts glyph word = T.intercalate " · " ([glyph <> " " <> word] ++ [cfWhy cf | not (T.null (cfWhy cf))])
+              withCode t = T.intercalate " · " ([t] ++ [w | let w = evidenceText cf, not (T.null w)])
+           in Just $ case cfJudgement cf of
+                JRight -> ("claim-right", DiagnosticSeverity_Hint, withCode (parts "✓" "Right"))
+                JWrong -> ("claim-wrong", DiagnosticSeverity_Warning, withCode (parts "✗" "Wrong"))
+                JCannotTell -> ("claim-unsure", DiagnosticSeverity_Hint, parts "?" "Could not tell")
+        Nothing
+          | seRoute e == Verify && can -> Just ("claim-queued", DiagnosticSeverity_Hint, "○ Unchecked claim · saved passes check it, or Check this")
+          | otherwise -> Nothing
+  where
+    key = sentenceKey (snText x)
+
+-- | The hover of the sentences on a row: one line each, without its glyph;
+-- none when no sentence there has a line.
+claimHover :: ClaimStore -> [Sentence] -> Maybe Text
+claimHover store ss = case [T.drop 2 msg | x <- ss, Just (_, _, msg) <- [claimLine True store S.empty x]] of
+  [] -> Nothing
+  ls -> Just (T.intercalate "\n\n" ls)
 
 -- | (path, unit) -> the unit's fingerprint now; Nothing = not found. A key
 -- that is absent has not been read yet.
@@ -211,17 +234,14 @@ planTokens :: AnchorPrints -> [Line] -> [PlanToken]
 planTokens = planTokensWith M.empty
 
 -- | 'planTokens', with a bare line's text marked by its claim entry:
--- `checked` (right, until its anchor is written), `wrong`, or `resolved`
--- (a unit, not checked).
+-- `checked` (the checker found it right) or `wrong` (`resolved` is no
+-- longer given; it stays in the legend for older clients).
 planTokensWith :: ClaimStore -> AnchorPrints -> [Line] -> [PlanToken]
 planTokensWith store prints ls = concatMap tokensOf ls
   where
-    claimMods l = case (lnAnchor l, M.lookup (claimKey l) store) of
-      (Nothing, Just e) -> case (ceUnit e, ceCheck e) of
-        (Just _, Just CheckRight) -> ["checked"]
-        (Just _, Just (CheckWrong _)) -> ["wrong"]
-        (Just _, Nothing) -> ["resolved"]
-        _ -> []
+    claimMods l = case cfJudgement . cjConfirmed <$> (M.lookup (lineKey l) store >>= seCheck) of
+      Just JRight -> ["checked"]
+      Just JWrong -> ["wrong"]
       _ -> []
     parentOf = parentIn ls
     ancestors = ancestorsIn ls
@@ -324,7 +344,7 @@ planFolds checked ls =
       Evidence -> True
       Claim
         | Just _ <- lnAnchor c -> case lnVerdict c of Verified _ -> True; _ -> False
-        | otherwise -> claimKey c `S.member` checked
+        | otherwise -> lineKey c `S.member` checked
       _ -> False
 
 utf16Length :: Text -> Int
@@ -464,10 +484,10 @@ beliefsUnder store ls q
   | otherwise = []
   where
     bare = [c | c <- childrenOf ls (lnRow q), lnIndent c == lnIndent q + 2, lnKind c == Claim, lnAnchor c == Nothing]
-    beliefs = [Belief (claimKey c) (checkOf (M.lookup (claimKey c) store)) | c <- bare]
+    beliefs = [Belief (lineKey c) (checkOf (M.lookup (lineKey c) store >>= seCheck)) | c <- bare]
     checkOf = \case
-      Just ClaimEntry {ceUnit = Just u, ceCheck = Just CheckRight} -> BelievedRight (refText u)
-      Just ClaimEntry {ceUnit = Just u, ceCheck = Just (CheckWrong why)} -> BelievedWrong why (refText u)
+      Just c | JRight <- cfJudgement (cjConfirmed c) -> BelievedRight (evidenceText (cjConfirmed c))
+      Just c | JWrong <- cfJudgement (cjConfirmed c) -> BelievedWrong (cfWhy (cjConfirmed c)) (evidenceText (cjConfirmed c))
       _ -> NotChecked
 
 -- | A do that continues an earlier one's thread: its id, its session, and
@@ -515,7 +535,7 @@ runErrand after reviewed reopen token verb path row s0 =
                     , erTokens = mrr >>= rrTokens, erCost = mrr >>= rrCost, erModels = maybe [] rrModels mrr
                     , erPromptChars = T.length prompt, erGrounded = length grounded
                     , erBlocks = blocks, erLines = ghosts, erDropped = dropped, erUnresolved = unresolved
-                    , erChanged = changed, erDenials = maybe 0 rrDenials mrr, erParent = roParent <$> reopen }
+                    , erChanged = changed, erDenials = maybe 0 rrDenials mrr, erParent = roParent <$> reopen, erAuto = False }
                 appendStepLine (ssPorts s) root
                   [ "plan-" <> verbName
                   , T.pack rel <> ":" <> tshow row

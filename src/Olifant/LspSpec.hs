@@ -62,7 +62,8 @@ import Olifant.Doctor (DoctorPorts (..))
 import Olifant.Workspace (Workspace (listFiles, listFilesSkipping, readText), diskWorkspace)
 import System.Environment (lookupEnv, setEnv, unsetEnv)
 import System.Directory (findExecutable, canonicalizePath, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getTemporaryDirectory, listDirectory, removeDirectory, removeFile, renameFile)
-import Olifant.Server.Claims (claimsPath)
+import Olifant.Server.Claims (CheckRecord (..), SentenceEntry (..), claimsPath, readClaims)
+import Olifant.Server.Checker (Confirmed (..), Judgement (..))
 import System.FilePath (makeRelative, normalise, takeDirectory, (</>), splitDirectories)
 import Olifant.Language.AstGrep (astGrepSyntax)
 import System.IO.Temp (withSystemTempDirectory)
@@ -2119,14 +2120,16 @@ plansSpec = describe "plans: anchors in the server" $ do
         changeDoc plan [TextDocumentContentChangeEvent (InL (TextDocumentContentChangePartial (Range (Position 1 0) (Position 1 0)) Nothing ("- table @src/bistro/booking/models/table.py:Table\n")))]
         after <- pullDiagnostics plan
         pure (before, jump, missing, bare, files, after)
-      map (\d -> (d ^. L.message, d ^. L.range . L.start . L.line)) before `shouldBe` [("? not found", 1)]
+      -- the anchors' own diagnostics (the claim pass's margin is olifant-plan)
+      let anchorsOf ds = [(d ^. L.message, d ^. L.range . L.start . L.line) | d <- ds, d ^. L.source == Just "olifant"]
+      anchorsOf before `shouldBe` [("? not found", 1)]
       fmap (lookupKey "found") jump `shouldBe` Right (Just (Bool True))
       fmap (lookupKey "line") jump `shouldBe` Right (Just (Number 22))
       fmap (fmap (\case String f -> (T.pack schedule) `T.isSuffixOf` f; _ -> False) . lookupKey "file") jump `shouldBe` Right (Just True)
       fmap (\v -> (lookupKey "found" v, lookupKey "line" v, lookupKey "file" v)) missing `shouldBe` Right (Just (Bool False), Just (Number 1), Just (String (T.pack (dir </> schedule))))
       bare `shouldBe` Left "no anchor on this line"
       fmap (fmap (\case Array xs -> length xs; _ -> 0) . lookupKey "items") files `shouldBe` Right (Just 2)
-      map (\d -> (d ^. L.message, d ^. L.range . L.start . L.line)) after `shouldBe` [("? not found", 2)]
+      anchorsOf after `shouldBe` [("? not found", 2)]
   it "a plan completes files after @ and units after @path:" $
     withPython [("plans/t.md", "- x @src/bistro/booking/queries/get_day_schedule.\n- y @" <> T.pack schedule <> ":GetDaySchedule.h\n")] $ \ports dir -> do
       ((paths, units), _) <- inProcessWith ports dir $ do
@@ -4201,43 +4204,91 @@ claimPassSpec = describe "plans claim pass" $ do
   let table = "src/bistro/booking/models/table.py"
       tableText = T.unlines ["def helper() -> int:", "    return 1"]
       config = T.unlines ["", "[decide]", "model = \"jev\"", "[model.backends.jev]", "kind = \"jev\"", "[model.backends.local]", "kind = \"openai-compatible\"", "url = \"http://127.0.0.1:1/v1\"", "model = \"x\"", "escalate = \"auto\"", "[plans]", "ladder = [\"local\"]"]
-      answersWith check = "{\"answers\": {\"plan-unit\": {\"choice\": \"" <> T.pack table <> ":helper\", \"confidence\": 0.9}, \"plan-check\": " <> check <> "}}"
-      right = answersWith "{\"choice\": \"right\", \"confidence\": 0.9}"
-      wrong = answersWith "{\"choice\": \"wrong\", \"fields\": {\"why\": \"it returns two\"}, \"confidence\": 0.9}"
-      withPass answers act = withPython [("plans/t.md", "- the helper returns one\n"), (table, tableText)] $ \ports dir -> do
+      claims = "{\"answers\": {\"sentence-kind\": {\"choice\": \"claim\", \"confidence\": 0.9, \"probabilities\": {\"claim\": 0.9}}, \"about-code\": {\"choice\": true, \"confidence\": 0.9}}}"
+      checkReply verdict = "{\"replies\": {\"the helper returns one\": {\"text\": \"```json\\n{\\\"verdict\\\": \\\"" <> verdict <> "\\\", \\\"why\\\": \\\"it returns two\\\", \\\"evidence\\\": [{\\\"path\\\": \\\"" <> T.pack table <> "\\\", \\\"unit\\\": \\\"helper\\\"}]}\\n```\", \"cost\": 0.1}}}"
+      right = checkReply "right"
+      wrong = checkReply "wrong"
+      withPassOn answers checks act = withPython [("plans/t.md", "- the helper returns one\n"), (table, tableText)] $ \ports dir -> do
         TIO.appendFile (dir </> ".olifant/config.toml") config
         let f = dir </> "answers.json"
+            c = dir </> "checks.json"
         TIO.writeFile f answers
-        act ports dir f [("decide_answers", String (T.pack f)), ("chat_answers", String (T.pack f))]
+        TIO.writeFile c checks
+        act ports dir f [("decide_answers", String (T.pack f)), ("check_answers", String (T.pack c))]
+      withPass = withPassOn claims
+      titles as = [a ^. L.title | InR a <- as]
       refreshed = (() <$ message SMethod_WorkspaceDiagnosticRefresh) <|> (anyMessage >> refreshed)
-      edited = message SMethod_WorkspaceApplyEdit <|> (anyMessage >> edited)
       askedIn f = liftIO (doesFileExist (f <> ".asked") >>= \case True -> length . T.lines <$> TIO.readFile (f <> ".asked"); False -> pure 0)
       waitFor cond = liftIO (let go n = cond >>= \ok -> if ok || n <= (0 :: Int) then pure ok else threadDelay 50000 >> go (n - 1) in go 200)
-      toE = \case InL x -> Left x; InR y -> Right y
-      hints = map (\d -> (d ^. L.code, d ^. L.message, d ^. L.range . L.start . L.line)) . filter ((== Just "olifant-plan") . (^. L.source))
-  it "(a) opening a plan with one bare claim checked right lands its anchor by applyEdit" $
+  it "(a) open triages, save checks; nothing is written to the plan" $
     withPass right $ \ports dir _ cfg -> do
-      (texts, _) <- inProcessWithConfig cfg ports dir $ do
-        _ <- openDoc "plans/t.md" "markdown"
-        TRequestMessage _ _ _ params <- edited
-        pure [either (^. L.newText) (^. L.newText) (toE t) | Just cs <- [params ^. L.edit . L.documentChanges], InL te <- cs, t <- te ^. L.edits]
-      texts `shouldSatisfy` any (\t -> ("@" <> T.pack table <> ":helper ✓ ") `T.isInfixOf` t)
-  it "(b) checked wrong: no edit, a claim-wrong hint on its row, and hover shows why" $
+      (asked', _) <- inProcessWithConfig cfg ports dir $ do
+        p <- openDoc "plans/t.md" "markdown"
+        refreshed
+        sendNotification SMethod_TextDocumentDidSave (DidSaveTextDocumentParams p Nothing)
+        ok <- waitFor (doesFileExist (dir </> "checks.json.asked"))
+        refreshed
+        pure ok
+      asked' `shouldBe` True
+      stored <- readClaims plainPorts dir "plans/t.md"
+      (cfJudgement . cjConfirmed <$> (M.lookup "the helper returns one" stored >>= seCheck)) `shouldBe` Just JRight
+      TIO.readFile (dir </> "plans/t.md") `shouldReturn` "- the helper returns one\n"
+  it "(b) checked wrong: a claim-wrong warning over the sentence, and hover shows why" $
     withPass wrong $ \ports dir _ cfg -> do
       ((ds, hover), _) <- inProcessWithConfig cfg ports dir $ do
         p <- openDoc "plans/t.md" "markdown"
         refreshed
+        sendNotification SMethod_TextDocumentDidSave (DidSaveTextDocumentParams p Nothing)
+        _ <- waitFor (doesFileExist (dir </> "checks.json.asked"))
+        _ <- waitFor (maybe False (isJust . seCheck) . M.lookup "the helper returns one" <$> readClaims plainPorts dir "plans/t.md")
         (,) <$> pullDiagnostics p <*> getHover p (Position 0 4)
-      hints ds `shouldBe` [(Just (InR "claim-wrong"), "✗ it returns two — helper (" <> T.pack table <> ")", 0)]
-      fmap (\h -> case h ^. L.contents of InL (MarkupContent _ md) -> "it returns two" `T.isInfixOf` md; _ -> False) hover `shouldBe` Just True
-  it "(c) an edit while the pass waits on the decider cancels it" $
-    withPass "wait" $ \ports dir f cfg -> do
-      (stopped, _) <- inProcessWithConfig cfg ports dir $ do
+      [(d ^. L.code, d ^. L.severity, d ^. L.message, d ^. L.range) | d <- ds, d ^. L.source == Just "olifant-plan"]
+        `shouldBe` [(Just (InR "claim-wrong"), Just DiagnosticSeverity_Warning, "✗ Wrong · it returns two · " <> T.pack table <> ":helper", Range (Position 0 2) (Position 0 24))]
+      fmap (\h -> case h ^. L.contents of InL (MarkupContent _ md) -> md; _ -> "") hover `shouldBe` Just ("Wrong · it returns two · " <> T.pack table <> ":helper")
+  it "(f) the actions: Check this on a queued claim; Show the code here and Show why once checked" $
+    withPass right $ \ports dir _ cfg -> do
+      ((before, after), _) <- inProcessWithConfig cfg ports dir $ do
+        p <- openDoc "plans/t.md" "markdown"
+        refreshed
+        b <- titles <$> getCodeActions p (Range (Position 0 4) (Position 0 4))
+        sendNotification SMethod_TextDocumentDidSave (DidSaveTextDocumentParams p Nothing)
+        _ <- waitFor (maybe False (isJust . seCheck) . M.lookup "the helper returns one" <$> readClaims plainPorts dir "plans/t.md")
+        (b,) . titles <$> getCodeActions p (Range (Position 0 4) (Position 0 4))
+      filter ("Check this" `T.isPrefixOf`) before `shouldBe` ["Check this (sonnet, ~$0.10)"]
+      filter (`elem` ["Show the code here", "Show why"]) after `shouldBe` ["Show the code here", "Show why"]
+      filter ("Check this" `T.isPrefixOf`) after `shouldBe` []
+  it "(g) olifant.checkSentence checks one sentence while the caps would forbid a pass" $
+    withPassOn claims right $ \ports dir _ cfg -> do
+      TIO.appendFile (dir </> ".olifant/config.toml") "pass_cost = 0\n"
+      (titles', _) <- inProcessWithConfig cfg ports dir $ do
+        p <- openDoc "plans/t.md" "markdown"
+        refreshed
+        sendNotification SMethod_TextDocumentDidSave (DidSaveTextDocumentParams p Nothing)
+        refreshed
+        _ <- request SMethod_WorkspaceExecuteCommand (ExecuteCommandParams Nothing "olifant.checkSentence" (Just [toJSON (getUri (p ^. L.uri)), String "the helper returns one"]))
+        titles <$> getCodeActions p (Range (Position 0 4) (Position 0 4))
+      titles' `shouldSatisfy` elem "Show why"
+      stored <- readClaims plainPorts dir "plans/t.md"
+      (cfJudgement . cjConfirmed <$> (M.lookup "the helper returns one" stored >>= seCheck)) `shouldBe` Just JRight
+  it "(h) with no Jev, a paragraph is aside and still offers Check this" $
+    withPython [("plans/t.md", "The helper returns one.\n"), (table, tableText)] $ \ports dir -> do
+      (ts, _) <- inProcessWithConfig [] ports dir $ do
+        p <- openDoc "plans/t.md" "markdown"
+        refreshed
+        titles <$> getCodeActions p (Range (Position 0 4) (Position 0 4))
+      filter ("Check this" `T.isPrefixOf`) ts `shouldBe` ["Check this (sonnet, ~$0.10)"]
+  it "(c) an edit or an idle leaves the running pass alone; a save replaces it" $
+    withPassOn "wait" right $ \ports dir f cfg -> do
+      ((afterEdit, afterSave), _) <- inProcessWithConfig cfg ports dir $ do
         p <- openDoc "plans/t.md" "markdown"
         _ <- waitFor (doesFileExist (f <> ".asked"))
         changeDoc p [TextDocumentContentChangeEvent (InL (TextDocumentContentChangePartial (Range (Position 0 0) (Position 0 0)) Nothing "x"))]
-        waitFor (doesFileExist (f <> ".cancelled"))
-      stopped `shouldBe` True
+        sendNotification (SMethod_CustomMethod (Proxy :: Proxy "olifant/plans/idle")) (object ["textDocument" .= object ["uri" .= (p ^. L.uri)]])
+        liftIO (threadDelay 500000)
+        e <- liftIO (doesFileExist (f <> ".cancelled"))
+        sendNotification SMethod_TextDocumentDidSave (DidSaveTextDocumentParams p Nothing)
+        (e,) <$> waitFor (doesFileExist (f <> ".cancelled"))
+      (afterEdit, afterSave) `shouldBe` (False, True)
   it "(d) olifant/plans/idle on an unchanged plan asks nothing new" $
     withPass wrong $ \ports dir f cfg -> do
       ((n1, n2), _) <- inProcessWithConfig cfg ports dir $ do

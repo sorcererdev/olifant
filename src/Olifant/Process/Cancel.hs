@@ -1,7 +1,7 @@
 -- | Internal to Olifant.Process: a cancellation token. Work polls it; the
 -- language server trips it when newer work supersedes it or the client
 -- cancels the request.
-module Olifant.Process.Cancel (Cancel, newCancel, neverCancel, cancelAfter, cancelled) where
+module Olifant.Process.Cancel (Cancel, newCancel, neverCancel, cancelAfter, cancelled, eitherCancel) where
 
 import Data.IORef (atomicModifyIORef', atomicWriteIORef, newIORef, readIORef)
 
@@ -26,3 +26,7 @@ cancelAfter n = do
 
 cancelled :: Cancel -> IO Bool
 cancelled (Cancel tripped) = tripped
+
+-- | Tripped when either token is.
+eitherCancel :: Cancel -> Cancel -> Cancel
+eitherCancel a b = Cancel ((||) <$> cancelled a <*> cancelled b)

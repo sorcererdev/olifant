@@ -119,6 +119,7 @@ library
     Olifant.Newness
     Olifant.Output
     Olifant.Plans
+    Olifant.Plans.Sentences
     Olifant.Preview
     Olifant.Preview.Fields
     Olifant.Preview.Marks
@@ -140,6 +141,7 @@ library
     Olifant.Server
     Olifant.Server.Actions
     Olifant.Server.Anticipate
+    Olifant.Server.Checker
     Olifant.Server.Claims
     Olifant.Server.Completion
     Olifant.Server.Confine
@@ -165,7 +167,6 @@ library
     Olifant.Server.Preview
     Olifant.Server.Recognize
     Olifant.Server.Regions
-    Olifant.Server.Resolve
     Olifant.Server.Review
     Olifant.Server.ReviewReadings
     Olifant.Server.Sibling
@@ -175,6 +176,7 @@ library
     Olifant.Server.Suggest
     Olifant.Server.Telemetry
     Olifant.Server.Tests
+    Olifant.Server.Triage
     Olifant.Server.Unit
     Olifant.Server.Waive
     Olifant.Snippet
@@ -318,6 +320,8 @@ test-suite spec
     Olifant.Output
     Olifant.OutputSpec
     Olifant.Plans
+    Olifant.Plans.Sentences
+    Olifant.Plans.SentencesSpec
     Olifant.PlansSpec
     Olifant.Preview
     Olifant.Preview.Fields
@@ -349,6 +353,8 @@ test-suite spec
     Olifant.Server.Actions
     Olifant.Server.Anticipate
     Olifant.Server.AnticipateSpec
+    Olifant.Server.Checker
+    Olifant.Server.CheckerSpec
     Olifant.Server.Claims
     Olifant.Server.ClaimsSpec
     Olifant.Server.Completion
@@ -381,11 +387,9 @@ test-suite spec
     Olifant.Server.Plans
     Olifant.Server.PlansSpec
     Olifant.Server.Preview
+    Olifant.Server.ProseCorpusSpec
     Olifant.Server.Recognize
     Olifant.Server.Regions
-    Olifant.Server.Resolve
-    Olifant.Server.ResolveCorpusSpec
-    Olifant.Server.ResolveSpec
     Olifant.Server.Review
     Olifant.Server.ReviewReadings
     Olifant.Server.ReviewReadingsSpec
@@ -399,6 +403,8 @@ test-suite spec
     Olifant.Server.Telemetry
     Olifant.Server.TelemetrySpec
     Olifant.Server.Tests
+    Olifant.Server.Triage
+    Olifant.Server.TriageSpec
     Olifant.Server.Unit
     Olifant.Server.UnitSpec
     Olifant.Server.Waive

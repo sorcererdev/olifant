@@ -30,6 +30,14 @@ spec = describe "Olifant.Server.Errand (the claude -p runner)" $ do
     runnerArgs cfg Validate [] Nothing `shouldBe` runnerArgs cfg Ask [] Nothing
     runnerArgs cfg {pcDoTools = ["Bash(cabal test*)"]} Do ["Bash(uv run pytest*)"] Nothing
       `shouldBe` ["-p", "--output-format", "json", "--model", "sonnet", "--permission-prompts", "none", "--permission-mode", "acceptEdits", "--allowedTools", "Read,Grep,Glob,Edit,Write,Bash(uv run pytest*),Bash(cabal test*)"]
+  it "builds a fenced read-only check" $ do
+    let c = cfg {pcCheckModel = "haiku", pcNotEvidence = ["docs"]}
+        args = runnerArgs c Check [] Nothing
+    take 9 args `shouldBe` ["-p", "--output-format", "json", "--model", "haiku", "--permission-prompts", "none", "--allowedTools", "Read,Grep,Glob"]
+    (args !! 9, args !! 10) `shouldBe` ("--settings", "{\"permissions\":{\"deny\":[\"Read(./plans/**)\",\"Read(./.olifant/**)\",\"Read(./docs/**)\"]}}")
+    args !! 11 `shouldBe` "--append-system-prompt"
+    args !! 12 `shouldSatisfy` (\p -> all (`T.isInfixOf` T.pack p) ["current directory", "plans/", ".olifant/", "docs/"])
+    length args `shouldBe` 13
   it "resumes a do's thread in a fork of its session" $
     drop 4 (runnerArgs cfg Do [] (Just "s1")) `shouldBe` ["sonnet", "--permission-prompts", "none", "--resume", "s1", "--fork-session", "--permission-mode", "acceptEdits", "--allowedTools", "Read,Grep,Glob,Edit,Write"]
   it "runs the shim, parses result, seconds and cost, and unsets CLAUDECODE" $ do

@@ -466,7 +466,7 @@ There are three kinds of backend:
 |---|---|---|
 | `openai-compatible` | `url`, `model` | `POST {url}/chat/completions` with the system and user messages and `"temperature": 0` (no JSON mode, [below](#why-tagged-blocks)) |
 | `anthropic` | `model`, `api_key_env` (default `ANTHROPIC_API_KEY`) | `POST https://api.anthropic.com/v1/messages` with `max_tokens` 4096. The key is read from the environment when `gen` runs. It is never stored in config and never printed. curl gets it from a private temporary header file, not from its command line |
-| `jev` | `model` (default `jev-latest`), `api_key_env` (default `JEV_API_KEY`) | `POST https://api.typesafe.ai/v1/systemone` with typed questions, all of one decision batch in one call. It answers decisions only (`[decide] model`), never holes. The key is handled as for `anthropic`. A 429 or 529 is retried twice (after 0.5 s, then 2 s); each call writes `decide jev N tokens M ms` to the step log |
+| `jev` | `model` (default `jev-1.14.0`, pinned: `jev-latest` can change calibration under you), `api_key_env` (default `JEV_API_KEY`) | `POST https://api.typesafe.ai/v1/systemone` with typed questions, all of one decision batch in one call. It answers decisions only (`[decide] model`), never holes. The key is handled as for `anthropic`. A 429 or 529 is retried twice (after 0.5 s, then 2 s); each call writes `decide jev N tokens M ms model <the model that answered>` to the step log |
 
 All are called with `curl`, which must be on your `PATH` ("curl is not installed"
 otherwise). Each call may take `timeout` seconds (`curl --max-time`). A call that runs out
@@ -506,6 +506,9 @@ set. Without it, `retries` rules as before. `ladder` lists backends, local first
 
 A `jev` backend cannot be a rung: it answers decisions, not prompts. The default `ask` keeps
 code from leaving your machine unless the config says it may.
+
+Neither the ladder nor `escalate` drives a plan's claim pass: it triages with `[decide] model`
+and checks with `[plans] check_model` under its own caps ([chapter 19](19-plans.md#checked-as-you-go)).
 
 `[conjure] wire = "<generator id>"` names the generator a steered conjure may run itself when Jev
 says a class lacks a port ([chapter 18](18-tdd-in-the-editor.md)); it is unset by default.

@@ -29,7 +29,7 @@ spec = describe "Olifant.Model (spec §6.4)" $ do
   it "(a) reads a jev backend: model and key variable default; a stray key is refused" $ do
     let Right top = parseToml "[model.backends.jev]\nkind = \"jev\"\n"
         Right stray = parseToml "[model.backends.jev]\nkind = \"jev\"\nurl = \"http://x\"\n"
-    parseModelConfig top `shouldBe` Right (defaultModelConfig {mcBackends = [("jev", Jev "jev-latest" "JEV_API_KEY")], mcEscalate = [("jev", EscalateAsk)]})
+    parseModelConfig top `shouldBe` Right (defaultModelConfig {mcBackends = [("jev", Jev "jev-1.14.0" "JEV_API_KEY")], mcEscalate = [("jev", EscalateAsk)]})
     parseModelConfig stray `shouldSatisfy` either ("url" `T.isInfixOf`) (const False)
   it "defaults to no backend and 2 retries without [model]" $
     parseModelConfig M.empty `shouldBe` Right defaultModelConfig

@@ -90,10 +90,10 @@ spec = describe "catalog" $ do
         _ -> expectationFailure "expected ConfigInvalid naming conjure"
   describe "[plans] (plans, stage 1)" $ do
     it "defaults when absent" $
-      withCatalog [("/proj/.olifant/config.toml", "")] $ \_ cat -> catalogPlans cat `shouldBe` PlansConfig "plans" "claude" "sonnet" 300 [] defaultPrices Nothing Nothing Nothing
+      withCatalog [("/proj/.olifant/config.toml", "")] $ \_ cat -> catalogPlans cat `shouldBe` defaultPlans
     it "reads every key" $
       withCatalog [("/proj/.olifant/config.toml", "[plans]\ndir = \"docs/plans\"\nrunner = \"/tmp/shim\"\nmodel = \"opus\"\ntimeout = 900\ndo_tools = [\"Bash(cabal test*)\"]\n")] $ \_ cat ->
-        catalogPlans cat `shouldBe` PlansConfig "docs/plans" "/tmp/shim" "opus" 900 ["Bash(cabal test*)"] defaultPrices Nothing Nothing Nothing
+        catalogPlans cat `shouldBe` defaultPlans {pcDir = "docs/plans", pcRunner = "/tmp/shim", pcModel = "opus", pcTimeout = 900, pcDoTools = ["Bash(cabal test*)"]}
     it "reads the loop's ladder and budget (stage 2); absent, neither" $ do
       withCatalog [("/proj/.olifant/config.toml", "[plans]\nladder = [\"local\"]\nbudget = 60\n[model.backends.local]\nkind = \"openai-compatible\"\nurl = \"http://x/v1\"\nmodel = \"q\"\n")] $ \_ cat ->
         (pcLadder (catalogPlans cat), pcBudget (catalogPlans cat)) `shouldBe` (Just ["local"], Just 60)
@@ -106,6 +106,17 @@ spec = describe "catalog" $ do
       case r of
         Left (ConfigInvalid _ e) -> e `shouldSatisfy` T.isInfixOf "pass_budget"
         _ -> expectationFailure "expected ConfigInvalid naming pass_budget"
+    it "reads the checker's keys; bad values and unknown keys are errors" $ do
+      withCatalog [("/proj/.olifant/config.toml", "[plans]\npass_cost = 1.5\ncheck_model = \"haiku\"\ncheck_timeout = 60\nnot_evidence = [\"docs\", \"book\"]\n")] $ \_ cat ->
+        let c = catalogPlans cat in (pcPassCost c, pcCheckModel c, pcCheckTimeout c, pcNotEvidence c) `shouldBe` (Just 1.5, "haiku", 60, ["docs", "book"])
+      withCatalog [("/proj/.olifant/config.toml", "")] $ \_ cat ->
+        let c = catalogPlans cat in (pcPassCost c, pcCheckModel c, pcCheckTimeout c, pcNotEvidence c) `shouldBe` (Nothing, "sonnet", 120, ["docs"])
+      let bad toml word = openWith [("/proj/.olifant/config.toml", toml)] >>= \case
+            Left (ConfigInvalid _ e) -> e `shouldSatisfy` T.isInfixOf word
+            _ -> expectationFailure ("expected ConfigInvalid naming " <> T.unpack word)
+      bad "[plans]\npass_cost = -1\n" "pass_cost"
+      bad "[plans]\ncheck_timeout = 0\n" "check_timeout"
+      bad "[plans]\ncheck_cost = 1\n" "check_cost"
     it "a ladder name with no backend is a config error, as [model] ladder's" $ do
       r <- openWith [("/proj/.olifant/config.toml", "[plans]\nladder = [\"gpt\"]\n")]
       case r of
