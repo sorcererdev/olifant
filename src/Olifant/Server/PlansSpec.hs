@@ -19,9 +19,10 @@ import Olifant.Plans (Anchor (..), parsePlan)
 import Olifant.Process (gitStateStamp)
 import Olifant.Server (ServerState, newServerState, projectFor)
 import Olifant.Server.Plans
-import Olifant.Server.Claims (Check (..), ClaimEntry (..))
+import Olifant.Server.Claims (CheckRecord (..), SentenceEntry (..))
+import Olifant.Server.Triage (Route (..), Triage (..))
 import Olifant.Server.Errand (Belief (..), BeliefCheck (..))
-import Olifant.Server.Resolve (UnitRef (..))
+import Olifant.Server.Checker (Citation (..), Confirmed (..), Judgement (..), UnitRef (..))
 import Olifant.Server.Unit (Named (..))
 import Olifant.Workspace (memoryWorkspace)
 import System.Directory (canonicalizePath, doesDirectoryExist, listDirectory)
@@ -168,20 +169,16 @@ spec = describe "Olifant.Server.Plans (anchors in the server)" $ do
       and [(r, c) < (r', c') && (r < r' || e <= c') | ((r, c, e), (r', c', _)) <- zip ends (drop 1 ends)] `shouldBe` True
 
   describe "planTokensWith (claim modifiers)" $
-    it "a bare line's text carries checked, wrong or resolved from its entry" $ do
-      let at0 = UTCTime (fromGregorian 2026 11 7) 0
-          u = UnitRef "src/a.py" "Foo"
-          e c = ClaimEntry (Just u) "jev-1" [u] 0.9 c Nothing at0
-          store = M.fromList [("right one", e (Just CheckRight)), ("wrong one", e (Just (CheckWrong "no"))), ("open one", e Nothing)]
+    it "a bare line's text carries checked or wrong from its check" $ do
+      let e j = verdictEntry j "no"
+          store = M.fromList [("right one", e JRight), ("wrong one", e JWrong), ("open one", queuedEntry)]
           mods = [(ptRow t, ptMods t) | t <- planTokensWith store M.empty (parsePlan "- right one\n- wrong one\n- open one\n- other\n"), ptType t == "planClaim"]
-      mods `shouldBe` [(0, ["checked"]), (1, ["wrong"]), (2, ["resolved"]), (3, [])]
+      mods `shouldBe` [(0, ["checked"]), (1, ["wrong"]), (2, []), (3, [])]
   describe "beliefsUnder" $
     it "an ask's beliefs are its question's bare claims, once one of them has a verdict" $ do
-      let at0 = UTCTime (fromGregorian 2026 11 7) 0
-          u = UnitRef "src/a.py" "Foo"
-          ls = parsePlan "- ? how\n  - it reads D\n  - grounded @src/a.py:Foo ✓ 0123456\n  - it is fast\n- other\n"
+      let ls = parsePlan "- ? how\n  - it reads D\n  - grounded @src/a.py:Foo ✓ 0123456\n  - it is fast\n- other\n"
           q = ls !! 0
-          checked = M.fromList [("it reads D", ClaimEntry (Just u) "jev-1" [u] 0.9 (Just (CheckWrong "it drops D")) Nothing at0)]
+          checked = M.fromList [("it reads D", verdictEntry JWrong "it drops D")]
       beliefsUnder checked ls q `shouldBe` [Belief "it reads D" (BelievedWrong "it drops D" "src/a.py:Foo"), Belief "it is fast" NotChecked]
       beliefsUnder M.empty ls q `shouldBe` []
       beliefsUnder checked ls (ls !! 4) `shouldBe` []
@@ -204,6 +201,17 @@ spec = describe "Olifant.Server.Plans (anchors in the server)" $ do
       folds ["- ? q", "  - I think x", "  - so it keeps D"] `shouldBe` []
     it "a question under a ticked step folds inside it" $
       planFolds (S.fromList ["the answer"]) (parsePlan (T.unlines ["- [x] a", "  - ? q", "    - the answer", "  - 25 Oct 21:31 · did"])) `shouldBe` [(0, 3), (1, 2)]
+
+at0 :: UTCTime
+at0 = UTCTime (fromGregorian 2026 11 7) 0
+
+-- | A verify sentence with no check yet.
+queuedEntry :: SentenceEntry
+queuedEntry = SentenceEntry (Triage "claim" 0.9 0.9 "jev") Verify Nothing Nothing at0
+
+-- | A verify sentence checked J, with WHY, citing src/a.py:Foo.
+verdictEntry :: Judgement -> Text -> SentenceEntry
+verdictEntry j why = queuedEntry {seCheck = Just (CheckRecord (Confirmed j why [Citation "src/a.py" (Just "Foo") Nothing] (Just (UnitRef "src/a.py" "Foo")) (Just "abc1234")) "claude-sonnet-5-5" (Just 0.1) 12 at0)}
 
 -- | /r1 with the python pack, `src/a.py` (class Foo with def bar) and a
 -- plan; a syntax whose units are Foo (lines 0-2) and Foo.bar (1-2).

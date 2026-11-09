@@ -33,9 +33,9 @@ import Data.Aeson.KeyMap qualified as KM
 import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe, mapMaybe)
 import Olifant.Plans (Anchor (..), Kind (..), Line (..), Verdict (..), anchorText, childrenOf, excerptInfo, excerptSpans, parsePlan, stepDone, testState, withVerdict)
 import Olifant.Server.Unit (Named (..))
-import Olifant.Server.Claims (checkedKeys, claimKey, claimsOf, passWork)
-import Olifant.Server.Claims qualified as Claims
-import Olifant.Server.Loop (PassAnswer (..), claimPass, retryCutoff, rungsFor)
+import Olifant.Server.Claims (checkedKeys, claimsOf)
+import Olifant.Server.Loop (PassAnswer (..), PassMode (..), claimPass)
+import Olifant.Plans.Sentences (Sentence (..), sentences)
 import Data.Text qualified as T
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (find, isInfixOf, nub)
@@ -287,7 +287,7 @@ handlers env =
           -- a plan's journal lines left pending while it was closed land now
           -- (only when there are any: the edit moves the plan's version)
           case found of
-            Just (_, p) | isPlanPath p path -> flushJournal env path >> startPass env path
+            Just (_, p) | isPlanPath p path -> flushJournal env path >> startPass env OpenPass path
             _ -> pure ()
     , notificationHandler SMethod_TextDocumentDidChange $ \msg -> do
         let uri = msg ^. L.params . L.textDocument . L.uri
@@ -307,7 +307,7 @@ handlers env =
     , -- the editor saw a plan go quiet (out of insert mode, a second since the last change)
       notificationHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/plans/idle")) $ \msg ->
         case documentPath (msg ^. L.params) of
-          Just path -> startPass env path
+          Just path -> startPass env IdlePass path
           Nothing -> pure ()
     , notificationHandler SMethod_TextDocumentDidClose $ \msg ->
         atPath (msg ^. L.params . L.textDocument . L.uri) (update env . closeDoc)
@@ -316,7 +316,7 @@ handlers env =
       notificationHandler SMethod_TextDocumentDidSave $ \msg ->
         atPath (msg ^. L.params . L.textDocument . L.uri) $ \path -> do
           update env fileSaved
-          startPass env path
+          startPass env SavePass path
           worked <- liftIO (atomicModifyIORef' (envSaving env) (\m -> (M.delete path m, M.lookup path m)))
           lspEnv <- getLspEnv
           -- what willSaveWaitUntil worked out, else (a client without it)
@@ -1604,11 +1604,12 @@ planHover env project path (Position l c) = do
   case [a | ln <- parsePlan text, lnRow ln == fromIntegral l, Just a <- [lnAnchor ln], anStart a <= col, col <= anEnd a] of
     a : _ -> withSnapshot env (\s -> (s,) <$> unitHover s project a) <&> fmap (\md -> Hover (InL (MarkupContent MarkupKind_Markdown md)) Nothing)
     [] -> do
-      -- a bare line: what the claim pass found for it
+      -- off an anchor: what the claim pass found for the sentences on the row
       store <- readMVar (envState env) >>= \s -> claimsOf s (prRoot project) path
-      pure $ case [ln | ln <- parsePlan text, lnRow ln == fromIntegral l] of
-        ln : _ | Just md <- claimHover store ln -> Just (Hover (InL (MarkupContent MarkupKind_Markdown md)) Nothing)
-        _ -> Nothing
+      let row = fromIntegral l
+      pure $ case claimHover store [x | x <- sentences (parsePlan text), snRow x <= row, row <= snEndRow x] of
+        Just md -> Just (Hover (InL (MarkupContent MarkupKind_Markdown md)) Nothing)
+        Nothing -> Nothing
 
 -- | The start of a line, up to a UTF-16 column.
 takeUtf16 :: Int -> T.Text -> T.Text
@@ -1738,49 +1739,44 @@ inBackground env req respond work = do
 -- one per plan (a new one cancels the running one; an edit cancels it too).
 -- Its anchors land by applyEdit only at the version it read; then the
 -- diagnostics and tokens are pulled again.
-startPass :: Env -> FilePath -> LspM () ()
-startPass env path =
+startPass :: Env -> PassMode -> FilePath -> LspM () ()
+startPass env mode path =
   liftIO (planContext env path) >>= \case
-    Just (p, _, text) | isPlanPath p path -> do
+    Just (p, _, _) | isPlanPath p path -> do
       lspEnv <- getLspEnv
       (token, trip) <- liftIO newCancel
-      (n, keys) <- liftIO $ do
+      n <- liftIO $ do
         (n, old) <- atomicModifyIORef' (envPasses env) (\(i, m) -> ((i + 1, M.insert path (i + 1, trip) m), (i + 1, M.lookup path m)))
         maybe (pure ()) snd old
-        -- the lines it works on show as being checked
-        st <- readMVar (envState env)
-        store <- claimsOf st (prRoot p) path
-        now <- pNow (envPorts env)
-        let keys = S.fromList [claimKey (Claims.workLine w) | w <- passWork (retryCutoff now (rungsFor st p False)) (parsePlan text) store]
-        atomicModifyIORef' (ssChecking st) (\m -> (M.insert (normalisePath path) keys m, ()))
-        pure (n, keys)
+        pure n
       -- the client may cancel its progress: the pass stops, the margin clears
       void . liftIO . forkIO . (`catch` \(_ :: SomeException) -> trip >> runLspT lspEnv claimsChanged) . runLspT lspEnv $ do
-        let run _ = try (withSnapshotState env {envCancel = token} (claimPass token path)) :: IO (Either SomeException (ServerState, Either T.Text PassAnswer))
-        -- nothing to work on: no "checking" in the editor
-        answered <- if S.null keys then liftIO (run ()) else planProgress "checking" run
+        done <- liftIO (newIORef False)
+        st0 <- liftIO (readMVar (envState env))
+        -- while it runs, the sentence being checked shows as such
+        void . liftIO . forkIO . runLspT lspEnv $ watchChecking st0 done Nothing
+        let run _ = try (withSnapshotState env {envCancel = token} (claimPass token mode path)) :: IO (Either SomeException (ServerState, Either T.Text PassAnswer))
+        -- triage alone is quick: progress only when checks may run
+        answered <- if mode == IdlePass then liftIO (run ()) else planProgress "checking" run
+        liftIO (writeIORef done True)
         stopped <- liftIO (cancelled token)
-        mine <- liftIO $ do
-          mine <- atomicModifyIORef' (envPasses env) (\(i, m) -> case M.lookup path m of
-            Just (j, _) | j == n -> ((i, M.delete path m), True)
-            _ -> ((i, m), False))
-          st <- readMVar (envState env)
-          when mine (atomicModifyIORef' (ssChecking st) (\m -> (M.delete (normalisePath path) m, ())))
-          pure mine
+        mine <- liftIO $ atomicModifyIORef' (envPasses env) (\(i, m) -> case M.lookup path m of
+          Just (j, _) | j == n -> ((i, M.delete path m), True)
+          _ -> ((i, m), False))
         case answered of
-          Right (read', Right a) | not stopped -> do
-            now <- liftIO (M.lookup path . ssDocs <$> readMVar (envState env))
-            case (fst <$> M.lookup path (ssDocs read'), now) of
-              (Just v, Just (v', current)) | v == v', not (null (paFacts a)) ->
-                void (sendRequest SMethod_WorkspaceApplyEdit (ApplyWorkspaceEditParams (Just "Olifant: checked") (factsEdit path (Just v) current (paFacts a))) (\_ -> pure ()))
-              _ -> pure ()
-            claimsChanged
+          Right (_, Right _) | not stopped -> claimsChanged
           _ -> when mine claimsChanged
     _ -> pure ()
   where
     claimsChanged = do
       void (sendRequest SMethod_WorkspaceDiagnosticRefresh Nothing (\_ -> pure ()))
       semanticTokensChanged
+    held = normalisePath path
+    watchChecking st done seen = do
+      finished <- liftIO (readIORef done)
+      now <- liftIO (M.lookup held <$> readIORef (ssChecking st))
+      when (now /= seen) (void (sendRequest SMethod_WorkspaceDiagnosticRefresh Nothing (\_ -> pure ())))
+      if finished then pure () else liftIO (threadDelay 250000) >> watchChecking st done now
 
 -- | Cancel the claim pass running on the plan at PATH, if any.
 stopPass :: Env -> FilePath -> IO ()

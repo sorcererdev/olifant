@@ -59,6 +59,14 @@ spec = describe "Olifant.Server.Telemetry (errand records)" $ do
     o <- objectOf (recordJson r)
     KM.lookup "kind" o `shouldBe` Just "resolve"
     parseRecord (recordJson r) `shouldBe` Just r
+  it "a pass record round-trips; an automatic check errand says auto" $ do
+    let r = APass (PassRecord "pass-plans/x.md:0@x" (UTCTime (fromGregorian 2026 11 8) 0) "plans/x.md" "save" 12 3 [("aside", 7), ("verify", 5)] 2 1 0 1 1 3 34.5 3 0.21)
+    o <- objectOf (recordJson r)
+    KM.lookup "kind" o `shouldBe` Just "pass"
+    parseRecord (recordJson r) `shouldBe` Just r
+    e <- objectOf (recordJson (AnErrand sampleErrand {erVerb = "check", erAuto = True}))
+    KM.lookup "auto" e `shouldBe` Just (Bool True)
+    parseRecord (recordJson (AnErrand sampleErrand {erAuto = True})) `shouldBe` Just (AnErrand sampleErrand {erAuto = True})
   it "an outcome record round-trips" $
     parseRecord (recordJson (AnOutcome (OutcomeRecord "s1" 0 t0 "accepted"))) `shouldBe` Just (AnOutcome (OutcomeRecord "s1" 0 t0 "accepted"))
   it "a record's at is whole-second ISO-8601 UTC, and parses back" $ do
@@ -109,7 +117,7 @@ sampleErrand =
     , erSection = "Steps", erBranch = Just "errand-telemetry", erModel = "sonnet", erStatus = Ok, erWhy = Nothing
     , erSession = Just "sess-1", erSeconds = Just 4.25, erTurns = Just 3, erTokens = Just (Tokens 10 20 30 40)
     , erCost = Just 0.054, erModels = [("claude-haiku-5-5", ModelUse (Tokens 1 2 3 4) (Just 0.001)), ("claude-sonnet-5-5", ModelUse (Tokens 9 18 27 36) Nothing)]
-    , erPromptChars = 1234, erGrounded = 2, erBlocks = 2, erLines = 7, erDropped = 1, erUnresolved = 0, erChanged = 0, erDenials = 0, erParent = Nothing }
+    , erPromptChars = 1234, erGrounded = 2, erBlocks = 2, erLines = 7, erDropped = 1, erUnresolved = 0, erChanged = 0, erDenials = 0, erParent = Nothing, erAuto = False }
 
 sampleReconcile :: ReconcileRecord
 sampleReconcile =

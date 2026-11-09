@@ -42,18 +42,20 @@ module Olifant.Server.Loop
   , reconcile
   , reconcileJson
     -- * the claim pass
+  , PassMode (..)
   , PassAnswer (..)
   , claimPass
-  , retryCutoff
+  , checkSentence
+  , unpricedCheck
   ) where
 
-import Data.Time (UTCTime, addUTCTime)
-import Control.Monad (forM, join, unless)
+import Data.Time (UTCTime)
+import Control.Monad (forM, join, when)
 import Data.Aeson (Value, object, (.=))
 import Data.Bifunctor (bimap)
 import Data.Containers.ListUtils (nubOrd, nubOrdOn)
 import Data.Functor ((<&>))
-import Data.IORef (modifyIORef', newIORef, readIORef)
+import Data.IORef (atomicModifyIORef', modifyIORef', newIORef, readIORef)
 import Data.List (delete, isPrefixOf, mapAccumL, sort, sortOn, stripPrefix)
 import Data.Map.Strict qualified as M
 import Data.Maybe (catMaybes, fromMaybe, isJust, listToMaybe)
@@ -67,7 +69,7 @@ import Olifant.Catalog (Catalog (..), PlansConfig (..))
 import Olifant.Decide (Answer (..), Confidence (..), Question (..), qOptions)
 import Olifant.Language.Adapter (languageFor)
 import Olifant.Model (ModelConfig (..), Rung (..))
-import Olifant.Plans (Anchor (..), Kind (..), Line (..), Section (..), TestState (..), Verdict (..), anchorText, childrenOf, evidenceTag, parsePlan, sections, stepDone, testState, withTestState, withVerdict)
+import Olifant.Plans (Anchor (..), Kind (..), Line (..), Section (..), TestState (..), Verdict (..), childrenOf, evidenceTag, parsePlan, sections, stepDone, testState, withTestState, withVerdict)
 import Olifant.Process (Cancel, cancelled)
 import Olifant.Server.Errand (Block (..), Ghost (..))
 import Olifant.Server.Excerpt (Excerpt (..), excerptFacts, excerptsOf, unitExcerpt)
@@ -76,10 +78,12 @@ import Olifant.Server.LoopTests
 import Olifant.Server.LoopTypes
 import Olifant.Server.Plans (Resolved (..), confined, currentBranch, gitOut, gitText, resolveAnchor, safely)
 import Olifant.Server.State (ServerState (..), appendStepLine, projectFor)
-import Olifant.Server.Telemetry (Decision (..), OutcomeRecord (..), ReconcileRecord (..), Record (..), ResolveRecord (..), appendRecord, errandId, readRecords, recordsPath)
-import Olifant.Server.Claims (Check (..), ClaimEntry (..), ClaimStore, Work (..), checkClaim, claimKey, claimsOf, passWork, pruneClaims, pruneOrphanClaims, storeClaims)
-import Olifant.Server.Resolve qualified as R
-import Olifant.Server.Resolve (LineContext (..), UnitRef (..), candidates, lineContext, projectIndex, resolveLine, roundName, upRef)
+import Olifant.Server.Telemetry (Decision (..), ErrandRecord (..), OutcomeRecord (..), PassRecord (..), ReconcileRecord (..), Record (..), appendRecord, errandId, readRecords, recordsPath)
+import Olifant.Server.Claims (CheckRecord (..), ClaimStore, Failure (..), SentenceEntry (..), claimsOf, claimsPath, pruneClaims, pruneOrphanClaims, queued, storeClaims)
+import Olifant.Plans.Sentences (Sentence (..), sentenceKey, sentences)
+import Olifant.Server.Checker (Checker, Confirmed (..), Judgement (..), checkPrompt, checkerUnder, confirm, fences, parseCheckReply)
+import Olifant.Server.Errand (RunFailure (..), RunResult (..), Status (..))
+import Olifant.Server.Triage (Triage (..), route, routeName, triage)
 import Olifant.Server.Unit (Named (..), fingerprint, unitsOf)
 import Olifant.Workspace (Workspace (..), normalisePath)
 import System.FilePath (makeRelative, takeExtension, (</>))
@@ -571,23 +575,39 @@ reconcileJson a =
 tshow :: Show a => a -> Text
 tshow = T.pack . show
 
--- | A claim pass's answer: the anchors its right checks earned (as facts),
--- the plan's store after it, and its record (none without a decide model;
--- appended only when a model call ran).
-data PassAnswer = PassAnswer {paFacts :: [Fact], paStore :: ClaimStore, paRecord :: Maybe ResolveRecord}
+-- | When a claim pass runs: on idle it only triages; on save it also
+-- checks; on open it checks only when the plan had a store before.
+data PassMode = IdlePass | OpenPass | SavePass
+  deriving stock (Eq, Show)
+
+passModeName :: PassMode -> Text
+passModeName = \case
+  IdlePass -> "idle"
+  OpenPass -> "open"
+  SavePass -> "save"
+
+-- | A claim pass's answer: the plan's store after it, and its record (none
+-- when nothing was triaged or checked). The pass writes nothing to the plan.
+data PassAnswer = PassAnswer {paStore :: ClaimStore, paRecord :: Maybe PassRecord}
   deriving stock (Show)
 
+-- | A check with no reported cost counts as this much against `pass_cost`.
+unpricedCheck :: Double
+unpricedCheck = 0.10
+
 -- | The automatic pass over the plan at PATH (the editor's text, else the
--- disk's): each new unanchored claim resolved and checked, each new step
--- resolved, each right check's anchor written, in plan order until the
--- budget (`[plans] pass_budget`, 30 s) or the token stops it. A right check
--- writes `@path:Unit ✓ <fp>` (the fingerprint read at the check); a unit
--- changed since (its fingerprint) writes nothing and is checked again next
--- pass; a check about other code leaves the line unresolved, that unit out
--- of its candidates. No decide model: nothing runs. Cancelled: Left, the
--- store keeping what the pass had earned.
-claimPass :: Cancel -> FilePath -> ServerState -> IO (ServerState, Either Text PassAnswer)
-claimPass token path s0 = do
+-- disk's). Every sentence whose key is not stored is triaged ('triage': the
+-- grammar, else Jev in one request, else 'noJev') and stored. Then, on save
+-- (or on open, when the plan had a store before this pass), the queued
+-- sentences ('queued') are checked one at a time ('checkerUnder',
+-- 'parseCheckReply', 'confirm'), the store written after each. Before each
+-- check the pass stops when cancelled, when `[plans] pass_budget` seconds
+-- (30) are spent, or when the next check's estimate would pass `[plans]
+-- pass_cost` dollars (0.50). A failed run or a reply with no verdict stores
+-- a 'Failure' (tried again after 'retryAfter'). Cancelled: the check in
+-- flight is dropped, the finished ones kept, and the answer is Left.
+claimPass :: Cancel -> PassMode -> FilePath -> ServerState -> IO (ServerState, Either Text PassAnswer)
+claimPass token mode path s0 = do
   start <- getMonotonicTime
   projectFor path s0 >>= \case
     (s, Nothing) -> pure (s, Left "this plan is in no Olifant project")
@@ -595,129 +615,127 @@ claimPass token path s0 = do
       text <- case M.lookup path (ssDocs s) of
         Just (_, t) -> pure t
         Nothing -> fromMaybe "" <$> safely Nothing (readText (pFiles (ssPorts s)) path)
-      let ls = parsePlan text
+      let ss = sentences (parsePlan text)
           root = prRoot p
           rel = makeRelative root (normalisePath path)
-          rungs = rungsFor s {ssCancel = token} p False
-          models = catalogModel (prCatalog p)
-          budget = fromIntegral (fromMaybe 30 (pcPassBudget (catalogPlans (prCatalog p)))) :: Double
-      case rgJev rungs of
-        Nothing -> do
-          store <- claimsOf s root path
-          pure (s, Right (PassAnswer [] store Nothing))
-        Just jev -> do
-          store0 <- claimsOf s root path
+          cfg = catalogPlans (prCatalog p)
+          budget = fromIntegral (fromMaybe 30 (pcPassBudget cfg)) :: Double
+          costCap = fromMaybe 0.50 (pcPassCost cfg)
+          jev = rgJev (rungsFor s {ssCancel = token} p False)
+          key = sentenceKey . snText
+          held = normalisePath path
+          elapsed = subtract start <$> getMonotonicTime
+      existed <- fileExists (pFiles (ssPorts s)) (claimsPath root path)
+      store0 <- claimsOf s root path
+      if budget <= 0
+        then pure (s, Right (PassAnswer store0 Nothing))
+        else do
           pruneOrphanClaims (ssPorts s) root
           now <- pNow (ssPorts s)
-          let work = passWork (retryCutoff now rungs) ls store0
-          -- no work: no index to read
-          index <- if null work then pure [] else projectIndex s p
-          let left = do
-                t <- getMonotonicTime
+          let fresh = firstPerKey key [x | x <- ss, not (M.member (key x) store0)]
+              -- triage until cancelled or out of time: (store, triaged, Jev calls, stopped)
+              triageAll st n calls [] = pure (st, n, calls, False)
+              triageAll st n calls (x : rest) = do
                 stop <- cancelled token
-                pure (not stop && t - start < budget)
-              -- the unit's text and fingerprint now, by its anchor
-              unitNow u = do
-                r <- resolveAnchor s p (Anchor (urPath u) (urName u) 0 0)
-                pure $ case (rsUnit r, rsText r, rsFingerprint r) of
-                  (Just n, Just t, Just fp) -> let (a, z) = namedLines n in Just (T.intercalate "\n" (take (z - a + 1) (drop (a - 1) (T.lines t))), fp)
-                  _ -> Nothing
-              written l u fp = Replace (lnRow l) (withVerdict (T.stripEnd (lnText l) <> "   " <> anchorText (Anchor (urPath u) (urName u) 0 0)) (Verified fp))
-              resolved l = do
-                let c = lineContext ls l
-                    cands = map fst (candidates (lcLine c) index)
-                (r, ds) <- resolveLine jev left c cands
-                pure (c, cands, r, ds)
-              -- one item: (facts, store change, decisions, tally); Nothing when the budget is out before it
-              step acc [] = pure (Right (acc, 0 :: Int))
-              step acc (w : rest) =
-                cancelled token >>= \case
-                  True -> pure (Left acc)
-                  False ->
-                    left >>= \case
-                      False -> pure (Right (acc, length (w : rest)))
-                      True -> do
-                        acc' <- item acc w
+                t <- elapsed
+                if stop || t >= budget
+                  then pure (st, n, calls, stop)
+                  else do
+                    tr <- triage jev x
+                    let e = SentenceEntry tr (route tr) Nothing Nothing now
+                    triageAll (M.insert (key x) e st) (n + 1) (calls + (if trBy tr == "jev" then 1 else 0)) rest
+          (store1, triaged, jevCalls, stoppedEarly) <- triageAll (pruneClaims ss store0) (0 :: Int) (0 :: Int) fresh
+          when (store1 /= store0) (storeClaims s root path store1)
+          let checking = mode == SavePass || (mode == OpenPass && existed)
+              queue = if checking && not stoppedEarly then queued now ss store1 else []
+              checker = checkerUnder s token cfg root
+              -- one check at a time: (store, tally, stopped by a cancel)
+              checkAll st tally [] = pure (st, tally, False)
+              checkAll st tally (x : rest) = do
+                stop <- cancelled token
+                t <- elapsed
+                let spent = ptCost tally
+                    estimate = if ptChecked tally + ptFailed tally > 0 then spent / fromIntegral (ptChecked tally + ptFailed tally) else unpricedCheck
+                if stop
+                  then pure (st, tally, True)
+                  else
+                    if t >= budget || spent + estimate > costCap + 1e-9
+                      then pure (st, tally, False)
+                      else do
+                        atomicModifyIORef' (ssChecking s) (\m -> (M.insert held (S.singleton (key x)) m, ()))
+                        result <- checkSentence s p cfg checker True now rel x
+                        atomicModifyIORef' (ssChecking s) (\m -> (M.delete held m, ()))
                         cancelled token >>= \case
-                          True -> pure (Left acc')
-                          False -> step acc' rest
-              entryOf r = case r of
-                R.Resolved u rd x -> ClaimEntry (Just u) (roundName rd) [] x Nothing Nothing now
-                R.Unresolved us x -> ClaimEntry Nothing "none" us x Nothing Nothing now
-              withCands cands e = e {ceCandidates = if null (ceCandidates e) then map upRef cands else ceCandidates e}
-              item tally = \case
-                ResolveOnly l -> do
-                  (_, cands, r, ds) <- resolved l
-                  pure (record l (withCands cands (entryOf r)) [] ds (rungOf r) Nothing tally)
-                ResolveAndCheck l -> do
-                  (c, cands, r, ds) <- resolved l
-                  let e0 = withCands cands (entryOf r)
-                  case r of
-                    R.Resolved u _ _ -> checked tally l c e0 u ds (rungOf r)
-                    _ -> pure (record l e0 [] ds (rungOf r) Nothing tally)
-                -- the unit stays; only the check is asked again
-                CheckAgain l e -> case ceUnit e of
-                  Just u -> checked tally l (lineContext ls l) e {ceAt = now} u [] (ceRung e)
-                  Nothing -> pure tally
-                WriteAnchor l e -> case (ceUnit e, ceFingerprint e) of
-                  (Just u, Just fp) ->
-                    unitNow u <&> \case
-                      Just (_, fpNow) | fpNow == fp -> tally {tFacts = tFacts tally ++ [written l u fp]}
-                      -- moved or gone since its check: checked again next pass
-                      _ -> tally {tStore = M.delete (claimKey l) (tStore tally)}
-                  _ -> pure tally
-              -- check the line against its resolved unit's code now
-              checked tally l c e0 u ds rung =
-                unitNow u >>= \case
-                  Nothing -> pure (record l e0 [] ds rung Nothing tally)
-                  Just (code, fp) -> do
-                    (check, ds2) <- checkClaim token (mcTimeout models) rungs c u code
-                    let e = case check of
-                          Just CheckElsewhere -> e0 {ceUnit = Nothing, ceRung = "elsewhere", ceCandidates = filter (/= u) (ceCandidates e0), ceCheck = Just CheckElsewhere}
-                          Just v -> e0 {ceCheck = Just v, ceFingerprint = Just fp}
-                          Nothing -> e0
-                        facts = [written l u fp | check == Just CheckRight]
-                    pure (record l e facts (ds ++ ds2) rung check tally)
-              rungOf = \case
-                R.Resolved _ rd _ -> roundName rd
-                R.Unresolved _ _ -> "none"
-              record l e facts ds rung check tally =
-                tally
-                  { tFacts = tFacts tally ++ facts
-                  , tStore = M.insert (claimKey l) e (tStore tally)
-                  , tDecisions = tDecisions tally ++ ds
-                  , tByRung = M.insertWith (+) rung (1 :: Int) (tByRung tally)
-                  , tChecked = tChecked tally + maybe 0 (const 1) check
-                  , tRight = tRight tally + (if check == Just CheckRight then 1 else 0)
-                  , tWrong = tWrong tally + (case check of Just (CheckWrong _) -> 1; _ -> 0)
-                  , tElsewhere = tElsewhere tally + (if check == Just CheckElsewhere then 1 else 0)
-                  }
-          step (Tally [] store0 [] M.empty 0 0 0 0) work >>= \case
-            -- cancelled: the verdicts earned so far are kept (each is valid
-            -- whatever was typed since); no facts, no record
-            Left t -> do
-              storeClaims s root path (pruneClaims ls (tStore t))
-              pure (s, Left "cancelled")
-            Right (t, more) -> do
-              end <- getMonotonicTime
-              let store = pruneClaims ls (tStore t)
-                  rec =
-                    ResolveRecord
-                      { rvId = errandId now "resolve" rel 0 Nothing, rvAt = now, rvPlan = rel, rvSeen = length work
-                      , rvByRung = M.toList (tByRung t), rvChecked = tChecked t, rvRight = tRight t, rvWrong = tWrong t
-                      , rvElsewhere = tElsewhere t, rvMore = more, rvSeconds = end - start
-                      , rvCalls = length (tDecisions t), rvDecisions = tDecisions t }
-              -- nothing to do and nothing pruned: the store on disk is already right
-              unless (null work && store == store0) (storeClaims s root path store)
-              if null (tDecisions t) then pure () else appendRecord (ssPorts s) root (AResolve rec)
-              pure (s, Right (PassAnswer (tFacts t) store (Just rec)))
+                          -- the check in flight is dropped: its sentence may have changed
+                          True -> pure (st, tally, True)
+                          False -> do
+                            let st' = M.adjust (\e -> either (\f -> e {seFailure = Just f}) (\c -> e {seCheck = Just c, seFailure = Nothing}) (fst result)) (key x) st
+                            storeClaims s root path st'
+                            checkAll st' (tallied tally result) rest
+          (store2, tally, cancelledMid) <- checkAll store1 (PassTally 0 0 0 0 0 0) queue
+          end <- getMonotonicTime
+          let left = length (queued now ss store2)
+              rec =
+                PassRecord
+                  { prId = errandId now "pass" rel 0 Nothing, prAt = now, prPlan = rel, prMode = passModeName mode
+                  , prSentences = length ss, prTriaged = triaged
+                  , prRoutes = M.toList (M.fromListWith (+) [(routeName (seRoute e), 1 :: Int) | e <- M.elems store2])
+                  , prChecked = ptChecked tally, prRight = ptRight tally, prWrong = ptWrong tally, prCannotTell = ptCannotTell tally
+                  , prFailed = ptFailed tally, prQueued = left, prSeconds = end - start, prJevCalls = jevCalls, prCost = ptCost tally }
+              -- grammar triage costs nothing: a record only for Jev calls or checks
+              worked = jevCalls > 0 || ptChecked tally + ptFailed tally > 0
+          when worked (appendRecord (ssPorts s) root (APass rec))
+          pure (s, if stoppedEarly || cancelledMid then Left "cancelled" else Right (PassAnswer store2 (if worked then Just rec else Nothing)))
+  where
+    firstPerKey k = go S.empty
+      where
+        go _ [] = []
+        go seen (x : xs)
+          | k x `S.member` seen = go seen xs
+          | otherwise = x : go (S.insert (k x) seen) xs
 
--- | Claims resolved but left unchecked are checked again once their entry is
--- ten minutes old, when a chat rung can check at all.
-retryCutoff :: UTCTime -> Rungs -> Maybe UTCTime
-retryCutoff now rungs = if null (rgChat rungs) then Nothing else Just (addUTCTime (-600) now)
+-- | What a pass's checks came to.
+data PassTally = PassTally {ptChecked, ptRight, ptWrong, ptCannotTell, ptFailed :: Int, ptCost :: Double}
 
--- | What a claim pass has done so far.
-data Tally = Tally
-  { tFacts :: [Fact], tStore :: ClaimStore, tDecisions :: [Decision], tByRung :: M.Map Text Int
-  , tChecked :: Int, tRight :: Int, tWrong :: Int, tElsewhere :: Int }
+tallied :: PassTally -> (Either Failure CheckRecord, Double) -> PassTally
+tallied t (r, cost) = case r of
+  Left _ -> t {ptFailed = ptFailed t + 1, ptCost = ptCost t + cost}
+  Right c ->
+    let j = cfJudgement (cjConfirmed c)
+     in t { ptChecked = ptChecked t + 1, ptCost = ptCost t + cost
+          , ptRight = ptRight t + fromEnum (j == JRight), ptWrong = ptWrong t + fromEnum (j == JWrong)
+          , ptCannotTell = ptCannotTell t + fromEnum (j == JCannotTell) }
+
+-- | One check of one sentence, recorded as a `check` errand (AUTO when the
+-- pass asked, not the user): the stored check or the failure, and what it
+-- cost against the pass's cap (a run with no reported cost, 'unpricedCheck';
+-- a run that never answered, nothing).
+checkSentence :: ServerState -> Project -> PlansConfig -> Checker -> Bool -> UTCTime -> FilePath -> Sentence -> IO (Either Failure CheckRecord, Double)
+checkSentence s p cfg checker auto now plan x = do
+  r <- checker x
+  let root = prRoot p
+      record status why mrr =
+        appendRecord (ssPorts s) root . AnErrand $
+          ErrandRecord
+            { erId = errandId now "check" plan (snRow x) (mrr >>= rrSession), erAt = now, erVerb = "check", erPlan = plan, erRow = snRow x
+            , erSection = snHeading x, erBranch = Nothing, erModel = pcCheckModel cfg, erStatus = status, erWhy = why
+            , erSession = mrr >>= rrSession, erSeconds = rrSeconds <$> mrr, erTurns = mrr >>= rrTurns, erTokens = mrr >>= rrTokens
+            , erCost = mrr >>= rrCost, erModels = maybe [] rrModels mrr, erPromptChars = T.length (checkPrompt x), erGrounded = 0
+            , erBlocks = 0, erLines = 0, erDropped = 0, erUnresolved = 0, erChanged = 0, erDenials = maybe 0 rrDenials mrr
+            , erParent = Nothing, erAuto = auto }
+  case r of
+    Left f -> do
+      record (rfStatus f) (Just (rfWhy f)) Nothing
+      -- a run that never started costs nothing; one that ran out of time or answered an error may have
+      pure (Left (Failure (rfWhy f) now), if rfStatus f == Timeout || isJust (rfSession f) then unpricedCheck else 0)
+    Right rr -> do
+      let cost = fromMaybe unpricedCheck (rrCost rr)
+      case parseCheckReply (rrText rr) of
+        Left why -> do
+          record Empty (Just why) (Just rr)
+          pure (Left (Failure why now), cost)
+        Right reply -> do
+          c <- confirm s p (fences cfg) reply
+          record Ok Nothing (Just rr)
+          let model = maybe (pcCheckModel cfg) fst (listToMaybe (rrModels rr))
+          pure (Right (CheckRecord c model (rrCost rr) (rrSeconds rr) now), cost)

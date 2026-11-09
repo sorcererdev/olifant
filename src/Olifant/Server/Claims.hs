@@ -1,24 +1,20 @@
 -- | Internal to Olifant.Server: what the claim pass knows about a plan's
--- lines, kept per plan in `.olifant/state/claims/` and keyed by a line's
--- words (not its row): the unit each resolved to, by which round, its
--- candidates, and the check against that unit, with the unit's fingerprint
--- when it was checked. And the check itself: a typed question on the plan's
--- chat ladder.
+-- sentences, kept per plan in `.olifant/state/claims/` (version 2) and keyed
+-- by a sentence's words ('sentenceKey', not its row): its triage and route,
+-- the check the checker made (with the cited code), or the last failure.
 module Olifant.Server.Claims
-  ( Check (..)
-  , ClaimEntry (..)
+  ( CheckRecord (..)
+  , Failure (..)
+  , SentenceEntry (..)
   , ClaimStore
-  , claimKey
+  , lineKey
   , claimsPath
   , readClaims
   , writeClaims
   , pruneOrphanClaims
-  , checkQuestion
-  , checkClaim
-  , Work (..)
-  , workLine
-  , passWork
   , pruneClaims
+  , queued
+  , retryAfter
   , checkedKeys
   , claimsOf
   , storeClaims
@@ -34,58 +30,55 @@ import Data.Aeson.Types (Parser, parseMaybe, withObject)
 import Data.ByteString.Lazy qualified as BL
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
-import Data.Maybe (fromMaybe, listToMaybe)
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
-import Data.Time (UTCTime)
+import Data.Time (NominalDiffTime, UTCTime, addUTCTime)
 import Data.Dynamic (fromDynamic, toDyn)
 import Data.IORef (modifyIORef', readIORef)
 import Olifant.App (Ports (..))
 import Olifant.Server.State (ServerState (..))
-import Olifant.Decide (Answer (..), Confidence (..), choice, qOptions)
-import Olifant.Decide qualified as D
 import Data.Set (Set)
 import Data.Set qualified as S
-import Olifant.Plans (Kind (..), Line (..), childrenOf)
-import Olifant.Process (Cancel)
-import Olifant.Server.LoopQuestions (Rungs (..), accepted, decideOver)
-import Olifant.Server.Resolve (LineContext (..), UnitRef (..), bareLine, refText)
-import Olifant.Server.Telemetry (Decision (..))
+import Olifant.Plans (Line (..))
+import Olifant.Plans.Sentences (Sentence (..), sentenceKey)
+import Olifant.Server.Checker (Citation (..), Confirmed (..), Judgement (..), UnitRef (..), judgementName)
+import Olifant.Server.Triage (Route (..), Triage (..), routeName)
 import Olifant.Workspace (Workspace (..), normalisePath)
 import System.FilePath (dropExtension, isAbsolute, makeRelative, takeExtension, (</>))
 import System.IO.Unsafe (unsafePerformIO)
 
--- | A claim checked against its unit: right, wrong (and why), or about some
--- other code than this unit.
-data Check = CheckRight | CheckWrong Text | CheckElsewhere
+-- | One check as stored: the confirmed verdict, the model that made it, its
+-- cost (when the runner said), its seconds, and when.
+data CheckRecord = CheckRecord {cjConfirmed :: Confirmed, cjModel :: Text, cjCost :: Maybe Double, cjSeconds :: Double, cjAt :: UTCTime}
   deriving stock (Eq, Show)
 
--- | What the pass knows of one line: its unit (none when unresolved), the
--- round that found it (`jev-1`, `jev-2`, `jev-3`, `none`, or `elsewhere`
--- when its check rejected the unit), its candidates best first, the top
--- probability Jev gave, its check, the unit's fingerprint at the check, and
--- when.
-data ClaimEntry = ClaimEntry
-  { ceUnit :: Maybe UnitRef
-  , ceRung :: Text
-  , ceCandidates :: [UnitRef]
-  , ceTop :: Double
-  , ceCheck :: Maybe Check
-  , ceFingerprint :: Maybe Text
-  , ceAt :: UTCTime
-  }
+-- | A check that failed (the runner, or a reply with no verdict), and when.
+data Failure = Failure {fuWhy :: Text, fuAt :: UTCTime}
   deriving stock (Eq, Show)
 
--- | A plan's entries by 'claimKey'.
-type ClaimStore = Map Text ClaimEntry
+-- | What the pass knows of one sentence.
+data SentenceEntry = SentenceEntry
+  { seTriage :: Triage, seRoute :: Route, seCheck :: Maybe CheckRecord
+  , seFailure :: Maybe Failure, seAt :: UTCTime }
+  deriving stock (Eq, Show)
 
--- | A line's words as a key: without its indentation, its `- `, a checkbox,
--- and its anchor and verdict. An edited line is a new key.
-claimKey :: Line -> Text
-claimKey l = T.strip (fromMaybe b (listToMaybe [r | p <- ["[ ] ", "[x] "], Just r <- [T.stripPrefix p b]]))
+-- | A plan's entries by 'sentenceKey'.
+type ClaimStore = Map Text SentenceEntry
+
+-- | A list line's key: the words after its marker, as 'sentenceKey' (the
+-- key of a one-sentence bullet).
+lineKey :: Line -> Text
+lineKey l =
+  let b = T.drop 2 (T.stripStart (lnText l))
+   in sentenceKey (fromMaybe b (T.stripPrefix "[ ] " b <|> T.stripPrefix "[x] " b <|> T.stripPrefix "? " b))
   where
-    b = bareLine l
+    a <|> b = maybe b Just a
+
+-- | How long a failed check waits before the pass tries it again.
+retryAfter :: NominalDiffTime
+retryAfter = 600
 
 -- | Where a plan's store is: `.olifant/state/claims/<plan without .md>.json`
 -- under ROOT (the plan relative to ROOT, or absolute under it).
@@ -101,7 +94,10 @@ readClaims ports root plan =
     txt <- readText (pFiles ports) (claimsPath root plan)
     evaluate (fromMaybe M.empty (txt >>= decodeStrict . TE.encodeUtf8 >>= parseMaybe store)))
   where
+    -- a store of another version is dropped: the pass triages again
     store = withObject "claims" $ \o -> do
+      v <- o .:? "version"
+      if v /= Just (2 :: Int) then fail "another version" else pure ()
       cs <- o .: "claims"
       withObject "entries" (\es -> M.fromList <$> mapM (\(k, v) -> (K.toText k,) <$> entry v) (KM.toList es)) cs
 
@@ -110,7 +106,7 @@ readClaims ports root plan =
 writeClaims :: Ports -> FilePath -> FilePath -> ClaimStore -> IO ()
 writeClaims ports root plan cs =
   void . (try :: IO () -> IO (Either SomeException ())) . withMVar claimsLock $ \() -> do
-    let body = TE.decodeUtf8 (BL.toStrict (encode (object ["version" .= (1 :: Int), "claims" .= Object (KM.fromList [(K.fromText k, entryJson e) | (k, e) <- M.toList cs])]))) <> "\n"
+    let body = TE.decodeUtf8 (BL.toStrict (encode (object ["version" .= (2 :: Int), "claims" .= Object (KM.fromList [(K.fromText k, entryJson e) | (k, e) <- M.toList cs])]))) <> "\n"
     -- whole or not at all: a crash mid-write must not leave half a store
     let file = claimsPath root plan
     writeText (pFiles ports) (file <> ".tmp") body
@@ -131,150 +127,86 @@ pruneOrphanClaims ports root =
 claimsLock :: MVar ()
 claimsLock = unsafePerformIO (newMVar ())
 
-entryJson :: ClaimEntry -> Value
+entryJson :: SentenceEntry -> Value
 entryJson e =
   object
-    [ "unit" .= fmap refJson (ceUnit e)
-    , "rung" .= ceRung e
-    , "candidates" .= map refJson (ceCandidates e)
-    , "top" .= ceTop e
-    , "check" .= fmap checkJson (ceCheck e)
-    , "fingerprint" .= ceFingerprint e
-    , "at" .= ceAt e
+    [ "triage" .= object ["kind" .= trKind t, "p" .= trKindP t, "about" .= trAboutCode t, "by" .= trBy t]
+    , "route" .= routeName (seRoute e)
+    , "check" .= fmap checkJson (seCheck e)
+    , "failure" .= fmap (\f -> object ["why" .= fuWhy f, "at" .= fuAt f]) (seFailure e)
+    , "at" .= seAt e
     ]
   where
+    t = seTriage e
     refJson r = object ["path" .= urPath r, "name" .= urName r]
-    checkJson = \case
-      CheckRight -> object ["verdict" .= ("right" :: Text)]
-      CheckWrong why -> object ["verdict" .= ("wrong" :: Text), "why" .= why]
-      CheckElsewhere -> object ["verdict" .= ("elsewhere" :: Text)]
+    checkJson c =
+      let cf = cjConfirmed c
+       in object
+            [ "verdict" .= judgementName (cfJudgement cf)
+            , "why" .= cfWhy cf
+            , "evidence" .= [object ["path" .= ciPath x, "unit" .= ciUnit x, "line" .= ciLine x] | x <- cfEvidence cf]
+            , "unit" .= fmap refJson (cfUnit cf)
+            , "fingerprint" .= cfFingerprint cf
+            , "model" .= cjModel c
+            , "cost" .= cjCost c
+            , "seconds" .= cjSeconds c
+            , "at" .= cjAt c
+            ]
 
-entry :: Value -> Parser ClaimEntry
+entry :: Value -> Parser SentenceEntry
 entry = withObject "entry" $ \o ->
-  ClaimEntry
-    <$> (o .:? "unit" >>= traverse ref)
-    <*> o .: "rung"
-    <*> (o .: "candidates" >>= mapM ref)
-    <*> o .: "top"
+  SentenceEntry
+    <$> (o .: "triage" >>= triage)
+    <*> (o .: "route" >>= route)
     <*> (o .:? "check" >>= traverse check)
-    <*> o .:? "fingerprint"
+    <*> (o .:? "failure" >>= traverse (withObject "failure" (\f -> Failure <$> f .: "why" <*> f .: "at")))
     <*> o .: "at"
   where
+    triage = withObject "triage" $ \t -> Triage <$> t .: "kind" <*> t .: "p" <*> t .: "about" <*> t .: "by"
+    route = \case
+      String "verify" -> pure Verify
+      String "progress" -> pure Progress
+      String "asked" -> pure Asked
+      String "aside" -> pure Aside
+      _ -> fail "a route"
     ref = withObject "unit" $ \r -> UnitRef <$> r .: "path" <*> r .: "name"
-    check = withObject "check" $ \c ->
-      (c .: "verdict" :: Parser Text) >>= \case
-        "right" -> pure CheckRight
-        "wrong" -> CheckWrong <$> c .: "why"
-        "elsewhere" -> pure CheckElsewhere
+    citation = withObject "citation" $ \c -> Citation <$> c .: "path" <*> c .:? "unit" <*> c .:? "line"
+    check = withObject "check" $ \c -> do
+      j <- (c .: "verdict" :: Parser Text) >>= \case
+        "right" -> pure JRight
+        "wrong" -> pure JWrong
+        "cannot_tell" -> pure JCannotTell
         _ -> fail "a verdict"
+      cf <- Confirmed j <$> c .: "why" <*> (c .: "evidence" >>= mapM citation) <*> (c .:? "unit" >>= traverse ref) <*> c .:? "fingerprint"
+      CheckRecord cf <$> c .: "model" <*> c .:? "cost" <*> c .: "seconds" <*> c .: "at"
 
--- | Is this plan line right about this unit's code? Right, wrong (why, in
--- one short sentence), or about other code.
-checkQuestion :: LineContext -> UnitRef -> Text -> D.Question
-checkQuestion c u code =
-  (choice "plan-check" "Is this plan line right about this code? If wrong, say why in one short sentence." options context) {D.qFields = [("why", "text")]}
+-- | The store without keys no sentence of the plan has (an edited
+-- sentence's old words). A heading is not part of a key, so renaming one
+-- keeps its section's entries.
+pruneClaims :: [Sentence] -> ClaimStore -> ClaimStore
+pruneClaims ss store = M.restrictKeys store (S.fromList (map (sentenceKey . snText) ss))
+
+-- | The sentences a pass may check, in plan order, one per key: routed to
+-- verify, not checked, and not failed in the last 'retryAfter'. A sentence
+-- with no entry is not queued (it is triaged first).
+queued :: UTCTime -> [Sentence] -> ClaimStore -> [Sentence]
+queued now ss store = go S.empty ss
   where
-    options =
-      [ ("right", "the code does what the line says")
-      , ("wrong", "the code contradicts the line, or lacks what it says")
-      , ("elsewhere", "this code is not what the line is about")
-      ]
-    context =
-      [("line", lcLine c), ("unit", refText u), ("code", T.intercalate "\n" (take 120 (T.lines code)))]
-        ++ [("question", q) | Just q <- [lcQuestion c]]
-
--- | A claim checked on the chat rungs (never Jev), under their escalate
--- policy: the check when one answers at the gate, and the decision asked.
-checkClaim :: Cancel -> Int -> Rungs -> LineContext -> UnitRef -> Text -> IO (Maybe Check, [Decision])
-checkClaim token timeout rungs c u code
-  | null (rgChat rungs) = pure (Nothing, [])
-  | otherwise = do
-      let q = checkQuestion c u code
-      (a, climbs) <- decideOver token timeout rungs {rgJev = Nothing} q
-      -- each rung asked is a call; the answer (and its confidence) is the last rung's
-      let lastName = fst <$> listToMaybe (reverse climbs)
-          decided = [Decision (D.qKind q) (qOptions q) (if Just name == lastName then chosen a else Nothing) (if Just name == lastName then confOf a else Nothing) name | (name, _) <- climbs]
-          check = case a of
-            Chosen "right" _ _ | accepted q a -> Just CheckRight
-            Chosen "wrong" fs _ | accepted q a -> Just (CheckWrong (let w = T.strip (fromMaybe "" (lookup "why" fs)) in if T.null w then "no reason given" else w))
-            Chosen "elsewhere" _ _ | accepted q a -> Just CheckElsewhere
-            _ -> Nothing
-      pure (check, decided)
-  where
-    chosen = \case
-      Chosen x _ _ -> Just x
-      _ -> Nothing
-    confOf = \case
-      Chosen _ _ (Confidence x) -> Just x
-      _ -> Nothing
-
--- | What the pass does for a line: resolve it and check it (a claim),
--- resolve it only (a step), or write the anchor its right check earned (a
--- write that did not land last time), or check a resolved claim again (its
--- last check got no answer).
-data Work = ResolveAndCheck Line | ResolveOnly Line | WriteAnchor Line ClaimEntry | CheckAgain Line ClaimEntry
-  deriving stock (Eq, Show)
-
--- | The pass's work in plan order: each unanchored claim and step not in the
--- store; each unanchored line whose entry is right, with a unit and a
--- fingerprint. A bare claim beside an anchored claim or evidence under a
--- question is that answer's conclusion, not a belief: never work. With a
--- RETRY cutoff (given when a chat rung can check), a claim whose entry holds
--- a unit and no check, stamped before the cutoff, is checked again: its last
--- check got no answer.
-passWork :: Maybe UTCTime -> [Line] -> ClaimStore -> [Work]
-passWork retry ls store = firstPerKey (concatMap work ls)
-  where
-    work l
-      | lnAnchor l /= Nothing || T.null key = []
-      | Just e <- M.lookup key store = case e of
-          ClaimEntry {ceCheck = Just CheckRight, ceUnit = Just _, ceFingerprint = Just _} | listLine -> [WriteAnchor l e]
-          ClaimEntry {ceCheck = Nothing, ceUnit = Just _, ceAt = at}
-            | lnKind l == Claim, Just cutoff <- retry, at < cutoff, not (conclusion l) -> [CheckAgain l e]
-          _ -> []
-      | lnKind l == Claim, not (conclusion l) = [ResolveAndCheck l]
-      | Step _ <- lnKind l = [ResolveOnly l]
-      | otherwise = []
+    go _ [] = []
+    go seen (s : rest)
+      | k `S.member` seen = go seen rest
+      | Just e <- M.lookup k store, ready e = s : go (S.insert k seen) rest
+      | otherwise = go (S.insert k seen) rest
       where
-        key = claimKey l
-        listLine = case lnKind l of
-          Claim -> True
-          Step _ -> True
-          _ -> False
-    -- one key is one question: lines with the same words share it
-    firstPerKey = go S.empty
-      where
-        go _ [] = []
-        go seen (w : ws)
-          | k `S.member` seen = go seen ws
-          | otherwise = w : go (S.insert k seen) ws
-          where
-            k = claimKey (workLine w)
-    conclusion l = case parentOf l of
-      Just q
-        | lnKind q == Question ->
-            any (\c -> lnKind c == Evidence || (lnKind c == Claim && lnAnchor c /= Nothing)) (directKids q)
-      _ -> False
-    parentOf l = listToMaybe [p | p <- reverse (take (lnRow l) ls), lnIndent p < lnIndent l, lnKind p /= Prose]
-    directKids q = [c | c <- childrenOf ls (lnRow q), lnIndent c == lnIndent q + 2]
+        k = sentenceKey (snText s)
+    ready e =
+      seRoute e == Verify
+        && seCheck e == Nothing
+        && maybe True (\f -> addUTCTime retryAfter (fuAt f) <= now) (seFailure e)
 
--- | The line a piece of work is about.
-workLine :: Work -> Line
-workLine = \case
-  ResolveAndCheck l -> l
-  ResolveOnly l -> l
-  WriteAnchor l _ -> l
-  CheckAgain l _ -> l
-
--- | The store without keys no line of the plan has (an edited line's old
--- words).
-pruneClaims :: [Line] -> ClaimStore -> ClaimStore
-pruneClaims ls store = M.restrictKeys store (S.fromList (map claimKey ls))
-
--- | The keys whose lines have a stored verdict, right or wrong (a checked
--- belief answers its question; one about other code does not).
+-- | The keys with a right or wrong check (a checked belief answers its question).
 checkedKeys :: ClaimStore -> Set Text
-checkedKeys = M.keysSet . M.filter (\e -> case ceCheck e of Just CheckRight -> True; Just (CheckWrong _) -> True; _ -> False)
+checkedKeys = M.keysSet . M.filter (\e -> maybe False ((/= JCannotTell) . cfJudgement . cjConfirmed) (seCheck e))
 
 -- | A plan's store as the server holds it (ROOT, the plan's path): read
 -- from disk on first use.

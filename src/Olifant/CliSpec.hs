@@ -1607,7 +1607,7 @@ plansCostSpec = describe "plans cost" $ do
             , erBranch = branch, erModel = "sonnet", erStatus = status, erWhy = Nothing
             , erSession = session, erSeconds = Just 10, erTurns = Just 2, erTokens = Nothing
             , erCost = cost, erModels = [], erPromptChars = 100, erGrounded = 0
-            , erBlocks = blocks, erLines = 4, erDropped = 0, erUnresolved = 0, erChanged = 0, erDenials = 0, erParent = Nothing }
+            , erBlocks = blocks, erLines = 4, erDropped = 0, erUnresolved = 0, erChanged = 0, erDenials = 0, erParent = Nothing, erAuto = False }
       outcome i b o = AnOutcome (OutcomeRecord i b (at 25 12) o)
       line r = TL.toStrict (TLE.decodeUtf8 (encode (recordJson r)))
       records rs extra = ("/proj/.olifant/state/errands.jsonl", T.unlines (map line rs ++ extra))

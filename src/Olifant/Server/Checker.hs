@@ -13,6 +13,7 @@ module Olifant.Server.Checker
   , Confirmed (..)
   , UnitRef (..)
   , refText
+  , evidenceText
   , Checker
   , fences
   , checkPrompt
@@ -24,6 +25,7 @@ module Olifant.Server.Checker
   , checkerUnder
   ) where
 
+import Control.Concurrent (threadDelay)
 import Control.Exception (SomeException, try)
 import Data.Aeson (Value (..), eitherDecodeStrict, encode, object, (.=))
 import Data.Aeson.Key qualified as Key
@@ -82,6 +84,14 @@ data Confirmed = Confirmed
   deriving (Eq, Show)
 
 type Checker = Sentence -> IO (Either RunFailure RunResult)
+
+-- | Where a confirmed verdict rests, in words: its unit as `path:Unit`, else
+-- the first citation's path (and line), else "".
+evidenceText :: Confirmed -> Text
+evidenceText c = case (cfUnit c, cfEvidence c) of
+  (Just u, _) -> refText u
+  (Nothing, x : _) -> T.pack (ciPath x) <> maybe "" (\l -> ":" <> T.pack (show l)) (ciLine x)
+  _ -> ""
 
 fences :: PlansConfig -> [FilePath]
 fences = checkFences
@@ -202,7 +212,7 @@ liveChecker :: Cancel -> PlansConfig -> FilePath -> Checker
 liveChecker token cfg root s = runClaude token cfg {pcTimeout = pcCheckTimeout cfg} Check [] Nothing root (checkPrompt s)
 
 -- | Recorded replies (tests): `{"replies": {KEY: TEXT or {"text", "cost", "seconds"}}}`
--- by 'sentenceKey'. Each key asked is appended to FILE.asked and each prompt to
+-- by 'sentenceKey' (an object may add "delay", seconds). Each key asked is appended to FILE.asked and each prompt to
 -- FILE.prompts; a key not in the file is a failure.
 recordedChecker :: FilePath -> Checker
 recordedChecker file s = do
@@ -210,9 +220,14 @@ recordedChecker file s = do
   appendFile (file <> ".asked") (T.unpack key <> "\n")
   BS.appendFile (file <> ".prompts") (TE.encodeUtf8 (checkPrompt s <> "\n"))
   replies <- readReplies file
-  pure $ case KM.lookup (Key.fromText key) replies of
-    Just v | Just r <- resultOf v -> Right r
-    _ -> Left (RunFailure Empty "no recorded reply" Nothing)
+  case KM.lookup (Key.fromText key) replies of
+    Just v | Just r <- resultOf v -> do
+      -- "delay": seconds the reply takes (a check in flight, for cancel tests)
+      case v of
+        Object o | Just (Number d) <- KM.lookup "delay" o -> threadDelay (round (toRealFloat d * 1000000 :: Double))
+        _ -> pure ()
+      pure (Right r)
+    _ -> pure (Left (RunFailure Empty "no recorded reply" Nothing))
 
 -- | As 'replayDecider': with no live checker, replay (a key not in the file
 -- is a failure, noted in FILE.missed); with one, run it and record its reply.
