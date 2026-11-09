@@ -35,7 +35,8 @@
   "contested": false,
   "labelledBy": "spike",
   "verdict": "right",
-  "evidence": "no AI/LLM client anywhere in nightvote/, static/, pyproject.toml; only .olifant/config.toml (dev tooling) mentions models"
+  "evidence": "no AI/LLM client anywhere in nightvote/, static/, pyproject.toml; only .olifant/config.toml (dev tooling) mentions models",
+  "code": []
  },
  {
   "id": "A4",
@@ -49,7 +50,14 @@
   "contested": false,
   "labelledBy": "spike",
   "verdict": "wrong",
-  "evidence": "not every fix needs a deploy: CountySource.config (URLs, slugs, election ids) is edited in CountySourceAdmin, a collector can be switched off in the admin (entry/services.py switched_off, ADR 010) and its counties then go to hand entry (entry/priority.py:arrange); parser changes do need code+deploy"
+  "evidence": "not every fix needs a deploy: CountySource.config (URLs, slugs, election ids) is edited in CountySourceAdmin, a collector can be switched off in the admin (entry/services.py switched_off, ADR 010) and its counties then go to hand entry (entry/priority.py:arrange); parser changes do need code+deploy",
+  "code": [
+   "nightvote/apps/entry/services.py",
+   "nightvote/apps/entry/priority.py",
+   "nightvote/apps/elections/admin.py",
+   "nightvote/apps/ops/services.py",
+   "nightvote/collectors/"
+  ]
  },
  {
   "id": "A5",
@@ -87,7 +95,10 @@
   "contested": false,
   "labelledBy": "spike",
   "verdict": "wrong",
-  "evidence": "nightvote/collectors/fetch.py:WebFetcher.__init__ retries=1 (one retry)"
+  "evidence": "nightvote/collectors/fetch.py:WebFetcher.__init__ retries=1 (one retry)",
+  "code": [
+   "nightvote/collectors/fetch.py"
+  ]
  },
  {
   "id": "A8",
@@ -101,7 +112,10 @@
   "contested": false,
   "labelledBy": "spike",
   "verdict": "wrong",
-  "evidence": "nightvote/collectors/fetch.py:WebFetcher retries=1; pdf_links uses retries=0; base.py:Collector._refind fetches once more only for a stale election setting"
+  "evidence": "nightvote/collectors/fetch.py:WebFetcher retries=1; pdf_links uses retries=0; base.py:Collector._refind fetches once more only for a stale election setting",
+  "code": [
+   "nightvote/collectors/"
+  ]
  },
  {
   "id": "H1",
@@ -151,7 +165,10 @@
   "contested": false,
   "labelledBy": "spike",
   "verdict": "wrong",
-  "evidence": "static/js/desk.js:askAboutUnsaved/isDirty: Skip and precinct links ask Save/Discard/Keep typing, plus beforeunload (fixed in #137)"
+  "evidence": "static/js/desk.js:askAboutUnsaved/isDirty: Skip and precinct links ask Save/Discard/Keep typing, plus beforeunload (fixed in #137)",
+  "code": [
+   "static/js/desk.js"
+  ]
  },
  {
   "id": "H5",
@@ -165,7 +182,10 @@
   "contested": true,
   "labelledBy": "spike",
   "verdict": "wrong",
-  "evidence": "static/css/desk.css:.rd-box small (height 16px) and .rd-box small[hidden] {display:block; visibility:hidden} reserve the line, so nothing shifts"
+  "evidence": "static/css/desk.css:.rd-box small (height 16px) and .rd-box small[hidden] {display:block; visibility:hidden} reserve the line, so nothing shifts",
+  "code": [
+   "static/css/desk.css"
+  ]
  },
  {
   "id": "S1",
@@ -179,7 +199,11 @@
   "contested": true,
   "labelledBy": "spike",
   "verdict": "wrong",
-  "evidence": "entry/board.py:volunteers lists superusers and every role with hand_entry; views/board.py:board_give (staff_page) lets such a staff login give itself a county; a Desk login still has no self-serve route, so 'users' (desk) is arguably right"
+  "evidence": "entry/board.py:volunteers lists superusers and every role with hand_entry; views/board.py:board_give (staff_page) lets such a staff login give itself a county; a Desk login still has no self-serve route, so 'users' (desk) is arguably right",
+  "code": [
+   "nightvote/apps/entry/board.py",
+   "nightvote/apps/entry/views/board.py"
+  ]
  },
  {
   "id": "S2",
@@ -289,7 +313,8 @@
   "contested": false,
   "labelledBy": "spike",
   "verdict": "cannot_tell",
-  "evidence": "about an external Google Sheet; the repo cannot show its columns (comparison_2018.py:read only shows what is parsed)"
+  "evidence": "about an external Google Sheet; the repo cannot show its columns (comparison_2018.py:read only shows what is parsed)",
+  "code": []
  },
  {
   "id": "R7",

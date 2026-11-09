@@ -387,6 +387,7 @@ test-suite spec
     Olifant.Server.Plans
     Olifant.Server.PlansSpec
     Olifant.Server.Preview
+    Olifant.Server.ProseCorpusSpec
     Olifant.Server.Recognize
     Olifant.Server.Regions
     Olifant.Server.Review
