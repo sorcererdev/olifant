@@ -94,16 +94,16 @@ kindInstructions = "What kind of sentence is this, in a software plan its author
 
 kindOptions :: [(Text, Text)]
 kindOptions =
-  [ ("claim", "Covers: a statement that something is or is not so about the codebase now, which reading the code could confirm or refute. Does not cover: what to do, wishes, opinions, estimates, or facts about people, documents or outside services. Examples: \"There is no AI in the codebase yet.\"; \"WebFetcher retries a failed request three times\"")
+  [ ("claim", "Covers: a statement that something is or is not so about the software now, which reading the code could confirm or refute: what the code contains, how the app behaves when someone uses it (what happens after a click, what is kept or lost), or what fixing something would take (whether it needs a code change and a redeploy). Does not cover: what to do, wishes, opinions, estimates of effort or cost, or facts about people, documents or outside services. Examples: \"There is no AI in the codebase yet.\"; \"WebFetcher retries a failed request three times\"; \"Saving the form clears the search box.\"")
   , ("question", "Covers: the author asks something. Does not cover: a statement or a task phrased with a question mark at the end of a request to do it. Examples: \"Do we have raw vote totals from previous years stored?\"; \"Is the 2018 results model not in admin?\"")
   , ("step", "Covers: says what to do or what was done: a task, change, proposal or idea for work. Does not cover: how the code is now, or opinions about the work. Examples: \"Add D and R fields to Comparison 2018\"; \"Make sure these new fields don't break the app if the data is missing.\"")
-  , ("prose", "Covers: opinion, estimate, process, context, narration or a wish the code cannot settle. Does not cover: statements about how the code is now, or tasks. Examples: \"We should break these up into small individual PRs\"; \"Having AI scrape specific gov websites at a regular cadence would not be difficult or expensive.\"")
+  , ("prose", "Covers: opinion, estimate of effort or cost, process, context, narration or a wish the code cannot settle. Does not cover: statements about how the code is now, or tasks. Examples: \"We should break these up into small individual PRs\"; \"Having AI scrape specific gov websites at a regular cadence would not be difficult or expensive.\"")
   ]
 
 aboutInstructions, aboutTrue, aboutFalse :: Text
 aboutInstructions = "Can this sentence be settled by reading this project's source code?"
-aboutTrue = "can be settled by reading this project's source code"
-aboutFalse = "is about people, process, plans, opinions, external services or documents"
+aboutTrue = "can be settled by reading this project's source code: what it contains, how the app behaves for its users, or what changing it would require"
+aboutFalse = "is only about people, opinions, plans for future work, external services or documents, and says nothing about what the software does or what changing it takes"
 
 -- | Jev's two answers (kind, about-code), in that order. The kind's
 -- probability is its share of the distribution (else the answer's

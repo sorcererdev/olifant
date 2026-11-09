@@ -121,10 +121,9 @@ measure checkout = do
   let c2 = [r | r <- rows, enCorpus (rwEntry r) == 2]
       kindAgrees = length [() | r <- c2, trKind (rwTriage r) == enKind (rwEntry r)]
       claims = [r | r <- c2, enKind (rwEntry r) == "claim"]
-      -- a checkbox line labelled claim (H5) is a step by the grammar, judged whole by its
-      -- progress check (milestone 2): routed to Progress, it counts as sent to a check
-      sentToCheck r = rwRoute r == Verify || (trBy (rwTriage r) == "grammar" && rwRoute r == Progress)
-      missedClaims = [enId (rwEntry r) | r <- claims, not (sentToCheck r), enId (rwEntry r) /= "R6"]
+      -- R6 is not about code; H5, a contested checkbox line, is a step by the grammar and
+      -- leaves the bar (user ruling 2026-11-09)
+      missedClaims = [enId (rwEntry r) | r <- claims, rwRoute r /= Verify, enId (rwEntry r) `notElem` ["R6", "H5"]]
       nonClaimsChecked = [enId (rwEntry r) | r <- c2, enKind (rwEntry r) /= "claim", rwRoute r == Verify]
       uncontested = [r | r <- rows, enKind (rwEntry r) == "claim", not (enContested (rwEntry r)), isJust (enVerdict (rwEntry r))]
       judged r = judgementName . cfJudgement <$> rwVerdict r

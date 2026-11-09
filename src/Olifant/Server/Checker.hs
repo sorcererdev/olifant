@@ -107,6 +107,7 @@ checkPrompt s =
       ++ ["Hint: the writer pointed at `" <> T.drop 1 (anchorText a) <> "`: a place to start, not the answer." | Just a <- [snAnchor s]]
       ++ [ ""
          , "Use Read, Grep and Glob to find the code the sentence is about, and read it."
+         , "Behaviour can live in any layer: server code, templates, and front-end scripts and styles. Before you conclude that something does not exist, search for it across the whole repository."
          , "Rule: judge what the sentence says is true of the code now; if it also wishes or asks for something, ignore that part."
          , "If the code cannot settle it (it is about people, documents or outside services), the verdict is cannot_tell."
          , ""

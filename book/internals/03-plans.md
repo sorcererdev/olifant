@@ -474,10 +474,15 @@ routed, and when routed to verify, checked and confirmed against a checkout at t
 `testdata/prose-corpus-checks.json` (`replayChecker`, keyed by `sentenceKey`); with
 `OLIFANT_RECORD_CHECKS=1` it asks both live and records them (about $3). It prints a row per
 entry (`OLIFANT_PROSE_TABLE` also writes the table to a file) and asserts the bars: kind agrees
-on at least 23 of 27, every labelled claim but R6 sent to a check (a checkbox line labelled claim
-counts when the grammar routes it to its progress check), at most one non-claim sent, every
+on at least 23 of 27, every labelled claim but R6 and H5 sent to a check (H5, a contested checkbox
+line, is a step by the grammar; user ruling), at most one non-claim sent, every
 uncontested claim's verdict equal to its label with a citation at the labelled code, no wrong-sure
-verdict, and a mean cost a check of at most $0.12. The resolver's corpus spec and recording
+verdict, and a mean cost a check of at most $0.12. Recorded on 2026-11-09 (third recording, after
+two tunings of the triage criteria and one of the check prompt): kind 25/27, no non-claim sent,
+the five checks (A3, A7, A8, H4, S1) right on every uncontested claim with citations at the
+labelled code, no wrong-sure verdict, $0.10 a check; one bar missed, A4 ("We would have to
+diagnose … and redeploy everything …") is a claim at 0.82 but about-code 0.67, so it is not
+checked. The gate fails on replay until that is decided. The resolver's corpus spec and recording
 retired with the resolver; its numbers are in the notes' experiments.
 
 ## Rough spots
@@ -509,6 +514,8 @@ retired with the resolver; its numbers are in the notes' experiments.
   `.olifant` and `not_evidence` for Read, Grep and Glob (a Read rule covers all three); leaving the
   repository is fenced only by the appended system prompt, and `confirm` refuses a citation outside
   the root. In the fence check haiku globbed a parent folder once.
+- **The gate misses one bar.** A4, a claim about what fixing a collector takes, scores
+  about-code 0.67 against the 0.70 threshold; the plan forbids moving a threshold or bar to pass.
 - **The triage texts are tuned on 27 lines.** The kind and about-code criteria (`kindOptions`,
   `aboutTrue`, `aboutFalse` in `Triage.hs`) carry examples taken from the very corpus that gates
   them, so the gate flatters them; a second corpus would tell.
