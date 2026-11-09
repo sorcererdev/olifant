@@ -2120,14 +2120,16 @@ plansSpec = describe "plans: anchors in the server" $ do
         changeDoc plan [TextDocumentContentChangeEvent (InL (TextDocumentContentChangePartial (Range (Position 1 0) (Position 1 0)) Nothing ("- table @src/bistro/booking/models/table.py:Table\n")))]
         after <- pullDiagnostics plan
         pure (before, jump, missing, bare, files, after)
-      map (\d -> (d ^. L.message, d ^. L.range . L.start . L.line)) before `shouldBe` [("? not found", 1)]
+      -- the anchors' own diagnostics (the claim pass's margin is olifant-plan)
+      let anchorsOf ds = [(d ^. L.message, d ^. L.range . L.start . L.line) | d <- ds, d ^. L.source == Just "olifant"]
+      anchorsOf before `shouldBe` [("? not found", 1)]
       fmap (lookupKey "found") jump `shouldBe` Right (Just (Bool True))
       fmap (lookupKey "line") jump `shouldBe` Right (Just (Number 22))
       fmap (fmap (\case String f -> (T.pack schedule) `T.isSuffixOf` f; _ -> False) . lookupKey "file") jump `shouldBe` Right (Just True)
       fmap (\v -> (lookupKey "found" v, lookupKey "line" v, lookupKey "file" v)) missing `shouldBe` Right (Just (Bool False), Just (Number 1), Just (String (T.pack (dir </> schedule))))
       bare `shouldBe` Left "no anchor on this line"
       fmap (fmap (\case Array xs -> length xs; _ -> 0) . lookupKey "items") files `shouldBe` Right (Just 2)
-      map (\d -> (d ^. L.message, d ^. L.range . L.start . L.line)) after `shouldBe` [("? not found", 2)]
+      anchorsOf after `shouldBe` [("? not found", 2)]
   it "a plan completes files after @ and units after @path:" $
     withPython [("plans/t.md", "- x @src/bistro/booking/queries/get_day_schedule.\n- y @" <> T.pack schedule <> ":GetDaySchedule.h\n")] $ \ports dir -> do
       ((paths, units), _) <- inProcessWith ports dir $ do
@@ -4214,6 +4216,7 @@ claimPassSpec = describe "plans claim pass" $ do
         TIO.writeFile c checks
         act ports dir f [("decide_answers", String (T.pack f)), ("check_answers", String (T.pack c))]
       withPass = withPassOn claims
+      titles as = [a ^. L.title | InR a <- as]
       refreshed = (() <$ message SMethod_WorkspaceDiagnosticRefresh) <|> (anyMessage >> refreshed)
       askedIn f = liftIO (doesFileExist (f <> ".asked") >>= \case True -> length . T.lines <$> TIO.readFile (f <> ".asked"); False -> pure 0)
       waitFor cond = liftIO (let go n = cond >>= \ok -> if ok || n <= (0 :: Int) then pure ok else threadDelay 50000 >> go (n - 1) in go 200)
@@ -4230,6 +4233,50 @@ claimPassSpec = describe "plans claim pass" $ do
       stored <- readClaims plainPorts dir "plans/t.md"
       (cfJudgement . cjConfirmed <$> (M.lookup "the helper returns one" stored >>= seCheck)) `shouldBe` Just JRight
       TIO.readFile (dir </> "plans/t.md") `shouldReturn` "- the helper returns one\n"
+  it "(b) checked wrong: a claim-wrong warning over the sentence, and hover shows why" $
+    withPass wrong $ \ports dir _ cfg -> do
+      ((ds, hover), _) <- inProcessWithConfig cfg ports dir $ do
+        p <- openDoc "plans/t.md" "markdown"
+        refreshed
+        sendNotification SMethod_TextDocumentDidSave (DidSaveTextDocumentParams p Nothing)
+        _ <- waitFor (doesFileExist (dir </> "checks.json.asked"))
+        _ <- waitFor (maybe False (isJust . seCheck) . M.lookup "the helper returns one" <$> readClaims plainPorts dir "plans/t.md")
+        (,) <$> pullDiagnostics p <*> getHover p (Position 0 4)
+      [(d ^. L.code, d ^. L.severity, d ^. L.message, d ^. L.range) | d <- ds, d ^. L.source == Just "olifant-plan"]
+        `shouldBe` [(Just (InR "claim-wrong"), Just DiagnosticSeverity_Warning, "✗ Wrong · it returns two · " <> T.pack table <> ":helper", Range (Position 0 2) (Position 0 24))]
+      fmap (\h -> case h ^. L.contents of InL (MarkupContent _ md) -> md; _ -> "") hover `shouldBe` Just ("Wrong · it returns two · " <> T.pack table <> ":helper")
+  it "(f) the actions: Check this on a queued claim; Show the code here and Show why once checked" $
+    withPass right $ \ports dir _ cfg -> do
+      ((before, after), _) <- inProcessWithConfig cfg ports dir $ do
+        p <- openDoc "plans/t.md" "markdown"
+        refreshed
+        b <- titles <$> getCodeActions p (Range (Position 0 4) (Position 0 4))
+        sendNotification SMethod_TextDocumentDidSave (DidSaveTextDocumentParams p Nothing)
+        _ <- waitFor (maybe False (isJust . seCheck) . M.lookup "the helper returns one" <$> readClaims plainPorts dir "plans/t.md")
+        (b,) . titles <$> getCodeActions p (Range (Position 0 4) (Position 0 4))
+      filter ("Check this" `T.isPrefixOf`) before `shouldBe` ["Check this (sonnet, ~$0.10)"]
+      filter (`elem` ["Show the code here", "Show why"]) after `shouldBe` ["Show the code here", "Show why"]
+      filter ("Check this" `T.isPrefixOf`) after `shouldBe` []
+  it "(g) olifant.checkSentence checks one sentence while the caps would forbid a pass" $
+    withPassOn claims right $ \ports dir _ cfg -> do
+      TIO.appendFile (dir </> ".olifant/config.toml") "pass_cost = 0\n"
+      (titles', _) <- inProcessWithConfig cfg ports dir $ do
+        p <- openDoc "plans/t.md" "markdown"
+        refreshed
+        sendNotification SMethod_TextDocumentDidSave (DidSaveTextDocumentParams p Nothing)
+        refreshed
+        _ <- request SMethod_WorkspaceExecuteCommand (ExecuteCommandParams Nothing "olifant.checkSentence" (Just [toJSON (getUri (p ^. L.uri)), String "the helper returns one"]))
+        titles <$> getCodeActions p (Range (Position 0 4) (Position 0 4))
+      titles' `shouldSatisfy` elem "Show why"
+      stored <- readClaims plainPorts dir "plans/t.md"
+      (cfJudgement . cjConfirmed <$> (M.lookup "the helper returns one" stored >>= seCheck)) `shouldBe` Just JRight
+  it "(h) with no Jev, a paragraph is aside and still offers Check this" $
+    withPython [("plans/t.md", "The helper returns one.\n"), (table, tableText)] $ \ports dir -> do
+      (ts, _) <- inProcessWithConfig [] ports dir $ do
+        p <- openDoc "plans/t.md" "markdown"
+        refreshed
+        titles <$> getCodeActions p (Range (Position 0 4) (Position 0 4))
+      filter ("Check this" `T.isPrefixOf`) ts `shouldBe` ["Check this (sonnet, ~$0.10)"]
   it "(c) an edit while the pass waits on the decider cancels it" $
     withPassOn "wait" right $ \ports dir f cfg -> do
       (stopped, _) <- inProcessWithConfig cfg ports dir $ do

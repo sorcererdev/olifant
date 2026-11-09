@@ -1,3 +1,4 @@
+{-# LANGUAGE ExplicitNamespaces #-}
 module Olifant.Server.PlansSpec (spec) where
 
 import Olifant.Language.Grammar (GrammarFailure (NoSource))
@@ -10,7 +11,7 @@ import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
 import Data.Time (UTCTime (..), fromGregorian)
 import Language.LSP.Protocol.Lens qualified as L
-import Language.LSP.Protocol.Types (DiagnosticSeverity (..))
+import Language.LSP.Protocol.Types (DiagnosticSeverity (..), type (|?) (..))
 import Olifant.App (Ports (..), Project)
 import Olifant.Doctor (DoctorPorts (..))
 import Olifant.Language (Match (..), noChecker, noRunner, querying)
@@ -19,7 +20,8 @@ import Olifant.Plans (Anchor (..), parsePlan)
 import Olifant.Process (gitStateStamp)
 import Olifant.Server (ServerState, newServerState, projectFor)
 import Olifant.Server.Plans
-import Olifant.Server.Claims (CheckRecord (..), SentenceEntry (..))
+import Olifant.Server.Claims (CheckRecord (..), Failure (..), SentenceEntry (..))
+import Olifant.Plans.Sentences (sentences)
 import Olifant.Server.Triage (Route (..), Triage (..))
 import Olifant.Server.Errand (Belief (..), BeliefCheck (..))
 import Olifant.Server.Checker (Citation (..), Confirmed (..), Judgement (..), UnitRef (..))
@@ -168,6 +170,35 @@ spec = describe "Olifant.Server.Plans (anchors in the server)" $ do
           ends = [(ptRow t, ptCol t, ptCol t + ptLen t) | t <- ts]
       and [(r, c) < (r', c') && (r < r' || e <= c') | ((r, c, e), (r', c', _)) <- zip ends (drop 1 ends)] `shouldBe` True
 
+  describe "claimHints and claimHover (the margin)" $ do
+    let ss = sentences . parsePlan . T.unlines
+        show' d = (d ^. L.code, d ^. L.severity, d ^. L.message)
+        rangeOf d = (d ^. L.range . L.start . L.line, d ^. L.range . L.start . L.character, d ^. L.range . L.end . L.line, d ^. L.range . L.end . L.character)
+        store = M.fromList
+          [ ("Queued one.", queuedEntry), ("Right one.", verdictEntry JRight "it returns 1"), ("Wrong one.", verdictEntry JWrong "it returns 2")
+          , ("Unsure one.", (verdictEntry JCannotTell "cited code not found") {seCheck = fmap (\c -> c {cjConfirmed = (cjConfirmed c) {cfUnit = Nothing, cfEvidence = []}}) (seCheck (verdictEntry JCannotTell "cited code not found"))})
+          , ("Failed one.", queuedEntry {seFailure = Just (Failure "timed out" at0)}), ("Aside one.", queuedEntry {seRoute = Aside}) ]
+    it "one hint per sentence, by its check" $
+      map show' (claimHints True store (S.singleton "Checking one.") (ss ["Queued one.", "Right one.", "Wrong one.", "Unsure one.", "Failed one.", "Aside one.", "Checking one."]))
+        `shouldBe`
+          [ (Just (InR "claim-queued"), Just DiagnosticSeverity_Hint, "○ Unchecked claim · saved passes check it, or Check this")
+          , (Just (InR "claim-right"), Just DiagnosticSeverity_Hint, "✓ Right · it returns 1 · src/a.py:Foo")
+          , (Just (InR "claim-wrong"), Just DiagnosticSeverity_Warning, "✗ Wrong · it returns 2 · src/a.py:Foo")
+          , (Just (InR "claim-unsure"), Just DiagnosticSeverity_Hint, "? Could not tell · cited code not found")
+          , (Just (InR "claim-queued"), Just DiagnosticSeverity_Hint, "○ Unchecked claim · saved passes check it, or Check this")
+          , (Just (InR "claim-checking"), Just DiagnosticSeverity_Hint, "… Checking") ]
+    it "no queued hint when checks cannot run" $
+      map show' (claimHints False store S.empty (ss ["Queued one.", "Right one."])) `shouldBe` [(Just (InR "claim-right"), Just DiagnosticSeverity_Hint, "✓ Right · it returns 1 · src/a.py:Foo")]
+    it "a two-row sentence's range spans both rows; two sentences on a row are two hints" $ do
+      let ds = claimHints True (M.fromList [("Right one. Wrong one.", queuedEntry), ("Queued one. Right one.", queuedEntry), ("Queued one.", queuedEntry), ("Right one.", verdictEntry JRight "x")]) S.empty (ss ["Queued one. Right", "one."])
+      map rangeOf ds `shouldBe` [(0, 0, 0, 11), (0, 12, 1, 4)]
+      map (^. L.code) ds `shouldBe` [Just (InR "claim-queued"), Just (InR "claim-right")]
+    it "the old resolved code and No unit found are gone" $ do
+      let all' = claimHints True store S.empty (ss ["Queued one.", "Right one.", "Wrong one.", "Unsure one."])
+      [d | d <- all', d ^. L.code == Just (InR "claim-resolved")] `shouldBe` []
+      claimHover store (ss ["Queued one. Right one."]) `shouldBe` Just "Unchecked claim · saved passes check it, or Check this\n\nRight · it returns 1 · src/a.py:Foo"
+      claimHover store (ss ["Aside one."]) `shouldBe` Nothing
+      fmap (T.isInfixOf "No unit found") (claimHover store (ss ["Right one."])) `shouldBe` Just False
   describe "planTokensWith (claim modifiers)" $
     it "a bare line's text carries checked or wrong from its check" $ do
       let e j = verdictEntry j "no"

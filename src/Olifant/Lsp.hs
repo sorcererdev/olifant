@@ -9,6 +9,7 @@ module Olifant.Lsp (runLsp, runLspWithHandles, serverDefinition) where
 
 import Data.Char (isSpace)
 import Control.Concurrent (forkIO, threadDelay)
+import Data.Word (Word64)
 import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar, readMVar, tryPutMVar, tryTakeMVar)
 import Control.Exception (SomeAsyncException, SomeException, catch, displayException, finally, fromException, throwIO, try)
 import Olifant.Language.Grammar (GrammarUnavailable (..))
@@ -34,8 +35,10 @@ import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe, mapMaybe)
 import Olifant.Plans (Anchor (..), Kind (..), Line (..), Verdict (..), anchorText, childrenOf, excerptInfo, excerptSpans, parsePlan, stepDone, testState, withVerdict)
 import Olifant.Server.Unit (Named (..))
 import Olifant.Server.Claims (checkedKeys, claimsOf)
-import Olifant.Server.Loop (PassAnswer (..), PassMode (..), claimPass)
-import Olifant.Plans.Sentences (Sentence (..), sentences)
+import Olifant.Server.Loop (PassAnswer (..), PassMode (..), checkOne, claimPass)
+import Olifant.Server.Claims (CheckRecord (..), SentenceEntry (..))
+import Olifant.Server.Checker (Citation (..), Confirmed (..), Judgement (..), evidenceText, judgementName)
+import Olifant.Plans.Sentences (Sentence (..), sentenceKey, sentences)
 import Data.Text qualified as T
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (find, isInfixOf, nub)
@@ -55,7 +58,10 @@ import Olifant.Server.Excerpt (Excerpt (..), excerptFacts, excerptsOf, renderFen
 import Olifant.Server.LoopTests (checkbox)
 import Olifant.Server.Loop (ReconcileAnswer (..), StepStub (..), StepTest (..), baseline, factJson, reconcile, reconcileJson, stepStub, stepTest, stepTestFacts)
 import Olifant.Server.ReviewReadings (Choice (..), Reading (..), ReadingsReview (..), answerReading, applyFactsText, choiceOf, readingEvent, dropReadings, entryKind, loadReadings, outcomeOf, readingFacts, readingKey, readingLens, readingRow, readingsId, readingsPayload, replaceReadings, saveReadings)
-import Olifant.Server.Telemetry (OutcomeRecord (..), Record (..), appendRecord)
+import Olifant.Server.Telemetry (ErrandRecord (..), OutcomeRecord (..), Record (..), appendRecord, readRecords, recordsPath)
+import Olifant.Server.Triage (Route (..))
+import Numeric (showFFloat, showHex)
+import Data.Bits (xor)
 import Olifant.Server.Review (Change (..), FileChange (..), Review (..), allowInConfig, allowPattern, archiveErrand, changeSince, dropReview, errandPayload, keepLines, keepTicked, loadArchive, loadArchiveIndex, loadArchived, loadReview, loadReviews, locateStep, revertChange, pastDosAt, reopenable, reviewPayload, sameStep, saveReview, testsOfFacts)
 import Olifant.Server.Journal (Entry (..), Event (..), keepEvent, movedEvent, withJournal)
 import Olifant.Server.Journal qualified as Journal
@@ -173,7 +179,7 @@ serverDefinition ports = do
       , doInitialize = \lspEnv req -> configure env (req ^. L.params . L.initializationOptions) >> pure (Right lspEnv)
       , staticHandlers = \_ -> guarded env (handlers env)
       , interpretHandler = \lspEnv -> Iso (runLspT lspEnv) liftIO
-      , options = defaultOptions {optTextDocumentSync = Just sync, optServerInfo = Just (ServerInfo "olifant" Nothing), optCompletionTriggerCharacters = Just ['@', ':'], optExecuteCommandCommands = Just ["olifant.doctor"]}
+      , options = defaultOptions {optTextDocumentSync = Just sync, optServerInfo = Just (ServerInfo "olifant" Nothing), optCompletionTriggerCharacters = Just ['@', ':'], optExecuteCommandCommands = Just ["olifant.doctor", "olifant.checkSentence", "olifant.showWhy", "olifant.showCode"]}
       }
   where
     -- open/close and incremental changes; saves are noticed (regions)
@@ -374,6 +380,32 @@ handlers env =
               liftIO (Async.race (untilCancelled (envCancel job)) (doctorChecks (envPorts env) project False)) >>= \case
                 Left () -> respond (Left (TResponseError (InL LSPErrorCodes_RequestCancelled) "cancelled" Nothing))
                 Right checks -> respond (Right (InL (doctorJson checks)))
+        -- Check this: one check, whatever the caps; the margin refreshed after
+        "olifant.checkSentence" -> case req ^. L.params . L.arguments of
+          Just [String uri, String key] | Just path <- uriToFilePath (Uri uri) -> inBackground env req respond $ \job -> do
+            r <- planProgress "checking" (\_ -> withSnapshotState job (checkOne (envCancel job) path key))
+            void (sendRequest SMethod_WorkspaceDiagnosticRefresh Nothing (\_ -> pure ()))
+            semanticTokensChanged
+            case snd r of
+              Left why -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
+              Right _ -> respond (Right (InR Null))
+          _ -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "olifant.checkSentence needs a plan's uri and a sentence's key" Nothing))
+        -- Show why: the sentence, its why and every citation in a file, shown
+        "olifant.showWhy" -> case req ^. L.params . L.arguments of
+          Just [String uri, String key] | Just path <- uriToFilePath (Uri uri) ->
+            liftIO (whyFile env path key) >>= \case
+              Left why -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
+              Right file -> do
+                void (sendRequest SMethod_WindowShowDocument (ShowDocumentParams (filePathToUri file) Nothing (Just True) Nothing) (\_ -> pure ()))
+                respond (Right (InR Null))
+          _ -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "olifant.showWhy needs a plan's uri and a sentence's key" Nothing))
+        -- Show the code here: the first citation's place, opened
+        "olifant.showCode" -> case req ^. L.params . L.arguments of
+          Just [String file, Number line] -> do
+            let at = Position (max 0 (round line - 1)) 0
+            void (sendRequest SMethod_WindowShowDocument (ShowDocumentParams (filePathToUri (T.unpack file)) Nothing (Just True) (Just (Range at at))) (\_ -> pure ()))
+            respond (Right (InR Null))
+          _ -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "olifant.showCode needs a file and a line" Nothing))
         other -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) ("no command " <> other) Nothing))
     , notificationHandler SMethod_WorkspaceDidChangeWorkspaceFolders (\_ -> pure ())
     , notificationHandler SMethod_WorkspaceDidChangeConfiguration (\_ -> pure ())
@@ -397,7 +429,7 @@ handlers env =
         let Range (Position from _) (Position to _) = req ^. L.params . L.range
         actions <- case uriToFilePath (req ^. L.params . L.textDocument . L.uri) of
           Nothing -> pure []
-          Just path -> liftIO (concat <$> sequence [fixActions env path (fromIntegral from + 1) (fromIntegral to + 1), holeActions env path (fromIntegral from + 1), cursorActions env path (req ^. L.params . L.range . L.start), newStepAction env path (req ^. L.params . L.range . L.start), excerptAction env path (req ^. L.params . L.context . L.only) (req ^. L.params . L.range . L.start), toggleAction env path (req ^. L.params . L.context . L.only) (req ^. L.params . L.range . L.start), refingerprintAction env path (req ^. L.params . L.range . L.start)])
+          Just path -> liftIO (concat <$> sequence [fixActions env path (fromIntegral from + 1) (fromIntegral to + 1), holeActions env path (fromIntegral from + 1), cursorActions env path (req ^. L.params . L.range . L.start), newStepAction env path (req ^. L.params . L.range . L.start), excerptAction env path (req ^. L.params . L.context . L.only) (req ^. L.params . L.range . L.start), toggleAction env path (req ^. L.params . L.context . L.only) (req ^. L.params . L.range . L.start), refingerprintAction env path (req ^. L.params . L.range . L.start), sentenceActions env path (req ^. L.params . L.range . L.start)])
         respond (Right (InL (map InR actions)))
     , -- planned on its own thread: a model fill or a test run takes seconds,
       -- and the server reads on meanwhile (other requests, progress)
@@ -1611,6 +1643,94 @@ planHover env project path (Position l c) = do
         Just md -> Just (Hover (InL (MarkupContent MarkupKind_Markdown md)) Nothing)
         Nothing -> Nothing
 
+-- | The claim pass's actions on the sentence under the cursor: *Check this
+-- (model, ~$cost)* on one with no check (queued, failed or aside; not a step
+-- or a question), and *Show the code here* (its first citation, opened) and
+-- *Show why* on a checked one.
+sentenceActions :: Env -> FilePath -> Position -> IO [CodeAction]
+sentenceActions env path (Position l c) =
+  planContext env path >>= \case
+    Just (p, _, text) | isPlanPath p path -> do
+      store <- readMVar (envState env) >>= \s -> claimsOf s (prRoot p) path
+      let row = fromIntegral l
+          col = T.length (takeUtf16 (fromIntegral c) (lineAt (T.splitOn "\n" text) row))
+          onRow = [x | x <- sentences (parsePlan text), snRow x <= row, row <= snEndRow x]
+          inside x = (snRow x, snCol x) <= (row, col) && (row, col) <= (snEndRow x, snEndCol x)
+          uri = getUri (filePathToUri path)
+          cfg = catalogPlans (prCatalog p)
+          act title cmd args = CodeAction title (Just CodeActionKind_Empty) Nothing Nothing Nothing Nothing (Just (Command title cmd (Just args))) Nothing
+      case filter inside onRow ++ onRow of
+        x : _ -> do
+          let key = sentenceKey (snText x)
+              entry = M.lookup key store
+          case entry >>= seCheck of
+            Just ch -> do
+              place <- citationPlace env p (cjConfirmed ch)
+              pure $
+                [act "Show the code here" "olifant.showCode" [toJSON file, toJSON line] | Just (file, line) <- [place]]
+                  ++ [act "Show why" "olifant.showWhy" [toJSON uri, toJSON key]]
+            Nothing
+              | maybe True ((`elem` [Verify, Aside]) . seRoute) entry, snKind x `notElem` [Question] , not (isStep (snKind x)) -> do
+                  est <- checkEstimate env p
+                  pure [act ("Check this (" <> pcCheckModel cfg <> ", ~$" <> T.pack (showFFloat (Just 2) est "") <> ")") "olifant.checkSentence" [toJSON uri, toJSON key]]
+              | otherwise -> pure []
+        [] -> pure []
+    _ -> pure []
+  where
+    isStep = \case
+      Step _ -> True
+      _ -> False
+
+-- | Where a confirmed verdict's first citation is: the file (absolute) and
+-- its line (1-based): the line cited, else the unit's first line, else 1.
+citationPlace :: Env -> Project -> Confirmed -> IO (Maybe (FilePath, Int))
+citationPlace env p cf = case cfEvidence cf of
+  [] -> pure Nothing
+  x : _ -> do
+    let file = normalisePath (prRoot p </> ciPath x)
+    line <- case (ciLine x, ciUnit x) of
+      (Just n, _) -> pure n
+      (Nothing, Just u) -> withSnapshot env (\s -> (s,) <$> resolveAnchor s p (Anchor (ciPath x) u 0 0)) <&> \r -> maybe 1 (fst . namedLines) (rsUnit r)
+      _ -> pure 1
+    pure (Just (file, line))
+
+-- | What a check costs, for a *Check this* title: the mean cost of the last
+-- 20 `check` errands, else $0.10 (sonnet) or $0.01 (haiku).
+checkEstimate :: Env -> Project -> IO Double
+checkEstimate env p = do
+  txt <- fromMaybe "" <$> readText (pFiles (envPorts env)) (recordsPath (prRoot p))
+  let costs = take 20 (reverse [c | AnErrand e <- fst (readRecords txt), erVerb e == "check", Just c <- [erCost e]])
+      model = pcCheckModel (catalogPlans (prCatalog p))
+  pure $ if null costs then (if "haiku" `T.isInfixOf` model then 0.01 else 0.10) else sum costs / fromIntegral (length costs)
+
+-- | *Show why*: `.olifant/state/why/<hash of the key>.md` holding the
+-- sentence, its verdict and why, and every citation; the file's path.
+whyFile :: Env -> FilePath -> T.Text -> IO (Either T.Text FilePath)
+whyFile env path key =
+  planContext env path >>= \case
+    Just (p, _, _) -> do
+      store <- readMVar (envState env) >>= \s -> claimsOf s (prRoot p) path
+      case M.lookup key store >>= seCheck of
+        Nothing -> pure (Left "that sentence has no check yet")
+        Just ch -> do
+          let cf = cjConfirmed ch
+              word = case cfJudgement cf of
+                JRight -> "Right"
+                JWrong -> "Wrong"
+                JCannotTell -> "Could not tell"
+              file = prRoot p </> ".olifant/state/why" </> keyHash key <> ".md"
+              body =
+                T.unlines $
+                  ["# " <> key, "", word <> (if T.null (cfWhy cf) then "" else " · " <> cfWhy cf), "", "## The code it rests on", ""]
+                    ++ ["- " <> T.pack (ciPath x) <> maybe "" (":" <>) (ciUnit x) <> maybe "" (\n -> " (line " <> T.pack (show n) <> ")") (ciLine x) | x <- cfEvidence cf]
+                    ++ ["- (none cited)" | null (cfEvidence cf)]
+                    ++ ["", "Checked by " <> cjModel ch <> maybe "" (\c -> ", $" <> T.pack (showFFloat (Just 3) c "")) (cjCost ch) <> ", " <> T.pack (show (round (cjSeconds ch) :: Int)) <> " s; the verdict's unit: " <> (let t = evidenceText cf in if T.null t then "none" else t) <> " (" <> judgementName (cfJudgement cf) <> ")."]
+          writeText (pFiles (envPorts env)) file body
+          pure (Right file)
+    Nothing -> pure (Left "not a plan")
+  where
+    keyHash k = showHex (T.foldl' (\h ch -> (h `xor` fromIntegral (fromEnum ch)) * 1099511628211) (14695981039346656037 :: Word64) k) ""
+
 -- | The start of a line, up to a UTF-16 column.
 takeUtf16 :: Int -> T.Text -> T.Text
 takeUtf16 n t = case T.uncons t of
@@ -1735,10 +1855,11 @@ inBackground env req respond work = do
     )
       `finally` atomicModifyIORef' (envRunning env) (\m -> (M.delete key m, ()))
 
--- | The claim pass on the plan at PATH, in the background under "checking":
--- one per plan (a new one cancels the running one; an edit cancels it too).
--- Its anchors land by applyEdit only at the version it read; then the
--- diagnostics and tokens are pulled again.
+-- | The claim pass on the plan at PATH in MODE, in the background (under
+-- "checking" on open and save): one per plan (a new one cancels the running
+-- one; an edit cancels it too). It writes nothing to the plan; while it
+-- runs, a change in the sentence being checked refreshes the diagnostics,
+-- and when it ends the diagnostics and tokens are pulled again.
 startPass :: Env -> PassMode -> FilePath -> LspM () ()
 startPass env mode path =
   liftIO (planContext env path) >>= \case

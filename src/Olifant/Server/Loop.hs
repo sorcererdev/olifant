@@ -46,6 +46,7 @@ module Olifant.Server.Loop
   , PassAnswer (..)
   , claimPass
   , checkSentence
+  , checkOne
   , unpricedCheck
   ) where
 
@@ -693,6 +694,42 @@ claimPass token mode path s0 = do
         go seen (x : xs)
           | k x `S.member` seen = go seen xs
           | otherwise = x : go (S.insert (k x) seen) xs
+
+-- | *Check this*: the sentence of the plan at PATH whose key is KEY, checked
+-- now whatever its route and whatever the caps (the user asked for this
+-- one), triaged first when it has no entry. Recorded as a `check` errand
+-- that is not automatic. Cancelled: the check is dropped.
+checkOne :: Cancel -> FilePath -> Text -> ServerState -> IO (ServerState, Either Text ClaimStore)
+checkOne token path wanted s0 =
+  projectFor path s0 >>= \case
+    (s, Nothing) -> pure (s, Left "this plan is in no Olifant project")
+    (s, Just (_, p)) -> do
+      text <- case M.lookup path (ssDocs s) of
+        Just (_, t) -> pure t
+        Nothing -> fromMaybe "" <$> safely Nothing (readText (pFiles (ssPorts s)) path)
+      let root = prRoot p
+          cfg = catalogPlans (prCatalog p)
+          rel = makeRelative root (normalisePath path)
+          held = normalisePath path
+      case [x | x <- sentences (parsePlan text), sentenceKey (snText x) == wanted] of
+        [] -> pure (s, Left "that sentence is no longer in the plan")
+        x : _ -> do
+          now <- pNow (ssPorts s)
+          store0 <- claimsOf s root path
+          store1 <- case M.lookup wanted store0 of
+            Just _ -> pure store0
+            Nothing -> do
+              tr <- triage (rgJev (rungsFor s {ssCancel = token} p False)) x
+              pure (M.insert wanted (SentenceEntry tr (route tr) Nothing Nothing now) store0)
+          atomicModifyIORef' (ssChecking s) (\m -> (M.insert held (S.singleton wanted) m, ()))
+          (result, _) <- checkSentence s p cfg (checkerUnder s token cfg root) False now rel x
+          atomicModifyIORef' (ssChecking s) (\m -> (M.delete held m, ()))
+          cancelled token >>= \case
+            True -> pure (s, Left "cancelled")
+            False -> do
+              let store2 = M.adjust (\e -> either (\f -> e {seFailure = Just f}) (\c -> e {seCheck = Just c, seFailure = Nothing}) result) wanted store1
+              storeClaims s root path store2
+              pure (s, either (Left . fuWhy) (const (Right store2)) result)
 
 -- | What a pass's checks came to.
 data PassTally = PassTally {ptChecked, ptRight, ptWrong, ptCannotTell, ptFailed :: Int, ptCost :: Double}

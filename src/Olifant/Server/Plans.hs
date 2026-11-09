@@ -13,6 +13,8 @@ module Olifant.Server.Plans
   , planTokenModifiers
   , planTokens
   , planTokensWith
+  , claimHints
+  , checksCanRun
   , claimHover
   , planFolds
   , anchorItems
@@ -31,7 +33,7 @@ module Olifant.Server.Plans
   , safely
   ) where
 
-import Control.Lens ((&), (?~))
+import Control.Lens ((&), (.~), (?~), (^.))
 import Control.Monad (filterM, when)
 import Language.LSP.Protocol.Lens qualified as L
 import Data.Functor ((<&>))
@@ -61,11 +63,13 @@ import Olifant.App (Ports (..), Project (..))
 import Olifant.Catalog (Catalog (..), PlansConfig (..))
 import Olifant.Language.Adapter (languageFor)
 import Olifant.Plans (Anchor (..), Line (..), Section (..), Verdict (..), parsePlan, sectionOf)
-import Olifant.Server.State (ServerState (..))
+import Olifant.Server.State (ServerConfig (..), ServerState (..))
+import System.Directory (doesFileExist, findExecutable)
 import Olifant.Server.Confine (confined, safely)
 import Olifant.Server.Claims (CheckRecord (..), ClaimStore, SentenceEntry (..), lineKey, claimsOf)
+import Olifant.Server.Triage (Route (..))
 import Olifant.Server.Checker (Confirmed (..), Judgement (..), evidenceText)
-import Olifant.Plans.Sentences (Sentence (..), sentences)
+import Olifant.Plans.Sentences (Sentence (..), sentenceKey, sentences)
 import Data.Set (Set)
 import Data.Set qualified as S
 import Olifant.Server.Unit (Named (..), fingerprint, unitLookupIn, unitsOf, unitsWithKinds)
@@ -127,8 +131,14 @@ planDiagnostics s p path text = do
   resolved <- resolveAll s p (map snd anchored)
   store <- claimsOf s (prRoot p) path
   checking <- M.findWithDefault S.empty (normalisePath path) <$> readIORef (ssChecking s)
+  can <- checksCanRun s p
+  let rows = T.splitOn "\n" text
+      utf16At r c = fromIntegral (utf16Length (T.take c (if r < length rows then rows !! r else "")))
+      inUtf16 d =
+        let Range (Position r0 c0) (Position r1 c1) = d ^. L.range
+         in d & L.range .~ Range (Position r0 (utf16At (fromIntegral r0) (fromIntegral c0))) (Position r1 (utf16At (fromIntegral r1) (fromIntegral c1)))
   pure
-    ( mapMaybe (\(l, a) -> diagnose ls l a =<< M.lookup (key a) resolved) anchored ++ claimHints False store checking (sentences ls)
+    ( mapMaybe (\(l, a) -> diagnose ls l a =<< M.lookup (key a) resolved) anchored ++ map inUtf16 (claimHints can store checking (sentences ls))
     , M.map (\r -> rsFingerprint r <* rsUnit r) resolved )
   where
     diagnose ls l a r = case (rsUnit r, lnVerdict l, rsFingerprint r) of
@@ -142,13 +152,62 @@ planDiagnostics s p path text = do
           col n = fromIntegral (utf16Length (T.take n (lnText l)))
        in Range (Position row (col (anStart a))) (Position row (col (anEnd a)))
 
--- | The claim pass's margin (rewritten with the checker).
-claimHints :: Bool -> ClaimStore -> S.Set Text -> [Sentence] -> [Diagnostic]
-claimHints _ _ _ _ = []
+-- | Can the claim pass check at all: the runner is found (or the server
+-- answers checks from a recording), and neither `pass_budget` nor
+-- `pass_cost` is 0.
+checksCanRun :: ServerState -> Project -> IO Bool
+checksCanRun s p = do
+  let cfg = catalogPlans (prCatalog p)
+      runner = pcRunner cfg
+  found <- case scCheckAnswers (ssConfig s) of
+    Just _ -> pure True
+    Nothing
+      | '/' `elem` runner -> doesFileExist runner
+      | otherwise -> isJust <$> findExecutable runner
+  pure (found && maybe True (> 0) (pcPassBudget cfg) && maybe True (> 0) (pcPassCost cfg))
 
--- | The hover of the sentences on a row.
+-- | The claim pass's margin: one diagnostic per sentence (source
+-- `olifant-plan`, over the sentence's range in code points; 'planDiagnostics'
+-- turns them into UTF-16): `claim-checking` (… while its check runs),
+-- `claim-right` (✓), `claim-wrong` (✗, a warning), `claim-unsure` (?: the
+-- checker could not tell, or a citation was not found), and `claim-queued`
+-- (○: routed to a check and not checked yet, or its last check failed) when
+-- checks can run (CAN). Nothing for prose, questions, steps, or a sentence
+-- with no entry.
+claimHints :: Bool -> ClaimStore -> S.Set Text -> [Sentence] -> [Diagnostic]
+claimHints can store checking = mapMaybe hint
+  where
+    hint x = do
+      (code, sev, msg) <- claimLine can store checking x
+      pure (Diagnostic (Range (Position (fromIntegral (snRow x)) (fromIntegral (snCol x))) (Position (fromIntegral (snEndRow x)) (fromIntegral (snEndCol x)))) (Just sev) (Just (InR code)) Nothing (Just "olifant-plan") msg Nothing Nothing Nothing)
+
+-- | A sentence's margin line: its code, severity and message (glyph first).
+claimLine :: Bool -> ClaimStore -> S.Set Text -> Sentence -> Maybe (Text, DiagnosticSeverity, Text)
+claimLine can store checking x
+  | key `S.member` checking = Just ("claim-checking", DiagnosticSeverity_Hint, "… Checking")
+  | otherwise = do
+      e <- M.lookup key store
+      case seCheck e of
+        Just c ->
+          let cf = cjConfirmed c
+              parts glyph word = T.intercalate " · " ([glyph <> " " <> word] ++ [cfWhy cf | not (T.null (cfWhy cf))])
+              withCode t = T.intercalate " · " ([t] ++ [w | let w = evidenceText cf, not (T.null w)])
+           in Just $ case cfJudgement cf of
+                JRight -> ("claim-right", DiagnosticSeverity_Hint, withCode (parts "✓" "Right"))
+                JWrong -> ("claim-wrong", DiagnosticSeverity_Warning, withCode (parts "✗" "Wrong"))
+                JCannotTell -> ("claim-unsure", DiagnosticSeverity_Hint, parts "?" "Could not tell")
+        Nothing
+          | seRoute e == Verify && can -> Just ("claim-queued", DiagnosticSeverity_Hint, "○ Unchecked claim · saved passes check it, or Check this")
+          | otherwise -> Nothing
+  where
+    key = sentenceKey (snText x)
+
+-- | The hover of the sentences on a row: one line each, without its glyph;
+-- none when no sentence there has a line.
 claimHover :: ClaimStore -> [Sentence] -> Maybe Text
-claimHover _ _ = Nothing
+claimHover store ss = case [T.drop 2 msg | x <- ss, Just (_, _, msg) <- [claimLine True store S.empty x]] of
+  [] -> Nothing
+  ls -> Just (T.intercalate "\n\n" ls)
 
 -- | (path, unit) -> the unit's fingerprint now; Nothing = not found. A key
 -- that is absent has not been read yet.
