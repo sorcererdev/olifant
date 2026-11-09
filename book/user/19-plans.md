@@ -287,6 +287,13 @@ Each check is an errand record (`verb: check`, `auto: true` when the pass asked)
 counts it; each pass that asked Jev or checked anything adds a `pass` record (its mode, sentences,
 triaged, routes, checks and verdicts, failures, what is left queued, seconds, Jev calls, cost).
 
+**How well it does.** Measured on 27 sentences from a real project's plans (labelled from its
+code): the kind agrees with the label on 25; no question, step or opinion was sent to a check;
+every claim checked got the labelled verdict with a citation at the right code, and none was
+marked right or wrong against its label; a check cost $0.10 on average (sonnet, 15 to 25
+seconds). One claim about what a fix would take ("we would have to … redeploy everything") is
+read as process and not checked. Contested lines can go either way.
+
 **The margin.** One diagnostic per sentence, over the sentence's range (source `olifant-plan`):
 
 | code | severity | message |

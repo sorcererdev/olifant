@@ -43,6 +43,12 @@ corpusFile = "src/Olifant/Server/testdata/prose-corpus.json"
 jevRecording = "src/Olifant/Server/testdata/prose-corpus-jev.json"
 checksRecording = "src/Olifant/Server/testdata/prose-corpus-checks.json"
 
+-- | Labelled claims the triage is known to set aside (user ruling 2026-11-09): A4, "We would
+-- have to diagnose … and redeploy everything …", reads to Jev as process (about-code 0.67,
+-- under 0.70). Asserted as Aside, so a change that fixes or breaks it shows.
+knownMisses :: [Text]
+knownMisses = ["A4"]
+
 corpusCommit :: String
 corpusCommit = "8488bb80"
 
@@ -123,7 +129,8 @@ measure checkout = do
       claims = [r | r <- c2, enKind (rwEntry r) == "claim"]
       -- R6 is not about code; H5, a contested checkbox line, is a step by the grammar and
       -- leaves the bar (user ruling 2026-11-09)
-      missedClaims = [enId (rwEntry r) | r <- claims, rwRoute r /= Verify, enId (rwEntry r) `notElem` ["R6", "H5"]]
+      missedClaims = [enId (rwEntry r) | r <- claims, rwRoute r /= Verify, enId (rwEntry r) `notElem` ["R6", "H5"] ++ knownMisses]
+      knownRoutes = [(enId (rwEntry r), rwRoute r) | r <- rows, enId (rwEntry r) `elem` knownMisses]
       nonClaimsChecked = [enId (rwEntry r) | r <- c2, enKind (rwEntry r) /= "claim", rwRoute r == Verify]
       uncontested = [r | r <- rows, enKind (rwEntry r) == "claim", not (enContested (rwEntry r)), isJust (enVerdict (rwEntry r))]
       judged r = judgementName . cfJudgement <$> rwVerdict r
@@ -136,6 +143,8 @@ measure checkout = do
   when (length c2 /= 27) (expectationFailure "corpus 2 is 27 entries")
   unless (kindAgrees >= 23) (expectationFailure ("kind agrees on " <> show kindAgrees <> " of 27, under 23"))
   missedClaims `shouldBe` []
+  -- a known miss stays visible: a change that routes it to a check (or anywhere else) fails here
+  knownRoutes `shouldBe` [(k, Aside) | k <- knownMisses]
   unless (length nonClaimsChecked <= 1) (expectationFailure ("non-claims routed to a check: " <> show nonClaimsChecked))
   wrongVerdict `shouldBe` []
   wrongSure `shouldBe` []

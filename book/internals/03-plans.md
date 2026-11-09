@@ -482,7 +482,8 @@ two tunings of the triage criteria and one of the check prompt): kind 25/27, no 
 the five checks (A3, A7, A8, H4, S1) right on every uncontested claim with citations at the
 labelled code, no wrong-sure verdict, $0.10 a check; one bar missed, A4 ("We would have to
 diagnose … and redeploy everything …") is a claim at 0.82 but about-code 0.67, so it is not
-checked. The gate fails on replay until that is decided. The resolver's corpus spec and recording
+checked. By user ruling A4 is a known miss (`knownMisses`): the gate asserts it is routed to
+`Aside`, so a change that fixes or breaks it shows. The resolver's corpus spec and recording
 retired with the resolver; its numbers are in the notes' experiments.
 
 ## Rough spots
@@ -514,8 +515,9 @@ retired with the resolver; its numbers are in the notes' experiments.
   `.olifant` and `not_evidence` for Read, Grep and Glob (a Read rule covers all three); leaving the
   repository is fenced only by the appended system prompt, and `confirm` refuses a citation outside
   the root. In the fence check haiku globbed a parent folder once.
-- **The gate misses one bar.** A4, a claim about what fixing a collector takes, scores
-  about-code 0.67 against the 0.70 threshold; the plan forbids moving a threshold or bar to pass.
+- **A known miss.** A4, a claim about what fixing a collector takes, scores about-code 0.67
+  against the 0.70 threshold and is set aside; the gate pins that (`knownMisses`) rather than
+  moving the threshold.
 - **The triage texts are tuned on 27 lines.** The kind and about-code criteria (`kindOptions`,
   `aboutTrue`, `aboutFalse` in `Triage.hs`) carry examples taken from the very corpus that gates
   them, so the gate flatters them; a second corpus would tell.
