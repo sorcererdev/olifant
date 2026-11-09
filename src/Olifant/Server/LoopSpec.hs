@@ -46,7 +46,7 @@ import Olifant.Server.ReviewReadings (applyFactsText)
 import System.Directory (createDirectoryIfMissing)
 import System.FilePath (takeDirectory, (</>))
 import Control.Concurrent.Async (async, waitCatch)
-import Control.Exception (bracket, throwIO)
+import Control.Exception (SomeException, bracket, throwIO, try)
 import System.IO (hGetLine)
 import System.Process (CreateProcess (..), StdStream (..), callProcess, createProcess, proc, readProcess, terminateProcess)
 import System.Timeout (timeout)
@@ -1046,6 +1046,13 @@ claimPassSpec = describe "Olifant.Server.Loop (claimPass)" $ describe "claimPass
       (_, a) <- pass SavePass dir s
       fmap (\r -> (prFailed r, prChecked r)) (paRecord a) `shouldBe` Just (3, 2)
       fmap ((<= 0.5 + 1e-9) . prCost) (paRecord a) `shouldBe` Just True
+  it "a check that throws leaves no sentence marked as being checked" $
+    withPass plan "" [("The helper returns one.", reply "right")] $ \dir s -> do
+      -- the recorded checker cannot note what it was asked: it throws
+      let s' = s {ssConfig = (ssConfig s) {scCheckAnswers = Just (dir </> "no-such-dir/checks.json")}}
+      r <- try (claimPass neverCancel SavePass (dir </> "plans/t.md") s') :: IO (Either SomeException (ServerState, Either Text PassAnswer))
+      either (const True) (const False) r `shouldBe` True
+      readIORef (ssChecking s) `shouldReturn` M.empty
   it "a failed check waits ten minutes" $
     withPass plan "" [] $ \dir s -> do
       (s1, a1) <- pass SavePass dir s

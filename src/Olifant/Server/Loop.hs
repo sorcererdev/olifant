@@ -51,6 +51,7 @@ module Olifant.Server.Loop
   ) where
 
 import Data.Time (UTCTime)
+import Control.Exception (bracket_)
 import Control.Monad (forM, join, unless, void, when)
 import Data.Aeson (Value, object, (.=))
 import Data.Bifunctor (bimap)
@@ -681,9 +682,7 @@ claimPass token mode path s0 = do
                     if t >= budget || spent + estimate > costCap + 1e-9
                       then pure (st, tally, False)
                       else if elsewhere then checkAll st tally rest else do
-                        atomicModifyIORef' (ssChecking s) (\m -> (M.insertWith S.union held (S.singleton (key x)) m, ()))
-                        result <- checkSentence s p cfg checker True now rel x
-                        atomicModifyIORef' (ssChecking s) (\m -> (M.update (nonEmpty . S.delete (key x)) held m, ()))
+                        result <- whileChecking s held (key x) (checkSentence s p cfg checker True now rel x)
                         -- the check in flight finished (a cancel stops the pass
                         -- before the next one, it does not kill this one): kept
                         -- while its sentence is in the plan, paid for either way
@@ -737,9 +736,7 @@ checkOne token path wanted s0 =
           unless (M.member wanted store0) $ do
             tr <- triage (rgJev (rungsFor s {ssCancel = token} p False)) x
             void (updateClaims s root path (M.insertWith (\_ old -> old) wanted (SentenceEntry tr (route tr) Nothing Nothing now Nothing)))
-          atomicModifyIORef' (ssChecking s) (\m -> (M.insertWith S.union held (S.singleton wanted) m, ()))
-          (result, _) <- checkSentence s p cfg (checkerUnder s token cfg root) False now rel x
-          atomicModifyIORef' (ssChecking s) (\m -> (M.update (nonEmpty . S.delete wanted) held m, ()))
+          (result, _) <- whileChecking s held wanted (checkSentence s p cfg (checkerUnder s token cfg root) False now rel x)
           cancelled token >>= \case
             True -> pure (s, Left "cancelled")
             False -> do
@@ -749,6 +746,14 @@ checkOne token path wanted s0 =
 -- | A check's result in its sentence's entry.
 landed :: Either Failure CheckRecord -> SentenceEntry -> SentenceEntry
 landed r e = either (\f -> e {seFailure = Just f}) (\c -> e {seCheck = Just c, seFailure = Nothing}) r
+
+-- | WORK with KEY of the plan HELD marked as being checked ('ssChecking'),
+-- the mark taken off however WORK ends.
+whileChecking :: ServerState -> FilePath -> Text -> IO a -> IO a
+whileChecking s held k =
+  bracket_
+    (atomicModifyIORef' (ssChecking s) (\m -> (M.insertWith S.union held (S.singleton k) m, ())))
+    (atomicModifyIORef' (ssChecking s) (\m -> (M.update (nonEmpty . S.delete k) held m, ())))
 
 -- | A set, unless empty.
 nonEmpty :: S.Set a -> Maybe (S.Set a)

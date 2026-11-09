@@ -344,7 +344,7 @@ the whole of it:
    `pass_cost`. `checkSentence` runs `checkerUnder` (the recorded checker when `scCheckAnswers`
    is set, else `liveChecker`), reads the reply with `parseCheckReply` and confirms it with
    `confirm`; it appends a `check` errand record (`erAuto`). The sentence's key sits in
-   `ssChecking` while it runs. The checker runs under the state's `ssCancel`, not the pass's
+   `ssChecking` while it runs (`whileChecking`, a `bracket_`: taken off however the check ends). The checker runs under the state's `ssCancel`, not the pass's
    token: a tripped token stops the pass before the next check, and the check in flight
    finishes. After it, the result is stored only when its key is still among the plan's
    sentences as the editor has them now (`ssLiveDoc`, else the pass's text) and `ssCancel` was
@@ -378,7 +378,8 @@ and its `fingerprint` are the sentence's evidence unit.
 sets `rpIdleAfter`, and that pass starts an `IdlePass` when it ends. `didChange` stops nothing.
 The pass's kill token (its `envCancel`, so the checker's `ssCancel`) is tripped only when the
 client cancels the progress or the pass throws. While it runs,
-a watcher polls `ssChecking` every 250 ms and sends `workspace/diagnostic/refresh` when the
+a watcher polls `ssChecking` every 250 ms (stopped by a flag the pass sets when it ends, or the
+handler when it throws) and sends `workspace/diagnostic/refresh` when the
 sentence being checked changes; after it, `workspace/diagnostic/refresh` and
 `semanticTokens/refresh`. Nothing goes out as `workspace/applyEdit`. The margin is
 `Server/Plans.claimHints` (inside `planDiagnostics`, which converts its code-point columns to

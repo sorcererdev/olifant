@@ -1879,10 +1879,11 @@ startPass env mode path =
           old -> ((i + 1, M.insert path (RunningPass (i + 1) mode stopTrip False) m), Just (i + 1, old)))
         forM_ r (mapM_ rpStop . snd)
         pure (fst <$> r)
-      forM_ started $ \n ->
+      forM_ started $ \n -> do
+        -- the watcher below stops when this is set, however the pass ends
+        done <- liftIO (newIORef False)
         -- the client may cancel its progress: the pass stops, its check killed, the margin clears
-        void . liftIO . forkIO . (`catch` \(_ :: SomeException) -> stopTrip >> killTrip >> runLspT lspEnv claimsChanged) . runLspT lspEnv $ do
-          done <- liftIO (newIORef False)
+        void . liftIO . forkIO . (`catch` \(_ :: SomeException) -> writeIORef done True >> stopTrip >> killTrip >> runLspT lspEnv claimsChanged) . runLspT lspEnv $ do
           st0 <- liftIO (readMVar (envState env))
           -- while it runs, the sentence being checked shows as such
           void . liftIO . forkIO . runLspT lspEnv $ watchChecking st0 done Nothing
