@@ -507,6 +507,9 @@ set. Without it, `retries` rules as before. `ladder` lists backends, local first
 A `jev` backend cannot be a rung: it answers decisions, not prompts. The default `ask` keeps
 code from leaving your machine unless the config says it may.
 
+Neither the ladder nor `escalate` drives a plan's claim pass: it triages with `[decide] model`
+and checks with `[plans] check_model` under its own caps ([chapter 19](19-plans.md#checked-as-you-go)).
+
 `[conjure] wire = "<generator id>"` names the generator a steered conjure may run itself when Jev
 says a class lacks a port ([chapter 18](18-tdd-in-the-editor.md)); it is unset by default.
 
