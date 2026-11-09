@@ -214,7 +214,8 @@ confirm s p fs r = do
                   mk n = Just (UnitRef rel (namedName n), fingerprint t (namedLines n))
               pure $ case (byName, ciUnit c, ciLine c) of
                 (Just n, _, _) -> Just (mk n)
-                (Nothing, _, Just l) | lineIn -> Just (enclosing l >>= mk)
+                -- a unit named but not found is a guess, whatever its line
+                (Nothing, Nothing, Just l) | lineIn -> Just (enclosing l >>= mk)
                 (Nothing, Nothing, Nothing) -> Just Nothing
                 _ -> Nothing
 

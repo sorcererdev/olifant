@@ -69,6 +69,8 @@ spec = describe "Olifant.Server.Checker" $ do
     notFound (Citation "../a.py" (Just "Foo") Nothing)
     notFound (Citation "src/nope.py" (Just "Foo") Nothing)
     notFound (Citation "src/a.py" (Just "Gone") Nothing)
+    -- a unit named but not in the file is a guess, whatever its line
+    notFound (Citation "src/a.py" (Just "Nope") (Just 3))
     good <- confirm s proj fs (reply [Citation "src/a.py" (Just "Foo.bar") Nothing])
     (cfJudgement good, cfUnit good, fmap T.length (cfFingerprint good)) `shouldBe` (JRight, Just (UnitRef "src/a.py" "Foo.bar"), Just 7)
     byLine <- confirm s proj fs (reply [Citation "/r1/src/a.py" Nothing (Just 3)])

@@ -366,7 +366,7 @@ gives the heading, the lead, the sentence, a typed anchor as "the writer pointed
 `parseCheckReply` takes the last ```json block, else the first `{` that decodes, and refuses a
 right or wrong with no evidence. `confirm` checks each citation (inside the root, outside the
 fences, lexically and again after `canonicalizePath` of the root and the path, so a symlink into a
-fence or out of the root is refused; the file exists, the unit found by `unitLookupIn` or the line inside the file, a bare path
+fence or out of the root is refused; the file exists, the unit found by `unitLookupIn`, or with no unit named the line inside the file, a bare path
 allowed); any miss makes the verdict `JCannotTell` "cited code not found". The first unit found
 and its `fingerprint` are the sentence's evidence unit.
 
