@@ -67,10 +67,10 @@ import System.FilePath (splitDirectories, takeDirectory, (</>))
 -- from instead of calling their backends (tests).
 -- @scKeys@: the editor's keys by name (`plan_review`: "<leader>mpr"), which
 -- the lenses that offer them name.
-data ServerConfig = ServerConfig {scDebounceMs :: Int, scModel :: Maybe Text, scFills :: Maybe FilePath, scDecideAnswers :: Maybe FilePath, scTestScript :: Maybe FilePath, scKeys :: [(Text, Text)], scChatAnswers :: Maybe FilePath}
+data ServerConfig = ServerConfig {scDebounceMs :: Int, scModel :: Maybe Text, scFills :: Maybe FilePath, scDecideAnswers :: Maybe FilePath, scTestScript :: Maybe FilePath, scKeys :: [(Text, Text)], scChatAnswers :: Maybe FilePath, scCheckAnswers :: Maybe FilePath}
 
 defaultServerConfig :: ServerConfig
-defaultServerConfig = ServerConfig 300 Nothing Nothing Nothing Nothing [] Nothing
+defaultServerConfig = ServerConfig 300 Nothing Nothing Nothing Nothing [] Nothing Nothing
 
 -- | A project as loaded: its catalog, or why it no longer loads (with the
 -- last good one, still served).

@@ -23,6 +23,7 @@ module Olifant.Server.Resolve
   ) where
 
 import Data.Maybe (listToMaybe)
+import Olifant.Server.Checker (UnitRef (..), refText)
 import Olifant.Decide (Answer (..), Confidence (..), Decider (..), Question, choice, qKind, qOptions)
 import Olifant.Plans (Anchor (..), Kind (..), Line (..), Section (..), sectionOf)
 import Olifant.Server.LoopQuestions (accepted)
@@ -49,12 +50,6 @@ import Olifant.Workspace (Workspace (..), normalisePath)
 import System.FilePath (splitDirectories, takeBaseName, takeDirectory, (</>))
 
 -- | A unit by its file (relative to the root) and its qualified name.
-data UnitRef = UnitRef {urPath :: FilePath, urName :: Text}
-  deriving stock (Eq, Ord, Show)
-
--- | `path:Name`, as an anchor writes it.
-refText :: UnitRef -> Text
-refText r = T.pack (urPath r) <> ":" <> urName r
 
 -- | A unit as the resolver sees it: its header line, its first 12 lines
 -- from the header, its whole text, whether it is in a test file, and the

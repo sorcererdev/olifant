@@ -161,11 +161,19 @@ data PlansConfig = PlansConfig
   , pcBudget :: Maybe Int
   , -- | seconds the automatic claim pass may run (`pass_budget`; 30 when absent)
     pcPassBudget :: Maybe Int
+  , -- | the checker's model (`check_model`, "sonnet")
+    pcCheckModel :: Text
+  , -- | seconds one check may take (`check_timeout`, 120)
+    pcCheckTimeout :: Int
+  , -- | directories the checker may not read besides the plans and `.olifant` (`not_evidence`, ["docs"])
+    pcNotEvidence :: [FilePath]
+  , -- | dollars an automatic pass may spend (`pass_cost`; 0.50 when absent)
+    pcPassCost :: Maybe Double
   }
   deriving (Eq, Show)
 
 defaultPlans :: PlansConfig
-defaultPlans = PlansConfig "plans" "claude" "sonnet" 300 [] defaultPrices Nothing Nothing Nothing
+defaultPlans = PlansConfig "plans" "claude" "sonnet" 300 [] defaultPrices Nothing Nothing Nothing "sonnet" 120 ["docs"] Nothing
 
 -- | One model's list price in USD per million tokens: input, output, cache
 -- read, and cache writes with the 5-minute and 1-hour TTLs.
@@ -329,11 +337,15 @@ openProjectCatalogWith loadP root paths = do
       Toml.optional "plans" Toml.table top >>= \case
         Nothing -> Right Nothing
         Just t -> Toml.inKey "plans" $ do
-          Toml.onlyKeys ["dir", "runner", "model", "timeout", "do_tools", "prices", "ladder", "budget", "pass_budget"] t
+          Toml.onlyKeys ["dir", "runner", "model", "timeout", "do_tools", "prices", "ladder", "budget", "pass_budget", "pass_cost", "check_model", "check_timeout", "not_evidence"] t
           budget <- fmap fromInteger <$> Toml.optional "budget" Toml.int t
           if maybe False (< 1) budget then Left "`budget` must be at least 1" else Right ()
           passBudget <- fmap fromInteger <$> Toml.optional "pass_budget" Toml.int t
           if maybe False (< 0) passBudget then Left "`pass_budget` must be at least 0" else Right ()
+          passCost <- Toml.optional "pass_cost" Toml.number t
+          if maybe False (< 0) passCost then Left "`pass_cost` must be at least 0" else Right ()
+          checkTimeout <- maybe (pcCheckTimeout defaultPlans) fromInteger <$> Toml.optional "check_timeout" Toml.int t
+          if checkTimeout < 1 then Left "`check_timeout` must be at least 1" else Right ()
           fmap Just $
             PlansConfig
               <$> (maybe (pcDir defaultPlans) T.unpack <$> Toml.optional "dir" Toml.text t)
@@ -345,6 +357,10 @@ openProjectCatalogWith loadP root paths = do
               <*> Toml.optional "ladder" (Toml.list Toml.text) t
               <*> pure budget
               <*> pure passBudget
+              <*> (fromMaybe (pcCheckModel defaultPlans) <$> Toml.optional "check_model" Toml.text t)
+              <*> pure checkTimeout
+              <*> (maybe (pcNotEvidence defaultPlans) (map T.unpack) <$> Toml.optional "not_evidence" (Toml.list Toml.text) t)
+              <*> pure passCost
     pricesIn ps = traverse (\(m, v) -> Toml.inKey m ((m,) <$> (Toml.table v >>= priceIn))) (M.toList ps)
     priceKeys = ["input", "output", "cache_read", "cache_write_5m", "cache_write_1h"]
     priceIn p = do

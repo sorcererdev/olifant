@@ -17,6 +17,7 @@ esac
 table=src/bistro/booking/models/table.py
 # answers hold \n (backslash, n): a newline once the JSON string is decoded, or once printf %b prints it
 case "$prompt" in
+  *SHIM:CHECK*) answer=${SHIM_CHECK_REPLY:-'{\"verdict\": \"right\", \"why\": \"shim\", \"evidence\": [{\"path\": \"src/a.py\", \"unit\": \"Foo\"}]}'} ;;
   *QUESTION:*) answer="- the booking table is a frozen dataclass @$table:Table\n- the day's schedule is built here @src/bistro/booking/queries/get_day_schedule.py:GetDaySchedule.handle\n- an old claim @src/nope.py:Gone" ;;
   *SECTION:*|*CLAIM:*) answer="AFTER: - a claim @$table:Table\n  - ✓ it is a dataclass @$table:Table" ;;
   *STEP:*)
