@@ -646,11 +646,11 @@ claimPass token mode path s0 = do
                   then pure (st, n, calls, stop)
                   else do
                     tr <- triage jev x
-                    let e = SentenceEntry tr (route tr) Nothing Nothing now
+                    let e = SentenceEntry tr (route tr) Nothing Nothing now Nothing
                     triageAll (M.insert (key x) e st) (n + 1) (calls + (if trBy tr == "jev" then 1 else 0)) rest
           (triagedStore, triaged, jevCalls, stoppedEarly) <- triageAll M.empty (0 :: Int) (0 :: Int) fresh
           -- merged into the store as it is now (Check this may have written meanwhile)
-          let merge cur = M.union (pruneClaims ss cur) triagedStore
+          let merge cur = M.union (pruneClaims now ss cur) triagedStore
           store1 <- if merge store0 /= store0 then updateClaims s root path merge else claimsOf s root path
           let checking = mode == SavePass || (mode == OpenPass && existed)
               queue = if checking && not stoppedEarly then queued now ss store1 else []
@@ -696,7 +696,7 @@ claimPass token mode path s0 = do
                 PassRecord
                   { prId = errandId now "pass" rel 0 Nothing, prAt = now, prPlan = rel, prMode = passModeName mode
                   , prSentences = length ss, prTriaged = triaged
-                  , prRoutes = M.toList (M.fromListWith (+) [(routeName (seRoute e), 1 :: Int) | e <- M.elems store2])
+                  , prRoutes = M.toList (M.fromListWith (+) [(routeName (seRoute e), 1 :: Int) | e <- M.elems store2, seGone e == Nothing])
                   , prChecked = ptChecked tally, prRight = ptRight tally, prWrong = ptWrong tally, prCannotTell = ptCannotTell tally
                   , prFailed = ptFailed tally, prQueued = left, prSeconds = end - start, prJevCalls = jevCalls, prCost = ptCost tally }
               -- grammar triage costs nothing: a record only for Jev calls or checks
@@ -734,7 +734,7 @@ checkOne token path wanted s0 =
           store0 <- claimsOf s root path
           unless (M.member wanted store0) $ do
             tr <- triage (rgJev (rungsFor s {ssCancel = token} p False)) x
-            void (updateClaims s root path (M.insertWith (\_ old -> old) wanted (SentenceEntry tr (route tr) Nothing Nothing now)))
+            void (updateClaims s root path (M.insertWith (\_ old -> old) wanted (SentenceEntry tr (route tr) Nothing Nothing now Nothing)))
           atomicModifyIORef' (ssChecking s) (\m -> (M.insertWith S.union held (S.singleton wanted) m, ()))
           (result, _) <- checkSentence s p cfg (checkerUnder s token cfg root) False now rel x
           atomicModifyIORef' (ssChecking s) (\m -> (M.update (nonEmpty . S.delete wanted) held m, ()))

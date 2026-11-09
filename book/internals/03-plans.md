@@ -47,7 +47,7 @@ a new-step ghost worded from the unit's header.
 | `Plans/Sentences.hs` | the **sentences** of a plan, pure: `sentences :: [Line] -> [Sentence]` (row and column range, the line's `Kind`, the text with markers stripped, heading, lead, anchor) and `sentenceKey`, a sentence's words without anchor or verdict |
 | `Server/Triage.hs` | **triage**: `byGrammar` (steps, questions), `triageQuestions` (Jev's `sentence-kind` choice with no unsure and its `about-code` Noul, one state), `fromAnswers`, `noJev`, and `route` with the two thresholds `kindThreshold` and `aboutThreshold` |
 | `Server/Checker.hs` | the **checker**: `checkPrompt`, `parseCheckReply`, `confirm` (every citation checked against the tree and the catalog), `liveChecker` (the `Check` verb of `runClaude`), `recordedChecker`, `replayChecker`, `checkerUnder`; `UnitRef` |
-| `Server/Claims.hs` | the **claim store**, version 2 (`SentenceEntry`: triage, route, `CheckRecord` or `Failure`; `ClaimStore` keyed by `sentenceKey`; `readClaims`/`writeClaims` under `.olifant/state/claims/`; `claimsOf`/`updateClaims` through `ssClaims`: every write is a function of the store as held now, under one lock), `queued`, `pruneClaims`, `checkedKeys`, `lineKey` |
+| `Server/Claims.hs` | the **claim store**, version 2 (`SentenceEntry`: triage, route, `CheckRecord` or `Failure`, `seGone`; `ClaimStore` keyed by `sentenceKey`; `readClaims`/`writeClaims` under `.olifant/state/claims/`; `claimsOf`/`updateClaims` through `ssClaims`: every write is a function of the store as held now, under one lock), `queued`, `pruneClaims`, `checkedKeys`, `lineKey` |
 | `Server/Confine.hs` | `confined` and `safely`, which `Server/Plans` re-exports (here so `LoopQuestions` and `Checker` need not import `Server/Plans`) |
 | `Transcripts.hs`, `Cli.hs` `runPlansCost` | `olifant plans cost`: the records beside Claude Code's own transcripts |
 | `Landings.hs` | a plan's landings from `git log --first-parent` (`landingsOf`, `parseLandings`), and `landingFor`, the first landing at or after a time |
@@ -325,7 +325,9 @@ the whole of it:
 1. **Read.** The plan from `ssDocs` (else disk), `Plans.Sentences.sentences` over `parsePlan`'s
    lines, the store from `Claims.claimsOf`, and whether a store file existed before this pass
    (`claimsPath`). `[plans] pass_budget = 0` stops here.
-2. **Triage.** `pruneClaims` drops keys no sentence has; each sentence whose `sentenceKey` is not
+2. **Triage.** `pruneClaims` marks a key no sentence has as gone (`seGone`, written as
+   `"gone"`), drops it once gone for `keepGone` (a day) and clears the mark on a key that is back,
+   so an undo finds its check; it runs in every mode, an idle's too; each sentence whose `sentenceKey` is not
    stored (one per key) goes through `Triage.triage`: `byGrammar` for steps and questions, else
    one `weighAll` request to Jev (`rgJev` of `rungsFor`, i.e. `deciderUnder`) with the two
    `triageQuestions`, read by `fromAnswers`; with no Jev, `noJev` (a `- ` bullet is a claim).

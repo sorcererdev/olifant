@@ -238,7 +238,7 @@ at0 = UTCTime (fromGregorian 2026 11 7) 0
 
 -- | A verify sentence with no check yet.
 queuedEntry :: SentenceEntry
-queuedEntry = SentenceEntry (Triage "claim" 0.9 0.9 "jev") Verify Nothing Nothing at0
+queuedEntry = SentenceEntry (Triage "claim" 0.9 0.9 "jev") Verify Nothing Nothing at0 Nothing
 
 -- | A verify sentence checked J, with WHY, citing src/a.py:Foo.
 verdictEntry :: Judgement -> Text -> SentenceEntry

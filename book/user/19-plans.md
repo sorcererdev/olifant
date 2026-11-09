@@ -239,7 +239,9 @@ A sentence ends at `.`, `?` or `!` followed by a space and a capital letter or a
 `i.e.`, `vs.`, `etc.` and `Dr.` do not end one, and code spans and URLs are read whole. A
 paragraph's rows are joined first, so a sentence may run across rows. A sentence is known by its
 words (its anchor and verdict left out), so moving it, re-wrapping its paragraph or renaming its
-heading keeps what the pass knows about it, and editing a word makes it new.
+heading keeps what the pass knows about it, and editing a word makes it new. The old words are
+kept for a day: undo the edit, or paste a cut sentence back, and its triage and verdict return
+without a new check.
 
 **Triage.** Each sentence the pass has not seen is classified once:
 

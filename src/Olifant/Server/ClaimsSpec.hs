@@ -30,8 +30,8 @@ at0 :: UTCTime
 at0 = UTCTime (fromGregorian 2026 11 7) 0
 
 claim, aside :: SentenceEntry
-claim = SentenceEntry (Triage "claim" 0.9 0.9 "jev") Verify Nothing Nothing at0
-aside = SentenceEntry (Triage "prose" 0.9 0.1 "jev") Aside Nothing Nothing at0
+claim = SentenceEntry (Triage "claim" 0.9 0.9 "jev") Verify Nothing Nothing at0 Nothing
+aside = SentenceEntry (Triage "prose" 0.9 0.1 "jev") Aside Nothing Nothing at0 Nothing
 
 checked :: Judgement -> SentenceEntry
 checked j = claim {seCheck = Just (CheckRecord (Confirmed j "it drops D" [Citation "app/x.py" (Just "f") (Just 2)] (Just (UnitRef "app/x.py" "f")) (Just "abc1234")) "claude-sonnet-5-5" (Just 0.1) 17.5 at0)}
@@ -46,9 +46,10 @@ spec = describe "Olifant.Server.Claims" $ do
     let store =
           M.fromList
             [ ("The loader keeps D.", checked JWrong)
-            , ("A step", SentenceEntry (Triage "step" 1 1 "grammar") Progress Nothing Nothing at0)
+            , ("A step", SentenceEntry (Triage "step" 1 1 "grammar") Progress Nothing Nothing at0 Nothing)
             , ("Failed one.", claim {seFailure = Just (Failure "timed out after 120 s" at0)})
-            , ("Prose here.", aside) ]
+            , ("Prose here.", aside)
+            , ("Edited away.", claim {seGone = Just at0}) ]
     writeClaims (ssPorts s) "/r1" "plans/t.md" store
     readClaims (ssPorts s) "/r1" "plans/t.md" `shouldReturn` store
     Just body <- readText (pFiles (ssPorts s)) (claimsPath "/r1" "plans/t.md")
@@ -88,10 +89,16 @@ spec = describe "Olifant.Server.Claims" $ do
     fileExists (pFiles (ssPorts s)) (claimsPath "/r1" "plans/t.md") `shouldReturn` True
     fileExists (pFiles (ssPorts s)) (claimsPath "/r1" "plans/gone.md") `shouldReturn` False
     fileExists (pFiles (ssPorts s)) (claimsPath "/r1" "plans/sub/deeper.md") `shouldReturn` False
-  it "(j) pruneClaims keeps the keys of sentences still there; a heading rename keeps them" $ do
-    let store = M.fromList [("The loader keeps D.", claim), ("Gone now.", claim)]
+  it "(j) pruneClaims keeps a sentence gone from the plan for a day, marked gone; a heading rename keeps it" $ do
+    let store = M.fromList [("The loader keeps D.", claim), ("Gone now.", checked JRight), ("Gone long ago.", claim {seGone = Just (addUTCTime (-86401) at0)})]
         ss = sentences (parsePlan "## Renamed\nThe loader keeps D.\n")
-    M.keys (pruneClaims ss store) `shouldBe` ["The loader keeps D."]
+        pruned = pruneClaims at0 ss store
+    M.keys pruned `shouldBe` ["Gone now.", "The loader keeps D."]
+    fmap seGone (M.lookup "Gone now." pruned) `shouldBe` Just (Just at0)
+    fmap seGone (M.lookup "The loader keeps D." pruned) `shouldBe` Just Nothing
+    -- back in the plan an hour later (an undo): no longer gone, its check kept
+    let back = pruneClaims (addUTCTime 3600 at0) (sentences (parsePlan "Gone now.\n")) pruned
+    fmap (\e -> (seGone e, seCheck e == seCheck (checked JRight))) (M.lookup "Gone now." back) `shouldBe` Just (Nothing, True)
   it "(k) queued: verify sentences unchecked and not failed lately, in plan order, one per key" $ do
     let ss = sentences (parsePlan (T.unlines ["- Prose here.", "- Done one.", "- New one.", "- Failed now.", "- Failed long ago.", "- Asked one.", "- A step", "- Two.", "- Two.", "- Unknown."]))
         old = addUTCTime (-660) at0

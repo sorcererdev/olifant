@@ -13,6 +13,7 @@ module Olifant.Server.Claims
   , writeClaims
   , pruneOrphanClaims
   , pruneClaims
+  , keepGone
   , queued
   , retryAfter
   , checkedKeys
@@ -59,10 +60,11 @@ data CheckRecord = CheckRecord {cjConfirmed :: Confirmed, cjModel :: Text, cjCos
 data Failure = Failure {fuWhy :: Text, fuAt :: UTCTime}
   deriving stock (Eq, Show)
 
--- | What the pass knows of one sentence.
+-- | What the pass knows of one sentence, and since when it is no longer in
+-- the plan (kept for 'keepGone', so an undo finds its triage and check).
 data SentenceEntry = SentenceEntry
   { seTriage :: Triage, seRoute :: Route, seCheck :: Maybe CheckRecord
-  , seFailure :: Maybe Failure, seAt :: UTCTime }
+  , seFailure :: Maybe Failure, seAt :: UTCTime, seGone :: Maybe UTCTime }
   deriving stock (Eq, Show)
 
 -- | A plan's entries by 'sentenceKey'.
@@ -136,6 +138,7 @@ entryJson e =
     , "check" .= fmap checkJson (seCheck e)
     , "failure" .= fmap (\f -> object ["why" .= fuWhy f, "at" .= fuAt f]) (seFailure e)
     , "at" .= seAt e
+    , "gone" .= seGone e
     ]
   where
     t = seTriage e
@@ -162,6 +165,7 @@ entry = withObject "entry" $ \o ->
     <*> (o .:? "check" >>= traverse check)
     <*> (o .:? "failure" >>= traverse (withObject "failure" (\f -> Failure <$> f .: "why" <*> f .: "at")))
     <*> o .: "at"
+    <*> o .:? "gone"
   where
     triage = withObject "triage" $ \t -> Triage <$> t .: "kind" <*> t .: "p" <*> t .: "about" <*> t .: "by"
     route = \case
@@ -181,11 +185,24 @@ entry = withObject "entry" $ \o ->
       cf <- Confirmed j <$> c .: "why" <*> (c .: "evidence" >>= mapM citation) <*> (c .:? "unit" >>= traverse ref) <*> c .:? "fingerprint"
       CheckRecord cf <$> c .: "model" <*> c .:? "cost" <*> c .: "seconds" <*> c .: "at"
 
--- | The store without keys no sentence of the plan has (an edited
--- sentence's old words). A heading is not part of a key, so renaming one
--- keeps its section's entries.
-pruneClaims :: [Sentence] -> ClaimStore -> ClaimStore
-pruneClaims ss store = M.restrictKeys store (S.fromList (map (sentenceKey . snText) ss))
+-- | How long the entry of a sentence no longer in the plan is kept: an
+-- edit undone, or a sentence cut and pasted back, finds its triage and its
+-- paid check instead of buying them again.
+keepGone :: NominalDiffTime
+keepGone = 86400
+
+-- | The store at NOW for the plan's sentences: a key no sentence has (an
+-- edited sentence's old words) is marked gone, and dropped once gone for
+-- 'keepGone'; a key back in the plan is no longer gone. A heading is not
+-- part of a key, so renaming one keeps its section's entries.
+pruneClaims :: UTCTime -> [Sentence] -> ClaimStore -> ClaimStore
+pruneClaims now ss = M.mapMaybeWithKey keep
+  where
+    present = S.fromList (map (sentenceKey . snText) ss)
+    keep k e
+      | k `S.member` present = Just e {seGone = Nothing}
+      | Just t <- seGone e = if addUTCTime keepGone t > now then Just e else Nothing
+      | otherwise = Just e {seGone = Just now}
 
 -- | The sentences a pass may check, in plan order, one per key: routed to
 -- verify, not checked, and not failed in the last 'retryAfter'. A sentence

@@ -1099,6 +1099,16 @@ claimPassSpec = describe "Olifant.Server.Loop (claimPass)" $ describe "claimPass
       let checkedOf k = cfJudgement . cjConfirmed <$> (M.lookup k stored >>= seCheck)
       map checkedOf ["First claim holds.", "Second claim holds."] `shouldBe` [Just JRight, Just JWrong]
       checksAsked dir `shouldReturn` ["First claim holds.", "Second claim holds."]
+  it "a one-word edit and its undo keep the paid check: nothing is checked again" $
+    withPass plan "" [("The helper returns one.", reply "right"), ("The helper returns two.", reply "wrong")] $ \dir s -> do
+      (s1, _) <- pass SavePass dir s
+      TIO.writeFile (dir </> "plans/t.md") "The helper returns two.\n"
+      (s2, _) <- pass IdlePass dir s1
+      TIO.writeFile (dir </> "plans/t.md") plan
+      (s3, _) <- pass IdlePass dir s2
+      (_, a) <- pass SavePass dir s3
+      verdictOf a "The helper returns one." `shouldBe` Just JRight
+      checksAsked dir `shouldReturn` ["The helper returns one."]
   it "the pass writes nothing to the plan" $
     withPass plan "" [("The helper returns one.", reply "right")] $ \dir s -> do
       before <- TIO.readFile (dir </> "plans/t.md")
