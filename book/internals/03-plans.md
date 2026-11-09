@@ -365,7 +365,8 @@ gives the heading, the lead, the sentence, a typed anchor as "the writer pointed
 (judge what is true of the code now, ignore wishes), and asks for one fenced JSON object.
 `parseCheckReply` takes the last ```json block, else the first `{` that decodes, and refuses a
 right or wrong with no evidence. `confirm` checks each citation (inside the root, outside the
-fences, the file exists, the unit found by `unitLookupIn` or the line inside the file, a bare path
+fences, lexically and again after `canonicalizePath` of the root and the path, so a symlink into a
+fence or out of the root is refused; the file exists, the unit found by `unitLookupIn` or the line inside the file, a bare path
 allowed); any miss makes the verdict `JCannotTell` "cited code not found". The first unit found
 and its `fingerprint` are the sentence's evidence unit.
 
@@ -460,7 +461,7 @@ in the main checkout (the git-backed specs refuse worktrees).
 | `Server/JournalSpec`, `TelemetrySpec`, `ExcerptSpec` | the store and its events; records and their readers; fences |
 | `Plans/SentencesSpec` | the splitter: steps whole, what gives no sentence, paragraphs across rows, numbered lines, abbreviations, versions, code spans, URLs, keys, leads |
 | `Server/TriageSpec` | the route table, the grammar, no Jev, the shared state and no unsure |
-| `Server/CheckerSpec` | fences, the prompt, the reply reader, `confirm` (fenced or missing citations cannot tell), the runner with the shim, recorded replies |
+| `Server/CheckerSpec` | fences, the prompt, the reply reader, `confirm` (fenced or missing citations cannot tell, a symlink into a fence or out of the root too), the runner with the shim, recorded replies |
 | `Server/ClaimsSpec` | store v2: round trip, a version-1 file read as empty, atomic writes, concurrent `updateClaims`, orphans, `pruneClaims`, `queued`, `checkedKeys` |
 | `Server/LoopSpec` `claimPassSpec` | the pass: idle triages only, save checks, open with and without a store, the cost cap and resuming, a failure waits ten minutes, a cancel lets the check in flight land (or drops it when its sentence changed), a key held elsewhere is skipped, Check this during a pass, nothing written to the plan, a typed anchor in the prompt, budget 0, no Jev |
 | `Server/ProseCorpusSpec` | the milestone gate on the prose corpus (below) |
@@ -526,7 +527,9 @@ retired with the resolver; its numbers are in the notes' experiments.
 - **The fences stop at the root by prompt only.** The deny rules fence the plans dir,
   `.olifant` and `not_evidence` for Read, Grep and Glob (a Read rule covers all three); leaving the
   repository is fenced only by the appended system prompt, and `confirm` refuses a citation outside
-  the root. In the fence check haiku globbed a parent folder once.
+  the root. In the fence check haiku globbed a parent folder once. The deny rules are path
+  patterns: a symlink into a fence (`notes -> plans`) can be read by the checker, and is caught
+  only when `confirm` canonicalises the cited path.
 - **A known miss.** A4, a claim about what fixing a collector takes, scores about-code 0.67
   against the 0.70 threshold and is set aside; the gate pins that (`knownMisses`) rather than
   moving the threshold.

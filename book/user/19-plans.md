@@ -266,7 +266,7 @@ stops Grep and Glob there), and the prompt says why. A sentence with an anchor y
 (`@path:Unit`) is checked the same way; the anchor is passed as a place to start, not the answer.
 
 Before a verdict shows, the engine checks every citation: the path is inside the project,
-outside the fences, and exists; the unit is in that file, or the line is inside it. Any citation
+outside the fences (both as written and with symbolic links followed), and exists; the unit is in that file, or the line is inside it. Any citation
 it cannot find turns the verdict into "Could not tell · cited code not found": a `✓` or `✗` never
 rests on code the engine could not find. The first unit cited is kept as the sentence's evidence
 unit, with its fingerprint.

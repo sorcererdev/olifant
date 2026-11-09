@@ -1,7 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 module Olifant.Server.CheckerSpec (spec) where
 
-import Control.Monad (forM)
+import Control.Monad (forM, forM_)
 import Data.Map.Strict qualified as M
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -17,11 +17,12 @@ import Olifant.Plans (parsePlan)
 import Olifant.Plans.Sentences (Sentence (..), sentences)
 import Olifant.Process (gitStateStamp, neverCancel)
 import Olifant.Server (ServerState, newServerState, projectFor)
+import Olifant.Server.State (ServerState (..))
 import Olifant.Server.Checker
 import Olifant.Server.Errand (RunResult (..))
-import Olifant.Workspace (memoryWorkspace)
-import System.Directory (canonicalizePath, doesDirectoryExist, getCurrentDirectory, listDirectory)
-import System.FilePath (makeRelative, (</>))
+import Olifant.Workspace (diskWorkspace, memoryWorkspace)
+import System.Directory (canonicalizePath, createDirectoryIfMissing, createDirectoryLink, doesDirectoryExist, getCurrentDirectory, listDirectory)
+import System.FilePath (makeRelative, takeDirectory, (</>))
 import System.IO.Temp (withSystemTempDirectory)
 import Test.Hspec
 
@@ -74,6 +75,32 @@ spec = describe "Olifant.Server.Checker" $ do
     (cfJudgement byLine, cfUnit byLine) `shouldBe` (JRight, Just (UnitRef "src/a.py" "Foo.bar"))
     file <- confirm s proj fs (reply [Citation "notes.txt" Nothing Nothing])
     (cfJudgement file, cfUnit file) `shouldBe` (JRight, Nothing)
+
+  it "a citation through a symlink into a fence or out of the root cannot tell" $
+    withSystemTempDirectory "olifant-checker" $ \tmp0 -> do
+      tmp <- canonicalizePath tmp0
+      pack <- canonicalizePath "packs/python-htmx"
+      let root = tmp </> "r"
+          put rel t = createDirectoryIfMissing True (takeDirectory (root </> rel)) >> TIO.writeFile (root </> rel) t
+          foo = "class Foo:\n    def bar(self):\n        return 1\n"
+      put ".olifant/config.toml" ("[packs]\npython-htmx = { path = \"" <> T.pack pack <> "\" }\n")
+      put "src/a.py" foo
+      put "plans/a.py" foo
+      createDirectoryIfMissing True (tmp </> "other")
+      TIO.writeFile (tmp </> "other/a.py") foo
+      createDirectoryLink (root </> "plans") (root </> "notes")
+      createDirectoryLink (tmp </> "other") (root </> "out")
+      (s0, _) <- checkerServer
+      s1 <- newServerState (ssPorts s0) {pFiles = diskWorkspace "/"}
+      proj <- projectFor (root </> "plans/t.md") s1 >>= \case
+        (_, Just (_, p)) -> pure p
+        _ -> fail "no project"
+      let reply cs = CheckReply JRight "it does" cs
+      forM_ [Citation "notes/a.py" (Just "Foo") Nothing, Citation "out/a.py" (Just "Foo") Nothing, Citation (root </> "out/a.py") Nothing (Just 1)] $ \c -> do
+        r <- confirm s1 proj (fences defaultPlans) (reply [c])
+        (cfJudgement r, cfWhy r) `shouldBe` (JCannotTell, "cited code not found")
+      good <- confirm s1 proj (fences defaultPlans) (reply [Citation "src/a.py" (Just "Foo") Nothing])
+      cfJudgement good `shouldBe` JRight
 
   it "runs the checker through the runner" $ do
     d <- getCurrentDirectory

@@ -50,7 +50,8 @@ import Olifant.Server.Errand (RunFailure (..), RunResult (..), Status (..), Verb
 import Olifant.Server.State (ServerConfig (..), ServerState (..))
 import Olifant.Server.Unit (Named (..), fingerprint, unitLookupIn, unitsWithKinds)
 import Olifant.Workspace (Workspace (..), normalisePath)
-import System.FilePath (isAbsolute, makeRelative)
+import System.Directory (canonicalizePath)
+import System.FilePath (isAbsolute, makeRelative, (</>))
 
 -- | A unit by its path and (qualified) name.
 data UnitRef = UnitRef {urPath :: FilePath, urName :: Text}
@@ -185,11 +186,20 @@ confirm s p fs r = do
       | isAbsolute path = if (root <> "/") `isPrefixOf` path then confined (makeRelative root path) else Nothing
       | otherwise = confined path
     fencedOff rel = any (\f -> let f' = normalisePath f in rel == f' || (f' <> "/") `isPrefixOf` rel) fs
+    -- the path as the disk resolves it (symlinks followed): under the root
+    -- and outside the fences, else not found
+    resolvedOk rel = do
+      canonRoot <- canonicalizePath root
+      canon <- canonicalizePath (root </> rel)
+      let inside = (canonRoot <> "/") `isPrefixOf` canon
+          canonFenced = any (\f -> let f' = normalisePath f in (canonRoot </> f') == canon || ((canonRoot </> f') <> "/") `isPrefixOf` canon) fs
+      pure (inside && not canonFenced)
     cite c = case relOf (ciPath c) of
       Nothing -> pure Nothing
       Just rel0 -> do
         let rel = normalisePath rel0
-        if fencedOff rel
+        ok <- safely False (resolvedOk rel)
+        if fencedOff rel || not ok
           then pure Nothing
           else safely Nothing (readText (prWorkspace p) rel) >>= \case
             Nothing -> pure Nothing
