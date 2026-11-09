@@ -1,7 +1,7 @@
 module Olifant.DecideSpec (spec) where
 
 import Control.Concurrent (forkIO, threadDelay)
-import Data.Aeson (Value (..))
+import Data.Aeson (Value (..), object, (.=))
 import Data.Aeson.KeyMap qualified as KM
 import Data.Text qualified as T
 import Data.IORef (modifyIORef, newIORef, readIORef)
@@ -54,7 +54,7 @@ spec = describe "Olifant.Decide" $ do
         timeout 5000000 (ask (recordedDecider file token) commandOrQuery) `shouldReturn` Just Unsure
   describe "replayDecider" $ do
     let unitQ line = choice "plan-unit" "Which unit" [("u1", "first"), ("u2", "second")] [("line", line)]
-        stub = Decider (fmap fst . pick) (traverse (fmap fst . pick)) pick
+        stub = Decider (fmap fst . pick) (traverse (fmap fst . pick)) pick (traverse pick)
         pick :: Question -> IO (Answer, [(T.Text, Double)])
         pick q = pure $ case lookup "line" (qContext q) of
           Just "x" -> (Chosen "u1" [] (Confidence 0.9), [("u1", 0.9), ("u2", 0.1)])
@@ -138,6 +138,18 @@ spec = describe "Olifant.Decide" $ do
     it "(f) a score is the most probable level" $
       jevAnswers [matters] "{\"answers\": {\"k\": {\"type\":\"score\",\"score\":1.2,\"probabilities\":{\"0\":0.1,\"1\":0.6,\"2\":0.3},\"confidence\":0.6}}}"
         `shouldSatisfy` \case [Level 1 _ _] -> True; _ -> False
+    it "(h) a question without unsure has no unsure criterion" $
+      (field "questions" (jevBody [which {qUnsure = False}]) >>= field "which" >>= field "criteria" >>= field "unsure") `shouldBe` Nothing
+    it "(i) a Noul carries its true and false criteria" $ do
+      let crit = (noul "t" "Is it about code" []) {qShape = Noul (Just ("can be settled by code", "is about people"))}
+      (field "questions" (jevBody [crit]) >>= field "t" >>= field "criteria")
+        `shouldBe` Just (object ["true" .= ("can be settled by code" :: T.Text), "false" .= ("is about people" :: T.Text)])
+    it "(j) weighAll on a recorded decider answers each question, in order" $
+      withSystemTempDirectory "olifant-decide" $ \dir -> do
+        let file = dir </> "answers.json"
+        writeFile file "{\"answers\": {\"which\": \"query\", \"done\": true}}"
+        (token, _) <- newCancel
+        map fst <$> weighAll (recordedDecider file token) [which, done] `shouldReturn` [Chosen "query" [] Unknown, Yes Unknown]
     it "(g) jevDecider without its key is unsure for the batch and logs nothing (no request)" $ do
       logged <- newIORef []
       let d = jevDecider neverCancel 5 (Jev "jev-latest" "OLIFANT_SPEC_NO_KEY") (\l -> modifyIORef logged (l :))

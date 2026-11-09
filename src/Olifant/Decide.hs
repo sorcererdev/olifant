@@ -55,18 +55,21 @@ import Olifant.Process (Cancel, cancelled)
 
 -- | What kind of answer is wanted: one of named options (each with what it
 -- means), a yes or no, or a level among described ones.
-data Shape = Choice [(Text, Text)] | Noul | Score [Text]
+data Shape = Choice [(Text, Text)] | Noul (Maybe (Text, Text)) | Score [Text]
   deriving stock (Eq, Show)
 
 -- | What is asked: its kind (what decision), the instructions, the shape of
--- the answer, typed details wanted (name, type: ident | text), and the
--- context it decides from.
+-- the answer, typed details wanted (name, type: ident | text), the
+-- context it decides from, and whether Jev is offered an "unsure" option
+-- (it competes for probability; triage turns it off). A Noul may carry its
+-- (true, false) criteria.
 data Question = Question
   { qKind :: Text
   , qInstructions :: Text
   , qShape :: Shape
   , qFields :: [(Text, Text)]
   , qContext :: [(Text, Text)]
+  , qUnsure :: Bool
   }
   deriving stock (Eq, Show)
 
@@ -86,16 +89,17 @@ data Answer
 
 -- | Ask one question, a batch in order, or one with the answer's
 -- distribution (option, probability; highest first; none when the
--- answerer gives none).
-data Decider m = Decider {ask :: Question -> m Answer, askAll :: [Question] -> m [Answer], weigh :: Question -> m (Answer, [(Text, Double)])}
+-- answerer gives none), or a batch with their distributions (Jev: one
+-- request for the whole batch).
+data Decider m = Decider {ask :: Question -> m Answer, askAll :: [Question] -> m [Answer], weigh :: Question -> m (Answer, [(Text, Double)]), weighAll :: [Question] -> m [(Answer, [(Text, Double)])]}
 
 -- | A decider from one question at a time; a batch is asked in order.
 decider :: Applicative m => (Question -> m Answer) -> Decider m
-decider f = Decider f (traverse f) (fmap (,[]) . f)
+decider f = Decider f (traverse f) (fmap (,[]) . f) (traverse (fmap (,[]) . f))
 
 -- | A decider from one weighed question at a time.
 weighed :: Applicative m => (Question -> m (Answer, [(Text, Double)])) -> Decider m
-weighed f = Decider (fmap fst . f) (traverse (fmap fst . f)) f
+weighed f = Decider (fmap fst . f) (traverse (fmap fst . f)) f (traverse f)
 
 -- | A distribution, highest first.
 byWeight :: [(Text, Double)] -> [(Text, Double)]
@@ -103,21 +107,21 @@ byWeight = sortOn (Down . snd)
 
 -- | Kind, instructions, the options (name, meaning), the context.
 choice :: Text -> Text -> [(Text, Text)] -> [(Text, Text)] -> Question
-choice kind instructions options = Question kind instructions (Choice options) []
+choice kind instructions options context = Question kind instructions (Choice options) [] context True
 
 -- | Kind, instructions, the context: a yes or a no.
 noul :: Text -> Text -> [(Text, Text)] -> Question
-noul kind instructions = Question kind instructions Noul []
+noul kind instructions context = Question kind instructions (Noul Nothing) [] context True
 
 -- | Kind, instructions, the described levels (from 0), the context.
 score :: Text -> Text -> [Text] -> [(Text, Text)] -> Question
-score kind instructions levels = Question kind instructions (Score levels) []
+score kind instructions levels context = Question kind instructions (Score levels) [] context True
 
 -- | The option names a question allows (the levels' indices for a score).
 qOptions :: Question -> [Text]
 qOptions q = case qShape q of
   Choice os -> map fst os
-  Noul -> ["yes", "no"]
+  Noul _ -> ["yes", "no"]
   Score ls -> [T.pack (show i) | (i, _) <- zip [0 :: Int ..] ls]
 
 -- | Is the answer known to be at least this sure?
@@ -142,8 +146,8 @@ noDecider = decider (const (pure Unsure))
 validated :: Question -> Answer -> Answer
 validated q a = case (qShape q, a) of
   (Choice _, Chosen c fs _) | c `elem` qOptions q, all ok fs -> a
-  (Noul, Yes _) -> a
-  (Noul, No _) -> a
+  (Noul _, Yes _) -> a
+  (Noul _, No _) -> a
   (Score ls, Level n _ _) | n >= 0, n < length ls -> a
   _ -> Unsure
   where
@@ -165,11 +169,11 @@ decisionPrompt q =
   where
     shapeLines = case qShape q of
       Choice os -> ["Options: " <> T.intercalate " | " (map fst os) <> " | unsure"] ++ [k <> ": " <> m | (k, m) <- os, not (T.null m)]
-      Noul -> ["Options: yes | no | unsure"]
+      Noul _ -> ["Options: yes | no | unsure"]
       Score ls -> "Levels (give the number), or unsure:" : [T.pack (show i) <> ": " <> l | (i, l) <- zip [0 :: Int ..] ls]
     answerHint = case qShape q of
       Choice _ -> "\"<an option, or unsure>\""
-      Noul -> "<true, false, or \"unsure\">"
+      Noul _ -> "<true, false, or \"unsure\">"
       Score _ -> "<a level number, or \"unsure\">"
 
 -- | A reply read leniently (the first JSON object in it, fields the
@@ -230,8 +234,9 @@ jevBody qs = object ["state" .= Object (KM.fromList [(Key.fromText k, String v) 
         | w == v -> acc
         | otherwise -> error ("jevBody: the context `" <> T.unpack k <> "` has two values in one batch (" <> T.unpack (T.intercalate ", " (map qKind qs)) <> ")")
     question q = case qShape q of
-      Choice os -> object ["type" .= ("choice" :: Text), "instructions" .= qInstructions q, "criteria" .= Object (KM.fromList [(Key.fromText o, String d) | (o, d) <- os ++ [("unsure", "none of these fits")]])]
-      Noul -> object ["type" .= ("noul" :: Text), "instructions" .= qInstructions q]
+      Choice os -> object ["type" .= ("choice" :: Text), "instructions" .= qInstructions q, "criteria" .= Object (KM.fromList [(Key.fromText o, String d) | (o, d) <- os ++ [("unsure", "none of these fits") | qUnsure q]])]
+      Noul Nothing -> object ["type" .= ("noul" :: Text), "instructions" .= qInstructions q]
+      Noul (Just (t, f)) -> object ["type" .= ("noul" :: Text), "instructions" .= qInstructions q, "criteria" .= object ["true" .= t, "false" .= f]]
       Score ls -> object ["type" .= ("score" :: Text), "instructions" .= qInstructions q, "criteria" .= ls]
 
 -- | Jev's reply, one answer a question in order, each validated. A reply
@@ -258,7 +263,7 @@ jevWeighed qs raw = fromMaybe (map (const (Unsure, [])) qs) $ do
             Just (String "unsure") -> Just Unsure
             Just (String c) -> Just (Chosen c [] (confidenceOf a))
             _ -> Nothing
-          (Noul, Just "noul") -> do
+          (Noul _, Just "noul") -> do
             p <- number =<< KM.lookup "noul" a
             Just (if p >= 0.5 then Yes (Confidence p) else No (Confidence (1 - p)))
           (Score _, Just "score") -> do
@@ -281,7 +286,7 @@ jevWeighed qs raw = fromMaybe (map (const (Unsure, [])) qs) $ do
 -- input tokens and time go to LOG as "decide\tjev\tN tokens\tM ms". No
 -- key, an error, a timeout or a malformed reply is unsure for the batch.
 jevDecider :: Cancel -> Int -> Backend -> (Text -> IO ()) -> Decider IO
-jevDecider token timeout backend logLine = Decider (\q -> fst . head' <$> weighs [q]) (fmap (map fst) . weighs) (\q -> head' <$> weighs [q])
+jevDecider token timeout backend logLine = Decider (\q -> fst . head' <$> weighs [q]) (fmap (map fst) . weighs) (\q -> head' <$> weighs [q]) weighs
   where
     head' = \case
       a : _ -> a
@@ -296,13 +301,16 @@ jevDecider token timeout backend logLine = Decider (\q -> fst . head' <$> weighs
         Left _ -> pure (map (const (Unsure, [])) qs)
         Right raw -> do
           end <- getMonotonicTime
-          logLine (T.intercalate "\t" ["decide", "jev", tshow (tokens raw body) <> " tokens", tshow (round ((end - start) * 1000) :: Int) <> " ms"])
+          logLine (T.intercalate "\t" (["decide", "jev", tshow (tokens raw body) <> " tokens", tshow (round ((end - start) * 1000) :: Int) <> " ms"] ++ ["model " <> m | Just m <- [modelOf raw]]))
           pure (jevWeighed qs raw)
     -- the reply's count when it gives one; else about four bytes a token
     tokens raw body = case eitherDecodeStrict raw of
       Right (Object o) | Just (Object u) <- KM.lookup "usage" o, Just (Number n) <- KM.lookup "input_tokens" u -> round n :: Int
       _ -> fromIntegral (BL.length (encode body) `div` 4)
     tshow = T.pack . show
+    modelOf raw = case eitherDecodeStrict raw of
+      Right (Object o) | Just (String m) <- KM.lookup "model" o -> Just m
+      _ -> Nothing
 
 -- | Recorded answers (tests): `{"answers": {KIND: CHOICE or {choice, fields,
 -- confidence, probabilities: {OPTION: P}}}}`;

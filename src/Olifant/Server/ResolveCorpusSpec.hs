@@ -212,7 +212,7 @@ rawAround ls l = T.intercalate "\n" (map raw (above ++ below))
 -- | A decider asked with each choice option named `path:Unit — header` (its
 -- description's first line), its answer named back.
 namedOptions :: Decider IO -> Decider IO
-namedOptions d = Decider (fmap fst . w) (traverse (fmap fst . w)) w
+namedOptions d = Decider (fmap fst . w) (traverse (fmap fst . w)) w (traverse w)
   where
     w q = case qShape q of
       Choice os -> do

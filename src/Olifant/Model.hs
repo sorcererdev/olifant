@@ -132,7 +132,7 @@ parseModelConfig top =
       required "kind" text t >>= \case
         "openai-compatible" -> onlyKeys ["kind", "url", "model", "escalate"] t >> (,) <$> (OpenAICompatible <$> required "url" text t <*> required "model" text t) <*> escalate t
         "anthropic" -> onlyKeys ["kind", "model", "api_key_env", "escalate"] t >> (,) <$> (Anthropic <$> required "model" text t <*> (fromMaybe "ANTHROPIC_API_KEY" <$> optional "api_key_env" text t)) <*> escalate t
-        "jev" -> onlyKeys ["kind", "model", "api_key_env"] t >> (\b -> (b, EscalateAsk)) <$> (Jev . fromMaybe "jev-latest" <$> optional "model" text t <*> (fromMaybe "JEV_API_KEY" <$> optional "api_key_env" text t))
+        "jev" -> onlyKeys ["kind", "model", "api_key_env"] t >> (\b -> (b, EscalateAsk)) <$> (Jev . fromMaybe "jev-1.14.0" <$> optional "model" text t <*> (fromMaybe "JEV_API_KEY" <$> optional "api_key_env" text t))
         other -> Left ("unknown backend kind `" <> other <> "` (kinds: " <> T.intercalate ", " backendKinds <> ")")
 
 systemPrompt :: Text
