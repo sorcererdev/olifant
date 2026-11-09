@@ -4277,14 +4277,18 @@ claimPassSpec = describe "plans claim pass" $ do
         refreshed
         titles <$> getCodeActions p (Range (Position 0 4) (Position 0 4))
       filter ("Check this" `T.isPrefixOf`) ts `shouldBe` ["Check this (sonnet, ~$0.10)"]
-  it "(c) an edit while the pass waits on the decider cancels it" $
+  it "(c) an edit or an idle leaves the running pass alone; a save replaces it" $
     withPassOn "wait" right $ \ports dir f cfg -> do
-      (stopped, _) <- inProcessWithConfig cfg ports dir $ do
+      ((afterEdit, afterSave), _) <- inProcessWithConfig cfg ports dir $ do
         p <- openDoc "plans/t.md" "markdown"
         _ <- waitFor (doesFileExist (f <> ".asked"))
         changeDoc p [TextDocumentContentChangeEvent (InL (TextDocumentContentChangePartial (Range (Position 0 0) (Position 0 0)) Nothing "x"))]
-        waitFor (doesFileExist (f <> ".cancelled"))
-      stopped `shouldBe` True
+        sendNotification (SMethod_CustomMethod (Proxy :: Proxy "olifant/plans/idle")) (object ["textDocument" .= object ["uri" .= (p ^. L.uri)]])
+        liftIO (threadDelay 500000)
+        e <- liftIO (doesFileExist (f <> ".cancelled"))
+        sendNotification SMethod_TextDocumentDidSave (DidSaveTextDocumentParams p Nothing)
+        (e,) <$> waitFor (doesFileExist (f <> ".cancelled"))
+      (afterEdit, afterSave) `shouldBe` (False, True)
   it "(d) olifant/plans/idle on an unchanged plan asks nothing new" $
     withPass wrong $ \ports dir f cfg -> do
       ((n1, n2), _) <- inProcessWithConfig cfg ports dir $ do

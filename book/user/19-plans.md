@@ -280,8 +280,11 @@ unit, with its fingerprint.
 | *Check this* | (the sentence, if not seen) | that sentence, ignoring both caps |
 
 Checks run one at a time and stop at `pass_budget` seconds or `pass_cost` dollars; the rest stay
-queued for the next save. One pass runs per plan: a new one, or an edit to the plan, cancels the
-running one; checks that finished are kept, the one in flight is dropped. A check that fails (the
+queued for the next save. One pass runs per plan. Typing and idling stop nothing: an idle while
+a save's or an open's pass runs waits for it to end, then triages. A new save or open replaces the
+running pass: it starts no new check, and the one in flight finishes and is kept if its sentence
+is still in the plan (its cost is counted either way); a sentence one pass is checking is not
+checked by another. Cancelling the "checking" progress stops the check in flight too. A check that fails (the
 runner missing, a timeout, a reply with no verdict) is recorded and tried again after ten minutes.
 Each check is an errand record (`verb: check`, `auto: true` when the pass asked), so `plans cost`
 counts it; each pass that asked Jev or checked anything adds a `pass` record (its mode, sentences,

@@ -334,13 +334,17 @@ the whole of it:
    before each sentence.
 3. **Check.** Only for `SavePass`, or `OpenPass` with a store that existed: `Claims.queued`
    (Verify, no check, no failure in the last `retryAfter`, plan order, one per key), one at a
-   time. Before each: stop when cancelled, when `pass_budget` seconds are spent, or when the
+   time, skipping a key another pass or `checkOne` holds in `ssChecking`. Before each: stop when
+   the token is tripped, when `pass_budget` seconds are spent, or when the
    spend so far plus the estimate (this pass's mean, else `unpricedCheck`) would pass
    `pass_cost`. `checkSentence` runs `checkerUnder` (the recorded checker when `scCheckAnswers`
    is set, else `liveChecker`), reads the reply with `parseCheckReply` and confirms it with
    `confirm`; it appends a `check` errand record (`erAuto`). The sentence's key sits in
-   `ssChecking` while it runs. After it, the store is written (a cancel loses only the check in
-   flight, which is dropped, never stored as a failure). A failed run or a reply with no verdict
+   `ssChecking` while it runs. The checker runs under the state's `ssCancel`, not the pass's
+   token: a tripped token stops the pass before the next check, and the check in flight
+   finishes. After it, the result is stored only when its key is still among the plan's
+   sentences as the editor has them now (`ssLiveDoc`, else the pass's text) and `ssCancel` was
+   not tripped; its cost goes into the tally either way. A failed run or a reply with no verdict
    stores a `Failure`.
 4. **End.** A `PassRecord` (kind `pass`) is appended when Jev was asked or a check ran. A pass
    stopped by the token answers `Left "cancelled"`.
@@ -363,8 +367,12 @@ and its `fingerprint` are the sentence's evidence unit.
 
 **In `Lsp`.** `startPass` (an `Env`, a `PassMode`, the plan) runs the pass in the background:
 `OpenPass` on `didOpen`, `SavePass` on `didSave` (both under `planProgress "checking"`),
-`IdlePass` on the client's `olifant/plans/idle`. `envPasses` holds one numbered pass per plan: a
-new start trips the running one, and `didChange` on the plan trips it (`stopPass`). While it runs,
+`IdlePass` on the client's `olifant/plans/idle`. `envPasses` holds one `RunningPass` per plan
+(number, mode, its stop, `rpIdleAfter`). A save or an open trips the running pass's stop token
+(passed to `claimPass` with `eitherCancel`); an idle while a save's or an open's pass runs only
+sets `rpIdleAfter`, and that pass starts an `IdlePass` when it ends. `didChange` stops nothing.
+The pass's kill token (its `envCancel`, so the checker's `ssCancel`) is tripped only when the
+client cancels the progress or the pass throws. While it runs,
 a watcher polls `ssChecking` every 250 ms and sends `workspace/diagnostic/refresh` when the
 sentence being checked changes; after it, `workspace/diagnostic/refresh` and
 `semanticTokens/refresh`. Nothing goes out as `workspace/applyEdit`. The margin is
@@ -450,7 +458,7 @@ in the main checkout (the git-backed specs refuse worktrees).
 | `Server/TriageSpec` | the route table, the grammar, no Jev, the shared state and no unsure |
 | `Server/CheckerSpec` | fences, the prompt, the reply reader, `confirm` (fenced or missing citations cannot tell), the runner with the shim, recorded replies |
 | `Server/ClaimsSpec` | store v2: round trip, a version-1 file read as empty, atomic writes, orphans, `pruneClaims`, `queued`, `checkedKeys` |
-| `Server/LoopSpec` `claimPassSpec` | the pass: idle triages only, save checks, open with and without a store, the cost cap and resuming, a failure waits ten minutes, a cancel keeps finished checks, nothing written to the plan, a typed anchor in the prompt, budget 0, no Jev |
+| `Server/LoopSpec` `claimPassSpec` | the pass: idle triages only, save checks, open with and without a store, the cost cap and resuming, a failure waits ten minutes, a cancel lets the check in flight land (or drops it when its sentence changed), a key held elsewhere is skipped, nothing written to the plan, a typed anchor in the prompt, budget 0, no Jev |
 | `Server/ProseCorpusSpec` | the milestone gate on the prose corpus (below) |
 | `LspSpec` (`plansSpec`, `plansLoopSpec`, `plansStage1Spec`, `doReviewSpec`, `claimPassSpec`) | every request, in process, over pipes |
 

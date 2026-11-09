@@ -2,7 +2,7 @@
 -- Nothing here throws: a tool that cannot start, exits before reading its
 -- input, or breaks a pipe is reported as 'Left', so callers can turn it into
 -- a miss or a check failure instead of crashing Olifant.
-module Olifant.Process (gitIn, gitBaseFiles, gitBaseText, gitStateStamp, gitTracked, runBytes, runBytesWithin, Outcome (..), runBytesCancellable, Cancel, newCancel, neverCancel, cancelAfter, cancelled) where
+module Olifant.Process (gitIn, gitBaseFiles, gitBaseText, gitStateStamp, gitTracked, runBytes, runBytesWithin, Outcome (..), runBytesCancellable, Cancel, newCancel, neverCancel, cancelAfter, cancelled, eitherCancel) where
 
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Monad (void)
@@ -16,7 +16,7 @@ import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Set (Set)
 import Data.Set qualified as S
-import Olifant.Process.Cancel (Cancel, cancelAfter, cancelled, neverCancel, newCancel)
+import Olifant.Process.Cancel (Cancel, cancelAfter, cancelled, eitherCancel, neverCancel, newCancel)
 import System.Posix.Signals (sigKILL, signalProcessGroup)
 import System.Directory (doesDirectoryExist, doesFileExist)
 import System.Exit (ExitCode (..))

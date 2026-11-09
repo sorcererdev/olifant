@@ -7,6 +7,7 @@ import Data.Aeson.KeyMap qualified as KM
 import Data.ByteString.Lazy qualified as BL
 import Data.List (find, isSuffixOf, sort)
 import Data.Map.Strict qualified as M
+import Data.Set qualified as S
 import Data.Maybe (fromMaybe)
 import Data.Text.Encoding qualified as TE
 import Data.Time (UTCTime (..), addUTCTime, fromGregorian, getCurrentTime)
@@ -1051,9 +1052,9 @@ claimPassSpec = describe "Olifant.Server.Loop (claimPass)" $ describe "claimPass
       storeClaims s2 dir (dir </> "plans/t.md") old
       _ <- pass SavePass dir s2
       length <$> checksAsked dir `shouldReturn` 2
-  it "keeps finished checks when cancelled" $ do
+  it "a cancel lets the check in flight finish: stored while its sentence is in the plan, and counted" $ do
     let three = "First claim holds.\nSecond claim holds.\nThird claim holds.\n"
-        slow = object ["text" .= ("x" :: Text), "delay" .= (2 :: Double)]
+        slow = object ["text" .= ("I read it.\n```json\n{\"verdict\": \"right\", \"why\": \"it returns 1\", \"evidence\": [{\"path\": \"" <> T.pack table <> "\", \"unit\": \"helper\"}]}\n```" :: Text), "cost" .= (0.1 :: Double), "delay" .= (1 :: Double)]
     withPass three "" [("First claim holds.", reply "right"), ("Second claim holds.", slow), ("Third claim holds.", reply "right")] $ \dir s -> do
       (token, trip) <- newCancel
       -- trip while the second check is in flight
@@ -1062,8 +1063,29 @@ claimPassSpec = describe "Olifant.Server.Loop (claimPass)" $ describe "claimPass
       either id (const "answered") r `shouldBe` "cancelled"
       stored <- readClaims (ssPorts s) dir "plans/t.md"
       let checkedOf k = cfJudgement . cjConfirmed <$> (M.lookup k stored >>= seCheck)
-      map checkedOf ["First claim holds.", "Second claim holds.", "Third claim holds."] `shouldBe` [Just JRight, Nothing, Nothing]
+      map checkedOf ["First claim holds.", "Second claim holds.", "Third claim holds."] `shouldBe` [Just JRight, Just JRight, Nothing]
       [k | (k, e) <- M.toList stored, isJust (seFailure e)] `shouldBe` []
+      (ps, _) <- passes dir
+      map (\p -> (prChecked p, prCost p)) ps `shouldBe` [(2, 0.2)]
+  it "a check whose sentence changed while in flight is dropped, its cost still counted" $ do
+    let two = "First claim holds.\nSecond claim holds.\n"
+        slow = object ["text" .= ("x" :: Text), "cost" .= (0.1 :: Double), "delay" .= (1 :: Double)]
+    withPass two "" [("First claim holds.", slow), ("Second claim holds.", reply "right")] $ \dir s -> do
+      live <- newIORef two
+      let s' = s {ssLiveDoc = Just (\_ -> Just . (2,) <$> readIORef live)}
+      -- the first sentence is edited while its check runs
+      _ <- async (let wait = checksAsked dir >>= \ks -> if length ks >= 1 then modifyIORef live (T.replace "First" "One" ) else threadDelay 10000 >> wait in wait)
+      (_, a) <- pass SavePass dir s'
+      stored <- readClaims (ssPorts s) dir "plans/t.md"
+      (M.lookup "First claim holds." stored >>= seCheck) `shouldBe` Nothing
+      (M.lookup "First claim holds." stored >>= seFailure) `shouldBe` Nothing
+      fmap prCost (paRecord a) `shouldBe` Just 0.2
+  it "a sentence another pass is checking is not checked again" $
+    withPass plan "" [("The helper returns one.", reply "right")] $ \dir s -> do
+      modifyIORef (ssChecking s) (M.insert (dir </> "plans/t.md") (S.singleton "The helper returns one."))
+      (_, a) <- pass SavePass dir s
+      checksAsked dir `shouldReturn` []
+      fmap prChecked (paRecord a) `shouldBe` Just 0
   it "the pass writes nothing to the plan" $
     withPass plan "" [("The helper returns one.", reply "right")] $ \dir s -> do
       before <- TIO.readFile (dir </> "plans/t.md")

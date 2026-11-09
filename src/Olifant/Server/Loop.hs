@@ -605,8 +605,11 @@ unpricedCheck = 0.10
 -- check the pass stops when cancelled, when `[plans] pass_budget` seconds
 -- (30) are spent, or when the next check's estimate would pass `[plans]
 -- pass_cost` dollars (0.50). A failed run or a reply with no verdict stores
--- a 'Failure' (tried again after 'retryAfter'). Cancelled: the check in
--- flight is dropped, the finished ones kept, and the answer is Left.
+-- a 'Failure' (tried again after 'retryAfter'). Cancelled (TOKEN): no new
+-- check starts; the one in flight finishes and is stored when its sentence
+-- is still in the plan (the live text, 'ssLiveDoc'), its cost counted
+-- either way, and the answer is Left. The checker itself is killed only by
+-- the state's 'ssCancel'.
 claimPass :: Cancel -> PassMode -> FilePath -> ServerState -> IO (ServerState, Either Text PassAnswer)
 claimPass token mode path s0 = do
   start <- getMonotonicTime
@@ -649,7 +652,13 @@ claimPass token mode path s0 = do
           when (store1 /= store0) (storeClaims s root path store1)
           let checking = mode == SavePass || (mode == OpenPass && existed)
               queue = if checking && not stoppedEarly then queued now ss store1 else []
-              checker = checkerUnder s token cfg root
+              -- the checker is killed only by the server's own cancel (the
+              -- client's progress cancel, shutdown), not by the pass's TOKEN
+              checker = checkerUnder s (ssCancel s) cfg root
+              -- the plan's keys as the editor has it now
+              keysNow = do
+                live <- maybe (pure Nothing) ($ path) (ssLiveDoc s)
+                pure (S.fromList (map key (sentences (parsePlan (maybe text snd live)))))
               -- one check at a time: (store, tally, stopped by a cancel)
               checkAll st tally [] = pure (st, tally, False)
               checkAll st tally (x : rest) = do
@@ -657,22 +666,25 @@ claimPass token mode path s0 = do
                 t <- elapsed
                 let spent = ptCost tally
                     estimate = if ptChecked tally + ptFailed tally > 0 then spent / fromIntegral (ptChecked tally + ptFailed tally) else unpricedCheck
+                -- a sentence another pass (or Check this) is checking now is its
+                elsewhere <- S.member (key x) . M.findWithDefault S.empty held <$> readIORef (ssChecking s)
                 if stop
                   then pure (st, tally, True)
                   else
                     if t >= budget || spent + estimate > costCap + 1e-9
                       then pure (st, tally, False)
-                      else do
-                        atomicModifyIORef' (ssChecking s) (\m -> (M.insert held (S.singleton (key x)) m, ()))
+                      else if elsewhere then checkAll st tally rest else do
+                        atomicModifyIORef' (ssChecking s) (\m -> (M.insertWith S.union held (S.singleton (key x)) m, ()))
                         result <- checkSentence s p cfg checker True now rel x
-                        atomicModifyIORef' (ssChecking s) (\m -> (M.delete held m, ()))
-                        cancelled token >>= \case
-                          -- the check in flight is dropped: its sentence may have changed
-                          True -> pure (st, tally, True)
-                          False -> do
-                            let st' = M.adjust (\e -> either (\f -> e {seFailure = Just f}) (\c -> e {seCheck = Just c, seFailure = Nothing}) (fst result)) (key x) st
-                            storeClaims s root path st'
-                            checkAll st' (tallied tally result) rest
+                        atomicModifyIORef' (ssChecking s) (\m -> (M.update (nonEmpty . S.delete (key x)) held m, ()))
+                        -- the check in flight finished (a cancel stops the pass
+                        -- before the next one, it does not kill this one): kept
+                        -- while its sentence is in the plan, paid for either way
+                        killed <- cancelled (ssCancel s)
+                        there <- S.member (key x) <$> keysNow
+                        let st' = if killed || not there then st else M.adjust (\e -> either (\f -> e {seFailure = Just f}) (\c -> e {seCheck = Just c, seFailure = Nothing}) (fst result)) (key x) st
+                        when (st' /= st) (storeClaims s root path st')
+                        checkAll st' (tallied tally result) rest
           (store2, tally, cancelledMid) <- checkAll store1 (PassTally 0 0 0 0 0 0) queue
           end <- getMonotonicTime
           let left = length (queued now ss store2)
@@ -721,15 +733,19 @@ checkOne token path wanted s0 =
             Nothing -> do
               tr <- triage (rgJev (rungsFor s {ssCancel = token} p False)) x
               pure (M.insert wanted (SentenceEntry tr (route tr) Nothing Nothing now) store0)
-          atomicModifyIORef' (ssChecking s) (\m -> (M.insert held (S.singleton wanted) m, ()))
+          atomicModifyIORef' (ssChecking s) (\m -> (M.insertWith S.union held (S.singleton wanted) m, ()))
           (result, _) <- checkSentence s p cfg (checkerUnder s token cfg root) False now rel x
-          atomicModifyIORef' (ssChecking s) (\m -> (M.delete held m, ()))
+          atomicModifyIORef' (ssChecking s) (\m -> (M.update (nonEmpty . S.delete wanted) held m, ()))
           cancelled token >>= \case
             True -> pure (s, Left "cancelled")
             False -> do
               let store2 = M.adjust (\e -> either (\f -> e {seFailure = Just f}) (\c -> e {seCheck = Just c, seFailure = Nothing}) result) wanted store1
               storeClaims s root path store2
               pure (s, either (Left . fuWhy) (const (Right store2)) result)
+
+-- | A set, unless empty.
+nonEmpty :: S.Set a -> Maybe (S.Set a)
+nonEmpty x = if S.null x then Nothing else Just x
 
 -- | What a pass's checks came to.
 data PassTally = PassTally {ptChecked, ptRight, ptWrong, ptCannotTell, ptFailed :: Int, ptCost :: Double}

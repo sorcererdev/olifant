@@ -13,7 +13,7 @@ import Data.Word (Word64)
 import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar, readMVar, tryPutMVar, tryTakeMVar)
 import Control.Exception (SomeAsyncException, SomeException, catch, displayException, finally, fromException, throwIO, try)
 import Olifant.Language.Grammar (GrammarUnavailable (..))
-import Olifant.Process (Cancel, cancelled, neverCancel, newCancel)
+import Olifant.Process (Cancel, cancelled, eitherCancel, neverCancel, newCancel)
 import Olifant.Recognize qualified as Recognize
 import Olifant.Decide qualified as De
 import Olifant.Generator (GeneratorId (..))
@@ -113,10 +113,14 @@ data Env = Env
     envPlanPrints :: IORef (M.Map FilePath AnchorPrints)
   , -- | the grammar stops already shown in a message: once per text per session
     envStops :: IORef (S.Set T.Text)
-  , -- | each plan's running claim pass (its number and how to cancel it),
-    -- and the last number given
-    envPasses :: IORef (Int, M.Map FilePath (Int, IO ()))
+  , -- | each plan's running claim pass, and the last number given
+    envPasses :: IORef (Int, M.Map FilePath RunningPass)
   }
+
+-- | A plan's running claim pass: its number, its mode, how to stop it (no
+-- check starts after; the one in flight finishes), and whether an idle came
+-- while it ran (triage again when it ends).
+data RunningPass = RunningPass {rpNumber :: Int, rpMode :: PassMode, rpStop :: IO (), rpIdleAfter :: Bool}
 
 -- | A suggestion's plan, for the document version it was planned against.
 data Offered = Offered {ofPath :: FilePath, ofVersion :: Int, ofSuggestion :: Suggestion}
@@ -302,8 +306,6 @@ handlers env =
           Just vf -> atPath uri $ \path -> do
             let version = fromIntegral (virtualFileVersion vf)
             update env (changeDoc path version (virtualFileText vf))
-            -- the plan's claim pass stops: the user is typing in it
-            liftIO (stopPass env path)
             -- what follows from this edit, once typing settles
             case lastEditedLine (msg ^. L.params . L.contentChanges) of
               Nothing -> pure ()
@@ -1856,37 +1858,46 @@ inBackground env req respond work = do
       `finally` atomicModifyIORef' (envRunning env) (\m -> (M.delete key m, ()))
 
 -- | The claim pass on the plan at PATH in MODE, in the background (under
--- "checking" on open and save): one per plan (a new one cancels the running
--- one; an edit cancels it too). It writes nothing to the plan; while it
--- runs, a change in the sentence being checked refreshes the diagnostics,
--- and when it ends the diagnostics and tokens are pulled again.
+-- "checking" on open and save): one per plan. A save or an open replaces
+-- the running pass (it starts no new check; the check in flight finishes
+-- and lands when its sentence is still there). An idle does not replace a
+-- save's or an open's pass: it runs when that pass ends. An edit stops
+-- nothing. The client's progress cancel kills the check in flight. The pass
+-- writes nothing to the plan; while it runs, a change in the sentence being
+-- checked refreshes the diagnostics, and when it ends the diagnostics and
+-- tokens are pulled again.
 startPass :: Env -> PassMode -> FilePath -> LspM () ()
 startPass env mode path =
   liftIO (planContext env path) >>= \case
     Just (p, _, _) | isPlanPath p path -> do
       lspEnv <- getLspEnv
-      (token, trip) <- liftIO newCancel
-      n <- liftIO $ do
-        (n, old) <- atomicModifyIORef' (envPasses env) (\(i, m) -> ((i + 1, M.insert path (i + 1, trip) m), (i + 1, M.lookup path m)))
-        maybe (pure ()) snd old
-        pure n
-      -- the client may cancel its progress: the pass stops, the margin clears
-      void . liftIO . forkIO . (`catch` \(_ :: SomeException) -> trip >> runLspT lspEnv claimsChanged) . runLspT lspEnv $ do
-        done <- liftIO (newIORef False)
-        st0 <- liftIO (readMVar (envState env))
-        -- while it runs, the sentence being checked shows as such
-        void . liftIO . forkIO . runLspT lspEnv $ watchChecking st0 done Nothing
-        let run _ = try (withSnapshotState env {envCancel = token} (claimPass token mode path)) :: IO (Either SomeException (ServerState, Either T.Text PassAnswer))
-        -- triage alone is quick: progress only when checks may run
-        answered <- if mode == IdlePass then liftIO (run ()) else planProgress "checking" run
-        liftIO (writeIORef done True)
-        stopped <- liftIO (cancelled token)
-        mine <- liftIO $ atomicModifyIORef' (envPasses env) (\(i, m) -> case M.lookup path m of
-          Just (j, _) | j == n -> ((i, M.delete path m), True)
-          _ -> ((i, m), False))
-        case answered of
-          Right (_, Right _) | not stopped -> claimsChanged
-          _ -> when mine claimsChanged
+      (stop, stopTrip) <- liftIO newCancel
+      (kill, killTrip) <- liftIO newCancel
+      started <- liftIO $ do
+        r <- atomicModifyIORef' (envPasses env) (\(i, m) -> case M.lookup path m of
+          Just running | mode == IdlePass, rpMode running /= IdlePass -> ((i, M.insert path running {rpIdleAfter = True} m), Nothing)
+          old -> ((i + 1, M.insert path (RunningPass (i + 1) mode stopTrip False) m), Just (i + 1, old)))
+        forM_ r (mapM_ rpStop . snd)
+        pure (fst <$> r)
+      forM_ started $ \n ->
+        -- the client may cancel its progress: the pass stops, its check killed, the margin clears
+        void . liftIO . forkIO . (`catch` \(_ :: SomeException) -> stopTrip >> killTrip >> runLspT lspEnv claimsChanged) . runLspT lspEnv $ do
+          done <- liftIO (newIORef False)
+          st0 <- liftIO (readMVar (envState env))
+          -- while it runs, the sentence being checked shows as such
+          void . liftIO . forkIO . runLspT lspEnv $ watchChecking st0 done Nothing
+          let run _ = try (withSnapshotState env {envCancel = kill} (claimPass (eitherCancel stop kill) mode path)) :: IO (Either SomeException (ServerState, Either T.Text PassAnswer))
+          -- triage alone is quick: progress only when checks may run
+          answered <- if mode == IdlePass then liftIO (run ()) else planProgress "checking" run
+          liftIO (writeIORef done True)
+          stopped <- liftIO (cancelled stop)
+          (mine, idleAfter) <- liftIO $ atomicModifyIORef' (envPasses env) (\(i, m) -> case M.lookup path m of
+            Just r | rpNumber r == n -> ((i, M.delete path m), (True, rpIdleAfter r))
+            _ -> ((i, m), (False, False)))
+          case answered of
+            Right (_, Right _) | not stopped -> claimsChanged
+            _ -> when mine claimsChanged
+          when idleAfter (startPass env IdlePass path)
     _ -> pure ()
   where
     claimsChanged = do
@@ -1898,10 +1909,6 @@ startPass env mode path =
       now <- liftIO (M.lookup held <$> readIORef (ssChecking st))
       when (now /= seen) (void (sendRequest SMethod_WorkspaceDiagnosticRefresh Nothing (\_ -> pure ())))
       if finished then pure () else liftIO (threadDelay 250000) >> watchChecking st done now
-
--- | Cancel the claim pass running on the plan at PATH, if any.
-stopPass :: Env -> FilePath -> IO ()
-stopPass env path = readIORef (envPasses env) >>= \(_, m) -> maybe (pure ()) snd (M.lookup path m)
 
 -- | `olifant/plans/<verb>` (params: textDocument, line): the errand in the
 -- background under a progress TITLE. A `do` runs alone: a second while one
