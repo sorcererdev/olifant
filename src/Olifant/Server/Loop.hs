@@ -667,7 +667,9 @@ claimPass token mode path s0 = do
                 stop <- cancelled token
                 t <- elapsed
                 let spent = ptCost tally
-                    estimate = if ptChecked tally + ptFailed tally > 0 then spent / fromIntegral (ptChecked tally + ptFailed tally) else unpricedCheck
+                    -- the mean of the runs that cost something: a run that never
+                    -- started ($0) says nothing about the next check's price
+                    estimate = if ptPriced tally > 0 then spent / fromIntegral (ptPriced tally) else unpricedCheck
                 -- a sentence another pass (or Check this) is checking now, or
                 -- has checked since this pass read the store, is not checked again
                 busy <- S.member (key x) . M.findWithDefault S.empty held <$> readIORef (ssChecking s)
@@ -689,7 +691,7 @@ claimPass token mode path s0 = do
                         there <- S.member (key x) <$> keysNow
                         st' <- if killed || not there then pure st else updateClaims s root path (M.adjust (landed (fst result)) (key x))
                         checkAll st' (tallied tally result) rest
-          (store2, tally, cancelledMid) <- checkAll store1 (PassTally 0 0 0 0 0 0) queue
+          (store2, tally, cancelledMid) <- checkAll store1 (PassTally 0 0 0 0 0 0 0) queue
           end <- getMonotonicTime
           let left = length (queued now ss store2)
               rec =
@@ -753,16 +755,18 @@ nonEmpty :: S.Set a -> Maybe (S.Set a)
 nonEmpty x = if S.null x then Nothing else Just x
 
 -- | What a pass's checks came to.
-data PassTally = PassTally {ptChecked, ptRight, ptWrong, ptCannotTell, ptFailed :: Int, ptCost :: Double}
+data PassTally = PassTally {ptChecked, ptRight, ptWrong, ptCannotTell, ptFailed, ptPriced :: Int, ptCost :: Double}
 
 tallied :: PassTally -> (Either Failure CheckRecord, Double) -> PassTally
-tallied t (r, cost) = case r of
+tallied t0 (r, cost) = case r of
   Left _ -> t {ptFailed = ptFailed t + 1, ptCost = ptCost t + cost}
   Right c ->
     let j = cfJudgement (cjConfirmed c)
      in t { ptChecked = ptChecked t + 1, ptCost = ptCost t + cost
           , ptRight = ptRight t + fromEnum (j == JRight), ptWrong = ptWrong t + fromEnum (j == JWrong)
           , ptCannotTell = ptCannotTell t + fromEnum (j == JCannotTell) }
+  where
+    t = t0 {ptPriced = ptPriced t0 + fromEnum (cost > 0)}
 
 -- | One check of one sentence, recorded as a `check` errand (AUTO when the
 -- pass asked, not the user): the stored check or the failure, and what it

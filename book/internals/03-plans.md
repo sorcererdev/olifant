@@ -340,7 +340,7 @@ the whole of it:
    time, skipping a key another pass or `checkOne` holds in `ssChecking` or has checked since
    (the held store, not the pass's copy, is asked). Before each: stop when
    the token is tripped, when `pass_budget` seconds are spent, or when the
-   spend so far plus the estimate (this pass's mean, else `unpricedCheck`) would pass
+   spend so far plus the estimate (this pass's mean over the runs that cost something, a run that never started costing $0; else `unpricedCheck`) would pass
    `pass_cost`. `checkSentence` runs `checkerUnder` (the recorded checker when `scCheckAnswers`
    is set, else `liveChecker`), reads the reply with `parseCheckReply` and confirms it with
    `confirm`; it appends a `check` errand record (`erAuto`). The sentence's key sits in

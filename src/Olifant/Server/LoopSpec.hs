@@ -1039,6 +1039,13 @@ claimPassSpec = describe "Olifant.Server.Loop (claimPass)" $ describe "claimPass
       length [k | k <- keys, verdictOf a2 k == Just JRight] `shouldBe` 10
       kinds <- asked dir
       length (filter (== "sentence-kind") kinds) `shouldBe` 12
+  it "failures that cost nothing do not lower the estimate: the cap holds" $ do
+    let plan6 = T.unlines ["Fails number " <> tshow n <> " here." | n <- [1 .. 3 :: Int]] <> T.unlines ["Claim number " <> tshow n <> " holds." | n <- [1 .. 3 :: Int]]
+        dear = object ["text" .= ("I read it.\n```json\n{\"verdict\": \"right\", \"why\": \"it returns 1\", \"evidence\": [{\"path\": \"" <> T.pack table <> "\", \"unit\": \"helper\"}]}\n```" :: Text), "cost" .= (0.2 :: Double)]
+    withPass plan6 "" [("Claim number " <> tshow n <> " holds.", dear) | n <- [1 .. 3 :: Int]] $ \dir s -> do
+      (_, a) <- pass SavePass dir s
+      fmap (\r -> (prFailed r, prChecked r)) (paRecord a) `shouldBe` Just (3, 2)
+      fmap ((<= 0.5 + 1e-9) . prCost) (paRecord a) `shouldBe` Just True
   it "a failed check waits ten minutes" $
     withPass plan "" [] $ \dir s -> do
       (s1, a1) <- pass SavePass dir s

@@ -146,7 +146,7 @@ In `.olifant/config.toml`, all optional:
 | `do_tools` | `[]` | extra `--allowedTools` entries for `do` (beyond Read, Grep, Glob, Edit, Write and the test command) |
 | `ladder` | `[model] ladder` without Jev | the backends a reconcile climbs when Jev is unsure, in order, each with its `escalate` policy (the claim pass uses neither) |
 | `pass_budget` | `30` | seconds an automatic claim pass may run ([below](#checked-as-you-go)), counted from its start and checked before each triage and each check; `0` turns the pass off. What it did not reach waits for the next pass |
-| `pass_cost` | `0.50` | dollars an automatic claim pass may spend on checks: before each check it adds the mean cost of this pass's checks so far (else $0.10) and stops if that would pass the cap; `0` checks nothing. A check whose cost the runner did not report counts as $0.10 |
+| `pass_cost` | `0.50` | dollars an automatic claim pass may spend on checks: before each check it adds the mean cost of this pass's checks so far that cost something (a run that never started costs nothing and is left out; else $0.10) and stops if that would pass the cap; `0` checks nothing. A check whose cost the runner did not report counts as $0.10 |
 | `check_model` | `"sonnet"` | the model a check runs on (`--model`) |
 | `check_timeout` | `120` | seconds before a check is killed (at least 1) |
 | `not_evidence` | `["docs"]` | folders a check may not read, besides `dir` and `.olifant/` (add `"book"` when a project's book repeats its plans) |
