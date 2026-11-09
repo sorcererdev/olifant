@@ -1,5 +1,6 @@
 module Olifant.Server.ClaimsSpec (spec) where
 
+import Control.Concurrent.Async (async, wait)
 import Control.Monad (forM)
 import Data.IORef (modifyIORef, newIORef, readIORef)
 import Data.Map.Strict qualified as M
@@ -70,6 +71,13 @@ spec = describe "Olifant.Server.Claims" $ do
     readIORef wrote `shouldReturn` [claimsPath "/r1" "plans/t.md" <> ".tmp"]
     readClaims ports "/r1" "plans/t.md" `shouldReturn` store
     fileExists ws (claimsPath "/r1" "plans/t.md" <> ".tmp") `shouldReturn` False
+  it "(n) updateClaims changes the store as it is now: concurrent writers lose nothing" $ do
+    (s, _) <- claimsServer
+    let keys = [T.pack ("k" <> show i) | i <- [1 .. 40 :: Int]]
+    done <- mapM (\k -> async (updateClaims s "/r1" "plans/t.md" (M.insert k aside))) keys
+    mapM_ wait done
+    M.keys <$> claimsOf s "/r1" "plans/t.md" `shouldReturn` M.keys (M.fromList [(k, ()) | k <- keys])
+    M.size <$> readClaims (ssPorts s) "/r1" "plans/t.md" `shouldReturn` 40
   it "(h) pruneOrphanClaims removes the stores of plans that no longer exist" $ do
     (s, _) <- claimsServer
     let store = M.fromList [("a", aside)]

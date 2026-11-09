@@ -18,6 +18,7 @@ module Olifant.Server.Claims
   , checkedKeys
   , claimsOf
   , storeClaims
+  , updateClaims
   ) where
 
 import Control.Concurrent.MVar (MVar, newMVar, withMVar)
@@ -36,7 +37,7 @@ import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Time (NominalDiffTime, UTCTime, addUTCTime)
 import Data.Dynamic (fromDynamic, toDyn)
-import Data.IORef (modifyIORef', readIORef)
+import Data.IORef (atomicModifyIORef', readIORef)
 import Olifant.App (Ports (..))
 import Olifant.Server.State (ServerState (..))
 import Data.Set (Set)
@@ -217,14 +218,31 @@ claimsOf s root plan = do
     Just cs -> pure cs
     Nothing -> do
       cs <- readClaims (ssPorts s) root plan
-      modifyIORef' (ssClaims s) (M.insert (heldAt root plan) (toDyn cs))
-      pure cs
+      -- another reader may have loaded it first: theirs is kept
+      atomicModifyIORef' (ssClaims s) $ \m -> case M.lookup (heldAt root plan) m >>= fromDynamic of
+        Just theirs -> (m, theirs)
+        Nothing -> (M.insert (heldAt root plan) (toDyn cs) m, cs)
 
--- | A plan's store kept by the server and written to disk.
+-- | A plan's store replaced by CS, kept by the server and written to disk
+-- (tests; the pass and Check this use 'updateClaims').
 storeClaims :: ServerState -> FilePath -> FilePath -> ClaimStore -> IO ()
-storeClaims s root plan cs = do
-  modifyIORef' (ssClaims s) (M.insert (heldAt root plan) (toDyn cs))
-  writeClaims (ssPorts s) root plan cs
+storeClaims s root plan cs = void (updateClaims s root plan (const cs))
+
+-- | Change a plan's store: F applied to the store as the server holds it
+-- now, kept and written to disk, all under one lock, so two writers (a
+-- pass and Check this, two passes) never write from a stale copy. The
+-- store after.
+updateClaims :: ServerState -> FilePath -> FilePath -> (ClaimStore -> ClaimStore) -> IO ClaimStore
+updateClaims s root plan f =
+  withMVar updateLock $ \() -> do
+    cs <- f <$> claimsOf s root plan
+    atomicModifyIORef' (ssClaims s) (\m -> (M.insert (heldAt root plan) (toDyn cs) m, ()))
+    writeClaims (ssPorts s) root plan cs
+    pure cs
+
+{-# NOINLINE updateLock #-}
+updateLock :: MVar ()
+updateLock = unsafePerformIO (newMVar ())
 
 -- | A plan's absolute path, the server's key for its store.
 heldAt :: FilePath -> FilePath -> FilePath

@@ -47,7 +47,7 @@ a new-step ghost worded from the unit's header.
 | `Plans/Sentences.hs` | the **sentences** of a plan, pure: `sentences :: [Line] -> [Sentence]` (row and column range, the line's `Kind`, the text with markers stripped, heading, lead, anchor) and `sentenceKey`, a sentence's words without anchor or verdict |
 | `Server/Triage.hs` | **triage**: `byGrammar` (steps, questions), `triageQuestions` (Jev's `sentence-kind` choice with no unsure and its `about-code` Noul, one state), `fromAnswers`, `noJev`, and `route` with the two thresholds `kindThreshold` and `aboutThreshold` |
 | `Server/Checker.hs` | the **checker**: `checkPrompt`, `parseCheckReply`, `confirm` (every citation checked against the tree and the catalog), `liveChecker` (the `Check` verb of `runClaude`), `recordedChecker`, `replayChecker`, `checkerUnder`; `UnitRef` |
-| `Server/Claims.hs` | the **claim store**, version 2 (`SentenceEntry`: triage, route, `CheckRecord` or `Failure`; `ClaimStore` keyed by `sentenceKey`; `readClaims`/`writeClaims` under `.olifant/state/claims/`; `claimsOf`/`storeClaims` through `ssClaims`), `queued`, `pruneClaims`, `checkedKeys`, `lineKey` |
+| `Server/Claims.hs` | the **claim store**, version 2 (`SentenceEntry`: triage, route, `CheckRecord` or `Failure`; `ClaimStore` keyed by `sentenceKey`; `readClaims`/`writeClaims` under `.olifant/state/claims/`; `claimsOf`/`updateClaims` through `ssClaims`: every write is a function of the store as held now, under one lock), `queued`, `pruneClaims`, `checkedKeys`, `lineKey` |
 | `Server/Confine.hs` | `confined` and `safely`, which `Server/Plans` re-exports (here so `LoopQuestions` and `Checker` need not import `Server/Plans`) |
 | `Transcripts.hs`, `Cli.hs` `runPlansCost` | `olifant plans cost`: the records beside Claude Code's own transcripts |
 | `Landings.hs` | a plan's landings from `git log --first-parent` (`landingsOf`, `parseLandings`), and `landingFor`, the first landing at or after a time |
@@ -330,11 +330,13 @@ the whole of it:
    one `weighAll` request to Jev (`rgJev` of `rungsFor`, i.e. `deciderUnder`) with the two
    `triageQuestions`, read by `fromAnswers`; with no Jev, `noJev` (a `- ` bullet is a claim).
    `route` turns the `Triage` into `Verify`, `Progress`, `Asked` or `Aside`. Each is stored as a
-   `SentenceEntry`; the store is written once after triage. The budget and the token are asked
+   `SentenceEntry`; the new entries are merged once after triage (`updateClaims`, into the
+   store as it is then). The budget and the token are asked
    before each sentence.
 3. **Check.** Only for `SavePass`, or `OpenPass` with a store that existed: `Claims.queued`
    (Verify, no check, no failure in the last `retryAfter`, plan order, one per key), one at a
-   time, skipping a key another pass or `checkOne` holds in `ssChecking`. Before each: stop when
+   time, skipping a key another pass or `checkOne` holds in `ssChecking` or has checked since
+   (the held store, not the pass's copy, is asked). Before each: stop when
    the token is tripped, when `pass_budget` seconds are spent, or when the
    spend so far plus the estimate (this pass's mean, else `unpricedCheck`) would pass
    `pass_cost`. `checkSentence` runs `checkerUnder` (the recorded checker when `scCheckAnswers`
@@ -344,7 +346,7 @@ the whole of it:
    token: a tripped token stops the pass before the next check, and the check in flight
    finishes. After it, the result is stored only when its key is still among the plan's
    sentences as the editor has them now (`ssLiveDoc`, else the pass's text) and `ssCancel` was
-   not tripped; its cost goes into the tally either way. A failed run or a reply with no verdict
+   not tripped (`updateClaims` adjusts that one entry); its cost goes into the tally either way. A failed run or a reply with no verdict
    stores a `Failure`.
 4. **End.** A `PassRecord` (kind `pass`) is appended when Jev was asked or a check ran. A pass
    stopped by the token answers `Left "cancelled"`.
@@ -457,8 +459,8 @@ in the main checkout (the git-backed specs refuse worktrees).
 | `Plans/SentencesSpec` | the splitter: steps whole, what gives no sentence, paragraphs across rows, numbered lines, abbreviations, versions, code spans, URLs, keys, leads |
 | `Server/TriageSpec` | the route table, the grammar, no Jev, the shared state and no unsure |
 | `Server/CheckerSpec` | fences, the prompt, the reply reader, `confirm` (fenced or missing citations cannot tell), the runner with the shim, recorded replies |
-| `Server/ClaimsSpec` | store v2: round trip, a version-1 file read as empty, atomic writes, orphans, `pruneClaims`, `queued`, `checkedKeys` |
-| `Server/LoopSpec` `claimPassSpec` | the pass: idle triages only, save checks, open with and without a store, the cost cap and resuming, a failure waits ten minutes, a cancel lets the check in flight land (or drops it when its sentence changed), a key held elsewhere is skipped, nothing written to the plan, a typed anchor in the prompt, budget 0, no Jev |
+| `Server/ClaimsSpec` | store v2: round trip, a version-1 file read as empty, atomic writes, concurrent `updateClaims`, orphans, `pruneClaims`, `queued`, `checkedKeys` |
+| `Server/LoopSpec` `claimPassSpec` | the pass: idle triages only, save checks, open with and without a store, the cost cap and resuming, a failure waits ten minutes, a cancel lets the check in flight land (or drops it when its sentence changed), a key held elsewhere is skipped, Check this during a pass, nothing written to the plan, a typed anchor in the prompt, budget 0, no Jev |
 | `Server/ProseCorpusSpec` | the milestone gate on the prose corpus (below) |
 | `LspSpec` (`plansSpec`, `plansLoopSpec`, `plansStage1Spec`, `doReviewSpec`, `claimPassSpec`) | every request, in process, over pipes |
 

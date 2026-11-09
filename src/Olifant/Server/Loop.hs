@@ -51,7 +51,7 @@ module Olifant.Server.Loop
   ) where
 
 import Data.Time (UTCTime)
-import Control.Monad (forM, join, when)
+import Control.Monad (forM, join, unless, void, when)
 import Data.Aeson (Value, object, (.=))
 import Data.Bifunctor (bimap)
 import Data.Containers.ListUtils (nubOrd, nubOrdOn)
@@ -80,7 +80,7 @@ import Olifant.Server.LoopTypes
 import Olifant.Server.Plans (Resolved (..), confined, currentBranch, gitOut, gitText, resolveAnchor, safely)
 import Olifant.Server.State (ServerState (..), appendStepLine, projectFor)
 import Olifant.Server.Telemetry (Decision (..), ErrandRecord (..), OutcomeRecord (..), PassRecord (..), ReconcileRecord (..), Record (..), appendRecord, errandId, readRecords, recordsPath)
-import Olifant.Server.Claims (CheckRecord (..), ClaimStore, Failure (..), SentenceEntry (..), claimsOf, claimsPath, pruneClaims, pruneOrphanClaims, queued, storeClaims)
+import Olifant.Server.Claims (CheckRecord (..), ClaimStore, Failure (..), SentenceEntry (..), claimsOf, claimsPath, pruneClaims, pruneOrphanClaims, queued, updateClaims)
 import Olifant.Plans.Sentences (Sentence (..), sentenceKey, sentences)
 import Olifant.Server.Checker (Checker, Confirmed (..), Judgement (..), checkPrompt, checkerUnder, confirm, fences, parseCheckReply)
 import Olifant.Server.Errand (RunFailure (..), RunResult (..), Status (..))
@@ -648,8 +648,10 @@ claimPass token mode path s0 = do
                     tr <- triage jev x
                     let e = SentenceEntry tr (route tr) Nothing Nothing now
                     triageAll (M.insert (key x) e st) (n + 1) (calls + (if trBy tr == "jev" then 1 else 0)) rest
-          (store1, triaged, jevCalls, stoppedEarly) <- triageAll (pruneClaims ss store0) (0 :: Int) (0 :: Int) fresh
-          when (store1 /= store0) (storeClaims s root path store1)
+          (triagedStore, triaged, jevCalls, stoppedEarly) <- triageAll M.empty (0 :: Int) (0 :: Int) fresh
+          -- merged into the store as it is now (Check this may have written meanwhile)
+          let merge cur = M.union (pruneClaims ss cur) triagedStore
+          store1 <- if merge store0 /= store0 then updateClaims s root path merge else claimsOf s root path
           let checking = mode == SavePass || (mode == OpenPass && existed)
               queue = if checking && not stoppedEarly then queued now ss store1 else []
               -- the checker is killed only by the server's own cancel (the
@@ -666,8 +668,11 @@ claimPass token mode path s0 = do
                 t <- elapsed
                 let spent = ptCost tally
                     estimate = if ptChecked tally + ptFailed tally > 0 then spent / fromIntegral (ptChecked tally + ptFailed tally) else unpricedCheck
-                -- a sentence another pass (or Check this) is checking now is its
-                elsewhere <- S.member (key x) . M.findWithDefault S.empty held <$> readIORef (ssChecking s)
+                -- a sentence another pass (or Check this) is checking now, or
+                -- has checked since this pass read the store, is not checked again
+                busy <- S.member (key x) . M.findWithDefault S.empty held <$> readIORef (ssChecking s)
+                ready <- not . null . queued now [x] <$> claimsOf s root path
+                let elsewhere = busy || not ready
                 if stop
                   then pure (st, tally, True)
                   else
@@ -682,8 +687,7 @@ claimPass token mode path s0 = do
                         -- while its sentence is in the plan, paid for either way
                         killed <- cancelled (ssCancel s)
                         there <- S.member (key x) <$> keysNow
-                        let st' = if killed || not there then st else M.adjust (\e -> either (\f -> e {seFailure = Just f}) (\c -> e {seCheck = Just c, seFailure = Nothing}) (fst result)) (key x) st
-                        when (st' /= st) (storeClaims s root path st')
+                        st' <- if killed || not there then pure st else updateClaims s root path (M.adjust (landed (fst result)) (key x))
                         checkAll st' (tallied tally result) rest
           (store2, tally, cancelledMid) <- checkAll store1 (PassTally 0 0 0 0 0 0) queue
           end <- getMonotonicTime
@@ -728,20 +732,21 @@ checkOne token path wanted s0 =
         x : _ -> do
           now <- pNow (ssPorts s)
           store0 <- claimsOf s root path
-          store1 <- case M.lookup wanted store0 of
-            Just _ -> pure store0
-            Nothing -> do
-              tr <- triage (rgJev (rungsFor s {ssCancel = token} p False)) x
-              pure (M.insert wanted (SentenceEntry tr (route tr) Nothing Nothing now) store0)
+          unless (M.member wanted store0) $ do
+            tr <- triage (rgJev (rungsFor s {ssCancel = token} p False)) x
+            void (updateClaims s root path (M.insertWith (\_ old -> old) wanted (SentenceEntry tr (route tr) Nothing Nothing now)))
           atomicModifyIORef' (ssChecking s) (\m -> (M.insertWith S.union held (S.singleton wanted) m, ()))
           (result, _) <- checkSentence s p cfg (checkerUnder s token cfg root) False now rel x
           atomicModifyIORef' (ssChecking s) (\m -> (M.update (nonEmpty . S.delete wanted) held m, ()))
           cancelled token >>= \case
             True -> pure (s, Left "cancelled")
             False -> do
-              let store2 = M.adjust (\e -> either (\f -> e {seFailure = Just f}) (\c -> e {seCheck = Just c, seFailure = Nothing}) result) wanted store1
-              storeClaims s root path store2
+              store2 <- updateClaims s root path (M.adjust (landed result) wanted)
               pure (s, either (Left . fuWhy) (const (Right store2)) result)
+
+-- | A check's result in its sentence's entry.
+landed :: Either Failure CheckRecord -> SentenceEntry -> SentenceEntry
+landed r e = either (\f -> e {seFailure = Just f}) (\c -> e {seCheck = Just c, seFailure = Nothing}) r
 
 -- | A set, unless empty.
 nonEmpty :: S.Set a -> Maybe (S.Set a)

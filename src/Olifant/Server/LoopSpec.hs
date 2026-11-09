@@ -1086,6 +1086,19 @@ claimPassSpec = describe "Olifant.Server.Loop (claimPass)" $ describe "claimPass
       (_, a) <- pass SavePass dir s
       checksAsked dir `shouldReturn` []
       fmap prChecked (paRecord a) `shouldBe` Just 0
+  it "Check this during a pass: neither write loses the other's verdict, nothing checked twice" $ do
+    let two = "First claim holds.\nSecond claim holds.\n"
+        slow = object ["text" .= ("I read it.\n```json\n{\"verdict\": \"right\", \"why\": \"it returns 1\", \"evidence\": [{\"path\": \"" <> T.pack table <> "\", \"unit\": \"helper\"}]}\n```" :: Text), "cost" .= (0.1 :: Double), "delay" .= (1 :: Double)]
+    withPass two "" [("First claim holds.", slow), ("Second claim holds.", reply "wrong")] $ \dir s -> do
+      (s1, _) <- pass IdlePass dir s
+      -- Check this on the second while the pass checks the first
+      one <- async (let go = checksAsked dir >>= \ks -> if length ks >= 1 then checkOne neverCancel (dir </> "plans/t.md") "Second claim holds." s1 else threadDelay 10000 >> go in go)
+      _ <- pass SavePass dir s1
+      _ <- waitCatch one
+      stored <- readClaims (ssPorts s) dir "plans/t.md"
+      let checkedOf k = cfJudgement . cjConfirmed <$> (M.lookup k stored >>= seCheck)
+      map checkedOf ["First claim holds.", "Second claim holds."] `shouldBe` [Just JRight, Just JWrong]
+      checksAsked dir `shouldReturn` ["First claim holds.", "Second claim holds."]
   it "the pass writes nothing to the plan" $
     withPass plan "" [("The helper returns one.", reply "right")] $ \dir s -> do
       before <- TIO.readFile (dir </> "plans/t.md")
