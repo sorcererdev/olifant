@@ -21,7 +21,7 @@ import Olifant.Process (gitStateStamp)
 import Olifant.Server (ServerState, newServerState, projectFor)
 import Olifant.Server.Plans
 import Olifant.Server.Claims (CheckRecord (..), Failure (..), SentenceEntry (..))
-import Olifant.Plans.Sentences (sentences)
+import Olifant.Plans.Sentences (sentences, sentencesWith)
 import Olifant.Server.Triage (Route (..), Triage (..))
 import Olifant.Server.Errand (Belief (..), BeliefCheck (..))
 import Olifant.Server.Checker (Citation (..), Confirmed (..), Judgement (..), UnitRef (..))
@@ -189,8 +189,8 @@ spec = describe "Olifant.Server.Plans (anchors in the server)" $ do
           , (Just (InR "claim-checking"), Just DiagnosticSeverity_Hint, "… Checking") ]
     it "no queued hint when checks cannot run" $
       map show' (claimHints False store S.empty (ss ["Queued one.", "Right one."])) `shouldBe` [(Just (InR "claim-right"), Just DiagnosticSeverity_Hint, "✓ Right · it returns 1 · src/a.py:Foo")]
-    it "a two-row sentence's range spans both rows; two sentences on a row are two hints" $ do
-      let ds = claimHints True (M.fromList [("Right one. Wrong one.", queuedEntry), ("Queued one. Right one.", queuedEntry), ("Queued one.", queuedEntry), ("Right one.", verdictEntry JRight "x")]) S.empty (ss ["Queued one. Right", "one."])
+    it "a two-row sentence (rows joined) spans both rows; two sentences on a row are two hints" $ do
+      let ds = claimHints True (M.fromList [("Right one. Wrong one.", queuedEntry), ("Queued one. Right one.", queuedEntry), ("Queued one.", queuedEntry), ("Right one.", verdictEntry JRight "x")]) S.empty (sentencesWith (== 0) (parsePlan (T.unlines ["Queued one. Right", "one."])))
       map rangeOf ds `shouldBe` [(0, 0, 0, 11), (0, 12, 1, 4)]
       map (^. L.code) ds `shouldBe` [Just (InR "claim-queued"), Just (InR "claim-right")]
     it "the old resolved code and No unit found are gone" $ do

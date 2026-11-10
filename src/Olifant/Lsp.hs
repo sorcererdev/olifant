@@ -34,11 +34,11 @@ import Data.Aeson.KeyMap qualified as KM
 import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe, mapMaybe)
 import Olifant.Plans (Anchor (..), Kind (..), Line (..), Verdict (..), anchorText, childrenOf, excerptInfo, excerptSpans, parsePlan, stepDone, testState, withVerdict)
 import Olifant.Server.Unit (Named (..))
-import Olifant.Server.Claims (checkedKeys, claimsOf)
+import Olifant.Server.Claims (checkedKeys, claimsOf, sentencesOf)
 import Olifant.Server.Loop (PassAnswer (..), PassMode (..), checkOne, claimPass)
 import Olifant.Server.Claims (CheckRecord (..), SentenceEntry (..))
 import Olifant.Server.Checker (Citation (..), Confirmed (..), Judgement (..), evidenceText, judgementName)
-import Olifant.Plans.Sentences (Sentence (..), sentenceKey, sentences)
+import Olifant.Plans.Sentences (Sentence (..), sentenceKey)
 import Data.Text qualified as T
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (find, isInfixOf, nub)
@@ -1639,9 +1639,9 @@ planHover env project path (Position l c) = do
     a : _ -> withSnapshot env (\s -> (s,) <$> unitHover s project a) <&> fmap (\md -> Hover (InL (MarkupContent MarkupKind_Markdown md)) Nothing)
     [] -> do
       -- off an anchor: what the claim pass found for the sentences on the row
-      store <- readMVar (envState env) >>= \s -> claimsOf s (prRoot project) path
+      (store, ss) <- readMVar (envState env) >>= \s -> (,) <$> claimsOf s (prRoot project) path <*> sentencesOf s (prRoot project) path (parsePlan text)
       let row = fromIntegral l
-      pure $ case claimHover store [x | x <- sentences (parsePlan text), snRow x <= row, row <= snEndRow x] of
+      pure $ case claimHover store [x | x <- ss, snRow x <= row, row <= snEndRow x] of
         Just md -> Just (Hover (InL (MarkupContent MarkupKind_Markdown md)) Nothing)
         Nothing -> Nothing
 
@@ -1653,10 +1653,10 @@ sentenceActions :: Env -> FilePath -> Position -> IO [CodeAction]
 sentenceActions env path (Position l c) =
   planContext env path >>= \case
     Just (p, _, text) | isPlanPath p path -> do
-      store <- readMVar (envState env) >>= \s -> claimsOf s (prRoot p) path
+      (store, ss) <- readMVar (envState env) >>= \s -> (,) <$> claimsOf s (prRoot p) path <*> sentencesOf s (prRoot p) path (parsePlan text)
       let row = fromIntegral l
           col = T.length (takeUtf16 (fromIntegral c) (lineAt (T.splitOn "\n" text) row))
-          onRow = [x | x <- sentences (parsePlan text), snRow x <= row, row <= snEndRow x]
+          onRow = [x | x <- ss, snRow x <= row, row <= snEndRow x]
           inside x = (snRow x, snCol x) <= (row, col) && (row, col) <= (snEndRow x, snEndCol x)
           uri = getUri (filePathToUri path)
           cfg = catalogPlans (prCatalog p)

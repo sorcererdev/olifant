@@ -1,6 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 module Olifant.Plans.SentencesSpec (spec) where
 
+import qualified Data.Map.Strict as M
 import Data.Text (Text)
 import qualified Data.Text as T
 import Olifant.Plans
@@ -45,8 +46,8 @@ spec = describe "Olifant.Plans.Sentences" $ do
     snKind s `shouldBe` Heading 2
     snHeading s `shouldBe` "Raw votes"
 
-  it "splits a paragraph across rows" $ do
-    let ss = of_ ["There is no AI in the codebase yet. We would have to", "redeploy everything."]
+  it "splits a paragraph across rows when the rows join" $ do
+    let ss = sentencesWith (== 0) (parsePlan (T.unlines ["There is no AI in the codebase yet. We would have to", "redeploy everything."]))
     map snText ss `shouldBe` ["There is no AI in the codebase yet.", "We would have to redeploy everything."]
     let [a, b] = ss
     (snRow a, snCol a, snEndRow a, snEndCol a) `shouldBe` (0, 0, 0, 35)
@@ -105,3 +106,48 @@ spec = describe "Olifant.Plans.Sentences" $ do
   it "leads a bullet with the bullet above it in the same run" $
     map snLead (of_ ["- WebFetcher retries.", "- The collector retries."])
       `shouldBe` [Nothing, Just "WebFetcher retries."]
+
+  describe "a line ends a sentence" $ do
+    let five =
+          [ "The collector retries 3 times.. On failures it does exponential backoff"
+          , "There is no AI in the codebase yet."
+          , "every scraper fix means a code change and a deploy"
+          , "volunteers cant assignthemselves."
+          , "I think raw vote totals from 2018 are stored with D and R columns"
+          ]
+    it "gives the user's five lines as six sentences, none spanning rows" $ do
+      let ss = of_ five
+      map snText ss `shouldBe`
+        [ "The collector retries 3 times.."
+        , "On failures it does exponential backoff"
+        , "There is no AI in the codebase yet."
+        , "every scraper fix means a code change and a deploy"
+        , "volunteers cant assignthemselves."
+        , "I think raw vote totals from 2018 are stored with D and R columns"
+        ]
+      all (\x -> snRow x == snEndRow x) ss `shouldBe` True
+      map snRow ss `shouldBe` [0, 0, 1, 2, 3, 4]
+
+    it "joins a hard-wrapped paragraph when the predicate says the rows continue" $ do
+      let ls = parsePlan (T.unlines ["The collector retries a failed request three times before it gives up and", "marks the county for hand entry."])
+      map snText (sentencesWith (== 0) ls) `shouldBe`
+        ["The collector retries a failed request three times before it gives up and marks the county for hand entry."]
+      let [s] = sentencesWith (== 0) ls
+      (snRow s, snEndRow s) `shouldBe` (0, 1)
+      length (sentences ls) `shouldBe` 2
+
+    it "offers as join candidates only rows that do not end a sentence" $
+      map (\(r, _, _) -> r) (joinCandidates (parsePlan (T.unlines five))) `shouldBe` [0, 2]
+
+    it "gives the candidate's two rows' texts" $
+      joinCandidates (parsePlan (T.unlines ["We would have to", "redeploy everything."]))
+        `shouldBe` [(0, "We would have to", "redeploy everything.")]
+
+    it "does not offer a row ending in a closing quote or paren after a stop" $
+      joinCandidates (parsePlan (T.unlines ["It said \"done.\"", "next", "", "(see x.)", "next"])) `shouldBe` []
+
+    it "joins rows by their pair key in the stored joins" $ do
+      let ls = parsePlan (T.unlines ["We would have to", "redeploy everything."])
+          k = pairKey "We would have to" "redeploy everything."
+      map snText (sentencesJoined (M.fromList [(k, True)]) ls) `shouldBe` ["We would have to redeploy everything."]
+      map snText (sentencesJoined (M.fromList [(k, False)]) ls) `shouldBe` ["We would have to", "redeploy everything."]

@@ -66,10 +66,10 @@ import Olifant.Plans (Anchor (..), Line (..), Section (..), Verdict (..), parseP
 import Olifant.Server.State (ServerConfig (..), ServerState (..))
 import System.Directory (doesFileExist, findExecutable)
 import Olifant.Server.Confine (confined, safely)
-import Olifant.Server.Claims (CheckRecord (..), ClaimStore, SentenceEntry (..), lineKey, claimsOf)
+import Olifant.Server.Claims (CheckRecord (..), ClaimStore, SentenceEntry (..), lineKey, claimsOf, sentencesOf)
 import Olifant.Server.Triage (Route (..))
 import Olifant.Server.Checker (Confirmed (..), Judgement (..), evidenceText)
-import Olifant.Plans.Sentences (Sentence (..), sentenceKey, sentences)
+import Olifant.Plans.Sentences (Sentence (..), sentenceKey)
 import Data.Set (Set)
 import Data.Set qualified as S
 import Olifant.Server.Unit (Named (..), fingerprint, unitLookupIn, unitsOf, unitsWithKinds)
@@ -130,6 +130,7 @@ planDiagnostics s p path text = do
       anchored = [(l, a) | l <- ls, Just a <- [lnAnchor l]]
   resolved <- resolveAll s p (map snd anchored)
   store <- claimsOf s (prRoot p) path
+  ss <- sentencesOf s (prRoot p) path ls
   checking <- M.findWithDefault S.empty (normalisePath path) <$> readIORef (ssChecking s)
   can <- checksCanRun s p
   let rows = T.splitOn "\n" text
@@ -138,7 +139,7 @@ planDiagnostics s p path text = do
         let Range (Position r0 c0) (Position r1 c1) = d ^. L.range
          in d & L.range .~ Range (Position r0 (utf16At (fromIntegral r0) (fromIntegral c0))) (Position r1 (utf16At (fromIntegral r1) (fromIntegral c1)))
   pure
-    ( mapMaybe (\(l, a) -> diagnose ls l a =<< M.lookup (key a) resolved) anchored ++ map inUtf16 (claimHints can store checking (sentences ls))
+    ( mapMaybe (\(l, a) -> diagnose ls l a =<< M.lookup (key a) resolved) anchored ++ map inUtf16 (claimHints can store checking ss)
     , M.map (\r -> rsFingerprint r <* rsUnit r) resolved )
   where
     diagnose ls l a r = case (rsUnit r, lnVerdict l, rsFingerprint r) of
