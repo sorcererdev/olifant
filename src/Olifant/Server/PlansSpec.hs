@@ -11,7 +11,7 @@ import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
 import Data.Time (UTCTime (..), fromGregorian)
 import Language.LSP.Protocol.Lens qualified as L
-import Language.LSP.Protocol.Types (DiagnosticSeverity (..), type (|?) (..))
+import Language.LSP.Protocol.Types (DiagnosticSeverity (..), TextEdit (..), uriToFilePath, type (|?) (..))
 import Olifant.App (Ports (..), Project)
 import Olifant.Doctor (DoctorPorts (..))
 import Olifant.Language (Match (..), noChecker, noRunner, querying)
@@ -196,9 +196,44 @@ spec = describe "Olifant.Server.Plans (anchors in the server)" $ do
     it "the old resolved code and No unit found are gone" $ do
       let all' = claimHints True store S.empty (ss ["Queued one.", "Right one.", "Wrong one.", "Unsure one."])
       [d | d <- all', d ^. L.code == Just (InR "claim-resolved")] `shouldBe` []
-      claimHover store (ss ["Queued one. Right one."]) `shouldBe` Just "Unchecked claim · saved passes check it, or Check this\n\nRight · it returns 1 · src/a.py:Foo"
+      claimHover store (ss ["Queued one. Right one."]) `shouldBe` Just "Unchecked claim · saved passes check it, or Check this\n\nRight · it returns 1 · src/a.py:Foo\n\ngd: the code · Keep this verdict: <leader>mpk"
       claimHover store (ss ["Aside one."]) `shouldBe` Nothing
       fmap (T.isInfixOf "No unit found") (claimHover store (ss ["Right one."])) `shouldBe` Just False
+  describe "gd and Keep this verdict" $ do
+    let checkOf e = case seCheck e of
+          Just c -> c
+          Nothing -> error "no check"
+        two = queuedEntry {seCheck = Just (CheckRecord (Confirmed JWrong "it drops D" [Citation "app/x.py" (Just "f") (Just 2), Citation "app/y.py" (Just "g") Nothing] (Just (UnitRef "app/x.py" "f")) Nothing) "m" Nothing 1 at0)}
+        insertOf (TextEdit r t) = ((r ^. L.start . L.line, r ^. L.start . L.character), (r ^. L.end . L.line, r ^. L.end . L.character), t)
+        one_ ls = case sentences ls of
+          x : _ -> x
+          [] -> error "no sentence"
+    it "every citation, in the checker's order, at its line, else its unit's first line, else line 1" $ do
+      let locs = citationLocations "/r1" (M.fromList [(("app/y.py", "g"), 7)]) two
+      [(uriToFilePath (l ^. L.uri), l ^. L.range . L.start . L.line) | l <- locs] `shouldBe` [(Just "/r1/app/x.py", 1), (Just "/r1/app/y.py", 6)]
+      map (^. L.range . L.start . L.line) (citationLocations "/r1" M.empty two) `shouldBe` [1, 0]
+      citationLocations "/r1" M.empty queuedEntry `shouldBe` []
+    it "keeps a verdict one level under a bullet" $ do
+      let ls = parsePlan "- The loader keeps D.\n- next\n"
+      fmap insertOf (keepEdit ls (one_ ls) (checkOf two)) `shouldBe` Just ((0, 21), (0, 21), "\n  - ✗ it drops D (app/x.py:f)")
+    it "keeps a verdict one level under a step" $ do
+      let ls = parsePlan "  - [ ] Make the loader keep D\n"
+      fmap insertOf (keepEdit ls (one_ ls) (checkOf (verdictEntry JRight "it keeps D"))) `shouldBe` Just ((0, 30), (0, 30), "\n    - ✓ it keeps D (src/a.py:Foo)")
+    it "keeps a verdict after the last row of a two-row paragraph sentence, at its indent" $ do
+      let ls = parsePlan "The loader keeps\nD in memory.\n"
+          [x] = sentencesWith (== 0) ls
+      fmap insertOf (keepEdit ls x (checkOf (verdictEntry JRight "it does"))) `shouldBe` Just ((1, 12), (1, 12), "\n- ✓ it does (src/a.py:Foo)")
+    it "keeps nothing when the same evidence line is already below, or the check could not tell" $ do
+      let ls = parsePlan "- The loader keeps D.\n  - ✗ it drops D (app/x.py:f)\n"
+      fmap insertOf (keepEdit ls (one_ ls) (checkOf two)) `shouldBe` Nothing
+      let ls' = parsePlan "- The loader keeps D.\n"
+      fmap insertOf (keepEdit ls' (one_ ls') (checkOf (verdictEntry JCannotTell "no idea"))) `shouldBe` Nothing
+    it "a checked sentence's hover ends with the footer; an unchecked one's does not" $ do
+      let ss = sentences . parsePlan . T.unlines
+      claimHover (M.fromList [("Right one.", verdictEntry JRight "it returns 1")]) (ss ["Right one."])
+        `shouldBe` Just "Right · it returns 1 · src/a.py:Foo\n\ngd: the code · Keep this verdict: <leader>mpk"
+      claimHover (M.fromList [("Queued one.", queuedEntry)]) (ss ["Queued one."])
+        `shouldBe` Just "Unchecked claim · saved passes check it, or Check this"
   describe "planTokensWith (claim modifiers)" $
     it "a bare line's text carries checked or wrong from its check" $ do
       let e j = verdictEntry j "no"

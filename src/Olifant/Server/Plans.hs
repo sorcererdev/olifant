@@ -16,6 +16,9 @@ module Olifant.Server.Plans
   , claimHints
   , checksCanRun
   , claimHover
+  , keepFooter
+  , citationLocations
+  , keepEdit
   , planFolds
   , anchorItems
   , newStepSnippet
@@ -68,7 +71,7 @@ import System.Directory (doesFileExist, findExecutable)
 import Olifant.Server.Confine (confined, safely)
 import Olifant.Server.Claims (CheckRecord (..), ClaimStore, SentenceEntry (..), lineKey, claimsOf, sentencesOf)
 import Olifant.Server.Triage (Route (..))
-import Olifant.Server.Checker (Confirmed (..), Judgement (..), evidenceText)
+import Olifant.Server.Checker (Citation (..), Confirmed (..), Judgement (..), evidenceText)
 import Olifant.Plans.Sentences (Sentence (..), sentenceKey)
 import Data.Set (Set)
 import Data.Set qualified as S
@@ -208,7 +211,50 @@ claimLine can store checking x
 claimHover :: ClaimStore -> [Sentence] -> Maybe Text
 claimHover store ss = case [T.drop 2 msg | x <- ss, Just (_, _, msg) <- [claimLine True store S.empty x]] of
   [] -> Nothing
-  ls -> Just (T.intercalate "\n\n" ls)
+  ls -> Just (T.intercalate "\n\n" (ls ++ [keepFooter | any checked ss]))
+  where
+    checked x = isJust (M.lookup (sentenceKey (snText x)) store >>= seCheck)
+
+-- | The last line of a checked sentence's hover. The server does not know
+-- the client's key for *Keep this verdict*; durandal.nvim's default is named.
+keepFooter :: Text
+keepFooter = "gd: the code · Keep this verdict: <leader>mpk"
+
+-- | Where a checked sentence's citations are, in the checker's order (ROOT
+-- the project root; STARTS the 1-based first line of each cited unit that
+-- resolved): the line cited, else the unit's first line, else line 1. None
+-- for an entry with no check.
+citationLocations :: FilePath -> M.Map (FilePath, Text) Int -> SentenceEntry -> [Location]
+citationLocations root starts e =
+  [ Location (filePathToUri (normalisePath (root </> ciPath c))) (Range (Position n 0) (Position n 0))
+  | Just ch <- [seCheck e], c <- cfEvidence (cjConfirmed ch)
+  , let line = fromMaybe 1 (ciLine c <|> (ciUnit c >>= \u -> M.lookup (ciPath c, u) starts))
+        n = fromIntegral (max 0 (line - 1)) ]
+  where
+    a <|> b = maybe b Just a
+
+-- | *Keep this verdict*: the check as one evidence line after the
+-- sentence's last row (`- ✓ why (path:Unit)` or `- ✗ …`), one level under a
+-- bullet or step, at the sentence's indent under prose. Nothing for a check
+-- that could not tell, or when the same line is already directly below.
+keepEdit :: [Line] -> Sentence -> CheckRecord -> Maybe TextEdit
+keepEdit ls x ch = do
+  glyph <- case cfJudgement cf of
+    JRight -> Just "✓"
+    JWrong -> Just "✗"
+    JCannotTell -> Nothing
+  first <- find ((== snRow x) . lnRow) ls
+  lastRow <- find ((== snEndRow x) . lnRow) ls
+  let indent = lnIndent first + (if isBullet first then 2 else 0)
+      body = glyph <> " " <> T.intercalate " " ([cfWhy cf | not (T.null (cfWhy cf))] ++ ["(" <> w <> ")" | let w = evidenceText cf, not (T.null w)])
+      line = T.replicate indent " " <> "- " <> body
+      below = find ((== snEndRow x + 1) . lnRow) ls
+  if fmap (T.strip . lnText) below == Just (T.strip line) then Nothing else do
+    let end = Position (fromIntegral (snEndRow x)) (fromIntegral (utf16Length (lnText lastRow)))
+    Just (TextEdit (Range end end) ("\n" <> line))
+  where
+    cf = cjConfirmed ch
+    isBullet l = "- " `T.isPrefixOf` T.drop (lnIndent l) (lnText l)
 
 -- | (path, unit) -> the unit's fingerprint now; Nothing = not found. A key
 -- that is absent has not been read yet.
