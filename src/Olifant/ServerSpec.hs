@@ -734,7 +734,7 @@ mutateSpecs = describe "a mutate (olifant/mutate)" $ do
     withSystemTempDirectory "olifant-mutate" $ \dir -> do
       let answers = dir </> "answers.json"
       TIO.writeFile answers "{\"answers\": {}}"
-      (s0, _) <- serving passing [(".olifant/config.toml", "[packs]\npython-htmx = { path = \"/pack\" }\n\n[decide]\nmodel = \"jev\"\n")] two
+      (s0, _) <- serving passing [(".olifant/config.toml", "[packs]\npython-htmx = { path = \"/pack\" }\n\n[decide]\nmodel = \"jev\"\n[model.backends.jev]\nkind = \"jev\"\n")] two
       (s1, Right first') <- mutateAt (root </> moduleRel) 6 s0
       map muLine (maSurvivors first') `shouldBe` [6, 7]
       let m : _ = maSurvivors first'

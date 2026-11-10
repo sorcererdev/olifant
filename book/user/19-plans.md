@@ -246,7 +246,10 @@ without a new check.
 **Triage.** Each sentence the pass has not seen is classified once:
 
 - The grammar decides explicit lines: a checkbox is a step, `- ? ` is a question.
-- Jev (`[decide] model`, pinned to `jev-1.14.0` by default) decides the rest, in one request per
+- Jev decides the rest: `[decide] model` names the backend (`model = "jev"`, with
+  `[model.backends.jev] kind = "jev"`); the Jev version is that backend's own `model` key, pinned
+  to `jev-1.14.0` by default. A `[decide] model` that names no backend (a version id put there by
+  mistake) is a config error, not a quiet fall back to the grammar. One request per
   sentence with its heading and the sentence or question before it: its kind (`claim`,
   `question`, `step` or `prose`, with no "unsure" option) and whether this project's code can
   settle it.

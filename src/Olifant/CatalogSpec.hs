@@ -75,11 +75,18 @@ spec = describe "catalog" $ do
         catalogRecognize cat `shouldBe` RecognizeConfig False (Just "local")
       withCatalog [("/proj/.olifant/config.toml", "")] $ \_ cat ->
         catalogRecognize cat `shouldBe` RecognizeConfig True Nothing
-  describe "[decide] (typed decisions: Jev, progressively)" $
+  describe "[decide] (typed decisions: Jev, progressively)" $ do
     it "reads the model; [recognize] model is its alias" $ do
-      withCatalog [("/proj/.olifant/config.toml", "[decide]\nmodel = \"jev\"\n")] $ \_ cat -> catalogDecideModel cat `shouldBe` Just "jev"
+      withCatalog [("/proj/.olifant/config.toml", "[decide]\nmodel = \"jev\"\n[model.backends.jev]\nkind = \"jev\"\n")] $ \_ cat -> catalogDecideModel cat `shouldBe` Just "jev"
       withCatalog [("/proj/.olifant/config.toml", "[recognize]\nmodel = \"local\"\n")] $ \_ cat -> catalogDecideModel cat `shouldBe` Just "local"
       withCatalog [("/proj/.olifant/config.toml", "")] $ \_ cat -> catalogDecideModel cat `shouldBe` Nothing
+    it "refuses a [decide] model that names no backend, saying where the version goes" $ do
+      let backends = "[model.backends.local]\nkind = \"openai-compatible\"\nurl = \"http://127.0.0.1:1/v1\"\nmodel = \"x\"\n[model.backends.jev]\nkind = \"jev\"\n"
+      r <- openWith [("/proj/.olifant/config.toml", "[decide]\nmodel = \"jev-1.14.0\"\n" <> backends)]
+      case r of
+        Left (ConfigInvalid _ e) -> e `shouldBe` "[decide] model = \"jev-1.14.0\" names no backend (backends: jev, local). It takes a backend's name; pin the version in that backend's model key."
+        _ -> expectationFailure "expected ConfigInvalid for a [decide] model naming no backend"
+      withCatalog [("/proj/.olifant/config.toml", "[decide]\nmodel = \"jev\"\n" <> backends)] $ \_ cat -> catalogDecideModel cat `shouldBe` Just "jev"
   describe "[conjure] (conjure, second pass)" $
     it "reads [conjure] wire and refuses other keys" $ do
       withCatalog [("/proj/.olifant/config.toml", "[conjure]\nwire = \"wire\"\n")] $ \_ cat -> catalogConjureWire cat `shouldBe` Just "wire"

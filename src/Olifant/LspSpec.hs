@@ -3396,7 +3396,7 @@ newCodeSpec = describe "new code (only = \"new\", against the base)" $ do
       [(c, d ^. L.severity) | d <- ds, Just (InR c) <- [d ^. L.code], c == "migrate-new-work"] `shouldBe` [("migrate-new-work", Just DiagnosticSeverity_Hint)]
   it "(h) with Jev saying new behaviour, the hint becomes the bug-fix-only warning" $
     withPython [(legacy, base)] $ \ports dir -> do
-      migrating dir "\n[decide]\nmodel = \"jev\"\n"
+      migrating dir "\n[decide]\nmodel = \"jev\"\n[model.backends.jev]\nkind = \"jev\"\n"
       underGit dir
       let answers = dir </> "answers.json"
       TIO.writeFile answers "{\"answers\": {\"bug-or-new\": \"new behaviour\"}}"
@@ -3407,7 +3407,7 @@ newCodeSpec = describe "new code (only = \"new\", against the base)" $ do
       [(c, d ^. L.severity) | d <- ds, Just (InR c) <- [d ^. L.code], c `elem` ["legacy-bug-fix-only", "migrate-new-work"]] `shouldBe` [("legacy-bug-fix-only", Just DiagnosticSeverity_Warning)]
   it "(j) typing in a big change asks Jev once at a time, not once per keystroke (review #8)" $
     withPython [(legacy, base)] $ \ports dir -> do
-      migrating dir "\n[decide]\nmodel = \"jev\"\n"
+      migrating dir "\n[decide]\nmodel = \"jev\"\n[model.backends.jev]\nkind = \"jev\"\n"
       underGit dir
       let answers = dir </> "answers.json"
       TIO.writeFile answers "wait"
@@ -3421,7 +3421,7 @@ newCodeSpec = describe "new code (only = \"new\", against the base)" $ do
       length asked `shouldBe` 1
   it "(k) a decision outlives the request that asked: its cancelled token does not make it unsure (review minor #9)" $
     withPython [(legacy, base)] $ \ports dir -> do
-      migrating dir "\n[decide]\nmodel = \"jev\"\n"
+      migrating dir "\n[decide]\nmodel = \"jev\"\n[model.backends.jev]\nkind = \"jev\"\n"
       let answers = dir </> "answers.json"
           q = De.choice "bug-or-new" "" [("bug fix", ""), ("new behaviour", "")] []
       TIO.writeFile answers "wait"
@@ -3444,7 +3444,7 @@ newCodeSpec = describe "new code (only = \"new\", against the base)" $ do
       poll 40 `shouldReturn` Just (De.Chosen "bug fix" [] De.Unknown)
   it "(i) Jev answering nonsense: the hint stands, and nothing waits on it (Review Focus 5)" $
     withPython [(legacy, base)] $ \ports dir -> do
-      migrating dir "\n[decide]\nmodel = \"jev\"\n"
+      migrating dir "\n[decide]\nmodel = \"jev\"\n[model.backends.jev]\nkind = \"jev\"\n"
       underGit dir
       let answers = dir </> "answers.json"
       TIO.writeFile answers "{\"answers\": {\"bug-or-new\": \"maybe\"}}"
@@ -4103,7 +4103,7 @@ anticipationSpec = describe "anticipation: asked after the deterministic push, p
       -- the project asks Jev ([decide] model), answered from a file
       withJev ports dir answer act = do
         config <- TIO.readFile (dir </> ".olifant/config.toml")
-        TIO.writeFile (dir </> ".olifant/config.toml") (config <> "\n[decide]\nmodel = \"jev\"\n")
+        TIO.writeFile (dir </> ".olifant/config.toml") (config <> "\n[decide]\nmodel = \"jev\"\n[model.backends.jev]\nkind = \"jev\"\n")
         let answers = dir </> "answers.json"
         TIO.writeFile answers answer
         r <- fst <$> inProcessWithConfig [("decide_answers", String (T.pack answers))] ports dir (act answers)
