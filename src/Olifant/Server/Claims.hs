@@ -2,6 +2,8 @@
 -- sentences, kept per plan in `.olifant/state/claims/` (version 2) and keyed
 -- by a sentence's words ('sentenceKey', not its row): its triage and route,
 -- the check the checker made (with the cited code), or the last failure.
+-- Beside the entries, the joins: for each pair of rows Jev was asked about
+-- ('Olifant.Plans.Sentences.pairKey'), whether the second continues the first.
 module Olifant.Server.Claims
   ( CheckRecord (..)
   , Failure (..)
@@ -11,6 +13,12 @@ module Olifant.Server.Claims
   , claimsPath
   , readClaims
   , writeClaims
+  , writeClaimsWith
+  , readJoins
+  , Joins
+  , joinsOf
+  , updateJoins
+  , sentencesOf
   , pruneOrphanClaims
   , pruneClaims
   , keepGone
@@ -44,7 +52,7 @@ import Olifant.Server.State (ServerState (..))
 import Data.Set (Set)
 import Data.Set qualified as S
 import Olifant.Plans (Line (..))
-import Olifant.Plans.Sentences (Sentence (..), sentenceKey)
+import Olifant.Plans.Sentences (Sentence (..), sentenceKey, sentencesJoined)
 import Olifant.Server.Checker (Citation (..), Confirmed (..), Judgement (..), UnitRef (..), judgementName)
 import Olifant.Server.Triage (Route (..), Triage (..), routeName)
 import Olifant.Workspace (Workspace (..), normalisePath)
@@ -69,6 +77,9 @@ data SentenceEntry = SentenceEntry
 
 -- | A plan's entries by 'sentenceKey'.
 type ClaimStore = Map Text SentenceEntry
+
+-- | Jev's answers on pairs of rows, by 'pairKey': True joins them.
+type Joins = Map Text Bool
 
 -- | A list line's key: the words after its marker, as 'sentenceKey' (the
 -- key of a one-sentence bullet).
@@ -104,12 +115,28 @@ readClaims ports root plan =
       cs <- o .: "claims"
       withObject "entries" (\es -> M.fromList <$> mapM (\(k, v) -> (K.toText k,) <$> entry v) (KM.toList es)) cs
 
--- | Write a plan's store, under a lock; a store that cannot be written is
--- not written (never thrown).
+-- | A plan's joins (the "joins" field, optional); missing or unreadable is none.
+readJoins :: Ports -> FilePath -> FilePath -> IO Joins
+readJoins ports root plan =
+  either (const M.empty) id <$> (try :: IO Joins -> IO (Either SomeException Joins)) (do
+    txt <- readText (pFiles ports) (claimsPath root plan)
+    evaluate (fromMaybe M.empty (txt >>= decodeStrict . TE.encodeUtf8 >>= parseMaybe joinsField)))
+  where
+    joinsField = withObject "claims" $ \o -> do
+      v <- o .:? "version"
+      if v /= Just (2 :: Int) then fail "another version" else pure ()
+      fromMaybe M.empty <$> o .:? "joins"
+
+-- | Write a plan's store with no joins ('writeClaimsWith').
 writeClaims :: Ports -> FilePath -> FilePath -> ClaimStore -> IO ()
-writeClaims ports root plan cs =
+writeClaims ports root plan cs = writeClaimsWith ports root plan cs M.empty
+
+-- | Write a plan's store and joins, under a lock; a store that cannot be
+-- written is not written (never thrown).
+writeClaimsWith :: Ports -> FilePath -> FilePath -> ClaimStore -> Joins -> IO ()
+writeClaimsWith ports root plan cs js =
   void . (try :: IO () -> IO (Either SomeException ())) . withMVar claimsLock $ \() -> do
-    let body = TE.decodeUtf8 (BL.toStrict (encode (object ["version" .= (2 :: Int), "claims" .= Object (KM.fromList [(K.fromText k, entryJson e) | (k, e) <- M.toList cs])]))) <> "\n"
+    let body = TE.decodeUtf8 (BL.toStrict (encode (object (["version" .= (2 :: Int), "claims" .= Object (KM.fromList [(K.fromText k, entryJson e) | (k, e) <- M.toList cs])] ++ ["joins" .= js | not (M.null js)])))) <> "\n"
     -- whole or not at all: a crash mid-write must not leave half a store
     let file = claimsPath root plan
     writeText (pFiles ports) (file <> ".tmp") body
@@ -253,13 +280,46 @@ updateClaims :: ServerState -> FilePath -> FilePath -> (ClaimStore -> ClaimStore
 updateClaims s root plan f =
   withMVar updateLock $ \() -> do
     cs <- f <$> claimsOf s root plan
+    js <- joinsOf s root plan
     atomicModifyIORef' (ssClaims s) (\m -> (M.insert (heldAt root plan) (toDyn cs) m, ()))
-    writeClaims (ssPorts s) root plan cs
+    writeClaimsWith (ssPorts s) root plan cs js
     pure cs
+
+-- | A plan's joins as the server holds them: read from disk on first use.
+joinsOf :: ServerState -> FilePath -> FilePath -> IO Joins
+joinsOf s root plan = do
+  known <- M.lookup (joinsAt root plan) <$> readIORef (ssClaims s)
+  case known >>= fromDynamic of
+    Just js -> pure js
+    Nothing -> do
+      js <- readJoins (ssPorts s) root plan
+      atomicModifyIORef' (ssClaims s) $ \m -> case M.lookup (joinsAt root plan) m >>= fromDynamic of
+        Just theirs -> (m, theirs)
+        Nothing -> (M.insert (joinsAt root plan) (toDyn js) m, js)
+
+-- | Change a plan's joins as 'updateClaims' changes its entries (same lock,
+-- same file).
+updateJoins :: ServerState -> FilePath -> FilePath -> (Joins -> Joins) -> IO Joins
+updateJoins s root plan f =
+  withMVar updateLock $ \() -> do
+    js <- f <$> joinsOf s root plan
+    cs <- claimsOf s root plan
+    atomicModifyIORef' (ssClaims s) (\m -> (M.insert (joinsAt root plan) (toDyn js) m, ()))
+    writeClaimsWith (ssPorts s) root plan cs js
+    pure js
+
+-- | The sentences of LINES, a plan's, with the joins the server holds for it:
+-- what the pass, the margin, hover, code actions and definition all read.
+sentencesOf :: ServerState -> FilePath -> FilePath -> [Line] -> IO [Sentence]
+sentencesOf s root plan ls = (`sentencesJoined` ls) <$> joinsOf s root plan
 
 {-# NOINLINE updateLock #-}
 updateLock :: MVar ()
 updateLock = unsafePerformIO (newMVar ())
+
+-- | Where the server holds a plan's joins, beside its store.
+joinsAt :: FilePath -> FilePath -> FilePath
+joinsAt root plan = heldAt root plan <> "#joins"
 
 -- | A plan's absolute path, the server's key for its store.
 heldAt :: FilePath -> FilePath -> FilePath

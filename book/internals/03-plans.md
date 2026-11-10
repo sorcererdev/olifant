@@ -44,10 +44,10 @@ a new-step ghost worded from the unit's header.
 | `Server/Journal.hs` | the plan's dated lines under a step (`record`, `journalLine`, `pendingFacts`) |
 | `Server/Telemetry.hs` | `.olifant/state/errands.jsonl`: errand, outcome, reconcile and claim-pass (`PassRecord`, kind `pass`) records (`appendRecord`); the retired resolver's `resolve` lines still parse |
 | `Server/Excerpt.hs` | code excerpts kept under a step, and the hover over an anchor |
-| `Plans/Sentences.hs` | the **sentences** of a plan, pure: `sentences :: [Line] -> [Sentence]` (row and column range, the line's `Kind`, the text with markers stripped, heading, lead, anchor) and `sentenceKey`, a sentence's words without anchor or verdict |
-| `Server/Triage.hs` | **triage**: `byGrammar` (steps, questions), `triageQuestions` (Jev's `sentence-kind` choice with no unsure and its `about-code` Noul, one state), `fromAnswers`, `noJev`, and `route` with the two thresholds `kindThreshold` and `aboutThreshold` |
+| `Plans/Sentences.hs` | the **sentences** of a plan, pure: `sentencesWith :: (Int -> Bool) -> [Line] -> [Sentence]` (row and column range, the line's `Kind`, the text with markers stripped, heading, lead, anchor), where the predicate says which rows continue on the next (a row that does not ends its sentence at the line break); `sentences` joins none, `sentencesJoined` joins by a store's answers; `joinCandidates` (the rows that end without `. ? ! :`, with their and the next row's text), `pairKey`, and `sentenceKey`, a sentence's words without anchor or verdict |
+| `Server/Triage.hs` | **triage**: `byGrammar` (steps, questions), `triageQuestions` (Jev's `sentence-kind` choice with no unsure and its `about-code` Noul, one state), `fromAnswers`, `noJev`, and `route` with the two thresholds `kindThreshold` and `aboutThreshold`; the join question `joinQuestion` (a `line-continues` Noul, no unsure), `joinThreshold` (0.70), `joinsAnswer`, and `decideJoins` (one `weighAll` per candidate while the pass allows; unsure answers dropped; no Jev, none) |
 | `Server/Checker.hs` | the **checker**: `checkPrompt`, `parseCheckReply`, `confirm` (every citation checked against the tree and the catalog), `liveChecker` (the `Check` verb of `runClaude`), `recordedChecker`, `replayChecker`, `checkerUnder`; `UnitRef` |
-| `Server/Claims.hs` | the **claim store**, version 2 (`SentenceEntry`: triage, route, `CheckRecord` or `Failure`, `seGone`; `ClaimStore` keyed by `sentenceKey`; `readClaims`/`writeClaims` under `.olifant/state/claims/`; `claimsOf`/`updateClaims` through `ssClaims`: every write is a function of the store as held now, under one lock), `queued`, `pruneClaims`, `checkedKeys`, `lineKey` |
+| `Server/Claims.hs` | the **claim store**, version 2 (`SentenceEntry`: triage, route, `CheckRecord` or `Failure`, `seGone`; `ClaimStore` keyed by `sentenceKey`; `readClaims`/`writeClaims` under `.olifant/state/claims/`; `claimsOf`/`updateClaims` through `ssClaims`: every write is a function of the store as held now, under one lock), `queued`, `pruneClaims`, `checkedKeys`, `lineKey`; the **joins** beside the entries (`Joins`, by `pairKey`, the file's optional `"joins"` field, still version 2; `readJoins`, `writeClaimsWith`, `joinsOf`/`updateJoins` held in `ssClaims` under `<plan>#joins`, same lock and file) and `sentencesOf`, the plan's sentences with its joins, which everything reading sentences calls |
 | `Server/Confine.hs` | `confined` and `safely`, which `Server/Plans` re-exports (here so `LoopQuestions` and `Checker` need not import `Server/Plans`) |
 | `Transcripts.hs`, `Cli.hs` `runPlansCost` | `olifant plans cost`: the records beside Claude Code's own transcripts |
 | `Landings.hs` | a plan's landings from `git log --first-parent` (`landingsOf`, `parseLandings`), and `landingFor`, the first landing at or after a time |
@@ -322,9 +322,15 @@ claims with a searching checker. It never writes to the plan. `Loop.claimPass`
 (`Cancel -> PassMode -> FilePath -> ServerState -> IO (ServerState, Either Text PassAnswer)`) is
 the whole of it:
 
-1. **Read.** The plan from `ssDocs` (else disk), `Plans.Sentences.sentences` over `parsePlan`'s
-   lines, the store from `Claims.claimsOf`, and whether a store file existed before this pass
-   (`claimsPath`). `[plans] pass_budget = 0` stops here.
+1. **Read.** The plan from `ssDocs` (else disk) through `parsePlan`, the store from
+   `Claims.claimsOf`, and whether a store file existed before this pass (`claimsPath`).
+   `[plans] pass_budget = 0` stops here. **Joins:** `joinCandidates` of the lines; those whose
+   `pairKey` is not in `joinsOf` go to Jev one request each (`Triage.decideJoins`: a Jev batch
+   shares one `state`, and `jevBody` refuses two values for one context name, so pairs cannot
+   share a request), while the token and `pass_budget` allow, under `safely`; an unsure answer
+   is not kept, so the pair is asked again next pass. The answers, with the held joins cut to
+   today's candidates, are kept by `updateJoins` (each request is a Jev call in the record). The sentences are
+   `sentencesJoined` of those joins.
 2. **Triage.** `pruneClaims` marks a key no sentence has as gone (`seGone`, written as
    `"gone"`), drops it once gone for `keepGone` (a day) and clears the mark on a key that is back,
    so an undo finds its check; it runs in every mode, an idle's too; each sentence whose `sentenceKey` is not
@@ -385,10 +391,18 @@ sentence being checked changes; after it, `workspace/diagnostic/refresh` and
 `Server/Plans.claimHints` (inside `planDiagnostics`, which converts its code-point columns to
 UTF-16 and passes `checksCanRun`: the runner found or a recording set, neither cap 0),
 `planTokensWith` (the `checked` and `wrong` modifiers, by `lineKey`) and `claimHover` (called by
-`Lsp.planHover` with the sentences on the row). `sentenceActions` offers *Check this* (with
-`checkEstimate`), *Show the code here* (`citationPlace`) and *Show why* (`whyFile`), each a
-`Command`: `olifant.checkSentence` (`checkOne` in the background), `olifant.showCode` and
-`olifant.showWhy` (`window/showDocument`). `planFolds` takes `checkedKeys` of the store, so a
+`Lsp.planHover` with the sentences on the row; a checked one adds `keepFooter`). Every one of
+these, and `checkOne` and the pass's live-keys check, builds sentences with `Claims.sentencesOf`,
+so the margin and the engine split a plan the same way. `sentenceActions` offers *Keep this
+verdict* (a `WorkspaceEdit` from `Plans.keepEdit`: one evidence line after the sentence's last
+row, `Nothing` when the same line is below or the check could not tell), *Check this* (with
+`checkEstimate`), *Show the code here* (`citationPlace`) and *Show why* (`whyFile`), the last
+three each a `Command`: `olifant.checkSentence` (`checkOne` in the background), `olifant.showCode` and
+`olifant.showWhy` (`window/showDocument`). **Definition** (`textDocument/definition`) in a plan:
+an anchor under the cursor answers with its unit as before; else `Lsp.sentenceCitations` takes the
+sentence under the cursor and, when it has a check, resolves each cited unit with no line
+(`resolveAnchor`) and answers `Plans.citationLocations` (every citation in the checker's order:
+the line cited, else the unit's first line, else 1); else nothing. `planFolds` takes `checkedKeys` of the store, so a
 belief folds its question once it has a verdict. An `ask` carries the checked beliefs under its
 question (`Plans.beliefsUnder` to `Errand.errandPromptWith`).
 

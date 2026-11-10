@@ -3396,7 +3396,7 @@ newCodeSpec = describe "new code (only = \"new\", against the base)" $ do
       [(c, d ^. L.severity) | d <- ds, Just (InR c) <- [d ^. L.code], c == "migrate-new-work"] `shouldBe` [("migrate-new-work", Just DiagnosticSeverity_Hint)]
   it "(h) with Jev saying new behaviour, the hint becomes the bug-fix-only warning" $
     withPython [(legacy, base)] $ \ports dir -> do
-      migrating dir "\n[decide]\nmodel = \"jev\"\n"
+      migrating dir "\n[decide]\nmodel = \"jev\"\n[model.backends.jev]\nkind = \"jev\"\n"
       underGit dir
       let answers = dir </> "answers.json"
       TIO.writeFile answers "{\"answers\": {\"bug-or-new\": \"new behaviour\"}}"
@@ -3407,7 +3407,7 @@ newCodeSpec = describe "new code (only = \"new\", against the base)" $ do
       [(c, d ^. L.severity) | d <- ds, Just (InR c) <- [d ^. L.code], c `elem` ["legacy-bug-fix-only", "migrate-new-work"]] `shouldBe` [("legacy-bug-fix-only", Just DiagnosticSeverity_Warning)]
   it "(j) typing in a big change asks Jev once at a time, not once per keystroke (review #8)" $
     withPython [(legacy, base)] $ \ports dir -> do
-      migrating dir "\n[decide]\nmodel = \"jev\"\n"
+      migrating dir "\n[decide]\nmodel = \"jev\"\n[model.backends.jev]\nkind = \"jev\"\n"
       underGit dir
       let answers = dir </> "answers.json"
       TIO.writeFile answers "wait"
@@ -3421,7 +3421,7 @@ newCodeSpec = describe "new code (only = \"new\", against the base)" $ do
       length asked `shouldBe` 1
   it "(k) a decision outlives the request that asked: its cancelled token does not make it unsure (review minor #9)" $
     withPython [(legacy, base)] $ \ports dir -> do
-      migrating dir "\n[decide]\nmodel = \"jev\"\n"
+      migrating dir "\n[decide]\nmodel = \"jev\"\n[model.backends.jev]\nkind = \"jev\"\n"
       let answers = dir </> "answers.json"
           q = De.choice "bug-or-new" "" [("bug fix", ""), ("new behaviour", "")] []
       TIO.writeFile answers "wait"
@@ -3444,7 +3444,7 @@ newCodeSpec = describe "new code (only = \"new\", against the base)" $ do
       poll 40 `shouldReturn` Just (De.Chosen "bug fix" [] De.Unknown)
   it "(i) Jev answering nonsense: the hint stands, and nothing waits on it (Review Focus 5)" $
     withPython [(legacy, base)] $ \ports dir -> do
-      migrating dir "\n[decide]\nmodel = \"jev\"\n"
+      migrating dir "\n[decide]\nmodel = \"jev\"\n[model.backends.jev]\nkind = \"jev\"\n"
       underGit dir
       let answers = dir </> "answers.json"
       TIO.writeFile answers "{\"answers\": {\"bug-or-new\": \"maybe\"}}"
@@ -4103,7 +4103,7 @@ anticipationSpec = describe "anticipation: asked after the deterministic push, p
       -- the project asks Jev ([decide] model), answered from a file
       withJev ports dir answer act = do
         config <- TIO.readFile (dir </> ".olifant/config.toml")
-        TIO.writeFile (dir </> ".olifant/config.toml") (config <> "\n[decide]\nmodel = \"jev\"\n")
+        TIO.writeFile (dir </> ".olifant/config.toml") (config <> "\n[decide]\nmodel = \"jev\"\n[model.backends.jev]\nkind = \"jev\"\n")
         let answers = dir </> "answers.json"
         TIO.writeFile answers answer
         r <- fst <$> inProcessWithConfig [("decide_answers", String (T.pack answers))] ports dir (act answers)
@@ -4244,7 +4244,7 @@ claimPassSpec = describe "plans claim pass" $ do
         (,) <$> pullDiagnostics p <*> getHover p (Position 0 4)
       [(d ^. L.code, d ^. L.severity, d ^. L.message, d ^. L.range) | d <- ds, d ^. L.source == Just "olifant-plan"]
         `shouldBe` [(Just (InR "claim-wrong"), Just DiagnosticSeverity_Warning, "✗ Wrong · it returns two · " <> T.pack table <> ":helper", Range (Position 0 2) (Position 0 24))]
-      fmap (\h -> case h ^. L.contents of InL (MarkupContent _ md) -> md; _ -> "") hover `shouldBe` Just ("Wrong · it returns two · " <> T.pack table <> ":helper")
+      fmap (\h -> case h ^. L.contents of InL (MarkupContent _ md) -> md; _ -> "") hover `shouldBe` Just ("Wrong · it returns two · " <> T.pack table <> ":helper\n\ngd: the code · Keep this verdict: <leader>mpk")
   it "(f) the actions: Check this on a queued claim; Show the code here and Show why once checked" $
     withPass right $ \ports dir _ cfg -> do
       ((before, after), _) <- inProcessWithConfig cfg ports dir $ do
@@ -4257,6 +4257,36 @@ claimPassSpec = describe "plans claim pass" $ do
       filter ("Check this" `T.isPrefixOf`) before `shouldBe` ["Check this (sonnet, ~$0.10)"]
       filter (`elem` ["Show the code here", "Show why"]) after `shouldBe` ["Show the code here", "Show why"]
       filter ("Check this" `T.isPrefixOf`) after `shouldBe` []
+  it "(i) gd on a checked sentence goes to every citation; Keep this verdict writes the evidence line once; an edited sentence offers neither" $ do
+    let twoCited = "{\"replies\": {\"the helper returns one\": {\"text\": \"```json\\n{\\\"verdict\\\": \\\"wrong\\\", \\\"why\\\": \\\"it returns two\\\", \\\"evidence\\\": [{\\\"path\\\": \\\"" <> T.pack table <> "\\\", \\\"unit\\\": \\\"helper\\\"}, {\\\"path\\\": \\\"" <> T.pack table <> "\\\", \\\"line\\\": 2}]}\\n```\", \"cost\": 0.1}}}"
+        spots = \case
+          InL (Definition (InL (Location u r))) -> [(uriToFilePath u, r ^. L.start . L.line)]
+          InL (Definition (InR ls)) -> [(uriToFilePath u, r ^. L.start . L.line) | Location u r <- ls]
+          _ -> []
+        keepOf as = [a | InR a <- as, a ^. L.title == "Keep this verdict"]
+    withPass twoCited $ \ports dir _ cfg -> do
+      ((unchecked, checked, kept, text, again, hover, edited), _) <- inProcessWithConfig cfg ports dir $ do
+        p <- openDoc "plans/t.md" "markdown"
+        refreshed
+        u <- getDefinitions p (Position 0 4)
+        sendNotification SMethod_TextDocumentDidSave (DidSaveTextDocumentParams p Nothing)
+        _ <- waitFor (maybe False (isJust . seCheck) . M.lookup "the helper returns one" <$> readClaims plainPorts dir "plans/t.md")
+        c <- getDefinitions p (Position 0 4)
+        k <- keepOf <$> getCodeActions p (Range (Position 0 4) (Position 0 4))
+        mapM_ executeCodeAction (take 1 k)
+        t <- documentContents p
+        a <- keepOf <$> getCodeActions p (Range (Position 0 4) (Position 0 4))
+        h <- getHover p (Position 0 4)
+        changeDoc p [TextDocumentContentChangePartial (Range (Position 0 2) (Position 0 2)) Nothing "now " & InL & TextDocumentContentChangeEvent]
+        e <- (,) <$> (keepOf <$> getCodeActions p (Range (Position 0 6) (Position 0 6))) <*> getDefinitions p (Position 0 6)
+        pure (u, c, length k, t, length a, h, e)
+      spots unchecked `shouldBe` []
+      spots checked `shouldBe` [(Just (dir </> table), 0), (Just (dir </> table), 1)]
+      kept `shouldBe` 1
+      text `shouldBe` "- the helper returns one\n  - ✗ it returns two (" <> T.pack table <> ":helper)\n"
+      again `shouldBe` 0
+      fmap (\h -> case h ^. L.contents of InL (MarkupContent _ md) -> last (T.lines md); _ -> "") hover `shouldBe` Just "gd: the code · Keep this verdict: <leader>mpk"
+      (length (fst edited), spots (snd edited)) `shouldBe` (0, [])
   it "(g) olifant.checkSentence checks one sentence while the caps would forbid a pass" $
     withPassOn claims right $ \ports dir _ cfg -> do
       TIO.appendFile (dir </> ".olifant/config.toml") "pass_cost = 0\n"

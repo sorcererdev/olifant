@@ -62,6 +62,24 @@ spec = describe "Olifant.Server.Claims" $ do
     readClaims (ssPorts s) "/r1" "plans/t.md" `shouldReturn` M.empty
     writeText (pFiles (ssPorts s)) (claimsPath "/r1" "plans/t.md") "{\"version\": 1, \"claims\": {\"the loader keeps D\": {\"unit\": null, \"rung\": \"none\", \"candidates\": [], \"top\": 0, \"check\": null, \"fingerprint\": null, \"at\": \"2026-11-07T00:00:00Z\"}}}"
     readClaims (ssPorts s) "/r1" "plans/t.md" `shouldReturn` M.empty
+  it "(o) the joins ride in the same file, optional, still version 2; each writer keeps the other's" $ do
+    (s, _) <- claimsServer
+    let store = M.fromList [("a", aside)]
+        joins = M.fromList [("We would have to ⏎ redeploy everything.", True), ("x ⏎ y", False)]
+    writeClaimsWith (ssPorts s) "/r1" "plans/t.md" store joins
+    readClaims (ssPorts s) "/r1" "plans/t.md" `shouldReturn` store
+    readJoins (ssPorts s) "/r1" "plans/t.md" `shouldReturn` joins
+    Just body <- readText (pFiles (ssPorts s)) (claimsPath "/r1" "plans/t.md")
+    body `shouldSatisfy` T.isInfixOf "\"version\":2"
+    -- a store written without joins reads as no joins
+    writeClaims (ssPorts s) "/r1" "plans/u.md" store
+    readJoins (ssPorts s) "/r1" "plans/u.md" `shouldReturn` M.empty
+    -- the held store and joins: updating one writes the other unchanged
+    _ <- updateJoins s "/r1" "plans/t.md" (M.insert "p ⏎ q" True)
+    _ <- updateClaims s "/r1" "plans/t.md" (M.insert "b" aside)
+    readJoins (ssPorts s) "/r1" "plans/t.md" `shouldReturn` M.insert "p ⏎ q" True joins
+    M.keys <$> readClaims (ssPorts s) "/r1" "plans/t.md" `shouldReturn` ["a", "b"]
+    joinsOf s "/r1" "plans/t.md" `shouldReturn` M.insert "p ⏎ q" True joins
   it "(g) a store is written whole or not at all: to a temporary file, then renamed over" $ do
     (s, _) <- claimsServer
     wrote <- newIORef []

@@ -5,10 +5,22 @@
 -- sentence (the "· …" suffix dropped); test, also, evidence and journal lines,
 -- fenced code, front matter and lines that are only a link give none;
 -- everything else (paragraphs, numbered lines, bullets, blockquotes) is split.
--- A paragraph's rows are joined before splitting, so a sentence may span rows.
-module Olifant.Plans.Sentences (Sentence (..), sentences, sentenceKey) where
+-- A line ends a sentence: a paragraph's (or bullet's) next row starts a new
+-- one, unless the join predicate says the row continues on the next (a
+-- hard-wrapped paragraph; Jev decides which, see 'joinCandidates'), and then
+-- the rows are joined before splitting, so a sentence may span rows.
+module Olifant.Plans.Sentences
+  ( Sentence (..)
+  , sentences
+  , sentencesWith
+  , sentencesJoined
+  , joinCandidates
+  , pairKey
+  , sentenceKey
+  ) where
 
 import Data.Char (isAlphaNum, isDigit, isHexDigit, isSpace, isUpper, toLower)
+import Data.List (sort)
 import qualified Data.Map.Strict as M
 import Data.Maybe (listToMaybe, mapMaybe)
 import qualified Data.Set as S
@@ -35,10 +47,14 @@ data Unit = Unit
 -- | What later rows may continue the unit.
 data Joins = NoJoin | JoinProse | JoinQuote deriving (Eq)
 
+-- | Every line ends its sentences: no row joins the next.
 sentences :: [Line] -> [Sentence]
-sentences ls = withLeads (concatMap (splitUnit ls) (units ls skipped))
+sentences = sentencesWith (const False)
+
+-- | The sentences when row r continues on row r+1 exactly when JOINS r.
+sentencesWith :: (Int -> Bool) -> [Line] -> [Sentence]
+sentencesWith joins ls = withLeads (concatMap (splitUnit joins ls) (units ls (skippedRows ls)))
   where
-    skipped = fencedRows ls `S.union` frontMatter ls
     withLeads ss = reverse (snd (foldl' lead (Nothing, []) ss))
     asked = questionParents ls
     lead (prev, acc) (blk, s) =
@@ -46,6 +62,36 @@ sentences ls = withLeads (concatMap (splitUnit ls) (units ls skipped))
             Just q -> Just q
             Nothing -> case prev of { Just (b, t) | b == blk -> Just t; _ -> Nothing }
       in (Just (blk, snText s), s { snLead = l } : acc)
+
+-- | The sentences with the joins a store keeps: by 'pairKey' of a candidate's
+-- two rows, True joins; anything else (no answer, False) does not.
+sentencesJoined :: M.Map Text Bool -> [Line] -> [Sentence]
+sentencesJoined stored ls = sentencesWith joined ls
+  where
+    cands = M.fromList [(r, pairKey u n) | (r, u, n) <- joinCandidates ls]
+    joined r = maybe False (\k -> M.lookup k stored == Just True) (M.lookup r cands)
+
+-- | The rows that may continue on the next: (row, its text, the next row's
+-- text), for adjacent rows of one paragraph, bullet or quote where the upper
+-- row does not end with . ? ! or : (closing quotes and parens after one
+-- count as the end).
+joinCandidates :: [Line] -> [(Int, Text, Text)]
+joinCandidates ls =
+  [ (r1, T.strip t1, T.strip t2)
+  | (_, u) <- units ls (skippedRows ls), uSplit u
+  , ((r1, _, t1), (_, _, t2)) <- zip (uSegs u) (drop 1 (uSegs u))
+  , not (endsSentence t1) ]
+  where
+    endsSentence t = case T.unsnoc (T.dropWhileEnd (`elem` ("\"”'’)]" :: String)) (T.stripEnd t)) of
+      Just (_, c) -> c `elem` (".?!:" :: String)
+      Nothing -> True
+
+-- | A candidate's key in the store: the two rows' 'sentenceKey's.
+pairKey :: Text -> Text -> Text
+pairKey upper next = sentenceKey upper <> " ⏎ " <> sentenceKey next
+
+skippedRows :: [Line] -> S.Set Int
+skippedRows ls = fencedRows ls `S.union` frontMatter ls
 
 -- | Rows inside a closed fence, fences included. An opener never closed is no fence.
 fencedRows :: [Line] -> S.Set Int
@@ -136,15 +182,25 @@ headingSeg l =
       sp = T.length (T.takeWhile (== ' ') afterHashes)
   in (lnRow l, ind + hashes + sp, fst (T.breakOn " · " (T.drop sp afterHashes)))
 
-splitUnit :: [Line] -> (Int, Unit) -> [(Int, Sentence)]
-splitUnit ls (blk, u) = mapMaybe toSentence spans
+splitUnit :: (Int -> Bool) -> [Line] -> (Int, Unit) -> [(Int, Sentence)]
+splitUnit joins ls (blk, u) = mapMaybe toSentence spans
   where
     -- The joined text, each character with its (row, column); the joining space takes the next row's start.
-    chars = concat (joinWith (zipWith (\i (r, c, t) -> (i, r, c, t)) [0 :: Int ..] (uSegs u)))
-    joinWith segs = [ [(' ', (r, c - 1)) | i > 0] ++ zip (T.unpack t) [(r, c + k) | k <- [0 ..]] | (i, r, c, t) <- segs ]
+    segs = uSegs u
+    chars = concat (joinWith (zip3 (Nothing : map (\(r, _, _) -> Just r) segs) [0 :: Int ..] segs))
+    joinWith ss = [ [(' ', (r, c - 1)) | i > 0] ++ zip (T.unpack t) [(r, c + k) | k <- [0 ..]] | (_, i, (r, c, t)) <- ss ]
+    -- the index of each joining space and the row above it
+    joints = scanJoints 0 (zip3 (Nothing : map (\(r, _, _) -> Just r) segs) [0 :: Int ..] segs)
+    scanJoints _ [] = []
+    scanJoints at ((above, i, (_, _, t)) : rest) =
+      let here = [(at, r) | i > 0, Just r <- [above]]
+          w = (if i > 0 then 1 else 0) + T.length t
+      in here ++ scanJoints (at + w) rest
     str = map fst chars
     n = length str
-    cuts = if uSplit u then ends str else []
+    -- a row that does not join the next ends its sentence at the joining space
+    forced = [k | (k, r) <- joints, not (joins r)]
+    cuts = if uSplit u then S.toAscList (S.fromList (ends str ++ forced)) else []
     spans = zip (0 : cuts) (cuts ++ [n])
     posArr = M.fromList (zip [0 ..] (map snd chars))
     charAt = M.fromList (zip [0 :: Int ..] str)

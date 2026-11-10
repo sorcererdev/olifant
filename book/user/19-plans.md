@@ -236,8 +236,24 @@ in the margin and on hover. Nothing is ever written into the plan: verdicts live
 | everything else: paragraphs, `1 - ` and `1. ` lines, `- ` bullets, blockquotes | split into sentences |
 
 A sentence ends at `.`, `?` or `!` followed by a space and a capital letter or a quote; `e.g.`,
-`i.e.`, `vs.`, `etc.` and `Dr.` do not end one, and code spans and URLs are read whole. A
-paragraph's rows are joined first, so a sentence may run across rows. A sentence is known by its
+`i.e.`, `vs.`, `etc.` and `Dr.` do not end one, and code spans and URLs are read whole.
+
+**A line ends a sentence.** Write one thought per line, with or without a full stop: each line of a
+paragraph (or of a bullet's continuation) is its own sentence. A paragraph hard-wrapped mid-sentence
+is the exception: a line that does not end with `.`, `?`, `!` or `:` (a closing quote or paren
+after one counts) is a *join candidate*, and Jev is asked once per candidate (one small request
+each, inside the pass's `pass_budget`) whether the next line continues it (`line-continues`,
+joined at probability 0.70 or more; an answer Jev could not give is asked again next pass). The
+answer is kept in the plan's store under the two lines' words, so it is asked again
+only when one of them changes. With no Jev (no `[decide] model`) nothing joins. So
+
+```
+The collector retries 3 times.. On failures it does exponential backoff
+every scraper fix means a code change and a deploy
+```
+
+is three sentences, while a paragraph wrapped at 90 columns stays one sentence across its rows.
+The margin, hover, `gd` and the actions read the same joins as the pass. A sentence is known by its
 words (its anchor and verdict left out), so moving it, re-wrapping its paragraph or renaming its
 heading keeps what the pass knows about it, and editing a word makes it new. The old words are
 kept for a day: undo the edit, or paste a cut sentence back, and its triage and verdict return
@@ -246,7 +262,10 @@ without a new check.
 **Triage.** Each sentence the pass has not seen is classified once:
 
 - The grammar decides explicit lines: a checkbox is a step, `- ? ` is a question.
-- Jev (`[decide] model`, pinned to `jev-1.14.0` by default) decides the rest, in one request per
+- Jev decides the rest: `[decide] model` names the backend (`model = "jev"`, with
+  `[model.backends.jev] kind = "jev"`); the Jev version is that backend's own `model` key, pinned
+  to `jev-1.14.0` by default. A `[decide] model` that names no backend (a version id put there by
+  mistake) is a config error, not a quiet fall back to the grammar. One request per
   sentence with its heading and the sentence or question before it: its kind (`claim`,
   `question`, `step` or `prose`, with no "unsure" option) and whether this project's code can
   settle it.
@@ -311,7 +330,9 @@ read as process and not checked. Contested lines can go either way.
 
 `claim-queued` shows only when checks can run (the runner is found and neither cap is 0); a
 failed check shows as queued. Prose, questions, steps and AI off show nothing. Hover (`K`) on a
-row lists each of its sentences' lines, without the glyph. The claim's words carry the
+row lists each of its sentences' lines, without the glyph; when one is checked it ends with
+`gd: the code · Keep this verdict: <leader>mpk` (the server does not know your key: it names
+durandal.nvim's default). The claim's words carry the
 semantic-token modifiers `checked` and `wrong`.
 
 **The actions** (code actions on the sentence under the cursor):
@@ -320,6 +341,16 @@ semantic-token modifiers `checked` and `wrong`.
   now, whatever the caps. The estimate is the mean cost of the last 20 checks (else $0.10, or
   $0.01 for haiku).
 - *Show the code here* on a checked sentence: opens the first cited code.
+- *Keep this verdict* on a checked sentence (right or wrong; not on *could not tell*): writes
+  the verdict into the plan as one evidence line after the sentence's last row, `- ✓ <why>
+  (<path>:<unit>)` or `- ✗ …`, one level under a bullet or step, at the sentence's indent under
+  prose. One undo step. Not offered once the same line is directly below, nor on a sentence
+  edited since its check (its words no longer match). The evidence line is yours: the pass
+  never writes or removes it.
+- **`gd`** on a checked sentence goes to the code its check cites: every citation in the
+  checker's order (the line cited, else the unit's first line), so an editor shows a list when
+  there are several. On an anchor `gd` still goes to its unit; on a sentence with no check it
+  does nothing.
 - *Show why*: the sentence, its verdict and why, and every citation, in
   `.olifant/state/why/<hash>.md`, opened.
 
@@ -469,13 +500,14 @@ The fair comparison is a head-to-head: the same change made both ways.
 | `<leader>mpc` | force a reconcile (and run the touched steps' tests) |
 | `<leader>mpx` | on a step (or a line under it): mark it done (ticked, `✓` its unit now, a live excerpt frozen) or reopen it (code actions "Mark done" / "Reopen step") |
 | `<leader>mpe` | on a step: its unit's code under it as an excerpt ("Show the code here"; frozen at once under a ticked step), or, where there is one, open or close its fold; where it cannot, the reason (LSP `disabled`). In a fold of done work or an answered question, it (like `zo`) opens or closes that fold |
-| `plans = { conceal, glyphs, fold_done }` | the reading layer ([above](#how-a-plan-reads)): `conceal = true` hides markers, paths and hashes off the cursor line (off by default); override a glyph or a verdict sign; close done work on entry |
-| the sign column | one sign per row from the claim pass: `○ … ✓ ✗ ?` (a row with several sentences shows its worst, `✗ › ? › … › ○ › ✓`), other olifant diagnostics by severity; a wrong claim is undercurled |
+| `plans = { conceal, glyphs, fold_done }` | the reading layer ([above](#how-a-plan-reads)): `conceal = true` hides markers, paths and hashes off the cursor line (off by default); override a glyph or a verdict sign (`glyphs.checking` is a list of spinner frames); close done work on entry |
+| the sign column | one sign per row from the claim pass: `○`, a spinner (`⠋⠙⠹…`, 100 ms a frame) while checking, `✓ ✗ ?` (a row with several sentences shows its worst, `✗ › ? › checking › ○ › ✓`), other olifant diagnostics by severity; a wrong claim is undercurled; the sentence being checked is highlighted (`DurandalPlanChecking`: the cursor line's background, dotted underneath) until its verdict lands |
+| `<leader>mpk` | keep the checked verdict here as an evidence line (the code action *Keep this verdict*; `keys.plan_keep`) |
 | `<leader>ms` / `<leader>mt` | on a step: stub a test under it / run its tests and tick it |
 | `<leader>mpr` | review the `do` or the reading of the step here (else the plan's first) |
 | `<leader>mp<CR>` | start a step under this line (the engine's "New step below") |
 | `<leader>mpf` | the plan's files, in the location list |
-| `gd` | on an anchor: go to its unit |
+| `gd` | on an anchor: go to its unit; on a checked sentence: to the code it cites (several: the quickfix list) |
 
 A plan buffer tells the engine it went quiet (`olifant/plans/idle`) one second after a change,
 counted from leaving insert mode, so the claim pass triages while you read, not while you type;

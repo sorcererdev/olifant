@@ -18,6 +18,10 @@ module Olifant.Server.Triage
   , route
   , routeName
   , triage
+  , joinQuestion
+  , joinThreshold
+  , joinsAnswer
+  , decideJoins
   ) where
 
 import Data.Maybe (fromMaybe)
@@ -25,7 +29,7 @@ import Data.Text (Text)
 import Olifant.Decide (Answer (..), Confidence (..), Decider (..), Question (..), Shape (..), choice, noul)
 import Olifant.Plans (Kind (Claim, Heading, Step))
 import qualified Olifant.Plans as P
-import Olifant.Plans.Sentences (Sentence (..))
+import Olifant.Plans.Sentences (Sentence (..), pairKey)
 
 data Route = Verify | Progress | Asked | Aside
   deriving (Eq, Show)
@@ -131,3 +135,49 @@ triage md s = case byGrammar s of
   Nothing -> case md of
     Nothing -> pure (noJev s)
     Just d -> fromAnswers <$> weighAll d (triageQuestions s)
+
+-- | The probability Jev must give "the second line continues" for two rows to be joined.
+joinThreshold :: Double
+joinThreshold = 0.70
+
+-- | Does the row below continue the sentence of the row above (a
+-- hard-wrapped paragraph), or start a new thought? No unsure option.
+joinQuestion :: Text -> Text -> Question
+joinQuestion upper next =
+  (noul "line-continues" joinInstructions [("first line", upper), ("second line", next)])
+    { qShape = Noul (Just (joinTrue, joinFalse)), qUnsure = False }
+
+joinInstructions, joinTrue, joinFalse :: Text
+joinInstructions = "Two consecutive lines of a plan written in prose; the author usually writes one thought per line and often leaves out the full stop. Does the second line continue the sentence the first line started (the first was wrapped mid-sentence)?"
+joinTrue = "the first line stops mid-sentence (it ends on a word that needs more: an article, a preposition, a conjunction, an auxiliary verb, an unfinished clause) and the second line completes that same sentence"
+joinFalse = "the first line is a complete thought on its own, even without a full stop, and the second line starts another thought"
+
+-- | Jev's answer to 'joinQuestion': joined at 'joinThreshold' or more.
+joinsAnswer :: (Answer, [(Text, Double)]) -> Bool
+joinsAnswer (a, _) = case a of
+  Yes (Confidence p) -> p >= joinThreshold
+  No (Confidence p) -> 1 - p >= joinThreshold
+  _ -> False
+
+-- | The join answers for CANDIDATES ('joinCandidates' rows), by 'pairKey':
+-- one request a pair (a Jev batch shares one state, and every pair has its
+-- own lines), asked while MORE says so. An unsure answer (Jev failed or
+-- would not say) is left out, so the pair is asked again next time; no
+-- Jev decides nothing (no row joins).
+decideJoins :: Maybe (Decider IO) -> IO Bool -> [(Int, Text, Text)] -> IO [(Text, Bool)]
+decideJoins md more cands = case md of
+  Nothing -> pure []
+  Just d -> go d cands
+  where
+    go _ [] = pure []
+    go d ((_, u, n) : rest) =
+      more >>= \case
+        False -> pure []
+        True -> do
+          as <- weighAll d [joinQuestion u n]
+          let kept = [(pairKey u n, joinsAnswer a) | a@(ans, _) : _ <- [as], definite ans]
+          (kept ++) <$> go d rest
+    definite = \case
+      Yes _ -> True
+      No _ -> True
+      _ -> False

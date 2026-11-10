@@ -18,7 +18,7 @@ import Olifant.Server.Errand (Block (..), Ghost (..))
 import Olifant.Server.Stub (StubAnswer (..))
 import Olifant.Server.State (ServerConfig (..), ServerState (..))
 import Olifant.Server.Telemetry (ErrandRecord (..), OutcomeRecord (..), PassRecord (..), ReconcileRecord (..), Record (..), appendRecord, readRecords, recordsPath)
-import Olifant.Server.Claims (CheckRecord (..), SentenceEntry (..), readClaims, storeClaims)
+import Olifant.Server.Claims (CheckRecord (..), SentenceEntry (..), readClaims, readJoins, storeClaims)
 import Olifant.Server.Claims qualified as C
 import Olifant.Server.Checker (Confirmed (..), Judgement (..), UnitRef (..))
 import Olifant.Server.Triage (Route (..), Triage (..))
@@ -1000,6 +1000,36 @@ claimPassSpec = describe "Olifant.Server.Loop (claimPass)" $ describe "claimPass
         there <- doesFileExist (recordsPath dir)
         rs <- if there then fst . readRecords <$> TIO.readFile (recordsPath dir) else pure []
         pure ([r | APass r <- rs], [e | AnErrand e <- rs])
+  describe "joins" $ do
+    let wrapped = "The helper returns\none.\n"
+        claimsJoining yes = TE.decodeUtf8 (BL.toStrict (encode (object ["answers" .= object
+          [ "sentence-kind" .= object ["choice" .= ("claim" :: Text), "confidence" .= (0.9 :: Double), "probabilities" .= object ["claim" .= (0.9 :: Double), "prose" .= (0.1 :: Double)]]
+          , "about-code" .= object ["choice" .= True, "confidence" .= (0.9 :: Double)]
+          , "line-continues" .= object ["choice" .= yes, "confidence" .= (0.9 :: Double)] ]])))
+        withJoining yes act =
+          withReconcile wrapped [] jevConfig (Just (claimsJoining yes)) $ \dir s -> do
+            TIO.writeFile (checksFile dir) (replies [("The helper returns one.", reply "right")])
+            act dir s {ssConfig = (ssConfig s) {scCheckAnswers = Just (checksFile dir)}}
+    it "a wrapped row Jev says continues is one sentence, checked whole; the answer is kept" $
+      withJoining True $ \dir s -> do
+        (s1, a) <- pass SavePass dir s
+        verdictOf a "The helper returns one." `shouldBe` Just JRight
+        M.member "The helper returns" (paStore a) `shouldBe` False
+        readJoins (ssPorts s) dir "plans/t.md" `shouldReturn` M.fromList [("The helper returns ⏎ one.", True)]
+        _ <- pass SavePass dir s1
+        kinds <- asked dir
+        length (filter (== "line-continues") kinds) `shouldBe` 1
+        fmap prJevCalls (paRecord a) `shouldBe` Just 2
+    it "rows Jev says do not continue are two sentences" $
+      withJoining False $ \dir s -> do
+        (_, a) <- pass IdlePass dir s
+        M.keys (M.filter ((== Nothing) . seGone) (paStore a)) `shouldBe` ["The helper returns", "one."]
+        readJoins (ssPorts s) dir "plans/t.md" `shouldReturn` M.fromList [("The helper returns ⏎ one.", False)]
+    it "with no Jev every row is its own sentence and nothing is stored for joins" $
+      withReconcile wrapped [] "" Nothing $ \dir s -> do
+        (_, a) <- pass IdlePass dir s
+        M.keys (paStore a) `shouldBe` ["The helper returns", "one."]
+        readJoins (ssPorts s) dir "plans/t.md" `shouldReturn` M.empty
   it "idle triages and checks nothing" $
     withPass plan "" [("The helper returns one.", reply "right")] $ \dir s -> do
       (_, a) <- pass IdlePass dir s

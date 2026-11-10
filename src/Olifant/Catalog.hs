@@ -313,7 +313,7 @@ openProjectCatalogWith loadP root paths = do
         Right (userM, projectM, rc, named, rec', mig, dec, conj, plns) ->
           let model = fromMaybe defaultModelConfig (maybe userM Just projectM)
               plansCfg = fromMaybe defaultPlans plns
-           in either (Left . ConfigInvalid projectConfig) Right (plansLadderIn model plansCfg) >> fmap (\c -> checkFixes (addRules ownRules (addRegions own c {catalogProject = Just project, catalogModel = model, catalogRulesConfig = rc, catalogName = named, catalogRecognize = rec', catalogMigrate = mig, catalogDecideModel = maybe (recModel rec') Just dec, catalogConjureWire = conj, catalogPlans = plansCfg}))) result
+           in either (Left . ConfigInvalid projectConfig) Right (plansLadderIn model plansCfg >> decideBackendIn model dec) >> fmap (\c -> checkFixes (addRules ownRules (addRegions own c {catalogProject = Just project, catalogModel = model, catalogRulesConfig = rc, catalogName = named, catalogRecognize = rec', catalogMigrate = mig, catalogDecideModel = maybe (recModel rec') Just dec, catalogConjureWire = conj, catalogPlans = plansCfg}))) result
   where
     recognizeIn top =
       Toml.optional "recognize" Toml.table top >>= \case
@@ -333,6 +333,12 @@ openProjectCatalogWith loadP root paths = do
     plansLadderIn model cfg = case [n | n <- fromMaybe [] (pcLadder cfg), n `notElem` map fst (mcBackends model)] of
       [] -> Right ()
       n : _ -> Left ("`plans`: `ladder`: no such backend `" <> n <> "` (backends: " <> T.intercalate ", " (map fst (mcBackends model)) <> ")")
+    -- `[decide] model` names a backend; a version id there would otherwise
+    -- turn every decision off without a word
+    decideBackendIn model = \case
+      Just n | n `notElem` map fst (mcBackends model) ->
+        Left ("[decide] model = \"" <> n <> "\" names no backend (backends: " <> (let bs = sort (map fst (mcBackends model)) in if null bs then "none" else T.intercalate ", " bs) <> "). It takes a backend's name; pin the version in that backend's model key.")
+      _ -> Right ()
     plansIn top =
       Toml.optional "plans" Toml.table top >>= \case
         Nothing -> Right Nothing

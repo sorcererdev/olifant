@@ -81,11 +81,11 @@ import Olifant.Server.LoopTypes
 import Olifant.Server.Plans (Resolved (..), confined, currentBranch, gitOut, gitText, resolveAnchor, safely)
 import Olifant.Server.State (ServerState (..), appendStepLine, projectFor)
 import Olifant.Server.Telemetry (Decision (..), ErrandRecord (..), OutcomeRecord (..), PassRecord (..), ReconcileRecord (..), Record (..), appendRecord, errandId, readRecords, recordsPath)
-import Olifant.Server.Claims (CheckRecord (..), ClaimStore, Failure (..), SentenceEntry (..), claimsOf, claimsPath, pruneClaims, pruneOrphanClaims, queued, updateClaims)
-import Olifant.Plans.Sentences (Sentence (..), sentenceKey, sentences)
+import Olifant.Server.Claims (CheckRecord (..), ClaimStore, Failure (..), SentenceEntry (..), claimsOf, claimsPath, joinsOf, pruneClaims, pruneOrphanClaims, queued, sentencesOf, updateClaims, updateJoins)
+import Olifant.Plans.Sentences (Sentence (..), joinCandidates, pairKey, sentenceKey, sentencesJoined)
 import Olifant.Server.Checker (Checker, Confirmed (..), Judgement (..), checkPrompt, checkerUnder, confirm, fences, parseCheckReply)
 import Olifant.Server.Errand (RunFailure (..), RunResult (..), Status (..))
-import Olifant.Server.Triage (Triage (..), route, routeName, triage)
+import Olifant.Server.Triage (Triage (..), decideJoins, route, routeName, triage)
 import Olifant.Server.Unit (Named (..), fingerprint, unitsOf)
 import Olifant.Workspace (Workspace (..), normalisePath)
 import System.FilePath (makeRelative, takeExtension, (</>))
@@ -620,7 +620,7 @@ claimPass token mode path s0 = do
       text <- case M.lookup path (ssDocs s) of
         Just (_, t) -> pure t
         Nothing -> fromMaybe "" <$> safely Nothing (readText (pFiles (ssPorts s)) path)
-      let ss = sentences (parsePlan text)
+      let ls = parsePlan text
           root = prRoot p
           rel = makeRelative root (normalisePath path)
           cfg = catalogPlans (prCatalog p)
@@ -637,7 +637,25 @@ claimPass token mode path s0 = do
         else do
           pruneOrphanClaims (ssPorts s) root
           now <- pNow (ssPorts s)
-          let fresh = firstPerKey key [x | x <- ss, not (M.member (key x) store0)]
+          -- the rows that may continue on the next: Jev asked once for those
+          -- not yet answered; no Jev (or a failing one) joins nothing
+          joins0 <- joinsOf s root path
+          let cands = joinCandidates ls
+              candKeys = S.fromList [pairKey u n | (_, u, n) <- cands]
+              unasked = [c | c@(_, u, n) <- cands, not (M.member (pairKey u n) joins0)]
+          asked <- newIORef (0 :: Int)
+          let more = do
+                stop <- cancelled token
+                t <- elapsed
+                let go = not stop && t < budget
+                when go (modifyIORef' asked (+ 1))
+                pure go
+          answered <- safely [] (decideJoins jev more unasked)
+          joinCalls <- readIORef asked
+          let joins1 = M.union (M.fromList answered) (M.restrictKeys joins0 candKeys)
+          when (joins1 /= joins0) (void (updateJoins s root path (const joins1)))
+          let ss = sentencesJoined joins1 ls
+              fresh = firstPerKey key [x | x <- ss, not (M.member (key x) store0)]
               -- triage until cancelled or out of time: (store, triaged, Jev calls, stopped)
               triageAll st n calls [] = pure (st, n, calls, False)
               triageAll st n calls (x : rest) = do
@@ -649,7 +667,7 @@ claimPass token mode path s0 = do
                     tr <- triage jev x
                     let e = SentenceEntry tr (route tr) Nothing Nothing now Nothing
                     triageAll (M.insert (key x) e st) (n + 1) (calls + (if trBy tr == "jev" then 1 else 0)) rest
-          (triagedStore, triaged, jevCalls, stoppedEarly) <- triageAll M.empty (0 :: Int) (0 :: Int) fresh
+          (triagedStore, triaged, jevCalls, stoppedEarly) <- triageAll M.empty (0 :: Int) joinCalls fresh
           -- merged into the store as it is now (Check this may have written meanwhile)
           let merge cur = M.union (pruneClaims now ss cur) triagedStore
           store1 <- if merge store0 /= store0 then updateClaims s root path merge else claimsOf s root path
@@ -661,7 +679,7 @@ claimPass token mode path s0 = do
               -- the plan's keys as the editor has it now
               keysNow = do
                 live <- maybe (pure Nothing) ($ path) (ssLiveDoc s)
-                pure (S.fromList (map key (sentences (parsePlan (maybe text snd live)))))
+                S.fromList . map key <$> sentencesOf s root path (parsePlan (maybe text snd live))
               -- one check at a time: (store, tally, stopped by a cancel)
               checkAll st tally [] = pure (st, tally, False)
               checkAll st tally (x : rest) = do
@@ -728,7 +746,8 @@ checkOne token path wanted s0 =
           cfg = catalogPlans (prCatalog p)
           rel = makeRelative root (normalisePath path)
           held = normalisePath path
-      case [x | x <- sentences (parsePlan text), sentenceKey (snText x) == wanted] of
+      planSentences <- sentencesOf s root path (parsePlan text)
+      case [x | x <- planSentences, sentenceKey (snText x) == wanted] of
         [] -> pure (s, Left "that sentence is no longer in the plan")
         x : _ -> do
           now <- pNow (ssPorts s)

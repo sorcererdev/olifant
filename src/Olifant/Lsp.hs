@@ -19,7 +19,7 @@ import Olifant.Decide qualified as De
 import Olifant.Generator (GeneratorId (..))
 import Control.Lens ((%~), (&), (.~), (?~), (^.))
 import Control.Applicative ((<|>))
-import Control.Monad (forM_, guard, join, unless, void, when)
+import Control.Monad (forM, forM_, guard, join, unless, void, when)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Data.Aeson (Value (Bool, Number, Object, String), object, toJSON, (.=))
 import Colog.Core qualified as L
@@ -34,11 +34,11 @@ import Data.Aeson.KeyMap qualified as KM
 import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe, mapMaybe)
 import Olifant.Plans (Anchor (..), Kind (..), Line (..), Verdict (..), anchorText, childrenOf, excerptInfo, excerptSpans, parsePlan, stepDone, testState, withVerdict)
 import Olifant.Server.Unit (Named (..))
-import Olifant.Server.Claims (checkedKeys, claimsOf)
+import Olifant.Server.Claims (checkedKeys, claimsOf, sentencesOf)
 import Olifant.Server.Loop (PassAnswer (..), PassMode (..), checkOne, claimPass)
 import Olifant.Server.Claims (CheckRecord (..), SentenceEntry (..))
 import Olifant.Server.Checker (Citation (..), Confirmed (..), Judgement (..), evidenceText, judgementName)
-import Olifant.Plans.Sentences (Sentence (..), sentenceKey, sentences)
+import Olifant.Plans.Sentences (Sentence (..), sentenceKey)
 import Data.Text qualified as T
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (find, isInfixOf, nub)
@@ -69,7 +69,7 @@ import Olifant.Transcripts (slugOf)
 import Data.Time (getCurrentTimeZone)
 import System.Directory (getHomeDirectory)
 import Olifant.Server.LoopTypes (Fact (..))
-import Olifant.Server.Plans (Reopen (..), claimHover, planTokensWith)
+import Olifant.Server.Plans (Reopen (..), citationLocations, claimHover, keepEdit, planTokensWith)
 import System.FilePath (makeRelative, takeFileName, (</>))
 import Olifant.Generation (Plan (..), ProgressEvent)
 import Olifant.Output (doctorJson, fileActionsJson, listJson, planJson, showJson)
@@ -679,22 +679,26 @@ handlers env =
                     , "fp" .= (rsFingerprint r <* rsUnit r)
                     ]))
           _ -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "olifant/plans/anchor needs a textDocument and a line" Nothing))
-    , -- gd on a plan's anchor: its unit's def line; quiet anywhere else
+    , -- gd on a plan's anchor: its unit's def line; on a checked sentence:
+      -- every code it cites; quiet anywhere else
       requestHandler SMethod_TextDocumentDefinition $ \req respond -> do
         let Position l c = req ^. L.params . L.position
         found <- case uriToFilePath (req ^. L.params . L.textDocument . L.uri) of
-          Nothing -> pure Nothing
+          Nothing -> pure []
           Just path -> liftIO $ withSnapshot env (projectFor path) >>= \case
             Just (_, project) | isPlanPath project path -> do
               text <- documentText env path
               let col = T.length (takeUtf16 (fromIntegral c) (lineAt (T.splitOn "\n" text) (fromIntegral l)))
               case [a | ln <- parsePlan text, lnRow ln == fromIntegral l, Just a <- [lnAnchor ln], anStart a <= col, col <= anEnd a] of
                 a : _ -> withSnapshot env (\s -> (s,) <$> resolveAnchor s project a) <&> \r -> case (rsUnit r, rsText r) of
-                  (Just u, Just _) -> Just (Location (filePathToUri (rsAbs r)) (Range (Position (fromIntegral (namedDef u) - 1) 0) (Position (fromIntegral (namedDef u) - 1) 0)))
-                  _ -> Nothing
-                [] -> pure Nothing
-            _ -> pure Nothing
-        respond (Right (maybe (InR (InR Null)) (InL . Definition . InL) found))
+                  (Just u, Just _) -> [Location (filePathToUri (rsAbs r)) (Range (Position (fromIntegral (namedDef u) - 1) 0) (Position (fromIntegral (namedDef u) - 1) 0))]
+                  _ -> []
+                [] -> sentenceCitations env project path text (fromIntegral l) col
+            _ -> pure []
+        respond . Right $ case found of
+          [] -> InR (InR Null)
+          [one] -> InL (Definition (InL one))
+          many -> InL (Definition (InR many))
     , -- a plan's anchored lines, by section, each with where it points
       requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/plans/files")) $ \req respond ->
         case documentPath (req ^. L.params) of
@@ -1639,9 +1643,9 @@ planHover env project path (Position l c) = do
     a : _ -> withSnapshot env (\s -> (s,) <$> unitHover s project a) <&> fmap (\md -> Hover (InL (MarkupContent MarkupKind_Markdown md)) Nothing)
     [] -> do
       -- off an anchor: what the claim pass found for the sentences on the row
-      store <- readMVar (envState env) >>= \s -> claimsOf s (prRoot project) path
+      (store, ss) <- readMVar (envState env) >>= \s -> (,) <$> claimsOf s (prRoot project) path <*> sentencesOf s (prRoot project) path (parsePlan text)
       let row = fromIntegral l
-      pure $ case claimHover store [x | x <- sentences (parsePlan text), snRow x <= row, row <= snEndRow x] of
+      pure $ case claimHover store [x | x <- ss, snRow x <= row, row <= snEndRow x] of
         Just md -> Just (Hover (InL (MarkupContent MarkupKind_Markdown md)) Nothing)
         Nothing -> Nothing
 
@@ -1653,10 +1657,10 @@ sentenceActions :: Env -> FilePath -> Position -> IO [CodeAction]
 sentenceActions env path (Position l c) =
   planContext env path >>= \case
     Just (p, _, text) | isPlanPath p path -> do
-      store <- readMVar (envState env) >>= \s -> claimsOf s (prRoot p) path
+      (store, ss) <- readMVar (envState env) >>= \s -> (,) <$> claimsOf s (prRoot p) path <*> sentencesOf s (prRoot p) path (parsePlan text)
       let row = fromIntegral l
           col = T.length (takeUtf16 (fromIntegral c) (lineAt (T.splitOn "\n" text) row))
-          onRow = [x | x <- sentences (parsePlan text), snRow x <= row, row <= snEndRow x]
+          onRow = [x | x <- ss, snRow x <= row, row <= snEndRow x]
           inside x = (snRow x, snCol x) <= (row, col) && (row, col) <= (snEndRow x, snEndCol x)
           uri = getUri (filePathToUri path)
           cfg = catalogPlans (prCatalog p)
@@ -1668,8 +1672,10 @@ sentenceActions env path (Position l c) =
           case entry >>= seCheck of
             Just ch -> do
               place <- citationPlace env p (cjConfirmed ch)
+              let keep te = CodeAction "Keep this verdict" (Just CodeActionKind_Empty) Nothing Nothing Nothing (Just (WorkspaceEdit (Just (M.singleton (Uri uri) [te])) Nothing Nothing)) Nothing Nothing
               pure $
-                [act "Show the code here" "olifant.showCode" [toJSON file, toJSON line] | Just (file, line) <- [place]]
+                [keep te | Just te <- [keepEdit (parsePlan text) x ch]]
+                  ++ [act "Show the code here" "olifant.showCode" [toJSON file, toJSON line] | Just (file, line) <- [place]]
                   ++ [act "Show why" "olifant.showWhy" [toJSON uri, toJSON key]]
             Nothing
               | maybe True ((`elem` [Verify, Aside]) . seRoute) entry, snKind x `notElem` [Question] , not (isStep (snKind x)) -> do
@@ -1682,6 +1688,21 @@ sentenceActions env path (Position l c) =
     isStep = \case
       Step _ -> True
       _ -> False
+
+-- | The sentence at (ROW, COL) of the plan at PATH (the one the column is
+-- in, else the row's first): every code its check cites ('citationLocations');
+-- none when it has no check.
+sentenceCitations :: Env -> Project -> FilePath -> T.Text -> Int -> Int -> IO [Location]
+sentenceCitations env p path text row col = do
+  (store, ss) <- readMVar (envState env) >>= \s -> (,) <$> claimsOf s (prRoot p) path <*> sentencesOf s (prRoot p) path (parsePlan text)
+  let onRow = [x | x <- ss, snRow x <= row, row <= snEndRow x]
+      inside x = (snRow x, snCol x) <= (row, col) && (row, col) <= (snEndRow x, snEndCol x)
+  case filter inside onRow ++ onRow of
+    x : _ | Just e <- M.lookup (sentenceKey (snText x)) store, Just ch <- seCheck e -> do
+      starts <- fmap M.fromList . forM [(ciPath ci, u) | ci <- cfEvidence (cjConfirmed ch), Nothing <- [ciLine ci], Just u <- [ciUnit ci]] $ \(f, u) ->
+        withSnapshot env (\s -> (s,) <$> resolveAnchor s p (Anchor f u 0 0)) <&> \r -> ((f, u), maybe 1 (fst . namedLines) (rsUnit r))
+      pure (citationLocations (prRoot p) starts e)
+    _ -> pure []
 
 -- | Where a confirmed verdict's first citation is: the file (absolute) and
 -- its line (1-based): the line cited, else the unit's first line, else 1.
