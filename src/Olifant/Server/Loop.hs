@@ -643,9 +643,16 @@ claimPass token mode path s0 = do
           let cands = joinCandidates ls
               candKeys = S.fromList [pairKey u n | (_, u, n) <- cands]
               unasked = [c | c@(_, u, n) <- cands, not (M.member (pairKey u n) joins0)]
-          answered <- safely [] (decideJoins jev unasked)
-          let joinCalls = if null answered then 0 else 1 :: Int
-              joins1 = M.union (M.fromList answered) (M.restrictKeys joins0 candKeys)
+          asked <- newIORef (0 :: Int)
+          let more = do
+                stop <- cancelled token
+                t <- elapsed
+                let go = not stop && t < budget
+                when go (modifyIORef' asked (+ 1))
+                pure go
+          answered <- safely [] (decideJoins jev more unasked)
+          joinCalls <- readIORef asked
+          let joins1 = M.union (M.fromList answered) (M.restrictKeys joins0 candKeys)
           when (joins1 /= joins0) (void (updateJoins s root path (const joins1)))
           let ss = sentencesJoined joins1 ls
               fresh = firstPerKey key [x | x <- ss, not (M.member (key x) store0)]

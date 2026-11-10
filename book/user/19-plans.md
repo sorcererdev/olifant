@@ -241,9 +241,10 @@ A sentence ends at `.`, `?` or `!` followed by a space and a capital letter or a
 **A line ends a sentence.** Write one thought per line, with or without a full stop: each line of a
 paragraph (or of a bullet's continuation) is its own sentence. A paragraph hard-wrapped mid-sentence
 is the exception: a line that does not end with `.`, `?`, `!` or `:` (a closing quote or paren
-after one counts) is a *join candidate*, and Jev is asked once, for all of a plan's new candidates
-in one request, whether the next line continues it (`line-continues`, joined at probability 0.70
-or more). The answer is kept in the plan's store under the two lines' words, so it is asked again
+after one counts) is a *join candidate*, and Jev is asked once per candidate (one small request
+each, inside the pass's `pass_budget`) whether the next line continues it (`line-continues`,
+joined at probability 0.70 or more; an answer Jev could not give is asked again next pass). The
+answer is kept in the plan's store under the two lines' words, so it is asked again
 only when one of them changes. With no Jev (no `[decide] model`) nothing joins. So
 
 ```

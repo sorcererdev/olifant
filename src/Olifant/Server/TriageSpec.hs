@@ -2,7 +2,8 @@
 module Olifant.Server.TriageSpec (spec) where
 
 import qualified Data.Text as T
-import Olifant.Decide (Answer (..), Confidence (..), Question (..), Shape (..))
+import Data.IORef (atomicModifyIORef', modifyIORef, newIORef, readIORef)
+import Olifant.Decide (Answer (..), Confidence (..), Decider (..), Question (..), Shape (..))
 import Olifant.Plans (parsePlan)
 import Olifant.Plans.Sentences
 import Olifant.Server.Triage
@@ -78,4 +79,16 @@ spec = describe "Olifant.Server.Triage" $ do
       joinsAnswer (Unsure, []) `shouldBe` False
 
     it "with no Jev, decides nothing" $
-      decideJoins Nothing [(0, "a", "b")] `shouldReturn` []
+      decideJoins Nothing (pure True) [(0, "a", "b")] `shouldReturn` []
+
+    it "asks each pair in its own request (Jev's batch is one state), keeps no unsure answer, and stops when told" $ do
+      calls <- newIORef (0 :: Int)
+      let fake = Decider undefined undefined undefined $ \qs -> do
+            modifyIORef calls (+ 1)
+            pure [if lookup "first line" (qContext q) == Just "c" then (Unsure, []) else (Yes (Confidence 0.9), []) | q <- qs]
+      decideJoins (Just fake) (pure True) [(0, "a", "b"), (1, "b", "x"), (2, "c", "d")]
+        `shouldReturn` [("a ⏎ b", True), ("b ⏎ x", True)]
+      readIORef calls `shouldReturn` 3
+      left <- newIORef (1 :: Int)
+      decideJoins (Just fake) (atomicModifyIORef' left (\n -> (n - 1, n > 0))) [(0, "a", "b"), (1, "b", "x")]
+        `shouldReturn` [("a ⏎ b", True)]

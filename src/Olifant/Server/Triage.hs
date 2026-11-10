@@ -159,11 +159,25 @@ joinsAnswer (a, _) = case a of
   No (Confidence p) -> 1 - p >= joinThreshold
   _ -> False
 
--- | The join answers for CANDIDATES ('joinCandidates' rows), by 'pairKey',
--- all in one request; no Jev decides nothing (no row joins).
-decideJoins :: Maybe (Decider IO) -> [(Int, Text, Text)] -> IO [(Text, Bool)]
-decideJoins md cands = case (md, cands) of
-  (Just d, _ : _) -> do
-    as <- weighAll d [joinQuestion u n | (_, u, n) <- cands]
-    pure [(pairKey u n, joinsAnswer a) | ((_, u, n), a) <- zip cands as]
-  _ -> pure []
+-- | The join answers for CANDIDATES ('joinCandidates' rows), by 'pairKey':
+-- one request a pair (a Jev batch shares one state, and every pair has its
+-- own lines), asked while MORE says so. An unsure answer (Jev failed or
+-- would not say) is left out, so the pair is asked again next time; no
+-- Jev decides nothing (no row joins).
+decideJoins :: Maybe (Decider IO) -> IO Bool -> [(Int, Text, Text)] -> IO [(Text, Bool)]
+decideJoins md more cands = case md of
+  Nothing -> pure []
+  Just d -> go d cands
+  where
+    go _ [] = pure []
+    go d ((_, u, n) : rest) =
+      more >>= \case
+        False -> pure []
+        True -> do
+          as <- weighAll d [joinQuestion u n]
+          let kept = [(pairKey u n, joinsAnswer a) | a@(ans, _) : _ <- [as], definite ans]
+          (kept ++) <$> go d rest
+    definite = \case
+      Yes _ -> True
+      No _ -> True
+      _ -> False
