@@ -217,7 +217,7 @@ splitUnit joins ls (blk, u) = mapMaybe toSentence spans
                  anc = listToMaybe
                    [ a' | l <- uLines u, Just a' <- [lnAnchor l]
                    , let p = (lnRow l, anStart a'), p >= (r0, c0), p <= (r1, c1) ]
-             in if T.null txt then Nothing
+             in if not (T.any isAlphaNum txt) then Nothing
                 else Just (blk, Sentence r0 c0 r1 (c1 + 1) (uKind u) txt (headingOf r0) Nothing anc)
     headingOf r = fst (T.breakOn " · " (secTitle (sectionOf ls r)))
 

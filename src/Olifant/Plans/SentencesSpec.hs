@@ -66,6 +66,12 @@ spec = describe "Olifant.Plans.Sentences" $ do
     texts ["Idea: We can use ai to", "1 - Check that collectors parse", "2 - Diagnose (e.g. The format changed)"]
       `shouldBe` ["Idea: We can use ai to", "Check that collectors parse", "Diagnose (e.g. The format changed)"]
 
+  it "gives no sentence for an empty bullet or one of only punctuation" $ do
+    texts ["- "] `shouldBe` []
+    texts ["-  ."] `shouldBe` []
+    texts ["- ..."] `shouldBe` []
+    texts ["- a."] `shouldBe` ["a."]
+
   it "splits a bullet into sentences, the dash stripped" $
     texts ["- The collector retries. It gives up after one."]
       `shouldBe` ["The collector retries.", "It gives up after one."]
