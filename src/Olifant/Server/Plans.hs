@@ -236,7 +236,9 @@ citationLocations root starts e =
 -- | *Keep this verdict*: the check as one evidence line after the
 -- sentence's last row (`- ✓ why (path:Unit)` or `- ✗ …`), one level under a
 -- bullet or step, at the sentence's indent under prose. Nothing for a check
--- that could not tell, or when the same line is already directly below.
+-- that could not tell, or when the same line is already in the run of
+-- evidence lines directly below. A new one goes after that run, so a line's
+-- kept verdicts read oldest first.
 keepEdit :: [Line] -> Sentence -> CheckRecord -> Maybe TextEdit
 keepEdit ls x ch = do
   glyph <- case cfJudgement cf of
@@ -248,9 +250,11 @@ keepEdit ls x ch = do
   let indent = lnIndent first + (if isBullet first then 2 else 0)
       body = glyph <> " " <> T.intercalate " " ([cfWhy cf | not (T.null (cfWhy cf))] ++ ["(" <> w <> ")" | let w = evidenceText cf, not (T.null w)])
       line = T.replicate indent " " <> "- " <> body
-      below = find ((== snEndRow x + 1) . lnRow) ls
-  if fmap (T.strip . lnText) below == Just (T.strip line) then Nothing else do
-    let end = Position (fromIntegral (snEndRow x)) (fromIntegral (utf16Length (lnText lastRow)))
+      isEvidence l = lnIndent l == indent && any (`T.isPrefixOf` T.drop indent (lnText l)) ["- ✓ ", "- ✗ "]
+      run = takeWhile isEvidence (dropWhile ((<= snEndRow x) . lnRow) ls)
+      lastOfRun = if null run then lastRow else last run
+  if any ((== T.strip line) . T.strip . lnText) run then Nothing else do
+    let end = Position (fromIntegral (lnRow lastOfRun)) (fromIntegral (utf16Length (lnText lastOfRun)))
     Just (TextEdit (Range end end) ("\n" <> line))
   where
     cf = cjConfirmed ch
