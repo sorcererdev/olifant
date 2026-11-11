@@ -228,6 +228,13 @@ spec = describe "Olifant.Server.Plans (anchors in the server)" $ do
       fmap insertOf (keepEdit ls (one_ ls) (checkOf two)) `shouldBe` Nothing
       let ls' = parsePlan "- The loader keeps D.\n"
       fmap insertOf (keepEdit ls' (one_ ls') (checkOf (verdictEntry JCannotTell "no idea"))) `shouldBe` Nothing
+    it "stacks kept verdicts in order: a second keep lands below the first, a duplicate anywhere in the run is not offered" $ do
+      let ls = parsePlan "- The loader keeps D.\n  - ✓ it keeps D (src/a.py:Foo)\n- next\n"
+          second = checkOf two
+      fmap insertOf (keepEdit ls (one_ ls) second) `shouldBe` Just ((1, 31), (1, 31), "\n  - ✗ it drops D (app/x.py:f)")
+      let ls2 = parsePlan "- The loader keeps D.\n  - ✓ it keeps D (src/a.py:Foo)\n  - ✗ it drops D (app/x.py:f)\n- next\n"
+      fmap insertOf (keepEdit ls2 (one_ ls2) (checkOf (verdictEntry JRight "it keeps D"))) `shouldBe` Nothing
+      fmap insertOf (keepEdit ls2 (one_ ls2) second) `shouldBe` Nothing
     it "a checked sentence's hover ends with the footer; an unchecked one's does not" $ do
       let ss = sentences . parsePlan . T.unlines
       claimHover (M.fromList [("Right one.", verdictEntry JRight "it returns 1")]) (ss ["Right one."])
