@@ -69,7 +69,7 @@ import Olifant.Plans (Anchor (..), Line (..), Section (..), Verdict (..), parseP
 import Olifant.Server.State (ServerConfig (..), ServerState (..))
 import System.Directory (doesFileExist, findExecutable)
 import Olifant.Server.Confine (confined, safely)
-import Olifant.Server.Claims (CheckRecord (..), ClaimStore, SentenceEntry (..), lineKey, claimsOf, sentencesOf)
+import Olifant.Server.Claims (CheckRecord (..), ClaimStore, SentenceEntry (..), checkable, lineKey, claimsOf, sentencesOf)
 import Olifant.Server.Triage (Route (..))
 import Olifant.Server.Checker (Citation (..), Confirmed (..), Judgement (..), evidenceText)
 import Olifant.Plans.Sentences (Sentence (..), sentenceKey)
@@ -201,7 +201,8 @@ claimLine can store checking x
                 JWrong -> ("claim-wrong", DiagnosticSeverity_Warning, withCode (parts "✗" "Wrong"))
                 _ -> ("claim-unsure", DiagnosticSeverity_Hint, parts "?" "Could not tell")
         Nothing
-          | seRoute e == Verify && can -> Just ("claim-queued", DiagnosticSeverity_Hint, "○ Unchecked claim · saved passes check it, or Check this")
+          | checkable x e && can ->
+              Just ("claim-queued", DiagnosticSeverity_Hint, if seOwed e then "○ Unchecked · the next save checks it" else "○ Unchecked · Check this, or Check the plan")
           | otherwise -> Nothing
   where
     key = sentenceKey (snText x)

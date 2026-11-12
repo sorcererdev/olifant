@@ -2280,7 +2280,7 @@ plansLoopSpec = describe "plans, stage 2" $ do
           <&> \(TResponseMessage _ _ r) -> [a | Right (InL acts) <- [r], InR a <- acts]
         titled t = filter ((== t) . (^. L.title))
         reasons acts = [fmap (^. L.reason) (a ^. L.disabled) | a <- acts]
-    it "(x1) hover on a step's anchor shows its unit's code; off the anchor, nothing" $
+    it "(x1) hover on a step's anchor shows its unit's code; off the anchor, the step's check line" $
       withEditedPlan (T.unlines [stepLine "[ ]"]) "" $ \ports dir -> do
         ((on, off), _) <- inProcessWith ports dir $ do
           p <- openDoc "plans/t.md" "markdown"
@@ -2289,7 +2289,7 @@ plansLoopSpec = describe "plans, stage 2" $ do
           Just h | InL (MarkupContent _ text) <- h ^. L.contents ->
             text `shouldBe` T.intercalate "\n" ["`" <> T.pack table <> ":label` · lines 1–2", "", "```python", "def label(id: str) -> str:", "    return \"t-\" + id", "```"]
           other -> expectationFailure ("hover: " <> show other)
-        off `shouldBe` Nothing
+        fmap (\h -> case h ^. L.contents of InL (MarkupContent _ md) -> md; _ -> "") off `shouldBe` Just "Unchecked · Check this, or Check the plan"
     it "(x2) Show the code here on an open anchored step, resolved, writes the fence below it at the plan's version; on a done step too (frozen), not on one that has one" $
       withEditedPlan (T.unlines ([stepLine "[ ]", stepLine "[x]", stepLine "[ ]"] ++ fenceOf ["x"])) "" $ \ports dir -> do
         ((open', resolved, done, has), _) <- inProcessWith ports dir $ do
@@ -4220,11 +4220,20 @@ claimPassSpec = describe "plans claim pass" $ do
       refreshed = (() <$ message SMethod_WorkspaceDiagnosticRefresh) <|> (anyMessage >> refreshed)
       askedIn f = liftIO (doesFileExist (f <> ".asked") >>= \case True -> length . T.lines <$> TIO.readFile (f <> ".asked"); False -> pure 0)
       waitFor cond = liftIO (let go n = cond >>= \ok -> if ok || n <= (0 :: Int) then pure ok else threadDelay 50000 >> go (n - 1) in go 200)
-  it "(a) open triages, save checks; nothing is written to the plan" $
+      -- the sentence written in the editor after the open: owed its automatic check
+      openWritten dir = do
+        liftIO (TIO.writeFile (dir </> "plans/t.md") "")
+        p <- openDoc "plans/t.md" "markdown"
+        -- the open's pass ends before the sentence is written
+        refreshed
+        changeDoc p [TextDocumentContentChangeEvent (InR (TextDocumentContentChangeWholeDocument "- the helper returns one\n"))]
+        -- as the editor's save writes it
+        liftIO (TIO.writeFile (dir </> "plans/t.md") "- the helper returns one\n")
+        pure p
+  it "(a) a sentence written in the editor is checked on save; nothing is written to the plan" $
     withPass right $ \ports dir _ cfg -> do
       (asked', _) <- inProcessWithConfig cfg ports dir $ do
-        p <- openDoc "plans/t.md" "markdown"
-        refreshed
+        p <- openWritten dir
         sendNotification SMethod_TextDocumentDidSave (DidSaveTextDocumentParams p Nothing)
         ok <- waitFor (doesFileExist (dir </> "checks.json.asked"))
         refreshed
@@ -4236,8 +4245,7 @@ claimPassSpec = describe "plans claim pass" $ do
   it "(b) checked wrong: a claim-wrong warning over the sentence, and hover shows why" $
     withPass wrong $ \ports dir _ cfg -> do
       ((ds, hover), _) <- inProcessWithConfig cfg ports dir $ do
-        p <- openDoc "plans/t.md" "markdown"
-        refreshed
+        p <- openWritten dir
         sendNotification SMethod_TextDocumentDidSave (DidSaveTextDocumentParams p Nothing)
         _ <- waitFor (doesFileExist (dir </> "checks.json.asked"))
         _ <- waitFor (maybe False (isJust . seCheck) . M.lookup "the helper returns one" <$> readClaims plainPorts dir "plans/t.md")
@@ -4248,8 +4256,7 @@ claimPassSpec = describe "plans claim pass" $ do
   it "(f) the actions: Check this on a queued claim; Show the code here and Show why once checked" $
     withPass right $ \ports dir _ cfg -> do
       ((before, after), _) <- inProcessWithConfig cfg ports dir $ do
-        p <- openDoc "plans/t.md" "markdown"
-        refreshed
+        p <- openWritten dir
         b <- titles <$> getCodeActions p (Range (Position 0 4) (Position 0 4))
         sendNotification SMethod_TextDocumentDidSave (DidSaveTextDocumentParams p Nothing)
         _ <- waitFor (maybe False (isJust . seCheck) . M.lookup "the helper returns one" <$> readClaims plainPorts dir "plans/t.md")
@@ -4266,8 +4273,7 @@ claimPassSpec = describe "plans claim pass" $ do
         keepOf as = [a | InR a <- as, a ^. L.title == "Keep this verdict"]
     withPass twoCited $ \ports dir _ cfg -> do
       ((unchecked, checked, kept, text, again, hover, edited), _) <- inProcessWithConfig cfg ports dir $ do
-        p <- openDoc "plans/t.md" "markdown"
-        refreshed
+        p <- openWritten dir
         u <- getDefinitions p (Position 0 4)
         sendNotification SMethod_TextDocumentDidSave (DidSaveTextDocumentParams p Nothing)
         _ <- waitFor (maybe False (isJust . seCheck) . M.lookup "the helper returns one" <$> readClaims plainPorts dir "plans/t.md")

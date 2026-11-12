@@ -41,7 +41,8 @@ import Olifant.Fill (FillHole (..), FillRequest (..), Filler (..), ModelFiller (
 import Data.IORef (modifyIORef, newIORef, readIORef)
 import Olifant.Language (Failure (..), Runner (..), TestRun (..))
 import Olifant.Server.Loop
-import Olifant.Server.Plans (Resolved (..), resolveAnchor)
+import Olifant.Server.Plans (Resolved (..), claimHover, resolveAnchor)
+import Olifant.Plans.Sentences (sentences)
 import Olifant.Server.ReviewReadings (applyFactsText)
 import System.Directory (createDirectoryIfMissing)
 import System.FilePath (takeDirectory, (</>))
@@ -1063,22 +1064,64 @@ claimPassSpec = describe "Olifant.Server.Loop (claimPass)" $ describe "claimPass
       (_, a) <- pass OpenPass dir s
       verdictOf a "The helper returns one." `shouldBe` Nothing
       checksAsked dir `shouldReturn` []
-  it "open with a store checks what is queued" $
+  it "an m1 store opened and saved checks nothing" $
     withPass plan "" [("The helper returns one.", reply "wrong")] $ \dir s -> do
-      (s1, _) <- pass IdlePass dir s
+      -- a milestone 1 store: version 2, no "owed"
+      createDirectoryIfMissing True (dir </> ".olifant/state/claims/plans")
+      TIO.writeFile (dir </> ".olifant/state/claims/plans/t.json") "{\"version\": 2, \"claims\": {\"The helper returns one.\": {\"triage\": {\"kind\": \"claim\", \"p\": 0.9, \"about\": 0.9, \"by\": \"jev\"}, \"route\": \"verify\", \"check\": null, \"failure\": null, \"at\": \"2026-11-07T00:00:00Z\", \"gone\": null}}}"
+      (s1, _) <- pass OpenPass dir s
+      (_, a) <- pass SavePass dir s1
+      checksAsked dir `shouldReturn` []
+      claimHover (paStore a) (sentences (parsePlan plan)) `shouldBe` Just "Unchecked · Check this, or Check the plan"
+  it "opening a plan with a store checks nothing" $
+    withPass plan "" [("The helper returns one.", reply "wrong")] $ \dir s -> do
+      (s1, a1) <- pass IdlePass dir s
+      fmap seOwed (entry a1 "The helper returns one.") `shouldBe` Just True
       (_, a) <- pass OpenPass dir s1
-      verdictOf a "The helper returns one." `shouldBe` Just JWrong
-  it "a big paste stops at the cost cap and resumes" $ do
-    let many = T.unlines ["Claim number " <> tshow n <> " holds." | n <- [1 .. 12 :: Int]]
-        keys = ["Claim number " <> tshow n <> " holds." | n <- [1 .. 12 :: Int]]
-    withPass many "" [(k, reply "right") | k <- keys] $ \dir s -> do
+      verdictOf a "The helper returns one." `shouldBe` Nothing
+      checksAsked dir `shouldReturn` []
+  it "a sentence written then saved is checked once" $
+    withPass plan "" [("The helper returns one.", reply "right")] $ \dir s -> do
+      (s1, _) <- pass IdlePass dir s
+      (s2, _) <- pass SavePass dir s1
+      _ <- pass SavePass dir s2
+      checksAsked dir `shouldReturn` ["The helper returns one."]
+  it "a step written then saved gets a progress check" $
+    withPass "- [ ] Make the helper return one\n" "" [("Make the helper return one", reply "done")] $ \dir s -> do
+      (s1, _) <- pass IdlePass dir s
+      (_, a) <- pass SavePass dir s1
+      fmap (\c -> (cjMode c, cfJudgement (cjConfirmed c))) (entry a "Make the helper return one" >>= seCheck) `shouldBe` Just (CheckProgress, JDone)
+  it "a ticked step is never checked automatically" $
+    withPass "- [x] Make the helper return one\n" "" [("Make the helper return one", reply "done")] $ \dir s -> do
+      (s1, _) <- pass IdlePass dir s
+      _ <- pass SavePass dir s1
+      checksAsked dir `shouldReturn` []
+  it "what the cost cap leaves is backlog" $ do
+    let many = T.unlines ["Claim number " <> tshow n <> " holds." | n <- [1 .. 6 :: Int]]
+        keys = ["Claim number " <> tshow n <> " holds." | n <- [1 .. 6 :: Int]]
+    withPass many "[plans]\npass_cost = 0.25\n" [(k, reply "right") | k <- keys] $ \dir s -> do
       (s1, a1) <- pass SavePass dir s
-      length [k | k <- keys, verdictOf a1 k == Just JRight] `shouldBe` 5
-      fmap prQueued (paRecord a1) `shouldBe` Just 7
-      (_, a2) <- pass SavePass dir s1
-      length [k | k <- keys, verdictOf a2 k == Just JRight] `shouldBe` 10
-      kinds <- asked dir
-      length (filter (== "sentence-kind") kinds) `shouldBe` 12
+      length [k | k <- keys, verdictOf a1 k == Just JRight] `shouldBe` 2
+      stored <- readClaims (ssPorts s) dir "plans/t.md"
+      [k | k <- keys, Just e <- [M.lookup k stored], seOwed e] `shouldBe` []
+      fmap prQueued (paRecord a1) `shouldBe` Just 0
+      _ <- pass SavePass dir s1
+      length <$> checksAsked dir `shouldReturn` 2
+  it "a failed check is retried once" $
+    withPass plan "" [] $ \dir s -> do
+      (s1, a1) <- pass SavePass dir s
+      fmap seOwed (entry a1 "The helper returns one.") `shouldBe` Just True
+      let aged st = do
+            now <- pNow (ssPorts s)
+            stored <- readClaims (ssPorts s) dir "plans/t.md"
+            storeClaims st dir (dir </> "plans/t.md") (M.adjust (\e -> e {seFailure = fmap (\f -> f {C.fuAt = addUTCTime (-660) now}) (seFailure e)}) "The helper returns one." stored)
+      aged s1
+      (s2, a2) <- pass SavePass dir s1
+      length <$> checksAsked dir `shouldReturn` 2
+      fmap seOwed (entry a2 "The helper returns one.") `shouldBe` Just False
+      aged s2
+      _ <- pass SavePass dir s2
+      length <$> checksAsked dir `shouldReturn` 2
   it "failures that cost nothing do not lower the estimate: the cap holds" $ do
     let plan6 = T.unlines ["Fails number " <> tshow n <> " here." | n <- [1 .. 3 :: Int]] <> T.unlines ["Claim number " <> tshow n <> " holds." | n <- [1 .. 3 :: Int]]
         dear = object ["text" .= ("I read it.\n```json\n{\"verdict\": \"right\", \"why\": \"it returns 1\", \"evidence\": [{\"path\": \"" <> T.pack table <> "\", \"unit\": \"helper\"}]}\n```" :: Text), "cost" .= (0.2 :: Double)]

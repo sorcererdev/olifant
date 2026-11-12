@@ -140,16 +140,19 @@ spec = describe "Olifant.Server.Claims" $ do
     -- back in the plan an hour later (an undo): no longer gone, its check kept
     let back = pruneClaims (addUTCTime 3600 at0) (sentences (parsePlan "Gone now.\n")) pruned
     fmap (\e -> (seGone e, seCheck e == seCheck (checked JRight))) (M.lookup "Gone now." back) `shouldBe` Just (Nothing, True)
-  it "(k) queued: verify sentences unchecked and not failed lately, in plan order, one per key" $ do
-    let ss = sentences (parsePlan (T.unlines ["- Prose here.", "- Done one.", "- New one.", "- Failed now.", "- Failed long ago.", "- Asked one.", "- A step", "- Two.", "- Two.", "- Unknown."]))
+  it "(k) queued: owed verify and progress sentences unchecked and not failed lately, in plan order, one per key; unchecked: owed or not" $ do
+    let ss = sentences (parsePlan (T.unlines ["- Prose here.", "- Done one.", "- New one.", "- Failed now.", "- Failed long ago.", "- Asked one.", "- [ ] A step", "- [x] Ticked", "- Two.", "- Two.", "- Unknown.", "- Backlog one."]))
         old = addUTCTime (-660) at0
+        owed e = e {seOwed = True}
         store =
           M.fromList
-            [ ("Prose here.", aside), ("Done one.", checked JRight), ("New one.", claim)
-            , ("Failed now.", claim {seFailure = Just (Failure "x" (addUTCTime (-60) at0))})
-            , ("Failed long ago.", claim {seFailure = Just (Failure "x" old)})
-            , ("Asked one.", aside {seRoute = Asked}), ("A step", aside {seRoute = Progress}), ("Two.", claim) ]
-    texts (queued at0 ss store) `shouldBe` ["New one.", "Failed long ago.", "Two."]
+            [ ("Prose here.", owed aside), ("Done one.", owed (checked JRight)), ("New one.", owed claim)
+            , ("Failed now.", owed claim {seFailure = Just (Failure "x" (addUTCTime (-60) at0))})
+            , ("Failed long ago.", owed claim {seFailure = Just (Failure "x" old)})
+            , ("Asked one.", owed aside {seRoute = Asked}), ("A step", owed aside {seRoute = Progress}), ("Ticked", owed aside {seRoute = Progress})
+            , ("Two.", owed claim), ("Backlog one.", claim) ]
+    texts (queued at0 ss store) `shouldBe` ["New one.", "Failed long ago.", "A step", "Two."]
+    texts (unchecked at0 ss store) `shouldBe` ["New one.", "Failed long ago.", "A step", "Two.", "Backlog one."]
   it "(l) checkedKeys holds right and wrong, not cannot tell" $
     checkedKeys (M.fromList [("a", checked JRight), ("b", checked JWrong), ("c", checked JCannotTell), ("d", claim)]) `shouldBe` M.keysSet (M.fromList [("a", ()), ("b", ())])
   it "(m) lineKey is a bullet's words after its marker" $

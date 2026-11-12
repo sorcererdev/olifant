@@ -181,12 +181,19 @@ spec = describe "Olifant.Server.Plans (anchors in the server)" $ do
     it "one hint per sentence, by its check" $
       map show' (claimHints True store (S.singleton "Checking one.") (ss ["Queued one.", "Right one.", "Wrong one.", "Unsure one.", "Failed one.", "Aside one.", "Checking one."]))
         `shouldBe`
-          [ (Just (InR "claim-queued"), Just DiagnosticSeverity_Hint, "○ Unchecked claim · saved passes check it, or Check this")
+          [ (Just (InR "claim-queued"), Just DiagnosticSeverity_Hint, "○ Unchecked · Check this, or Check the plan")
           , (Just (InR "claim-right"), Just DiagnosticSeverity_Hint, "✓ Right · it returns 1 · src/a.py:Foo")
           , (Just (InR "claim-wrong"), Just DiagnosticSeverity_Warning, "✗ Wrong · it returns 2 · src/a.py:Foo")
           , (Just (InR "claim-unsure"), Just DiagnosticSeverity_Hint, "? Could not tell · cited code not found")
-          , (Just (InR "claim-queued"), Just DiagnosticSeverity_Hint, "○ Unchecked claim · saved passes check it, or Check this")
+          , (Just (InR "claim-queued"), Just DiagnosticSeverity_Hint, "○ Unchecked · Check this, or Check the plan")
           , (Just (InR "claim-checking"), Just DiagnosticSeverity_Hint, "… Checking") ]
+    it "an owed sentence says the next save checks it; an unticked step is unchecked too, a ticked one shows nothing" $ do
+      let stepE = queuedEntry {seTriage = Triage "step" 1 1 "grammar", seRoute = Progress}
+          st = M.fromList [("Owed one.", queuedEntry {seOwed = True}), ("a", stepE), ("b", stepE {seOwed = True})]
+      map show' (claimHints True st S.empty (ss ["Owed one.", "- [ ] a", "- [x] b"]))
+        `shouldBe`
+          [ (Just (InR "claim-queued"), Just DiagnosticSeverity_Hint, "○ Unchecked · the next save checks it")
+          , (Just (InR "claim-queued"), Just DiagnosticSeverity_Hint, "○ Unchecked · Check this, or Check the plan") ]
     it "no queued hint when checks cannot run" $
       map show' (claimHints False store S.empty (ss ["Queued one.", "Right one."])) `shouldBe` [(Just (InR "claim-right"), Just DiagnosticSeverity_Hint, "✓ Right · it returns 1 · src/a.py:Foo")]
     it "a two-row sentence (rows joined) spans both rows; two sentences on a row are two hints" $ do
@@ -196,7 +203,7 @@ spec = describe "Olifant.Server.Plans (anchors in the server)" $ do
     it "the old resolved code and No unit found are gone" $ do
       let all' = claimHints True store S.empty (ss ["Queued one.", "Right one.", "Wrong one.", "Unsure one."])
       [d | d <- all', d ^. L.code == Just (InR "claim-resolved")] `shouldBe` []
-      claimHover store (ss ["Queued one. Right one."]) `shouldBe` Just "Unchecked claim · saved passes check it, or Check this\n\nRight · it returns 1 · src/a.py:Foo\n\ngd: the code · Keep this verdict: <leader>mpk"
+      claimHover store (ss ["Queued one. Right one."]) `shouldBe` Just "Unchecked · Check this, or Check the plan\n\nRight · it returns 1 · src/a.py:Foo\n\ngd: the code · Keep this verdict: <leader>mpk"
       claimHover store (ss ["Aside one."]) `shouldBe` Nothing
       fmap (T.isInfixOf "No unit found") (claimHover store (ss ["Right one."])) `shouldBe` Just False
   describe "gd and Keep this verdict" $ do
@@ -240,7 +247,7 @@ spec = describe "Olifant.Server.Plans (anchors in the server)" $ do
       claimHover (M.fromList [("Right one.", verdictEntry JRight "it returns 1")]) (ss ["Right one."])
         `shouldBe` Just "Right · it returns 1 · src/a.py:Foo\n\ngd: the code · Keep this verdict: <leader>mpk"
       claimHover (M.fromList [("Queued one.", queuedEntry)]) (ss ["Queued one."])
-        `shouldBe` Just "Unchecked claim · saved passes check it, or Check this"
+        `shouldBe` Just "Unchecked · Check this, or Check the plan"
   describe "planTokensWith (claim modifiers)" $
     it "a bare line's text carries checked or wrong from its check" $ do
       let e j = verdictEntry j "no"

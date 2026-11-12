@@ -60,7 +60,7 @@ import Data.Functor ((<&>))
 import Data.IORef (atomicModifyIORef', modifyIORef', newIORef, readIORef)
 import Data.List (delete, isPrefixOf, mapAccumL, sort, sortOn, stripPrefix)
 import Data.Map.Strict qualified as M
-import Data.Maybe (catMaybes, fromMaybe, isJust, listToMaybe)
+import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing, listToMaybe)
 import Data.Set qualified as S
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -630,7 +630,6 @@ claimPass token mode path s0 = do
           key = sentenceKey . snText
           held = normalisePath path
           elapsed = subtract start <$> getMonotonicTime
-      existed <- fileExists (pFiles (ssPorts s)) (claimsPath root path)
       store0 <- claimsOf s root path
       if budget <= 0
         then pure (s, Right (PassAnswer store0 Nothing))
@@ -665,13 +664,16 @@ claimPass token mode path s0 = do
                   then pure (st, n, calls, stop)
                   else do
                     tr <- triage jev x
-                    let e = SentenceEntry tr (route tr) Nothing Nothing now Nothing False
+                    -- written in this editor (idle, save): owed its one automatic check;
+                    -- already in the file when opened: backlog
+                    let e = SentenceEntry tr (route tr) Nothing Nothing now Nothing (mode /= OpenPass)
                     triageAll (M.insert (key x) e st) (n + 1) (calls + (if trBy tr == "jev" then 1 else 0)) rest
           (triagedStore, triaged, jevCalls, stoppedEarly) <- triageAll M.empty (0 :: Int) joinCalls fresh
           -- merged into the store as it is now (Check this may have written meanwhile)
           let merge cur = M.union (pruneClaims now ss cur) triagedStore
           store1 <- if merge store0 /= store0 then updateClaims s root path merge else claimsOf s root path
-          let checking = mode == SavePass || (mode == OpenPass && existed)
+          tried <- newIORef S.empty
+          let checking = mode == SavePass
               queue = if checking && not stoppedEarly then queued now ss store1 else []
               -- the checker is killed only by the server's own cancel (the
               -- client's progress cancel, shutdown), not by the pass's TOKEN
@@ -680,7 +682,7 @@ claimPass token mode path s0 = do
               keysNow = do
                 live <- maybe (pure Nothing) ($ path) (ssLiveDoc s)
                 S.fromList . map key <$> sentencesOf s root path (parsePlan (maybe text snd live))
-              -- one check at a time: (store, tally, stopped by a cancel)
+              -- one check at a time: (store, tally, stopped by a cancel, keys tried)
               checkAll st tally [] = pure (st, tally, False)
               checkAll st tally (x : rest) = do
                 stop <- cancelled token
@@ -700,6 +702,7 @@ claimPass token mode path s0 = do
                     if t >= budget || spent + estimate > costCap + 1e-9
                       then pure (st, tally, False)
                       else if elsewhere then checkAll st tally rest else do
+                        modifyIORef' tried (S.insert (key x))
                         mode' <- maybe CheckClaim (checkModeOf . seTriage) . M.lookup (key x) <$> claimsOf s root path
                         result <- whileChecking s held (key x) (checkSentence s p cfg checker True now rel mode' x)
                         -- the check in flight finished (a cancel stops the pass
@@ -709,7 +712,17 @@ claimPass token mode path s0 = do
                         there <- S.member (key x) <$> keysNow
                         st' <- if killed || not there then pure st else updateClaims s root path (M.adjust (landed (fst result)) (key x))
                         checkAll st' (tallied tally result) rest
-          (store2, tally, cancelledMid) <- checkAll store1 (PassTally 0 0 0 0 0 0 0) queue
+          (store2a, tally, cancelledMid) <- checkAll store1 (PassTally 0 0 0 0 0 0 0) queue
+          -- what the pass did not reach (a cap, a cancel) had its chance: backlog.
+          -- A pass a newer one replaced (stopped, not killed) leaves it owed: the
+          -- newer pass takes it on. A key held by another check is left alone.
+          replaced <- (&&) <$> cancelled token <*> (not <$> cancelled (ssCancel s))
+          triedKeys <- readIORef tried
+          holding <- M.findWithDefault S.empty held <$> readIORef (ssChecking s)
+          let missed = S.fromList [key x | x <- queue] `S.difference` triedKeys `S.difference` holding
+          store2 <-
+            if replaced || S.null missed then pure store2a
+            else updateClaims s root path (\cur -> foldr (M.adjust (\e -> e {seOwed = False})) cur (S.toList missed))
           end <- getMonotonicTime
           let left = length (queued now ss store2)
               rec =
@@ -764,9 +777,12 @@ checkOne token path wanted s0 =
               store2 <- updateClaims s root path (M.adjust (landed result) wanted)
               pure (s, either (Left . fuWhy) (const (Right store2)) result)
 
--- | A check's result in its sentence's entry.
+-- | A check's result in its sentence's entry. A first failure keeps the
+-- sentence owed (one retry after 'retryAfter'); a second makes it backlog.
 landed :: Either Failure CheckRecord -> SentenceEntry -> SentenceEntry
-landed r e = either (\f -> e {seFailure = Just f}) (\c -> e {seCheck = Just c, seFailure = Nothing}) r
+landed r e = either failed (\c -> e {seCheck = Just c, seFailure = Nothing, seOwed = False}) r
+  where
+    failed f = e {seFailure = Just f, seOwed = seOwed e && isNothing (seFailure e)}
 
 -- | WORK with KEY of the plan HELD marked as being checked ('ssChecking'),
 -- the mark taken off however WORK ends.

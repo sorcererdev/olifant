@@ -23,6 +23,8 @@ module Olifant.Server.Claims
   , pruneClaims
   , keepGone
   , queued
+  , unchecked
+  , checkable
   , retryAfter
   , checkedKeys
   , claimsOf
@@ -51,7 +53,7 @@ import Olifant.App (Ports (..))
 import Olifant.Server.State (ServerState (..))
 import Data.Set (Set)
 import Data.Set qualified as S
-import Olifant.Plans (Line (..))
+import Olifant.Plans (Kind (Step), Line (..))
 import Olifant.Plans.Sentences (Sentence (..), sentenceKey, sentencesJoined)
 import Olifant.Server.Checker (CheckMode (..), Citation (..), Confirmed (..), Judgement (..), Print (..), UnitRef (..), checkModeName, judgementName, judgementNamed)
 import Olifant.Server.Triage (Route (..), Triage (..), routeName)
@@ -241,23 +243,37 @@ pruneClaims now ss = M.mapMaybeWithKey keep
       | Just t <- seGone e = if addUTCTime keepGone t > now then Just e else Nothing
       | otherwise = Just e {seGone = Just now}
 
--- | The sentences a pass may check, in plan order, one per key: routed to
--- verify, not checked, and not failed in the last 'retryAfter'. A sentence
--- with no entry is not queued (it is triaged first).
+-- | Whether a sentence is one a check is for and has none: routed to verify
+-- or progress, not a ticked step (you said it is done), and not checked.
+checkable :: Sentence -> SentenceEntry -> Bool
+checkable x e = seRoute e `elem` [Verify, Progress] && snKind x /= Step True && seCheck e == Nothing
+
+-- | The sentences the save pass checks, in plan order, one per key:
+-- 'checkable', owed their automatic check ('seOwed'), and not failed in the
+-- last 'retryAfter'. A sentence with no entry is not queued (it is
+-- triaged first).
 queued :: UTCTime -> [Sentence] -> ClaimStore -> [Sentence]
-queued now ss store = go S.empty ss
+queued now = pick (\x e -> seOwed e && ready now x e)
+
+-- | The sentences *Check the plan* may check, and the count it shows: as
+-- 'queued', owed or not.
+unchecked :: UTCTime -> [Sentence] -> ClaimStore -> [Sentence]
+unchecked now = pick (ready now)
+
+ready :: UTCTime -> Sentence -> SentenceEntry -> Bool
+ready now x e = checkable x e && maybe True (\f -> addUTCTime retryAfter (fuAt f) <= now) (seFailure e)
+
+-- | The sentences, in plan order and one per key (the first), whose entry OK says yes to.
+pick :: (Sentence -> SentenceEntry -> Bool) -> [Sentence] -> ClaimStore -> [Sentence]
+pick ok ss store = go S.empty ss
   where
     go _ [] = []
     go seen (s : rest)
       | k `S.member` seen = go seen rest
-      | Just e <- M.lookup k store, ready e = s : go (S.insert k seen) rest
+      | Just e <- M.lookup k store, ok s e = s : go (S.insert k seen) rest
       | otherwise = go (S.insert k seen) rest
       where
         k = sentenceKey (snText s)
-    ready e =
-      seRoute e == Verify
-        && seCheck e == Nothing
-        && maybe True (\f -> addUTCTime retryAfter (fuAt f) <= now) (seFailure e)
 
 -- | The keys with a right or wrong check (a checked belief answers its question).
 checkedKeys :: ClaimStore -> Set Text
