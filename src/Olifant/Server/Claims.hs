@@ -25,6 +25,8 @@ module Olifant.Server.Claims
   , queued
   , unchecked
   , checkable
+  , stepUnit
+  , stepCitations
   , retryAfter
   , checkedKeys
   , claimsOf
@@ -53,9 +55,10 @@ import Olifant.App (Ports (..))
 import Olifant.Server.State (ServerState (..))
 import Data.Set (Set)
 import Data.Set qualified as S
-import Olifant.Plans (Kind (Step), Line (..))
-import Olifant.Plans.Sentences (Sentence (..), sentenceKey, sentencesJoined)
+import Olifant.Plans (Anchor (..), Kind (Step), Line (..))
+import Olifant.Plans.Sentences (Sentence (..), sentenceKey, sentences, sentencesJoined)
 import Olifant.Server.Checker (CheckMode (..), Citation (..), Confirmed (..), Judgement (..), Print (..), UnitRef (..), checkModeName, judgementName, judgementNamed)
+import Data.List (nub)
 import Olifant.Server.Triage (Route (..), Triage (..), routeName)
 import Olifant.Workspace (Workspace (..), normalisePath)
 import System.FilePath (dropExtension, isAbsolute, makeRelative, takeExtension, (</>))
@@ -350,3 +353,35 @@ joinsAt root plan = heldAt root plan <> "#joins"
 -- | A plan's absolute path, the server's key for its store.
 heldAt :: FilePath -> FilePath -> FilePath
 heldAt root plan = normalisePath (if isAbsolute plan then plan else root </> plan)
+
+-- | A step's working unit: the line's typed anchor if it has one, else the
+-- unit the check stored for the step's sentence (the 'Step' sentence that
+-- starts on the line's row) rests on first, as an anchor at no columns.
+stepUnit :: ClaimStore -> [Line] -> Line -> Maybe Anchor
+stepUnit store ls l = case lnAnchor l of
+  Just a -> Just a
+  Nothing -> do
+    c <- checkOf store ls l
+    u <- cfUnit c
+    pure (Anchor (urPath u) (urName u) 0 0)
+
+-- | Every unit a step's check confirmed (its prints with a unit, else its
+-- first unit), as anchors: what a `do` on the step is grounded in.
+stepCitations :: ClaimStore -> [Line] -> Line -> [Anchor]
+stepCitations store ls l = case checkOf store ls l of
+  Nothing -> []
+  Just c ->
+    let units = nub [(ptPath p, u) | p <- cfPrints c, Just u <- [ptUnit p]]
+        fallback = [(urPath u, urName u) | Just u <- [cfUnit c]]
+     in [Anchor path u 0 0 | (path, u) <- if null units then fallback else units]
+
+-- | The confirmed check of the step sentence that starts on L's row.
+checkOf :: ClaimStore -> [Line] -> Line -> Maybe Confirmed
+checkOf store ls l = do
+  x <- case [x | x <- sentences ls, snRow x == lnRow l, isStep (snKind x)] of
+    x : _ -> Just x
+    [] -> Nothing
+  e <- M.lookup (sentenceKey (snText x)) store
+  cjConfirmed <$> seCheck e
+  where
+    isStep = \case Step _ -> True; _ -> False

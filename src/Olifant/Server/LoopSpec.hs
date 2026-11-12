@@ -20,7 +20,7 @@ import Olifant.Server.State (ServerConfig (..), ServerState (..), filesChanged)
 import Olifant.Server.Telemetry (ErrandRecord (..), OutcomeRecord (..), PassRecord (..), ReconcileRecord (..), Record (..), appendRecord, readRecords, recordsPath)
 import Olifant.Server.Claims (CheckRecord (..), SentenceEntry (..), readClaims, readJoins, storeClaims)
 import Olifant.Server.Claims qualified as C
-import Olifant.Server.Checker (CheckMode (..), Confirmed (..), Judgement (..), UnitRef (..))
+import Olifant.Server.Checker (CheckMode (..), Citation (..), Confirmed (..), Judgement (..), Print (..), UnitRef (..))
 import Olifant.Server.Triage (Route (..), Triage (..))
 import Control.Concurrent (threadDelay)
 import Data.Maybe (isJust)
@@ -875,6 +875,16 @@ stepTestsSpec = describe "Olifant.Server.Loop (a step's tests)" $ do
       either id (const "stubbed") r1 `shouldBe` "the step has no anchor"
       (_, r2) <- stepStub (planPath dir) 9 s
       either id (const "stubbed") r2 `shouldBe` "the step's unit was not found"
+  it "(c2) stepStub on a checked step with no anchor stubs its cited unit; a typed anchor still wins" $
+    withLoop plan [] $ \s _ dir -> do
+      fp <- fpNow dir s "Table.label"
+      let check unit = CheckRecord (Confirmed JDone "it does" [Citation table (Just unit) Nothing] (Just (UnitRef table unit)) (Just fp) [Print table (Just unit) fp]) "sonnet" (Just 0.1) 1 (UTCTime (fromGregorian 2026 11 7) 0) CheckProgress
+          entry unit = SentenceEntry (Triage "step" 1 1 "grammar") Progress (Just (check unit)) Nothing (UTCTime (fromGregorian 2026 11 7) 0) Nothing False
+      storeClaims s dir (planPath dir) (M.fromList [("no anchor here", entry "Table.label"), ("the table is wrong", entry "Table.label")])
+      (_, r) <- stepStub (planPath dir) 8 s
+      fmap (saName . stAnswer) r `shouldBe` Right "test_no_anchor_here"
+      (_, r2) <- stepStub (planPath dir) 6 s
+      fmap stChild r2 `shouldSatisfy` either (const False) (T.isInfixOf "test_the_table_is_wrong")
   it "(d) stepTest on a step runs its tests: green ticks it at its fingerprint; on a test child, red keeps it open" $
     withLoopTested plan [(tableTest, tableTestText)] $ \s _ dir -> do
       fp <- fpNow dir s "Table.label"
@@ -1101,7 +1111,10 @@ claimPassSpec = describe "Olifant.Server.Loop (claimPass)" $ describe "claimPass
         s2 <- filesChanged [dir </> table] s1
         (_, r) <- sweep dir s2
         fmap swChecked r `shouldBe` Right 2
-        checksAsked dir `shouldReturn` ["The helper returns one.", "The helper returns one.", "Another claim holds."]
+        -- Check this first, then the sweep's two side by side
+        asked' <- checksAsked dir
+        take 1 asked' `shouldBe` ["The helper returns one."]
+        sort (drop 1 asked') `shouldBe` ["Another claim holds.", "The helper returns one."]
     it "a save during a sweep checks nothing the sweep holds" $
       withPass (planN 5) "" [(k, slow) | k <- keysN 5] $ \dir s -> do
         (s1, _) <- pass IdlePass dir s

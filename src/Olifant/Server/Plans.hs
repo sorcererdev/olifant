@@ -73,7 +73,7 @@ import Olifant.Plans (Anchor (..), Line (..), Section (..), Verdict (..), parseP
 import Olifant.Server.State (ServerConfig (..), ServerState (..))
 import System.Directory (doesFileExist, findExecutable)
 import Olifant.Server.Confine (confined, safely)
-import Olifant.Server.Claims (CheckRecord (..), ClaimStore, SentenceEntry (..), checkable, lineKey, claimsOf, sentencesOf, unchecked)
+import Olifant.Server.Claims (CheckRecord (..), ClaimStore, SentenceEntry (..), checkable, lineKey, claimsOf, sentencesOf, stepCitations, unchecked)
 import Olifant.Server.Triage (Route (..))
 import Olifant.Server.Checker (CheckMode (..), Citation (..), Confirmed (..), Judgement (..), Print (..), evidenceText, judgementName)
 import Olifant.Server.Stale (CitedFile (..), citedPrints, printsNow, staleKeys)
@@ -653,9 +653,14 @@ runErrand after reviewed reopen token verb path row s0 =
           root = prRoot p
       case find ((== row) . lnRow) ls of
         Just target | fits (lnKind target) -> do
+          store0 <- claimsOf s root path
           let sec = sectionOf ls row
               around = target : childrenOf ls row ++ [l | l <- ls, lnRow l >= secRow sec, lnRow l < secEnd sec]
-              anchors = take groundingLimit (foldl (\acc a -> if any ((== key a) . key) acc then acc else acc ++ [a]) [] [a | l <- around, Just a <- [lnAnchor l]])
+              -- a step's check's cited units ground it too (the code the checker read)
+              cited = case lnKind target of
+                Step _ -> stepCitations store0 ls target
+                _ -> []
+              anchors = take groundingLimit (foldl (\acc a -> if any ((== key a) . key) acc then acc else acc ++ [a]) [] ([a | l <- around, Just a <- [lnAnchor l]] ++ cited))
           grounded <- catMaybes <$> mapM (\a -> grounding a <$> resolveAnchor s p a) anchors
           tests <- projectTests (workspaceProbe (pFiles (ssPorts s)) (prRoot p)) p
           let tools = if verb == Do then testTools p tests else []

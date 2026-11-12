@@ -2358,6 +2358,23 @@ plansLoopSpec = describe "plans, stage 2" $ do
         take 1 ls `shouldSatisfy` \xs -> length xs == 1 && all (maybe False ((== 7) . T.length) . T.stripPrefix ("- [x] s " <> anchorOf <> " \10003 ")) xs
         drop 1 ls `shouldBe` ["  - a note", "  ```python " <> anchorOf <> " · done", "  def label(id: str) -> str:", "      return \"t-\" + id", "  ```", "notes"]
         readings `shouldBe` Right (Just (Number 0))
+    it "(x11) a checked step with no anchor works on its cited unit: Show the code here shows it, Mark done stamps it" $
+      withEditedPlan "- [ ] s\n" "" $ \ports dir -> do
+        writeStore dir (storedStepCheck "s" table "label")
+        ((fence, after), _) <- inProcessWith ports dir $ do
+          p <- openDoc "plans/t.md" "markdown"
+          shows' <- filter ((== Just CodeActionKind_Source) . (^. L.kind)) <$> sourceActions p 0
+          resolved <- mapM resolveCodeAction shows'
+          marks <- titled "Mark done" <$> sourceOnly p 0
+          done <- mapM resolveCodeAction marks
+          forM_ [t | a <- done, Just e <- [a ^. L.edit], Just cs <- [e ^. L.documentChanges], InL te <- cs, InL t <- te ^. L.edits] (applyEdit p)
+          (concatMap startsAndTexts resolved,) <$> documentContents p
+        map snd fence `shouldSatisfy` \case
+          [t] -> ("```python " <> anchorOf) `T.isInfixOf` t && "return \"t-\" + id" `T.isInfixOf` t
+          _ -> False
+        take 1 (T.lines after) `shouldSatisfy` \case
+          [l] -> maybe False ((== 7) . T.length) (T.stripPrefix ("- [x] s " <> anchorOf <> " \10003 ") l)
+          _ -> False
     it "(x10) Reopen step on a ticked step: unticked, its verdict dropped; its frozen excerpt stays" $
       withEditedPlan (T.unlines ([stepLine "[x]" <> " \10003 abc1234", "  ```python " <> anchorOf <> " · done", "  x", "  ```"])) "" $ \ports dir -> do
         (after, _) <- inProcessWith ports dir $ do
@@ -2717,6 +2734,12 @@ plansStage1Spec = describe "olifant/plans (stage 1)" $ do
       [t | Just t <- map (lookupKey "text") (arr (lookupKey "facts" v))] `shouldSatisfy` \case
         [String child, String step] -> T.isSuffixOf "\9679" child && ("- [x] add a method" `T.isPrefixOf` step)
         _ -> False
+  it "do on a checked step with no anchor grounds the code its check cited" $
+    withPlan (planWith "- [ ] add a method") $ \ports dir -> do
+      writeStore dir (storedStepCheck "add a method" table "Table")
+      _ <- inProcessWith ports dir (errand doP 7)
+      (rs, _) <- records dir
+      [erGrounded r | AnErrand r <- rs, erVerb r == "do"] `shouldBe` [1]
   it "a runner failure leaves the plan alone and names the reason" $
     withPlan (T.replace "where is the table" "where is the table SHIM:FAIL" plan) $ \ports dir -> do
       (answer, _) <- inProcessWith ports dir (errand askP 3)
@@ -3290,6 +3313,17 @@ inProcessWithConfig extra ports dir session = do
   a <- runSessionWithHandles inWrite outRead defaultConfig {lspConfig = KM.fromList ([("debug", Bool True), ("debounce_ms", Number 100)] ++ extra)} fullLatestClientCaps dir session
   code <- timeout 5000000 (takeMVar done)
   pure (a, code)
+
+-- | A plan's store (version 2) holding one step's check: done, citing UNIT in PATH.
+storedStepCheck :: Text -> FilePath -> Text -> Text
+storedStepCheck key path unit =
+  "{\"version\": 2, \"claims\": {\"" <> key <> "\": {\"triage\": {\"kind\": \"step\", \"p\": 1, \"about\": 1, \"by\": \"grammar\"}, \"route\": \"progress\", \"check\": {\"verdict\": \"done\", \"why\": \"it does\", \"evidence\": [{\"path\": \"" <> T.pack path <> "\", \"unit\": \"" <> unit <> "\", \"line\": null}], \"unit\": {\"path\": \"" <> T.pack path <> "\", \"name\": \"" <> unit <> "\"}, \"fingerprint\": \"abc1234\", \"mode\": \"progress\", \"model\": \"sonnet\", \"cost\": 0.1, \"seconds\": 1, \"at\": \"2026-11-07T00:00:00Z\"}, \"failure\": null, \"at\": \"2026-11-07T00:00:00Z\", \"gone\": null}}}"
+
+-- | Write a plan's store under DIR before the server starts.
+writeStore :: FilePath -> Text -> IO ()
+writeStore dir body = do
+  createDirectoryIfMissing True (dir </> ".olifant/state/claims/plans")
+  TIO.writeFile (dir </> ".olifant/state/claims/plans/t.json") body
 
 debugState :: Session Value
 debugState =

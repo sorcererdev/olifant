@@ -34,7 +34,7 @@ import Data.Aeson.KeyMap qualified as KM
 import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe, mapMaybe)
 import Olifant.Plans (Anchor (..), Kind (..), Line (..), Verdict (..), anchorText, childrenOf, excerptInfo, excerptSpans, parsePlan, stepDone, testState, withVerdict)
 import Olifant.Server.Unit (Named (..))
-import Olifant.Server.Claims (checkedKeys, claimsOf, sentencesOf)
+import Olifant.Server.Claims (ClaimStore, checkedKeys, claimsOf, sentencesOf, stepUnit)
 import Olifant.Server.Loop (PassAnswer (..), PassMode (..), Sweep (..), checkOne, checkPlan, claimPass, estimateFor, estimatesOf, sweepTargets)
 import Olifant.Server.Claims (CheckRecord (..), SentenceEntry (..))
 import Olifant.Server.Checker (CheckMode (..), Citation (..), Confirmed (..), Judgement (..), checkModeOf, evidenceText, judgementName)
@@ -1521,7 +1521,8 @@ excerptAction env path only (Position l _) =
   withSnapshot env (\s -> projectFor path s >>= \case
     (s', Just (_, project)) | isPlanPath project path -> do
       text <- documentText env path
-      case excerptStep text (fromIntegral l) of
+      store <- claimsOf s' (prRoot project) path
+      case excerptStep store text (fromIntegral l) of
         Right (_, a) -> resolveAnchor s' project a <&> \r -> (s', [if isJust (rsUnit r) then Right () else Left ("the anchor " <> anchorText a <> " does not resolve" <> maybe "" (": " <>) (rsWhy r), Nothing)])
         Left why -> pure (s', [Left why])
     (s', _) -> pure (s', [])) >>= \found -> do
@@ -1536,9 +1537,9 @@ excerptAction env path only (Position l _) =
 -- | The anchored step at ROW of a plan's TEXT with no child opening an
 -- excerpt (closed or not, live or frozen), and its anchor; else why not,
 -- with the opening row of the step's excerpt when it has one.
-excerptStep :: T.Text -> Int -> Either (T.Text, Maybe Int) (Line, Anchor)
-excerptStep text row = case [ln | ln <- ls, lnRow ln == row] of
-  ln : _ | Step _ <- lnKind ln -> case lnAnchor ln of
+excerptStep :: ClaimStore -> T.Text -> Int -> Either (T.Text, Maybe Int) (Line, Anchor)
+excerptStep store text row = case [ln | ln <- ls, lnRow ln == row] of
+  ln : _ | Step _ <- lnKind ln -> case stepUnit store ls ln of
     Nothing -> Left ("no anchor on this line", Nothing)
     Just a
       | o : _ <- [o | (st, o, _) <- excerptSpans ls, st == row] -> Left ("the step shows its code already", Just o)
@@ -1559,7 +1560,8 @@ excerptEdit env path l version =
     (s', Just (_, project)) | isPlanPath project path -> do
       text <- documentText env path
       let now = fst <$> M.lookup path (ssDocs s')
-      case excerptStep text l of
+      store <- claimsOf s' (prRoot project) path
+      case excerptStep store text l of
         _ | now /= version -> pure (s', Left "the plan changed since; ask again")
         Right (ln, a) -> do
           base <- baseline (prRoot project) (makeRelative (prRoot project) (normalisePath path))
@@ -1626,8 +1628,15 @@ toggleEdit env path row version =
 -- with the code now. "Mark done", and `keep` on a step with no tests.
 doneFacts :: ServerState -> Project -> FilePath -> T.Text -> Int -> T.Text -> IO [Fact]
 doneFacts s project path text row ticked0 = do
-  fp <- maybe (pure Nothing) (\a -> resolveAnchor s project a <&> \r -> rsFingerprint r <* rsUnit r) (listToMaybe (parsePlan ticked0) >>= lnAnchor)
-  let ticked = maybe id (\f t -> withVerdict t (Verified f)) fp ticked0
+  store <- claimsOf s (prRoot project) path
+  let typed = listToMaybe (parsePlan ticked0) >>= lnAnchor
+      -- no typed anchor: the step's working unit, written with its stamp
+      worked = case typed of
+        Just _ -> Nothing
+        Nothing -> listToMaybe [ln | ln <- parsePlan text, lnRow ln == row] >>= stepUnit store (parsePlan text)
+      line0 = maybe ticked0 (\a -> T.stripEnd ticked0 <> " " <> anchorText a) worked
+  fp <- maybe (pure Nothing) (\a -> resolveAnchor s project a <&> \r -> rsFingerprint r <* rsUnit r) (typed <|> worked)
+  let ticked = maybe id (\f t -> withVerdict t (Verified f)) fp (if isJust fp then line0 else ticked0)
       after = parsePlan (applyFactsText [Replace row ticked] text)
       mine = [e | e <- excerptsOf after, exStep e == row, not (exDone e)]
   base <- if null mine then pure Nothing else baseline (prRoot project) (makeRelative (prRoot project) (normalisePath path))
