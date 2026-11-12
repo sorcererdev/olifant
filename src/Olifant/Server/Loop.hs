@@ -67,7 +67,8 @@ import Data.Text qualified as T
 import GHC.Clock (getMonotonicTime)
 import Numeric (showFFloat)
 import Olifant.App (Ports (..), Project (..))
-import Olifant.Catalog (Catalog (..), PlansConfig (..))
+import Olifant.Catalog (Catalog (..), PlansConfig (..), Recheck (..))
+import Olifant.Server.Stale (staleIn)
 import Olifant.Decide (Answer (..), Confidence (..), Question (..), qOptions)
 import Olifant.Language.Adapter (languageFor)
 import Olifant.Model (ModelConfig (..), Rung (..))
@@ -674,7 +675,11 @@ claimPass token mode path s0 = do
           store1 <- if merge store0 /= store0 then updateClaims s root path merge else claimsOf s root path
           tried <- newIORef S.empty
           let checking = mode == SavePass
-              queue = if checking && not stoppedEarly then queued now ss store1 else []
+          -- `recheck = "save"`: stale verdicts after the owed sentences (not ticked steps)
+          staleSet <- if checking && pcRecheck cfg == RecheckSave then staleIn s p store1 else pure S.empty
+          let owedQueue = queued now ss store1
+              staleQueue = firstPerKey key [x | x <- ss, key x `S.member` staleSet, snKind x /= Step True, key x `notElem` map key owedQueue]
+              queue = if checking && not stoppedEarly then owedQueue ++ staleQueue else []
               -- the checker is killed only by the server's own cancel (the
               -- client's progress cancel, shutdown), not by the pass's TOKEN
               checker = checkerUnder s (ssCancel s) cfg root
@@ -694,7 +699,7 @@ claimPass token mode path s0 = do
                 -- a sentence another pass (or Check this) is checking now, or
                 -- has checked since this pass read the store, is not checked again
                 busy <- S.member (key x) . M.findWithDefault S.empty held <$> readIORef (ssChecking s)
-                ready <- not . null . queued now [x] <$> claimsOf s root path
+                ready <- if key x `S.member` staleSet then pure True else not . null . queued now [x] <$> claimsOf s root path
                 let elsewhere = busy || not ready
                 if stop
                   then pure (st, tally, True)

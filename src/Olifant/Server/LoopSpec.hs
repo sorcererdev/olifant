@@ -16,7 +16,7 @@ import Olifant.Process (cancelAfter, newCancel, neverCancel)
 import Olifant.Server.Edits (FileEdit (..))
 import Olifant.Server.Errand (Block (..), Ghost (..))
 import Olifant.Server.Stub (StubAnswer (..))
-import Olifant.Server.State (ServerConfig (..), ServerState (..))
+import Olifant.Server.State (ServerConfig (..), ServerState (..), filesChanged)
 import Olifant.Server.Telemetry (ErrandRecord (..), OutcomeRecord (..), PassRecord (..), ReconcileRecord (..), Record (..), appendRecord, readRecords, recordsPath)
 import Olifant.Server.Claims (CheckRecord (..), SentenceEntry (..), readClaims, readJoins, storeClaims)
 import Olifant.Server.Claims qualified as C
@@ -1064,6 +1064,23 @@ claimPassSpec = describe "Olifant.Server.Loop (claimPass)" $ describe "claimPass
       (_, a) <- pass OpenPass dir s
       verdictOf a "The helper returns one." `shouldBe` Nothing
       checksAsked dir `shouldReturn` []
+  describe "recheck" $ do
+    let editHelper dir s = do
+          TIO.writeFile (dir </> table) (T.replace "return 1" "return 2" tableText)
+          filesChanged [dir </> table] s
+    it "with recheck = \"save\", a save re-checks a stale verdict" $
+      withPass plan "[plans]\nrecheck = \"save\"\n" [("The helper returns one.", reply "right")] $ \dir s -> do
+        (s1, _) <- pass SavePass dir s
+        s2 <- editHelper dir s1
+        (_, a) <- pass SavePass dir s2
+        checksAsked dir `shouldReturn` ["The helper returns one.", "The helper returns one."]
+        fmap prChecked (paRecord a) `shouldBe` Just 1
+    it "by default a stale verdict waits to be asked" $
+      withPass plan "" [("The helper returns one.", reply "right")] $ \dir s -> do
+        (s1, _) <- pass SavePass dir s
+        s2 <- editHelper dir s1
+        _ <- pass SavePass dir s2
+        checksAsked dir `shouldReturn` ["The helper returns one."]
   it "an m1 store opened and saved checks nothing" $
     withPass plan "" [("The helper returns one.", reply "wrong")] $ \dir s -> do
       -- a milestone 1 store: version 2, no "owed"
@@ -1072,7 +1089,7 @@ claimPassSpec = describe "Olifant.Server.Loop (claimPass)" $ describe "claimPass
       (s1, _) <- pass OpenPass dir s
       (_, a) <- pass SavePass dir s1
       checksAsked dir `shouldReturn` []
-      claimHover (paStore a) (sentences (parsePlan plan)) `shouldBe` Just "Unchecked · Check this, or Check the plan"
+      claimHover (paStore a) S.empty (sentences (parsePlan plan)) `shouldBe` Just "Unchecked · Check this, or Check the plan"
   it "opening a plan with a store checks nothing" $
     withPass plan "" [("The helper returns one.", reply "wrong")] $ \dir s -> do
       (s1, a1) <- pass IdlePass dir s

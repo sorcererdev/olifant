@@ -69,7 +69,8 @@ import Olifant.Transcripts (slugOf)
 import Data.Time (getCurrentTimeZone)
 import System.Directory (getHomeDirectory)
 import Olifant.Server.LoopTypes (Fact (..))
-import Olifant.Server.Plans (Reopen (..), citationLocations, claimHover, keepEdit, planTokensWith)
+import Olifant.Server.Stale (staleIn)
+import Olifant.Server.Plans (Reopen (..), citationLocations, claimHover, keepEdit, planTokensWith, whyBody)
 import System.FilePath (makeRelative, takeFileName, (</>))
 import Olifant.Generation (Plan (..), ProgressEvent)
 import Olifant.Output (doctorJson, fileActionsJson, listJson, planJson, showJson)
@@ -1643,9 +1644,11 @@ planHover env project path (Position l c) = do
     a : _ -> withSnapshot env (\s -> (s,) <$> unitHover s project a) <&> fmap (\md -> Hover (InL (MarkupContent MarkupKind_Markdown md)) Nothing)
     [] -> do
       -- off an anchor: what the claim pass found for the sentences on the row
-      (store, ss) <- readMVar (envState env) >>= \s -> (,) <$> claimsOf s (prRoot project) path <*> sentencesOf s (prRoot project) path (parsePlan text)
+      (store, ss, stale) <- readMVar (envState env) >>= \s -> do
+        store <- claimsOf s (prRoot project) path
+        (store,,) <$> sentencesOf s (prRoot project) path (parsePlan text) <*> staleIn s project store
       let row = fromIntegral l
-      pure $ case claimHover store [x | x <- ss, snRow x <= row, row <= snEndRow x] of
+      pure $ case claimHover store stale [x | x <- ss, snRow x <= row, row <= snEndRow x] of
         Just md -> Just (Hover (InL (MarkupContent MarkupKind_Markdown md)) Nothing)
         Nothing -> Nothing
 
@@ -1736,21 +1739,8 @@ whyFile env path key =
       case M.lookup key store >>= seCheck of
         Nothing -> pure (Left "that sentence has no check yet")
         Just ch -> do
-          let cf = cjConfirmed ch
-              word = case cfJudgement cf of
-                JRight -> "Right"
-                JWrong -> "Wrong"
-                JCannotTell -> "Could not tell"
-                JDone -> "Done in the code"
-                JOpen -> "Still open"
-                JMisfit -> "As written this would not work"
-              file = prRoot p </> ".olifant/state/why" </> keyHash key <> ".md"
-              body =
-                T.unlines $
-                  ["# " <> key, "", word <> (if T.null (cfWhy cf) then "" else " · " <> cfWhy cf), "", "## The code it rests on", ""]
-                    ++ ["- " <> T.pack (ciPath x) <> maybe "" (":" <>) (ciUnit x) <> maybe "" (\n -> " (line " <> T.pack (show n) <> ")") (ciLine x) | x <- cfEvidence cf]
-                    ++ ["- (none cited)" | null (cfEvidence cf)]
-                    ++ ["", "Checked by " <> cjModel ch <> maybe "" (\c -> ", $" <> T.pack (showFFloat (Just 3) c "")) (cjCost ch) <> ", " <> T.pack (show (round (cjSeconds ch) :: Int)) <> " s; the verdict's unit: " <> (let t = evidenceText cf in if T.null t then "none" else t) <> " (" <> judgementName (cfJudgement cf) <> ")."]
+          let file = prRoot p </> ".olifant/state/why" </> keyHash key <> ".md"
+              body = whyBody key ch
           writeText (pFiles (envPorts env)) file body
           pure (Right file)
     Nothing -> pure (Left "not a plan")

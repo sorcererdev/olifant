@@ -16,6 +16,7 @@ module Olifant.Catalog
   , catalogConjureWire
   , catalogPlans
   , PlansConfig (..)
+  , Recheck (..)
   , defaultPlans
   , Price (..)
   , defaultPrices
@@ -169,11 +170,17 @@ data PlansConfig = PlansConfig
     pcNotEvidence :: [FilePath]
   , -- | dollars an automatic pass may spend (`pass_cost`; 0.50 when absent)
     pcPassCost :: Maybe Double
+  , -- | whether the save pass re-checks stale verdicts (`recheck`: "asked", the default, or "save")
+    pcRecheck :: Recheck
   }
   deriving (Eq, Show)
 
+-- | Who re-checks a stale verdict: the user (*Re-check*, *Check the plan*), or the save pass too.
+data Recheck = RecheckAsked | RecheckSave
+  deriving (Eq, Show)
+
 defaultPlans :: PlansConfig
-defaultPlans = PlansConfig "plans" "claude" "sonnet" 300 [] defaultPrices Nothing Nothing Nothing "sonnet" 120 ["docs"] Nothing
+defaultPlans = PlansConfig "plans" "claude" "sonnet" 300 [] defaultPrices Nothing Nothing Nothing "sonnet" 120 ["docs"] Nothing RecheckAsked
 
 -- | One model's list price in USD per million tokens: input, output, cache
 -- read, and cache writes with the 5-minute and 1-hour TTLs.
@@ -343,7 +350,7 @@ openProjectCatalogWith loadP root paths = do
       Toml.optional "plans" Toml.table top >>= \case
         Nothing -> Right Nothing
         Just t -> Toml.inKey "plans" $ do
-          Toml.onlyKeys ["dir", "runner", "model", "timeout", "do_tools", "prices", "ladder", "budget", "pass_budget", "pass_cost", "check_model", "check_timeout", "not_evidence"] t
+          Toml.onlyKeys ["dir", "runner", "model", "timeout", "do_tools", "prices", "ladder", "budget", "pass_budget", "pass_cost", "check_model", "check_timeout", "not_evidence", "recheck"] t
           budget <- fmap fromInteger <$> Toml.optional "budget" Toml.int t
           if maybe False (< 1) budget then Left "`budget` must be at least 1" else Right ()
           passBudget <- fmap fromInteger <$> Toml.optional "pass_budget" Toml.int t
@@ -352,6 +359,11 @@ openProjectCatalogWith loadP root paths = do
           if maybe False (< 0) passCost then Left "`pass_cost` must be at least 0" else Right ()
           checkTimeout <- maybe (pcCheckTimeout defaultPlans) fromInteger <$> Toml.optional "check_timeout" Toml.int t
           if checkTimeout < 1 then Left "`check_timeout` must be at least 1" else Right ()
+          recheck <- Toml.optional "recheck" Toml.text t >>= \case
+            Nothing -> Right RecheckAsked
+            Just "asked" -> Right RecheckAsked
+            Just "save" -> Right RecheckSave
+            Just other -> Left ("`recheck` is \"asked\" or \"save\", not \"" <> other <> "\"")
           fmap Just $
             PlansConfig
               <$> (maybe (pcDir defaultPlans) T.unpack <$> Toml.optional "dir" Toml.text t)
@@ -367,6 +379,7 @@ openProjectCatalogWith loadP root paths = do
               <*> pure checkTimeout
               <*> (maybe (pcNotEvidence defaultPlans) (map T.unpack) <$> Toml.optional "not_evidence" (Toml.list Toml.text) t)
               <*> pure passCost
+              <*> pure recheck
     pricesIn ps = traverse (\(m, v) -> Toml.inKey m ((m,) <$> (Toml.table v >>= priceIn))) (M.toList ps)
     priceKeys = ["input", "output", "cache_read", "cache_write_5m", "cache_write_1h"]
     priceIn p = do

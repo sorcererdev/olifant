@@ -1,5 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
-module Olifant.Server.CheckerSpec (spec) where
+module Olifant.Server.CheckerSpec (spec, checkerServer) where
 
 import Control.Monad (forM, forM_)
 import Data.Map.Strict qualified as M

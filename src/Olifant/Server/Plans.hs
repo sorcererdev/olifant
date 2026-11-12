@@ -16,6 +16,8 @@ module Olifant.Server.Plans
   , claimHints
   , checksCanRun
   , claimHover
+  , claimLine
+  , whyBody
   , keepFooter
   , citationLocations
   , keepEdit
@@ -71,7 +73,10 @@ import System.Directory (doesFileExist, findExecutable)
 import Olifant.Server.Confine (confined, safely)
 import Olifant.Server.Claims (CheckRecord (..), ClaimStore, SentenceEntry (..), checkable, lineKey, claimsOf, sentencesOf)
 import Olifant.Server.Triage (Route (..))
-import Olifant.Server.Checker (Citation (..), Confirmed (..), Judgement (..), evidenceText)
+import Olifant.Server.Checker (CheckMode (..), Citation (..), Confirmed (..), Judgement (..), Print (..), evidenceText, judgementName)
+import Olifant.Server.Stale (CitedFile (..), citedPrints, printsNow, staleKeys)
+import Data.Time.Format (defaultTimeLocale, formatTime)
+import Numeric (showFFloat)
 import Olifant.Plans.Sentences (Sentence (..), sentenceKey)
 import Data.Set (Set)
 import Data.Set qualified as S
@@ -136,14 +141,19 @@ planDiagnostics s p path text = do
   ss <- sentencesOf s (prRoot p) path ls
   checking <- M.findWithDefault S.empty (normalisePath path) <$> readIORef (ssChecking s)
   can <- checksCanRun s p
+  -- the cited files as they are now (read once, kept until they change)
+  let prints = citedPrints store
+  now <- printsNow s p (map ptPath prints)
+  let stale = staleKeys now store
+      citedNow = M.fromList [((path, fromMaybe "" (ptUnit pr)), maybe (cdHash f) (\u -> M.lookup u (cdUnits f)) (ptUnit pr)) | pr <- prints, let path = normalisePath (ptPath pr), Just f <- [M.lookup path now]]
   let rows = T.splitOn "\n" text
       utf16At r c = fromIntegral (utf16Length (T.take c (if r < length rows then rows !! r else "")))
       inUtf16 d =
         let Range (Position r0 c0) (Position r1 c1) = d ^. L.range
          in d & L.range .~ Range (Position r0 (utf16At (fromIntegral r0) (fromIntegral c0))) (Position r1 (utf16At (fromIntegral r1) (fromIntegral c1)))
   pure
-    ( mapMaybe (\(l, a) -> diagnose ls l a =<< M.lookup (key a) resolved) anchored ++ map inUtf16 (claimHints can store checking ss)
-    , M.map (\r -> rsFingerprint r <* rsUnit r) resolved )
+    ( mapMaybe (\(l, a) -> diagnose ls l a =<< M.lookup (key a) resolved) anchored ++ map inUtf16 (claimHints can store checking stale ss)
+    , M.union (M.map (\r -> rsFingerprint r <* rsUnit r) resolved) citedNow )
   where
     diagnose ls l a r = case (rsUnit r, lnVerdict l, rsFingerprint r) of
       (Nothing, _, _) -> Just (at l a DiagnosticSeverity_Hint "? not found")
@@ -172,34 +182,66 @@ checksCanRun s p = do
 
 -- | The claim pass's margin: one diagnostic per sentence (source
 -- `olifant-plan`, over the sentence's range in code points; 'planDiagnostics'
--- turns them into UTF-16): `claim-checking` (… while its check runs),
--- `claim-right` (✓), `claim-wrong` (✗, a warning), `claim-unsure` (?: the
--- checker could not tell, or a citation was not found), and `claim-queued`
--- (○: routed to a check and not checked yet, or its last check failed) when
--- checks can run (CAN). Nothing for prose, questions, steps, or a sentence
--- with no entry.
-claimHints :: Bool -> ClaimStore -> S.Set Text -> [Sentence] -> [Diagnostic]
-claimHints can store checking = mapMaybe hint
+-- turns them into UTF-16), from 'claimLine', except the lines only the hover
+-- shows ('hoverOnly'): an open step, a step the checker could not tell
+-- about, a ticked step found done. CHECKING: the keys being checked now;
+-- STALE: the keys whose cited code changed since their check.
+claimHints :: Bool -> ClaimStore -> S.Set Text -> S.Set Text -> [Sentence] -> [Diagnostic]
+claimHints can store checking stale = mapMaybe hint
   where
     hint x = do
-      (code, sev, msg) <- claimLine can store checking x
-      pure (Diagnostic (Range (Position (fromIntegral (snRow x)) (fromIntegral (snCol x))) (Position (fromIntegral (snEndRow x)) (fromIntegral (snEndCol x)))) (Just sev) (Just (InR code)) Nothing (Just "olifant-plan") msg Nothing Nothing Nothing)
+      (code, sev, msg) <- claimLine can store checking stale x
+      if code `elem` hoverOnly then Nothing else
+        pure (Diagnostic (Range (Position (fromIntegral (snRow x)) (fromIntegral (snCol x))) (Position (fromIntegral (snEndRow x)) (fromIntegral (snEndCol x)))) (Just sev) (Just (InR code)) Nothing (Just "olifant-plan") msg Nothing Nothing Nothing)
 
--- | A sentence's margin line: its code, severity and message (glyph first).
-claimLine :: Bool -> ClaimStore -> S.Set Text -> Sentence -> Maybe (Text, DiagnosticSeverity, Text)
-claimLine can store checking x
+-- | The codes the hover shows and the margin does not; their lines carry no glyph.
+hoverOnly :: [Text]
+hoverOnly = ["step-open", "step-unsure", "step-ticked-done"]
+
+-- | A sentence's margin line: its code, severity and message (glyph first,
+-- except 'hoverOnly' lines). A claim: `claim-checking` (…), `claim-right`
+-- (✓), `claim-wrong` (✗, a warning), `claim-unsure` (?). A step's progress:
+-- `step-done` (✓, with "Mark done?" on a checkbox), `step-misfit` (!, a
+-- warning), `step-open`, `step-unsure`; on a ticked step `step-ticked` (!,
+-- a warning: the code does not do it) or `step-ticked-done`. A stale
+-- verdict: `claim-right-stale`, `claim-wrong-stale`, `step-done-stale`,
+-- `step-misfit-stale` (the sign dimmed) and `step-stale` (○: an open step
+-- whose code moved). No check: `claim-queued` (○) for a 'checkable'
+-- sentence when checks can run (CAN), saying whether a save checks it.
+claimLine :: Bool -> ClaimStore -> S.Set Text -> S.Set Text -> Sentence -> Maybe (Text, DiagnosticSeverity, Text)
+claimLine can store checking stale x
   | key `S.member` checking = Just ("claim-checking", DiagnosticSeverity_Hint, "… Checking")
   | otherwise = do
       e <- M.lookup key store
       case seCheck e of
         Just c ->
           let cf = cjConfirmed c
-              parts glyph word = T.intercalate " · " ([glyph <> " " <> word] ++ [cfWhy cf | not (T.null (cfWhy cf))])
-              withCode t = T.intercalate " · " ([t] ++ [w | let w = evidenceText cf, not (T.null w)])
-           in Just $ case cfJudgement cf of
-                JRight -> ("claim-right", DiagnosticSeverity_Hint, withCode (parts "✓" "Right"))
-                JWrong -> ("claim-wrong", DiagnosticSeverity_Warning, withCode (parts "✗" "Wrong"))
-                _ -> ("claim-unsure", DiagnosticSeverity_Hint, parts "?" "Could not tell")
+              why = [cfWhy cf | not (T.null (cfWhy cf))]
+              code' = [w | let w = evidenceText cf, not (T.null w)]
+              line ws = T.intercalate " · " ws
+              hint co t = Just (co, DiagnosticSeverity_Hint, t)
+              warn co t = Just (co, DiagnosticSeverity_Warning, t)
+              ticked = snKind x == Step True
+              changed = "the code changed since"
+           in if key `S.member` stale && cfJudgement cf /= JCannotTell
+                then case cfJudgement cf of
+                  JRight -> hint "claim-right-stale" (line (["✓ Right when checked", changed] ++ why ++ code'))
+                  JWrong -> hint "claim-wrong-stale" (line (["✗ Wrong when checked", changed] ++ why ++ code'))
+                  JDone -> hint "step-done-stale" (line (["✓ Done when checked", changed] ++ why ++ code'))
+                  JMisfit -> hint "step-misfit-stale" (line (["! Would not work when checked", changed] ++ why ++ code'))
+                  _ -> hint "step-stale" "○ The code this step would change has changed · Check this"
+                else case cfJudgement cf of
+                  JRight -> hint "claim-right" (line (["✓ Right"] ++ why ++ code'))
+                  JWrong -> warn "claim-wrong" (line (["✗ Wrong"] ++ why ++ code'))
+                  JDone
+                    | ticked -> hint "step-ticked-done" (line (["Done in the code"] ++ why ++ code'))
+                    | otherwise -> hint "step-done" (line (["✓ Done in the code"] ++ why ++ code' ++ ["Mark done?" | snKind x == Step False]))
+                  j | ticked, j `elem` [JOpen, JMisfit] -> warn "step-ticked" (line (["! Ticked, but the code does not do this yet"] ++ why))
+                  JMisfit -> warn "step-misfit" (line (["! As written this would not work"] ++ why ++ code'))
+                  JOpen -> hint "step-open" (line (["Still open"] ++ why))
+                  JCannotTell
+                    | cjMode c == CheckProgress -> hint "step-unsure" (line (["Could not tell"] ++ why))
+                    | otherwise -> hint "claim-unsure" (line (["? Could not tell"] ++ why))
         Nothing
           | checkable x e && can ->
               Just ("claim-queued", DiagnosticSeverity_Hint, if seOwed e then "○ Unchecked · the next save checks it" else "○ Unchecked · Check this, or Check the plan")
@@ -209,12 +251,32 @@ claimLine can store checking x
 
 -- | The hover of the sentences on a row: one line each, without its glyph;
 -- none when no sentence there has a line.
-claimHover :: ClaimStore -> [Sentence] -> Maybe Text
-claimHover store ss = case [T.drop 2 msg | x <- ss, Just (_, _, msg) <- [claimLine True store S.empty x]] of
+claimHover :: ClaimStore -> S.Set Text -> [Sentence] -> Maybe Text
+claimHover store stale ss = case [if code `elem` hoverOnly then msg else T.drop 2 msg | x <- ss, Just (code, _, msg) <- [claimLine True store S.empty stale x]] of
   [] -> Nothing
   ls -> Just (T.intercalate "\n\n" (ls ++ [keepFooter | any checked ss]))
   where
     checked x = isJust (M.lookup (sentenceKey (snText x)) store >>= seCheck)
+
+-- | *Show why*'s page for the sentence KEY and its check: the verdict and
+-- why, every citation, and who checked it, when, at what cost.
+whyBody :: Text -> CheckRecord -> Text
+whyBody key ch =
+  T.unlines $
+    ["# " <> key, "", word <> (if T.null (cfWhy cf) then "" else " · " <> cfWhy cf), "", "## The code it rests on", ""]
+      ++ ["- " <> T.pack (ciPath x) <> maybe "" (":" <>) (ciUnit x) <> maybe "" (\n -> " (line " <> T.pack (show n) <> ")") (ciLine x) | x <- cfEvidence cf]
+      ++ ["- (none cited)" | null (cfEvidence cf)]
+      ++ [ ""
+         , "Checked " <> T.pack (formatTime defaultTimeLocale "%Y-%m-%d %H:%M" (cjAt ch)) <> " by " <> cjModel ch <> maybe "" (\c -> ", $" <> T.pack (showFFloat (Just 3) c "")) (cjCost ch) <> ", " <> T.pack (show (round (cjSeconds ch) :: Int)) <> " s; the verdict's unit: " <> (let t = evidenceText cf in if T.null t then "none" else t) <> " (" <> judgementName (cfJudgement cf) <> ")." ]
+  where
+    cf = cjConfirmed ch
+    word = case cfJudgement cf of
+      JRight -> "Right"
+      JWrong -> "Wrong"
+      JCannotTell -> "Could not tell"
+      JDone -> "Done in the code"
+      JOpen -> "Still open"
+      JMisfit -> "As written this would not work"
 
 -- | The last line of a checked sentence's hover. The server does not know
 -- the client's key for *Keep this verdict*; durandal.nvim's default is named.
@@ -262,7 +324,9 @@ keepEdit ls x ch = do
     isBullet l = "- " `T.isPrefixOf` T.drop (lnIndent l) (lnText l)
 
 -- | (path, unit) -> the unit's fingerprint now; Nothing = not found. A key
--- that is absent has not been read yet.
+-- that is absent has not been read yet. Beside the anchors', the prints of
+-- the plan's checks: (path, unit) for a unit, (path, "") for a whole file's
+-- hash, so a change to cited code is noticed as an anchor's is.
 type AnchorPrints = M.Map (FilePath, Text) (Maybe Text)
 
 -- | One span of a plan: row, column and length in UTF-16 code units, its

@@ -4,6 +4,7 @@
 -- whose configuration breaks keeps its last good catalog.
 module Olifant.Server.State
   ( ServerState (..)
+  , CitedFile (..)
   , appendStepLine
   , cachedBase
   , deciderFor
@@ -72,6 +73,11 @@ data ServerConfig = ServerConfig {scDebounceMs :: Int, scModel :: Maybe Text, sc
 defaultServerConfig :: ServerConfig
 defaultServerConfig = ServerConfig 300 Nothing Nothing Nothing Nothing [] Nothing Nothing
 
+-- | A cited file as it is now: its 'Olifant.Server.Checker.fileHash'
+-- (Nothing: the file is gone) and each unit's fingerprint by name.
+data CitedFile = CitedFile {cdHash :: Maybe Text, cdUnits :: Map Text Text}
+  deriving stock (Eq, Show)
+
 -- | A project as loaded: its catalog, or why it no longer loads (with the
 -- last good one, still served).
 data ProjectSlot = Loaded Project | Broken Text (Maybe Project)
@@ -134,6 +140,11 @@ data ServerState = ServerState
   , -- | per plan (normalised path): the key of the sentence its claim pass
     -- is checking now (the margin shows it as being checked)
     ssChecking :: IORef (Map FilePath (Set Text))
+  , -- | per cited file (absolute path): what it is now, with the editor's
+    -- version it was read at (Nothing: from disk). Read through once; an
+    -- entry is dropped when the file changes on disk ('filesChanged') and
+    -- not used once the editor's version differs
+    ssCitePrints :: IORef (Map FilePath (Maybe Int, CitedFile))
   }
 
 newServerState :: Ports -> IO ServerState
@@ -146,7 +157,8 @@ newServerState ports = do
   units <- newIORef M.empty
   claims <- newIORef M.empty
   checking <- newIORef M.empty
-  pure (ServerState ports M.empty M.empty cache defaultServerConfig M.empty 0 0 M.empty M.empty neverCancel M.empty M.empty M.empty M.empty bases decisions onDecided Nothing Nothing paused M.empty units claims checking)
+  cited <- newIORef M.empty
+  pure (ServerState ports M.empty M.empty cache defaultServerConfig M.empty 0 0 M.empty M.empty neverCancel M.empty M.empty M.empty M.empty bases decisions onDecided Nothing Nothing paused M.empty units claims checking cited)
 
 -- | A file's base text, from the cache while no file changed since.
 cachedBase :: ServerState -> FilePath -> Text -> FilePath -> IO (Either Text (Text, Maybe Text))
@@ -263,7 +275,10 @@ catalogChanged root s = case slotOf root s of
 -- project whose `.olifant/` or one of whose packs holds one is loaded
 -- again; the others are left as they are.
 filesChanged :: [FilePath] -> ServerState -> IO ServerState
-filesChanged paths s0 = foldr (\root next -> next >>= catalogChanged root) (pure s) affected
+filesChanged paths s0 = do
+  -- a cited file read before is read again
+  modifyIORef' (ssCitePrints s0) (\m -> foldr (M.delete . normalisePath) m paths)
+  foldr (\root next -> next >>= catalogChanged root) (pure s) affected
   where
     s = s0 {ssFilesStamp = ssFilesStamp s0 + 1, ssGeneration = ssGeneration s0 + 1}
     affected = [root | (root, slot) <- M.toList (ssProjects s), any (touches root slot) paths]

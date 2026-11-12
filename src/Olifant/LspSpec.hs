@@ -34,7 +34,7 @@ import System.Exit (ExitCode (..))
 import System.Process (callProcess, proc, readCreateProcessWithExitCode)
 import Data.Text.IO qualified as TIO
 import Control.Monad.IO.Class (liftIO)
-import Data.List (isInfixOf, sort, sortOn)
+import Data.List (isInfixOf, isSuffixOf, sort, sortOn)
 import Data.Ord (Down (..))
 import Data.Time (UTCTime (..), diffUTCTime, fromGregorian, getCurrentTime)
 import Olifant.Server.Fixes qualified as Fx
@@ -4293,6 +4293,37 @@ claimPassSpec = describe "plans claim pass" $ do
       again `shouldBe` 0
       fmap (\h -> case h ^. L.contents of InL (MarkupContent _ md) -> last (T.lines md); _ -> "") hover `shouldBe` Just "gd: the code · Keep this verdict: <leader>mpk"
       (length (fst edited), spots (snd edited)) `shouldBe` (0, [])
+  it "a watched-file change turns a verdict stale" $
+    withPass right $ \ports dir _ cfg -> do
+      (codes, _) <- inProcessWithConfig cfg ports dir $ do
+        p <- openWritten dir
+        sendNotification SMethod_TextDocumentDidSave (DidSaveTextDocumentParams p Nothing)
+        _ <- waitFor (maybe False (isJust . seCheck) . M.lookup "the helper returns one" <$> readClaims plainPorts dir "plans/t.md")
+        before <- pullDiagnostics p
+        -- the cited unit changes on disk, as a checkout or a formatter would
+        liftIO (TIO.writeFile (dir </> table) (T.replace "return 1" "return 2" tableText))
+        sendNotification SMethod_WorkspaceDidChangeWatchedFiles (DidChangeWatchedFilesParams [FileEvent (filePathToUri (dir </> table)) FileChangeType_Changed])
+        after <- pullDiagnostics p
+        let codesOf ds = [d ^. L.code | d <- ds, d ^. L.source == Just "olifant-plan"]
+        pure (codesOf before, codesOf after)
+      codes `shouldBe` ([Just (InR "claim-right")], [Just (InR "claim-right-stale")])
+  it "a plan edit reads no cited file" $
+    withPass right $ \ports dir _ cfg -> do
+      reads <- newIORef (0 :: Int)
+      let disk = pFiles ports
+          counting = disk {readText = \path -> when (table `isSuffixOf` path) (atomicModifyIORef' reads (\n -> (n + 1, ()))) >> readText disk path}
+      (n, _) <- inProcessWithConfig cfg ports {pFiles = counting} dir $ do
+        p <- openWritten dir
+        sendNotification SMethod_TextDocumentDidSave (DidSaveTextDocumentParams p Nothing)
+        _ <- waitFor (maybe False (isJust . seCheck) . M.lookup "the helper returns one" <$> readClaims plainPorts dir "plans/t.md")
+        _ <- pullDiagnostics p
+        first <- liftIO (readIORef reads)
+        liftIO (writeIORef reads 0)
+        changeDoc p [TextDocumentContentChangeEvent (InR (TextDocumentContentChangeWholeDocument "- the helper returns one\n\nMore words here.\n"))]
+        _ <- pullDiagnostics p
+        (first,) <$> liftIO (readIORef reads)
+      -- the cited file was read (the check, the first pull), then not again
+      (fst n > 0, snd n) `shouldBe` (True, 0)
   it "(g) olifant.checkSentence checks one sentence while the caps would forbid a pass" $
     withPassOn claims right $ \ports dir _ cfg -> do
       TIO.appendFile (dir </> ".olifant/config.toml") "pass_cost = 0\n"
