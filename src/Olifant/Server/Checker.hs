@@ -164,15 +164,18 @@ checkPrompt CheckProgress s =
          , "Behaviour can live in any layer: server code, templates, and front-end scripts and styles. Before you conclude that something does not exist, search for it across the whole repository."
          , "Rule: judge the step against the code now. Give one verdict:"
          , "- done: the code already does all of what the step says. Cite the code that does it."
-         , "- open: the code does not do it yet, and nothing in the code says the step cannot be done as written. Cite the code the step would change when it exists; none is fine for a step that makes something new."
-         , "- misfit: the step as written rests on something that is not so in the code, or would not get what it says. Say in why what is not so, and cite the code that shows it. A step that also states something about the code now is a misfit when that statement is false."
+         , "- open: the code does not do it yet, and doing it as written would get what the step says. Cite the code the step would change when it exists; none is fine for a step that makes something new."
+         , "- misfit: the step as written rests on something that is not so in the code, or doing it as written would not get what it says: the means it names (a field, a flag, a filter, a file) does not cover what the step is for. Read what the named means covers in the code before you answer open. Say in why what is not so, and cite the code that shows it. A step that also states something about the code now is a misfit when that statement is false."
+         , "Name roles, fields and functions as the code names them."
+         , "If the step points back at something (\"these new fields\", \"it\") that the section and lead do not name, take the most likely thing in the code the section is about, and judge that."
          , "If the code cannot settle it (it is about people, documents or outside services), the verdict is cannot_tell."
          , ""
          , "Answer with one fenced ```json block holding one object, after any notes:"
          , "```json"
          , "{\"verdict\": \"done | open | misfit | cannot_tell\", \"why\": \"<one sentence>\", \"evidence\": [{\"path\": \"<path relative to the current directory>\", \"unit\": \"<function or class name, or null>\", \"line\": <line number, or null>}]}"
          , "```"
-         , "For done or misfit, give at least one evidence entry: the code the verdict rests on." ]
+         , "For done or misfit, give at least one evidence entry: the code the verdict rests on."
+         , "In evidence, \"unit\" is the exact name of one function, class or method as the file defines it (Class.method for a method), or null. For anything else (a template, a heading, part of a function, several names) give null and the line. A unit the file does not define voids the verdict." ]
 checkPrompt CheckClaim s =
   T.unlines $
     [ "Check one sentence of a software plan against this repository (the current directory)."

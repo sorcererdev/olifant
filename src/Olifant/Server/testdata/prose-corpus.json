@@ -9,7 +9,11 @@
   "kind": "step",
   "corpus": 2,
   "contested": false,
-  "labelledBy": "spike"
+  "labelledBy": "spike",
+  "progress": "open",
+  "idea": true,
+  "progressBy": "builder",
+  "progressEvidence": "an idea for future work (what AI could do in collectors); no AI in the codebase at 8488bb80, nothing to have done it"
  },
  {
   "id": "A2",
@@ -21,7 +25,11 @@
   "kind": "step",
   "corpus": 2,
   "contested": false,
-  "labelledBy": "spike"
+  "labelledBy": "spike",
+  "progress": "open",
+  "idea": true,
+  "progressBy": "builder",
+  "progressEvidence": "an idea for future work (AI as a fallback collector); collectors at 8488bb80 are scrapers and parsers with no AI"
  },
  {
   "id": "A3",
@@ -81,7 +89,11 @@
   "kind": "step",
   "corpus": 2,
   "contested": false,
-  "labelledBy": "spike"
+  "labelledBy": "spike",
+  "progress": "open",
+  "idea": true,
+  "progressBy": "builder",
+  "progressEvidence": "an idea for future work (AI helps diagnose and surface problems); no AI in the codebase at 8488bb80"
  },
  {
   "id": "A7",
@@ -139,7 +151,11 @@
   "kind": "step",
   "corpus": 2,
   "contested": false,
-  "labelledBy": "spike"
+  "labelledBy": "spike",
+  "progress": "done",
+  "idea": false,
+  "progressBy": "builder",
+  "progressEvidence": "nightvote/apps/entry/priority.py:arrange orders hand entry first, then broken collectors, then low confidence (priority__test.py:OrderTests.test_the_desks_order); spike label"
  },
  {
   "id": "H3",
@@ -151,7 +167,11 @@
   "kind": "step",
   "corpus": 2,
   "contested": false,
-  "labelledBy": "spike"
+  "labelledBy": "spike",
+  "progress": "done",
+  "idea": false,
+  "progressBy": "builder",
+  "progressEvidence": "nightvote/apps/entry/priority.py:arrange keeps hand entry first (\"hand entry first, to get it assigned quickly\", line 218)"
  },
  {
   "id": "H4",
@@ -239,7 +259,11 @@
   "kind": "step",
   "corpus": 2,
   "contested": false,
-  "labelledBy": "spike"
+  "labelledBy": "spike",
+  "progress": "misfit",
+  "idea": false,
+  "progressBy": "builder",
+  "progressEvidence": "nightvote/apps/entry/board.py:volunteers: is_staff misses the Staff role volunteers log in with; spike label"
  },
  {
   "id": "R1",
@@ -263,7 +287,11 @@
   "kind": "step",
   "corpus": 2,
   "contested": false,
-  "labelledBy": "spike"
+  "labelledBy": "spike",
+  "progress": "done",
+  "idea": false,
+  "progressBy": "builder",
+  "progressEvidence": "nightvote/apps/elections/models.py:Comparison2018 has votes_d_2018 and votes_r_2018, and comparison_2018.py keeps them in the loader; spike label"
  },
  {
   "id": "R3",
@@ -275,7 +303,11 @@
   "kind": "step",
   "corpus": 2,
   "contested": false,
-  "labelledBy": "spike"
+  "labelledBy": "spike",
+  "progress": "done",
+  "idea": false,
+  "progressBy": "builder",
+  "progressEvidence": "nightvote/apps/elections/models.py:Comparison2018 votes_d_2018 and votes_r_2018 are null=True, blank=True"
  },
  {
   "id": "R4",
@@ -287,7 +319,11 @@
   "kind": "step",
   "corpus": 2,
   "contested": false,
-  "labelledBy": "spike"
+  "labelledBy": "spike",
+  "progress": "open",
+  "idea": false,
+  "progressBy": "builder",
+  "progressEvidence": "nightvote/apps/dashboard/views/campus.py:COLUMNS_2018 is a fixed tuple; no column chooser or toggle in templates/dashboard/campus_2018.html"
  },
  {
   "id": "R5",
@@ -326,7 +362,11 @@
   "kind": "step",
   "corpus": 2,
   "contested": false,
-  "labelledBy": "spike"
+  "labelledBy": "spike",
+  "progress": "done",
+  "idea": false,
+  "progressBy": "builder",
+  "progressEvidence": "nightvote/apps/dashboard/services.py:BaselineCol prior_d, prior_r and prior_votes for the chosen baseline year, shown by columns.py:_comparison_columns"
  },
  {
   "id": "R8",
@@ -350,7 +390,11 @@
   "kind": "step",
   "corpus": 2,
   "contested": false,
-  "labelledBy": "spike"
+  "labelledBy": "spike",
+  "progress": "done",
+  "idea": false,
+  "progressBy": "builder",
+  "progressEvidence": "static/js/vendor/htmx.min.js is 4.0.0 and .agents/skills/ holds the htmx agent skills; spike label"
  },
  {
   "id": "X2",
@@ -362,7 +406,11 @@
   "kind": "step",
   "corpus": 2,
   "contested": false,
-  "labelledBy": "spike"
+  "labelledBy": "spike",
+  "progress": "done",
+  "idea": false,
+  "progressBy": "builder",
+  "progressEvidence": "static/js/vendor/htmx.min.js is 4.0.0"
  },
  {
   "id": "C1",
@@ -388,6 +436,10 @@
   "corpus": 3,
   "contested": false,
   "labelledBy": "builder",
-  "evidence": "an idea for future work (what AI could do), like A1 and A3; no AI exists at 8488bb80 to check it against"
+  "evidence": "an idea for future work (what AI could do), like A1 and A3; no AI exists at 8488bb80 to check it against",
+  "progress": "open",
+  "idea": true,
+  "progressBy": "builder",
+  "progressEvidence": "an idea for future work, like A1 and A2; no AI exists at 8488bb80 to diagnose collector targets"
  }
 ]
