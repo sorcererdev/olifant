@@ -51,7 +51,7 @@ import Numeric (showHex)
 import Olifant.App (Ports (..), Project (..))
 import Olifant.Catalog (Catalog (..), PlansConfig (..))
 import Olifant.Language.Adapter (languageFor)
-import Olifant.Plans (anchorText)
+import Olifant.Plans (Kind (Step), anchorText)
 import Olifant.Plans.Sentences (Sentence (..), sentenceKey)
 import Olifant.Process (Cancel)
 import Olifant.Server.Confine (confined, safely)
@@ -131,7 +131,8 @@ data Confirmed = Confirmed
   , cfUnit :: Maybe UnitRef, cfFingerprint :: Maybe Text, cfPrints :: [Print] }
   deriving (Eq, Show)
 
-type Checker = Sentence -> IO (Either RunFailure RunResult)
+-- | One check of a sentence in a mode.
+type Checker = CheckMode -> Sentence -> IO (Either RunFailure RunResult)
 
 -- | Where a confirmed verdict rests, in words: its unit as `path:Unit`, else
 -- the first citation's path (and line), else "".
@@ -144,8 +145,33 @@ evidenceText c = case (cfUnit c, cfEvidence c) of
 fences :: PlansConfig -> [FilePath]
 fences = checkFences
 
-checkPrompt :: Sentence -> Text
-checkPrompt s =
+-- | The prompt: a claim judged as the code stands now ('CheckClaim'), or a
+-- step's progress, done, open or misfit ('CheckProgress').
+checkPrompt :: CheckMode -> Sentence -> Text
+checkPrompt CheckProgress s =
+  T.unlines $
+    [ "Check how far this repository (the current directory) has got with one step of a software plan."
+    , ""
+    , "Section: " <> (if T.null (snHeading s) then "(none)" else snHeading s) ]
+      ++ ["Lead (the sentence or question above it): " <> l | Just l <- [snLead s]]
+      ++ ["Step: " <> snText s]
+      ++ [if snKind s == Step True then "The writer ticked this step: they say it is done." else "The step is not ticked."]
+      ++ ["Hint: the writer pointed at `" <> T.drop 1 (anchorText a) <> "`: a place to start, not the answer." | Just a <- [snAnchor s]]
+      ++ [ ""
+         , "Use Read, Grep and Glob to find the code the step is about, and read it."
+         , "Behaviour can live in any layer: server code, templates, and front-end scripts and styles. Before you conclude that something does not exist, search for it across the whole repository."
+         , "Rule: judge the step against the code now. Give one verdict:"
+         , "- done: the code already does all of what the step says. Cite the code that does it."
+         , "- open: the code does not do it yet, and nothing in the code says the step cannot be done as written. Cite the code the step would change when it exists; none is fine for a step that makes something new."
+         , "- misfit: the step as written rests on something that is not so in the code, or would not get what it says. Say in why what is not so, and cite the code that shows it. A step that also states something about the code now is a misfit when that statement is false."
+         , "If the code cannot settle it (it is about people, documents or outside services), the verdict is cannot_tell."
+         , ""
+         , "Answer with one fenced ```json block holding one object, after any notes:"
+         , "```json"
+         , "{\"verdict\": \"done | open | misfit | cannot_tell\", \"why\": \"<one sentence>\", \"evidence\": [{\"path\": \"<path relative to the current directory>\", \"unit\": \"<function or class name, or null>\", \"line\": <line number, or null>}]}"
+         , "```"
+         , "For done or misfit, give at least one evidence entry: the code the verdict rests on." ]
+checkPrompt CheckClaim s =
   T.unlines $
     [ "Check one sentence of a software plan against this repository (the current directory)."
     , ""
@@ -166,19 +192,20 @@ checkPrompt s =
          , "For right or wrong, give at least one evidence entry: the code the verdict rests on." ]
 
 -- | The last ```json block, else the first `{` from which the rest of the
--- reply decodes as an object. Right or wrong with no evidence is refused.
-parseCheckReply :: Text -> Either Text CheckReply
-parseCheckReply reply = do
+-- reply decodes as an object. A verdict of the other mode is refused, and
+-- so is right, wrong, done or misfit with no evidence.
+parseCheckReply :: CheckMode -> Text -> Either Text CheckReply
+parseCheckReply mode reply = do
   v <- maybe (Left "no JSON object in the reply") Right (maybe bare Just fenced)
   o <- case v of
     Object o -> Right o
     _ -> Left "the reply's JSON is not an object"
   j <- case KM.lookup "verdict" o of
-    Just (String t) -> case T.map toLower (T.replace " " "_" (T.strip t)) of
-      "right" -> Right JRight
-      "wrong" -> Right JWrong
-      "cannot_tell" -> Right JCannotTell
-      other -> Left ("unknown verdict `" <> other <> "`")
+    Just (String t) ->
+      let w = T.map toLower (T.replace " " "_" (T.strip t))
+       in case judgementNamed w of
+            Just j | j `elem` wordsOf mode -> Right j
+            _ -> Left ("unknown verdict `" <> w <> "`")
     _ -> Left "no verdict"
   let why = case KM.lookup "why" o of
         Just (String t) -> T.strip t
@@ -186,8 +213,11 @@ parseCheckReply reply = do
       evidence = case KM.lookup "evidence" o of
         Just (Array xs) -> [c | Object e <- foldr (:) [] xs, Just c <- [citation e]]
         _ -> []
-  if j /= JCannotTell && null evidence then Left "a verdict with no evidence" else Right (CheckReply j why evidence)
+  if j `elem` [JRight, JWrong, JDone, JMisfit] && null evidence then Left "a verdict with no evidence" else Right (CheckReply j why evidence)
   where
+    wordsOf = \case
+      CheckClaim -> [JRight, JWrong, JCannotTell]
+      CheckProgress -> [JDone, JOpen, JMisfit, JCannotTell]
     decode t = either (const Nothing) Just (eitherDecodeStrict (TE.encodeUtf8 t)) :: Maybe Value
     fenced = case drop 1 (T.splitOn "```json" reply) of
       [] -> Nothing
@@ -217,16 +247,21 @@ parseCheckReply reply = do
 -- | Each citation checked: a path under the root, outside the fences, that
 -- exists; a unit found there by name, else a line inside the file (its
 -- enclosing unit, if any), else no unit or line at all (the whole file).
--- Any citation that fails makes the verdict cannot_tell, "cited code not found".
+-- Any citation that fails makes the verdict cannot_tell, "cited code not
+-- found"; except for open, which rests on no code: the citation is dropped.
+-- Each citation found has its 'Print': the unit's fingerprint (named, or
+-- enclosing the line), else the whole file's 'fileHash'.
 confirm :: ServerState -> Project -> [FilePath] -> CheckReply -> IO Confirmed
 confirm s p fs r = do
-  checked <- traverse cite (crEvidence r)
-  let found = [u | Just (Just u) <- checked]
+  checked0 <- traverse (\c -> (c,) <$> cite c) (crEvidence r)
+  let checked = if crJudgement r == JOpen then [x | x@(_, Just _) <- checked0] else checked0
+      found = [u | (_, Just (Just u, _)) <- checked]
       unit = listToMaybe found
+      prints = [pr | (_, Just (_, pr)) <- checked]
   pure $
-    if any isNothing checked
+    if any (isNothing . snd) checked
       then Confirmed JCannotTell (if crJudgement r == JCannotTell then crWhy r else "cited code not found") (crEvidence r) Nothing Nothing []
-      else Confirmed (crJudgement r) (crWhy r) (crEvidence r) (fst <$> unit) (snd <$> unit) []
+      else Confirmed (crJudgement r) (crWhy r) (map fst checked) (fst <$> unit) (snd <$> unit) prints
   where
     root = prRoot p
     relOf path
@@ -258,26 +293,27 @@ confirm s p fs r = do
                   rows = length (T.lines t)
                   lineIn = maybe False (\l -> l >= 1 && l <= rows) (ciLine c)
                   enclosing l = listToMaybe (sortOn (\n -> snd (namedLines n) - fst (namedLines n)) [n | (n, _) <- units, fst (namedLines n) <= l, l <= snd (namedLines n)])
-                  mk n = Just (UnitRef rel (namedName n), fingerprint t (namedLines n))
+                  mk n = let fp = fingerprint t (namedLines n) in (Just (UnitRef rel (namedName n), fp), Print rel (Just (namedName n)) fp)
+                  whole = (Nothing, Print rel Nothing (fileHash t))
               pure $ case (byName, ciUnit c, ciLine c) of
                 (Just n, _, _) -> Just (mk n)
                 -- a unit named but not found is a guess, whatever its line
-                (Nothing, Nothing, Just l) | lineIn -> Just (enclosing l >>= mk)
-                (Nothing, Nothing, Nothing) -> Just Nothing
+                (Nothing, Nothing, Just l) | lineIn -> Just (maybe whole mk (enclosing l))
+                (Nothing, Nothing, Nothing) -> Just whole
                 _ -> Nothing
 
 -- | One live check: the runner under `check_timeout`, the prompt on stdin, cwd the root.
 liveChecker :: Cancel -> PlansConfig -> FilePath -> Checker
-liveChecker token cfg root s = runClaude token cfg {pcTimeout = pcCheckTimeout cfg} Check [] Nothing root (checkPrompt s)
+liveChecker token cfg root mode s = runClaude token cfg {pcTimeout = pcCheckTimeout cfg} Check [] Nothing root (checkPrompt mode s)
 
 -- | Recorded replies (tests): `{"replies": {KEY: TEXT or {"text", "cost", "seconds"}}}`
 -- by 'sentenceKey' (an object may add "delay", seconds). Each key asked is appended to FILE.asked and each prompt to
 -- FILE.prompts; a key not in the file is a failure.
 recordedChecker :: FilePath -> Checker
-recordedChecker file s = do
+recordedChecker file mode s = do
   let key = sentenceKey (snText s)
   appendFile (file <> ".asked") (T.unpack key <> "\n")
-  BS.appendFile (file <> ".prompts") (TE.encodeUtf8 (checkPrompt s <> "\n"))
+  BS.appendFile (file <> ".prompts") (TE.encodeUtf8 (checkPrompt mode s <> "\n"))
   replies <- readReplies file
   case KM.lookup (Key.fromText key) replies of
     Just v | Just r <- resultOf v -> do
@@ -291,7 +327,7 @@ recordedChecker file s = do
 -- | As 'replayDecider': with no live checker, replay (a key not in the file
 -- is a failure, noted in FILE.missed); with one, run it and record its reply.
 replayChecker :: FilePath -> Maybe Checker -> Checker
-replayChecker file live s = do
+replayChecker file live mode s = do
   let key = sentenceKey (snText s)
   replies <- readReplies file
   case live of
@@ -299,7 +335,7 @@ replayChecker file live s = do
       Just r -> pure (Right r)
       Nothing -> Left (RunFailure Empty "no recorded reply" Nothing) <$ appendFile (file <> ".missed") (T.unpack key <> "\n")
     Just run ->
-      run s >>= \case
+      run mode s >>= \case
         Left f -> pure (Left f)
         Right r -> do
           let entry = object (["text" .= rrText r, "seconds" .= rrSeconds r, "models" .= map fst (rrModels r)] ++ ["cost" .= c | Just c <- [rrCost r]])

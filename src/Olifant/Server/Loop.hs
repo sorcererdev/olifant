@@ -83,7 +83,7 @@ import Olifant.Server.State (ServerState (..), appendStepLine, projectFor)
 import Olifant.Server.Telemetry (Decision (..), ErrandRecord (..), OutcomeRecord (..), PassRecord (..), ReconcileRecord (..), Record (..), appendRecord, errandId, readRecords, recordsPath)
 import Olifant.Server.Claims (CheckRecord (..), ClaimStore, Failure (..), SentenceEntry (..), claimsOf, claimsPath, joinsOf, pruneClaims, pruneOrphanClaims, queued, sentencesOf, updateClaims, updateJoins)
 import Olifant.Plans.Sentences (Sentence (..), joinCandidates, pairKey, sentenceKey, sentencesJoined)
-import Olifant.Server.Checker (CheckMode (..), Checker, Confirmed (..), Judgement (..), checkPrompt, checkerUnder, confirm, fences, parseCheckReply)
+import Olifant.Server.Checker (CheckMode (..), Checker, Confirmed (..), Judgement (..), checkModeName, checkModeOf, judgementName, checkPrompt, checkerUnder, confirm, fences, parseCheckReply)
 import Olifant.Server.Errand (RunFailure (..), RunResult (..), Status (..))
 import Olifant.Server.Triage (Triage (..), decideJoins, route, routeName, triage)
 import Olifant.Server.Unit (Named (..), fingerprint, unitsOf)
@@ -700,7 +700,8 @@ claimPass token mode path s0 = do
                     if t >= budget || spent + estimate > costCap + 1e-9
                       then pure (st, tally, False)
                       else if elsewhere then checkAll st tally rest else do
-                        result <- whileChecking s held (key x) (checkSentence s p cfg checker True now rel x)
+                        mode' <- maybe CheckClaim (checkModeOf . seTriage) . M.lookup (key x) <$> claimsOf s root path
+                        result <- whileChecking s held (key x) (checkSentence s p cfg checker True now rel mode' x)
                         -- the check in flight finished (a cancel stops the pass
                         -- before the next one, it does not kill this one): kept
                         -- while its sentence is in the plan, paid for either way
@@ -755,7 +756,8 @@ checkOne token path wanted s0 =
           unless (M.member wanted store0) $ do
             tr <- triage (rgJev (rungsFor s {ssCancel = token} p False)) x
             void (updateClaims s root path (M.insertWith (\_ old -> old) wanted (SentenceEntry tr (route tr) Nothing Nothing now Nothing False)))
-          (result, _) <- whileChecking s held wanted (checkSentence s p cfg (checkerUnder s token cfg root) False now rel x)
+          mode <- maybe CheckClaim (checkModeOf . seTriage) . M.lookup wanted <$> claimsOf s root path
+          (result, _) <- whileChecking s held wanted (checkSentence s p cfg (checkerUnder s token cfg root) False now rel mode x)
           cancelled token >>= \case
             True -> pure (s, Left "cancelled")
             False -> do
@@ -796,32 +798,32 @@ tallied t0 (r, cost) = case r of
 -- pass asked, not the user): the stored check or the failure, and what it
 -- cost against the pass's cap (a run with no reported cost, 'unpricedCheck';
 -- a run that never answered, nothing).
-checkSentence :: ServerState -> Project -> PlansConfig -> Checker -> Bool -> UTCTime -> FilePath -> Sentence -> IO (Either Failure CheckRecord, Double)
-checkSentence s p cfg checker auto now plan x = do
-  r <- checker x
+checkSentence :: ServerState -> Project -> PlansConfig -> Checker -> Bool -> UTCTime -> FilePath -> CheckMode -> Sentence -> IO (Either Failure CheckRecord, Double)
+checkSentence s p cfg checker auto now plan mode x = do
+  r <- checker mode x
   let root = prRoot p
-      record status why mrr =
+      record status why verdict mrr =
         appendRecord (ssPorts s) root . AnErrand $
           ErrandRecord
             { erId = errandId now "check" plan (snRow x) (mrr >>= rrSession), erAt = now, erVerb = "check", erPlan = plan, erRow = snRow x
             , erSection = snHeading x, erBranch = Nothing, erModel = pcCheckModel cfg, erStatus = status, erWhy = why
             , erSession = mrr >>= rrSession, erSeconds = rrSeconds <$> mrr, erTurns = mrr >>= rrTurns, erTokens = mrr >>= rrTokens
-            , erCost = mrr >>= rrCost, erModels = maybe [] rrModels mrr, erPromptChars = T.length (checkPrompt x), erGrounded = 0
+            , erCost = mrr >>= rrCost, erModels = maybe [] rrModels mrr, erPromptChars = T.length (checkPrompt mode x), erGrounded = 0
             , erBlocks = 0, erLines = 0, erDropped = 0, erUnresolved = 0, erChanged = 0, erDenials = maybe 0 rrDenials mrr
-            , erParent = Nothing, erAuto = auto, erMode = Nothing, erVerdict = Nothing }
+            , erParent = Nothing, erAuto = auto, erMode = Just (checkModeName mode), erVerdict = verdict }
   case r of
     Left f -> do
-      record (rfStatus f) (Just (rfWhy f)) Nothing
+      record (rfStatus f) (Just (rfWhy f)) Nothing Nothing
       -- a run that never started costs nothing; one that ran out of time or answered an error may have
       pure (Left (Failure (rfWhy f) now), if rfStatus f == Timeout || isJust (rfSession f) then unpricedCheck else 0)
     Right rr -> do
       let cost = fromMaybe unpricedCheck (rrCost rr)
-      case parseCheckReply (rrText rr) of
+      case parseCheckReply mode (rrText rr) of
         Left why -> do
-          record Empty (Just why) (Just rr)
+          record Empty (Just why) Nothing (Just rr)
           pure (Left (Failure why now), cost)
         Right reply -> do
           c <- confirm s p (fences cfg) reply
-          record Ok Nothing (Just rr)
+          record Ok Nothing (Just (judgementName (cfJudgement c))) (Just rr)
           let model = maybe (pcCheckModel cfg) fst (listToMaybe (rrModels rr))
-          pure (Right (CheckRecord c model (rrCost rr) (rrSeconds rr) now CheckClaim), cost)
+          pure (Right (CheckRecord c model (rrCost rr) (rrSeconds rr) now mode), cost)

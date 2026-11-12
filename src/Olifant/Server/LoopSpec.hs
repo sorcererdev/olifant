@@ -20,7 +20,7 @@ import Olifant.Server.State (ServerConfig (..), ServerState (..))
 import Olifant.Server.Telemetry (ErrandRecord (..), OutcomeRecord (..), PassRecord (..), ReconcileRecord (..), Record (..), appendRecord, readRecords, recordsPath)
 import Olifant.Server.Claims (CheckRecord (..), SentenceEntry (..), readClaims, readJoins, storeClaims)
 import Olifant.Server.Claims qualified as C
-import Olifant.Server.Checker (Confirmed (..), Judgement (..), UnitRef (..))
+import Olifant.Server.Checker (CheckMode (..), Confirmed (..), Judgement (..), UnitRef (..))
 import Olifant.Server.Triage (Route (..), Triage (..))
 import Control.Concurrent (threadDelay)
 import Data.Maybe (isJust)
@@ -1030,6 +1030,16 @@ claimPassSpec = describe "Olifant.Server.Loop (claimPass)" $ describe "claimPass
         (_, a) <- pass IdlePass dir s
         M.keys (paStore a) `shouldBe` ["The helper returns", "one."]
         readJoins (ssPorts s) dir "plans/t.md" `shouldReturn` M.empty
+  it "Check this on a step records a progress check, and its errand line says so" $
+    withPass "- [ ] Make the helper return one\n" "" [("Make the helper return one", reply "done")] $ \dir s -> do
+      (_, r) <- checkOne neverCancel (dir </> "plans/t.md") "Make the helper return one" s
+      store <- either (fail . T.unpack) pure r
+      let ch = M.lookup "Make the helper return one" store >>= seCheck
+      fmap (\c -> (cjMode c, cfJudgement (cjConfirmed c))) ch `shouldBe` Just (CheckProgress, JDone)
+      (_, es) <- passes dir
+      map (\e -> (erVerb e, erMode e, erVerdict e)) es `shouldBe` [("check", Just "progress", Just "done")]
+      prompts <- TIO.readFile (checksFile dir <> ".prompts")
+      prompts `shouldSatisfy` T.isInfixOf "done | open | misfit | cannot_tell"
   it "idle triages and checks nothing" $
     withPass plan "" [("The helper returns one.", reply "right")] $ \dir s -> do
       (_, a) <- pass IdlePass dir s
