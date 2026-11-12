@@ -46,10 +46,11 @@ a new-step ghost worded from the unit's header.
 | `Server/Excerpt.hs` | code excerpts kept under a step, and the hover over an anchor |
 | `Plans/Sentences.hs` | the **sentences** of a plan, pure: `sentencesWith :: (Int -> Bool) -> [Line] -> [Sentence]` (row and column range, the line's `Kind`, the text with markers stripped, heading, lead, anchor), where the predicate says which rows continue on the next (a row that does not ends its sentence at the line break); `sentences` joins none, `sentencesJoined` joins by a store's answers; `joinCandidates` (the rows that end without `. ? ! :`, with their and the next row's text), `pairKey`, and `sentenceKey`, a sentence's words without anchor or verdict; a span with no letter or digit (an empty `- `, `-  .`) gives no sentence, so nothing downstream sees it |
 | `Server/Triage.hs` | **triage**: `byGrammar` (steps, questions), `triageQuestions` (Jev's `sentence-kind` choice with no unsure and its `about-code` Noul, one state), `fromAnswers`, `noJev`, and `route` with the two thresholds `kindThreshold` and `aboutThreshold`; the join question `joinQuestion` (a `line-continues` Noul, no unsure), `joinThreshold` (0.70), `joinsAnswer`, and `decideJoins` (one `weighAll` per candidate while the pass allows; unsure answers dropped; no Jev, none) |
-| `Server/Checker.hs` | the **checker**: `checkPrompt`, `parseCheckReply`, `confirm` (every citation checked against the tree and the catalog), `liveChecker` (the `Check` verb of `runClaude`), `recordedChecker`, `replayChecker`, `checkerUnder`; `UnitRef` |
-| `Server/Claims.hs` | the **claim store**, version 2 (`SentenceEntry`: triage, route, `CheckRecord` or `Failure`, `seGone`; `ClaimStore` keyed by `sentenceKey`; `readClaims`/`writeClaims` under `.olifant/state/claims/`; `claimsOf`/`updateClaims` through `ssClaims`: every write is a function of the store as held now, under one lock), `queued`, `pruneClaims`, `checkedKeys`, `lineKey`; the **joins** beside the entries (`Joins`, by `pairKey`, the file's optional `"joins"` field, still version 2; `readJoins`, `writeClaimsWith`, `joinsOf`/`updateJoins` held in `ssClaims` under `<plan>#joins`, same lock and file) and `sentencesOf`, the plan's sentences with its joins, which everything reading sentences calls |
+| `Server/Checker.hs` | the **checker**: `Judgement` (right, wrong, cannot tell; done, open, misfit), `CheckMode` (`CheckClaim`, JSON `verify`; `CheckProgress`, `progress`) and `checkModeOf` (a triage of kind `step` is checked for progress), `checkPrompt` and `parseCheckReply` in either mode, `confirm` (every citation checked against the tree and the catalog; a `Print` per citation found, `fileHash` for a whole file), `liveChecker` (the `Check` verb of `runClaude`), `recordedChecker`, `replayChecker`, `checkerUnder`; `UnitRef` |
+| `Server/Claims.hs` | the **claim store**, version 2 (`SentenceEntry`: triage, route, `CheckRecord` or `Failure`, `seGone`; `ClaimStore` keyed by `sentenceKey`; `readClaims`/`writeClaims` under `.olifant/state/claims/`; `claimsOf`/`updateClaims` through `ssClaims`: every write is a function of the store as held now, under one lock), `checkable`, `queued` (owed), `unchecked` (owed or not), `stepUnit` and `stepCitations` (a step's working unit from its check), `pruneClaims`, `checkedKeys`, `lineKey`; the **joins** beside the entries (`Joins`, by `pairKey`, the file's optional `"joins"` field, still version 2; `readJoins`, `writeClaimsWith`, `joinsOf`/`updateJoins` held in `ssClaims` under `<plan>#joins`, same lock and file) and `sentencesOf`, the plan's sentences with its joins, which everything reading sentences calls |
+| `Server/Stale.hs` | **stale verdicts**: `printsNow` (the cited files as they are now, read through the server's cache `ssCitePrints`), `isStale`, `staleKeys`, `staleIn`, `citedPrints`; `CitedFile` lives in `Server/State` (State is below Checker) |
 | `Server/Confine.hs` | `confined` and `safely`, which `Server/Plans` re-exports (here so `LoopQuestions` and `Checker` need not import `Server/Plans`) |
-| `Transcripts.hs`, `Cli.hs` `runPlansCost` | `olifant plans cost`: the records beside Claude Code's own transcripts |
+| `Transcripts.hs`, `Cli.hs` `runPlansCost`, `runChecksCost` | `olifant plans cost`: the records beside Claude Code's own transcripts; `--checks`, the checker's cost and verdicts per plan |
 | `Landings.hs` | a plan's landings from `git log --first-parent` (`landingsOf`, `parseLandings`), and `landingFor`, the first landing at or after a time |
 
 Two things to know before reading. There are two modules called Plans: `Olifant.Plans` is the
@@ -317,13 +318,14 @@ the language's `[test] unit` rules ([chapter 5](05-languages.md)).
 
 ## The claim pass, end to end
 
-The pass reads every sentence, triages the ones it has not seen, and on save checks the queued
-claims with a searching checker. It never writes to the plan. `Loop.claimPass`
+The pass reads every sentence, triages the ones it has not seen, and on save checks the ones
+written since the last save (owed) with a searching checker: claims for whether they are so,
+steps for their progress. It never writes to the plan. `Loop.claimPass`
 (`Cancel -> PassMode -> FilePath -> ServerState -> IO (ServerState, Either Text PassAnswer)`) is
 the whole of it:
 
-1. **Read.** The plan from `ssDocs` (else disk) through `parsePlan`, the store from
-   `Claims.claimsOf`, and whether a store file existed before this pass (`claimsPath`).
+1. **Read.** The plan from `ssDocs` (else disk) through `parsePlan`, and the store from
+   `Claims.claimsOf`.
    `[plans] pass_budget = 0` stops here. **Joins:** `joinCandidates` of the lines; those whose
    `pairKey` is not in `joinsOf` go to Jev one request each (`Triage.decideJoins`: a Jev batch
    shares one `state`, and `jevBody` refuses two values for one context name, so pairs cannot
@@ -338,43 +340,94 @@ the whole of it:
    one `weighAll` request to Jev (`rgJev` of `rungsFor`, i.e. `deciderUnder`) with the two
    `triageQuestions`, read by `fromAnswers`; with no Jev, `noJev` (a `- ` bullet is a claim).
    `route` turns the `Triage` into `Verify`, `Progress`, `Asked` or `Aside`. Each is stored as a
-   `SentenceEntry`; the new entries are merged once after triage (`updateClaims`, into the
+   `SentenceEntry`, with `seOwed = mode /= OpenPass` (written in the editor: owed one automatic
+   check; already in the file when opened: backlog; JSON `"owed": true`, absent reads false, so
+   a milestone 1 store is all backlog); the new entries are merged once after triage (`updateClaims`, into the
    store as it is then). The budget and the token are asked
    before each sentence.
-3. **Check.** Only for `SavePass`, or `OpenPass` with a store that existed: `Claims.queued`
-   (Verify, no check, no failure in the last `retryAfter`, plan order, one per key), one at a
-   time, skipping a key another pass or `checkOne` holds in `ssChecking` or has checked since
-   (the held store, not the pass's copy, is asked). Before each: stop when
+3. **Check.** Only for `SavePass`: `Claims.queued` (`checkable`: routed `Verify` or
+   `Progress`, not a ticked step, no check; owed; no failure in the last `retryAfter`; plan
+   order, one per key), then with `[plans] recheck = "save"` the stale sentences
+   (`Stale.staleIn`, not ticked steps), one at a time. Each key is taken atomically
+   (`holdKey` on `ssChecking`: a key another pass, `checkOne` or a sweep holds is skipped) and
+   asked again against the held store (checked since: skipped). Before each: stop when
    the token is tripped, when `pass_budget` seconds are spent, or when the
    spend so far plus the estimate (this pass's mean over the runs that cost something, a run that never started costing $0; else `unpricedCheck`) would pass
-   `pass_cost`. `checkSentence` runs `checkerUnder` (the recorded checker when `scCheckAnswers`
-   is set, else `liveChecker`), reads the reply with `parseCheckReply` and confirms it with
-   `confirm`; it appends a `check` errand record (`erAuto`). The sentence's key sits in
-   `ssChecking` while it runs (`whileChecking`, a `bracket_`: taken off however the check ends). The checker runs under the state's `ssCancel`, not the pass's
+   `pass_cost`. `checkSentence` takes the mode (`checkModeOf` of the entry's triage), runs
+   `checkerUnder` (the recorded checker when `scCheckAnswers` is set, else `liveChecker`),
+   reads the reply with `parseCheckReply` and confirms it with `confirm`; it appends a `check`
+   errand record (`erAuto`, `erMode`, `erVerdict`) and puts a priced check's cost into the
+   held estimates (`ssEstimates`). The key is let go (`releaseKey`, in a `finally`) only after
+   the result is stored, so no other check takes it in between. The checker runs under the state's `ssCancel`, not the pass's
    token: a tripped token stops the pass before the next check, and the check in flight
    finishes. After it, the result is stored only when its key is still among the plan's
    sentences as the editor has them now (`ssLiveDoc`, else the pass's text) and `ssCancel` was
-   not tripped (`updateClaims` adjusts that one entry); its cost goes into the tally either way. A failed run or a reply with no verdict
-   stores a `Failure`.
-4. **End.** A `PassRecord` (kind `pass`) is appended when Jev was asked or a check ran. A pass
+   not tripped (`updateClaims` adjusts that one entry, `landed`); its cost goes into the tally either way. A failed run or a reply with no verdict
+   stores a `Failure`; `landed` keeps the sentence owed after a first failure (one retry after
+   `retryAfter`) and clears it after a second.
+4. **Backlog.** Every queued key the pass did not try (a cap, a cancel) and no one holds gets
+   `seOwed = False` in one `updateClaims`, unless the pass was replaced by a newer one (its stop
+   token tripped, `ssCancel` not), which takes them on.
+5. **End.** A `PassRecord` (kind `pass`) is appended when Jev was asked or a check ran. A pass
    stopped by the token answers `Left "cancelled"`.
 
-`checkOne` is *Check this*: one sentence by key, triaged first when unseen, checked whatever its
-route and the caps, recorded as a `check` errand that is not automatic.
+`checkOne` is *Check this* and *Re-check*: one sentence by key, triaged first when unseen, checked
+whatever its route and the caps (in its triage's mode), recorded as a `check` errand that is not
+automatic, landed inside its `whileChecking`.
+
+**Check the plan.** `Loop.checkPlan` (`Cancel -> (Int -> Int -> IO ()) -> FilePath ->
+ServerState -> IO (ServerState, Either Text Sweep)`) takes `sweepTargets`: `unchecked` (owed or
+backlog) then the stale keys (`staleIn`), not ticked steps, plan order, one per key, each with
+its mode. `sweepWidth` (3) workers (`Async.replicateConcurrently_`) share one `IORef` of the
+queue, the dollars spent and the dollars reserved: a worker reserves `estimateFor` the next
+target's mode and takes it only while spent + reserved + that estimate stays within `[plans]
+check_cost`, else it marks the sweep stopped and leaves the target queued. Each holds its key
+(`holdKey`), checks it again against the held store, runs `checkSentence` (not automatic), lands
+it and lets go; the callback gets (done, total). A tripped token stops new checks; those in
+flight land. `Sweep` is checks made, targets left, spent, and whether the ceiling stopped it.
+`estimatesOf` reads `errands.jsonl` once per project root into `ssEstimates` (the last 20 priced
+`check` records per mode, newest first; no `mode` is `verify`), and `checkSentence` prepends
+each priced check after that; `estimateFor` is the mean, else `unpricedCheck` ($0.01 for haiku).
+
+**Stale.** `confirm` keeps a `Print` for every citation found (`cfPrints`): the unit's
+`fingerprint` when a unit was named or encloses the cited line, else `fileHash` of the whole text
+(FNV-1a 64, 7 hex, as `fingerprint`). `Stale.printsNow` answers, per cited file, a `CitedFile`
+(the file's hash, Nothing when it is gone, and every unit's fingerprint), from `ssCitePrints`
+while the entry's editor version (Nothing: read from disk) is the document's now, else read
+through `prWorkspace` and parsed once (`unitsWithKinds`) and kept. `State.filesChanged` (the
+client's watched files: `Lsp.watch` registers `**/*` under each project root on open) drops the
+entries of the changed paths; an edit of the plan touches none, so a pull after it reads no cited
+file. `isStale` is any print whose file or unit is gone or whose hash differs; a check with no
+prints (milestone 1) or one that could not tell is never stale. `staleKeys` is the stale entries
+of a store.
+
+**The working unit.** `Claims.stepUnit` is a step line's typed anchor, else the `cfUnit` of the
+check stored for the `Step` sentence starting on its row (an `Anchor` at no columns);
+`stepCitations` is every unit print of that check. `stepStub`, the excerpt (`Lsp.excerptStep`,
+which takes the store first) and *Mark done* (`Lsp.doneFacts`, which writes the anchor with its
+stamp when the line has none) use `stepUnit`; `runErrand` grounds a step's `do` in
+`stepCitations` too, after the typed anchors, deduplicated, up to `groundingLimit`. The
+reconcile and `testsRan` are unchanged.
 
 **The checker.** `liveChecker` runs `runClaude` with the verb `Check`: `runnerArgs` gives it
 `--model <check_model>`, `--allowedTools Read,Grep,Glob`, `--settings` with a `Read(./<dir>/**)`
 deny rule per fence (`checkFences`: the plans dir, `.olifant`, `not_evidence`; a Read rule also
 fences Grep and Glob, measured in the redesign's fence check), and `--append-system-prompt`
 saying to stay under the current directory and why the fences are not evidence. `checkPrompt`
-gives the heading, the lead, the sentence, a typed anchor as "the writer pointed at …", the rule
-(judge what is true of the code now, ignore wishes), and asks for one fenced JSON object.
-`parseCheckReply` takes the last ```json block, else the first `{` that decodes, and refuses a
-right or wrong with no evidence. `confirm` checks each citation (inside the root, outside the
+has two modes. `CheckClaim` gives the heading, the lead, the sentence, a typed anchor as "the
+writer pointed at …", the rule (judge what is true of the code now, ignore wishes), and asks for
+one fenced JSON object (`right | wrong | cannot_tell`). `CheckProgress` gives the step (with its
+continuation rows), whether it is ticked, the anchor, the three definitions (done, open, misfit;
+a misfit's named means must cover what the step is for), a rule for a step that points back at
+something unnamed, and a rule that `unit` is a name the file defines, and asks for `done | open |
+misfit | cannot_tell`. `parseCheckReply` takes the mode, the last ```json block, else the first
+`{` that decodes; it refuses a verdict of the other mode, and a right, wrong, done or misfit with
+no evidence. `confirm` checks each citation (inside the root, outside the
 fences, lexically and again after `canonicalizePath` of the root and the path, so a symlink into a
 fence or out of the root is refused; the file exists, the unit found by `unitLookupIn`, or with no unit named the line inside the file, a bare path
-allowed); any miss makes the verdict `JCannotTell` "cited code not found". The first unit found
-and its `fingerprint` are the sentence's evidence unit.
+allowed); any miss makes the verdict `JCannotTell` "cited code not found", except for an `open`,
+whose missing citations are dropped. The first unit found and its `fingerprint` are the
+sentence's evidence unit; every citation found has its `Print`.
 
 **In `Lsp`.** `startPass` (an `Env`, a `PassMode`, the plan) runs the pass in the background:
 `OpenPass` on `didOpen`, `SavePass` on `didSave` (both under `planProgress "checking"`),
@@ -389,16 +442,31 @@ handler when it throws) and sends `workspace/diagnostic/refresh` when the
 sentence being checked changes; after it, `workspace/diagnostic/refresh` and
 `semanticTokens/refresh`. Nothing goes out as `workspace/applyEdit`. The margin is
 `Server/Plans.claimHints` (inside `planDiagnostics`, which converts its code-point columns to
-UTF-16 and passes `checksCanRun`: the runner found or a recording set, neither cap 0),
+UTF-16 and passes `checksCanRun`: the runner found or a recording set, neither cap 0, and
+`staleKeys`; its second result, the `AnchorPrints`, carries the cited prints too, keyed
+`(path, unit or "")`, so a code change that moves them sends `semanticTokens/refresh` as an
+anchor's does; and `planSummary`, the `plan-unchecked` line from `planCounts`),
 `planTokensWith` (the `checked` and `wrong` modifiers, by `lineKey`) and `claimHover` (called by
-`Lsp.planHover` with the sentences on the row; a checked one adds `keepFooter`). Every one of
+`Lsp.planHover` with the sentences on the row and the stale keys; a checked one adds
+`keepFooter`). `claimLine` is the one table: a claim's codes, a step's (`step-done`,
+`step-misfit`, `step-ticked`; `step-open`, `step-unsure` and `step-ticked-done` are `hoverOnly`:
+`claimHints` emits no diagnostic for them and the hover shows them without stripping a glyph),
+the stale ones (`claim-right-stale`, `claim-wrong-stale`, `step-done-stale`,
+`step-misfit-stale`, `step-stale`), and `claim-queued` for a `checkable` sentence with no check,
+saying whether a save checks it (`seOwed`). Every one of
 these, and `checkOne` and the pass's live-keys check, builds sentences with `Claims.sentencesOf`,
-so the margin and the engine split a plan the same way. `sentenceActions` offers *Keep this
+so the margin and the engine split a plan the same way. `sentenceActions` offers *Re-check* on a stale verdict and *Check this* on any sentence with no
+check but a question (both `olifant.checkSentence`, titled with `estimateFor` of the sentence's
+mode), *Check the plan* on every row while `sweepTargets` is not empty (`olifant.checkPlan`, its
+title from `planCounts` and the summed estimates), *Keep this
 verdict* (a `WorkspaceEdit` from `Plans.keepEdit`: one evidence line after the sentence's last
-row and after any `- ✓`/`- ✗` lines already directly below it at the evidence indent, so kept verdicts stack oldest first; `Nothing` when the same line is in that run or the check could not tell), *Check this* (with
-`checkEstimate`), *Show the code here* (`citationPlace`) and *Show why* (`whyFile`), the last
-three each a `Command`: `olifant.checkSentence` (`checkOne` in the background), `olifant.showCode` and
-`olifant.showWhy` (`window/showDocument`). **Definition** (`textDocument/definition`) in a plan:
+row and after any `- ✓`/`- ✗` lines already directly below it at the evidence indent, so kept verdicts stack oldest first; `Nothing` when the same line is in that run or the check could not tell), *Show the code here* (`citationPlace`) and *Show why* (`whyFile`, the page from
+`Plans.whyBody`, which says when the check ran): `olifant.checkSentence` (`checkOne` in the
+background), `olifant.checkPlan` (`checkPlan` in the background under `planProgress
+"checking"` with `checking N of M` as `Said` events; one per plan through `envSweeps`, not
+`envPasses`, so a save does not stop it, and a second is refused with `window/showMessage`
+`Already checking this plan`; a ceiling stop says `Stopped at $X · N left`), `olifant.showCode`
+and `olifant.showWhy` (`window/showDocument`). **Definition** (`textDocument/definition`) in a plan:
 an anchor under the cursor answers with its unit as before; else `Lsp.sentenceCitations` takes the
 sentence under the cursor and, when it has a check, resolves each cited unit with no line
 (`resolveAnchor`) and answers `Plans.citationLocations` (every citation in the checker's order:
@@ -422,11 +490,12 @@ The plans requests, all in `Lsp.hs` (the line numbers are the handlers):
 | `olifant/plans/stub`, `test` | a step's test written / run |
 | `olifant/plans/outcome` | **notification**: a block was accepted or rejected (an `ask`'s at once, unless the editor reviews answers) |
 | `olifant/plans/idle` | **notification** from the client: the plan went quiet; starts the claim pass (`startPass`, `IdlePass`: triage only) |
-| `workspace/executeCommand` `olifant.checkSentence`, `olifant.showWhy`, `olifant.showCode` | the claim pass's actions (`sentenceActions` offers them as code actions) |
+| `workspace/executeCommand` `olifant.checkSentence`, `olifant.checkPlan`, `olifant.showWhy`, `olifant.showCode` | the claim pass's actions (`sentenceActions` offers them as code actions) |
+| `textDocument/diagnostic` in a plan, source `olifant-plan` | the checker's codes: `claim-queued`, `claim-checking`, `claim-right`, `claim-wrong`, `claim-unsure`, `step-done`, `step-misfit`, `step-ticked`, `claim-right-stale`, `claim-wrong-stale`, `step-done-stale`, `step-misfit-stale`, `step-stale`, and `plan-unchecked` (information, the plan's summary); `step-open`, `step-unsure` and `step-ticked-done` are on hover only |
 | `textDocument/definition`, `hover`, `completion`, `codeLens`, `foldingRange`, `semanticTokens/full` | `gd` on an anchor, the unit hover, `@` completion, review and delegation lenses, folds (excerpts from `excerptSpans`, ticked steps and answered questions from `planFolds`, all kind `region`), the plan's tokens (`planTokens`, encoded by `encodePlanTokens`; the legend is `planTokenTypes`/`planTokenModifiers`, advertised by `advertise`; any other file answers `[]`) |
 
 `workspace/semanticTokens/refresh` goes to the client when a pulled diagnostics pass changes a plan's
-`envPlanPrints`, so a `✓` turns stale without a second edit.
+`envPlanPrints` (its anchors' fingerprints and its checks' cited prints), so a `✓` turns stale without a second edit.
 
 All the slow ones go through `inBackground` and `planProgress` like the other slow requests
 ([tour](01-tour.md#lsp-the-adapter)). `olifant plans cost` is not in the server: `runPlansCost`
@@ -436,14 +505,18 @@ with `Transcripts.readTranscripts`, and prices both from `[plans.prices]`. `--by
 (`git log --first-parent -- PLAN`, so the runtime's git seam, faked in specs) and buckets records
 with `landingRows` (`Cli.hs`): errands and reconciles by `landingFor` over their own plan's
 landings, messages over every plan's. Both views build a line with `rowOf` and print with
-`rowTable`; `landingTable` is the plan, landing and `(not landed)` layout. A failing `git log`
+`rowTable`; `landingTable` is the plan, landing and `(not landed)` layout. `--checks` is
+`runChecksCost`: one `ChecksRow` per plan from its `pass` records (sentences triaged) and `check`
+errands (by `erMode`, no mode a claim, verdicts from `erVerdict`, automatic or asked by
+`erAuto`), printed by `checksTable` or as `{"checks": [...]}`. A failing `git log`
 is a stderr note and no landings, never a failure.
 
 ## The seams
 
 - **`[plans]`** (`Catalog.hs`, the `PlansConfig` record): `dir`, `runner`, `model`,
   `timeout`, `do_tools`, `ladder`, `budget`, `pass_budget`, `pass_cost`, `check_model`,
-  `check_timeout`, `not_evidence`, `prices`. An unknown key is a configuration error;
+  `check_timeout`, `not_evidence`, `recheck` (`Recheck`: `RecheckAsked` or `RecheckSave`),
+  `check_cost` (`pcCheckCost`, 5.00, at least 0), `prices`. An unknown key is a configuration error;
   a `ladder` name not under `[model.backends]` is one too (`plansLadderIn`).
 - **`[decide] model`** names the backend Jev answers on (a `jev` backend's model defaults to the
   pinned `jev-1.14.0`; `jevDecider` logs the model that answered); `catalogDecideModel` is what
@@ -474,11 +547,12 @@ in the main checkout (the git-backed specs refuse worktrees).
 | `Server/LoopSpec` | `factsSpec`, `workSetSpec` (baselines, moves, accounted), `questionsSpec`, `reconcileSpec`, `stepTestsSpec`, and the Haskell/Rust step tests |
 | `Server/ReviewSpec`, `ReviewReadingsSpec` | the tree reference and revert; readings as a review |
 | `Server/JournalSpec`, `TelemetrySpec`, `ExcerptSpec` | the store and its events; records and their readers; fences |
-| `Plans/SentencesSpec` | the splitter: steps whole, what gives no sentence, paragraphs across rows, numbered lines, abbreviations, versions, code spans, URLs, keys, leads |
+| `Plans/SentencesSpec` | the splitter: steps whole with their continuation rows (a nested checkbox its own step, a blank row ending it), what gives no sentence, paragraphs across rows, numbered lines, abbreviations, versions, code spans, URLs, keys, leads |
 | `Server/TriageSpec` | the route table, the grammar, no Jev, the shared state and no unsure |
-| `Server/CheckerSpec` | fences, the prompt, the reply reader, `confirm` (fenced or missing citations cannot tell, a symlink into a fence or out of the root too), the runner with the shim, recorded replies |
-| `Server/ClaimsSpec` | store v2: round trip, a version-1 file read as empty, atomic writes, concurrent `updateClaims`, orphans, `pruneClaims`, `queued`, `checkedKeys` |
-| `Server/LoopSpec` `claimPassSpec` | the pass: idle triages only, save checks, open with and without a store, the cost cap and resuming, a failure waits ten minutes, a cancel lets the check in flight land (or drops it when its sentence changed), a key held elsewhere is skipped, Check this during a pass, nothing written to the plan, a typed anchor in the prompt, budget 0, no Jev |
+| `Server/CheckerSpec` | fences, both prompts, both reply readers, `checkModeOf`, `fileHash`, `confirm` (a print per citation; an `open` drops a missing citation) (fenced or missing citations cannot tell, a symlink into a fence or out of the root too), the runner with the shim, recorded replies |
+| `Server/StaleSpec` | a changed unit, a gone unit or file, a whole-file print, no prints, the cache read once until `filesChanged` |
+| `Server/ClaimsSpec` | store v2: round trip (owed, modes, prints; a milestone 1 store read as backlog), a version-1 file read as empty, atomic writes, concurrent `updateClaims`, orphans, `pruneClaims`, `queued` and `unchecked`, `checkedKeys` |
+| `Server/LoopSpec` `claimPassSpec` | the pass: idle triages only, save checks once what was written, an open never checks (an m1 store neither), a step gets a progress check and a ticked one none, what the cost cap leaves is backlog, a failure retried once, `recheck = "save"`, *Check the plan* (three at a time, the ceiling, ticked steps skipped and stale ones checked, a save during it, a cancel), a failure waits ten minutes, a cancel lets the check in flight land (or drops it when its sentence changed), a key held elsewhere is skipped, Check this during a pass, nothing written to the plan, a typed anchor in the prompt, budget 0, no Jev |
 | `Server/ProseCorpusSpec` | the milestone gate on the prose corpus (below) |
 | `LspSpec` (`plansSpec`, `plansLoopSpec`, `plansStage1Spec`, `doReviewSpec`, `claimPassSpec`) | every request, in process, over pipes |
 
@@ -492,7 +566,7 @@ delay}}}` by `sentenceKey`, and notes each key asked in `FILE.asked` and each pr
 `FILE.prompts`. Its Jev triage answers from `scDecideAnswers` by question kind
 (`sentence-kind`, `about-code`).
 
-**The corpus spec.** `ProseCorpusSpec` measures milestone 1 on `testdata/prose-corpus.json`: the
+**The corpus spec.** `ProseCorpusSpec` measures milestone 1 and the step gate of 2a on `testdata/prose-corpus.json`: the
 user's own plan sentences (corpus 2, 27 lines, and two from corpus 3), each labelled with its kind
 and, for a claim, its verdict and the code a citation must point into, from nightvote at
 `8488bb80`. Each entry becomes a `Sentence` from its line, heading and lead; it is triaged and
@@ -500,7 +574,9 @@ routed, and when routed to verify, checked and confirmed against a checkout at t
 (`OLIFANT_PROSE_CORPUS`; without one, or at another commit, it is pending). It replays Jev from
 `testdata/prose-corpus-jev.json` (`replayDecider`) and the checker from
 `testdata/prose-corpus-checks.json` (`replayChecker`, keyed by `sentenceKey`); with
-`OLIFANT_RECORD_CHECKS=1` it asks both live and records them (about $3). It prints a row per
+`OLIFANT_RECORD_CHECKS=1` it asks the checker live for the sentences the recording has no reply
+for and records them (delete a reply to ask it again; a run cut by the suite's 180 s limit
+resumes), and with `OLIFANT_RECORD_JEV=1` Jev too. It prints a row per
 entry (`OLIFANT_PROSE_TABLE` also writes the table to a file) and asserts the bars: kind agrees
 on at least 23 of 27, every labelled claim but R6 and H5 sent to a check (H5, a contested checkbox
 line, is a step by the grammar; user ruling), at most one non-claim sent, every
@@ -513,6 +589,17 @@ diagnose … and redeploy everything …") is a claim at 0.82 but about-code 0.6
 checked. By user ruling A4 is a known miss (`knownMisses`): the gate asserts it is routed to
 `Aside`, so a change that fixes or breaks it shows. The resolver's corpus spec and recording
 retired with the resolver; its numbers are in the notes' experiments.
+
+**The step gate (2a).** The 13 step lines carry a `progress` label (done, open, misfit) and an
+`idea` flag from the builder (`progressEvidence` says why), and `rows` for continuation rows
+(none in this corpus). Each entry routed `Progress` gets the progress check. Bars: H2, R2 and X1
+done and S4 misfit with `Staff` in its why (4 of 4); labelled non-idea steps off the label at
+most 1, none done or misfit against it; idea lines routed `Progress` at most 2; a progress check
+at most $0.12 on average. Recorded 2026-11-11 after two tunings of the progress prompt: 4 of 4
+known, 0 ideas routed, no wrong-sure, but two off (R4 set aside by triage, about-code 0.56; R3
+could not tell, a cited line not in its file) and $0.122 a check; the claim bars also miss H4,
+whose m1 reply cites non-names that `confirm` has refused since 0bf1d39. The gate waits for a
+ruling, so it fails with `OLIFANT_PROSE_CORPUS` set and is pending without it.
 
 ## Rough spots
 
@@ -554,7 +641,12 @@ retired with the resolver; its numbers are in the notes' experiments.
 - **The splitter is a heuristic.** A sentence ends at `.`, `?` or `!` before a capital; a
   lowercase start after a full stop (`it works. then…`) stays one sentence, and an abbreviation not
   in the list (`approx. The`) splits.
-- **A step's progress is not checked yet.** Steps are triaged and stored; milestone 2 adds their
-  check, *Check the plan* and staleness of a verdict whose evidence unit changed.
+- **Absence verdicts do not go stale.** A verdict about absence ("there is no AI in the
+  codebase") rests on whole files or on nothing, so new code elsewhere does not make it stale.
+- **A whole-file print is coarse.** A citation of a path or of a line outside any unit is
+  printed with `fileHash`, so any edit to that file turns the verdict stale.
+- **A unit field that names no unit voids a verdict.** `confirm` refuses a citation whose `unit`
+  the file does not define, whatever its line; the progress prompt says so, the claim prompt does
+  not yet (H4 in the corpus).
 - **`[conjure] wire` and the language's `[conjure]` table are different things** with the same
   name; see [chapter 4](04-conjure.md#two-things-called-conjure).

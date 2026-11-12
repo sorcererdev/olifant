@@ -80,6 +80,20 @@ durandal.nvim the text reads as in `cat` by default: no text is hidden or moved.
   file's text shows, so what you edit is what the file has. Moving off it hides the markers again;
   a line shifts left by up to five columns between the two, which is why conceal is off by default.
 
+- **Steps are sentences too.** A checkbox line (`- [ ] `, `- [x] `) is one step, and its
+  continuation rows (indented prose directly under it, no blank line between) are part of it: one
+  sentence over all its rows, never split and never asked about joins. A nested checkbox is its
+  own step. A step written as prose ("Add D and R fields to Comparison 2018") is a step when Jev
+  says so ([triage](#checked-as-you-go)). What each kind gets:
+
+  | sentence | route | checked |
+  |---|---|---|
+  | a claim (kind ≥ 0.80, about the code ≥ 0.70) | verify | right, wrong or could not tell |
+  | an unticked checkbox, or a prose step over the same thresholds | progress | done, open, misfit or could not tell |
+  | a ticked checkbox | progress | only when you ask |
+  | a question (`- ? `, or Jev's) | asked | not yet (answers come in a later milestone) |
+  | everything else | aside | only when you ask |
+
 - **Diagnostics are signs.** A plan line is prose, so olifant's diagnostics in a plan buffer are
   signs (one per row, the claim pass's verdicts by glyph) and underlines on the anchor, with no
   virtual text beside the words; a wrong claim is undercurled. `changed since this
@@ -91,7 +105,7 @@ durandal.nvim the text reads as in `cat` by default: no text is hidden or moved.
 plans = {
   conceal = false,  -- true: hide markers, paths and hashes off the cursor line
   glyphs = {},      -- override: todo, done, question, test, also, dash, path, hex,
-                    -- and the verdict signs queued ○, checking …, right ✓, wrong ✗, unsure ?
+                    -- and the verdict signs queued ○, checking …, right ✓, wrong ✗, unsure ?, misfit !
   fold_done = true, -- false: on entry close only excerpts, leave done work open
 }
 ```
@@ -145,8 +159,10 @@ In `.olifant/config.toml`, all optional:
 | `timeout` | `300` | seconds before an errand is killed |
 | `do_tools` | `[]` | extra `--allowedTools` entries for `do` (beyond Read, Grep, Glob, Edit, Write and the test command) |
 | `ladder` | `[model] ladder` without Jev | the backends a reconcile climbs when Jev is unsure, in order, each with its `escalate` policy (the claim pass uses neither) |
-| `pass_budget` | `30` | seconds an automatic claim pass may run ([below](#checked-as-you-go)), counted from its start and checked before each triage and each check; `0` turns the pass off. What it did not reach waits for the next pass |
+| `pass_budget` | `30` | seconds an automatic claim pass may run ([below](#checked-as-you-go)), counted from its start and checked before each triage and each check; `0` turns the pass off. Checks it did not reach become backlog |
 | `pass_cost` | `0.50` | dollars an automatic claim pass may spend on checks: before each check it adds the mean cost of this pass's checks so far that cost something (a run that never started costs nothing and is left out; else $0.10) and stops if that would pass the cap; `0` checks nothing. A check whose cost the runner did not report counts as $0.10 |
+| `check_cost` | `5.00` | dollars one *Check the plan* may spend: before each check it adds the estimates of the checks in flight and the next one, and stops when that would pass the cap; at least 0 |
+| `recheck` | `"asked"` | who re-checks a stale verdict: `"asked"`, only *Re-check* and *Check the plan*; `"save"`, each save too, after the owed sentences and under the same caps. Anything else is a configuration error |
 | `check_model` | `"sonnet"` | the model a check runs on (`--model`) |
 | `check_timeout` | `120` | seconds before a check is killed (at least 1) |
 | `not_evidence` | `["docs"]` | folders a check may not read, besides `dir` and `.olifant/` (add `"book"` when a project's book repeats its plans) |
@@ -222,7 +238,8 @@ the reconcile's `blocks` by index.
 ## Checked as you go
 
 The **claim pass** reads every sentence of a plan, works out which ones say something about the
-code, and has a model that searches the repository check those against the code. The verdict shows
+code (a claim) or ask it to change (a step), and has a model that searches the repository check
+those against the code: a claim for whether it is so, a step for how far the code has got. The verdict shows
 in the margin and on hover. Nothing is ever written into the plan: verdicts live in
 `.olifant/state/claims/<plan>.json` (ignored by git) and in the margin.
 
@@ -230,7 +247,8 @@ in the margin and on hover. Nothing is ever written into the plan: verdicts live
 
 | line | sentences |
 |---|---|
-| a step (`- [ ] `, `- [x] `) or a question (`- ? `) | one, the whole line, judged whole |
+| a step (`- [ ] `, `- [x] `), with its continuation rows | one, judged whole |
+| a question (`- ? `) | one, the whole line, judged whole |
 | `- test:`, `- also`, evidence (`- ✓`, `- ✗`), a journal line, fenced code, front matter, a line that is only a link | none |
 | a heading | one (the text after the `#`s, a ` · …` suffix dropped) |
 | everything else: paragraphs, `1 - ` and `1. ` lines, `- ` bullets, blockquotes | split into sentences |
@@ -273,12 +291,13 @@ not triaged, checked or marked while you are still typing it.
   `question`, `step` or `prose`, with no "unsure" option) and whether this project's code can
   settle it.
 - The route is fixed: a **claim** with kind probability at least 0.80 and about-code at least
-  0.70 is **queued for a check**. Steps are stored and wait for milestone 2's progress check;
-  questions and everything else are stored and never asked about again until their words change.
+  0.70 goes to the claim check (`verify`); a **step** over the same thresholds, and every
+  checkbox, to the progress check (`progress`). Questions and everything else are stored and
+  never asked about again until their words change.
 - With no `[decide] model` the grammar alone classifies: `- ` bullets are claims, checkboxes
   steps, paragraphs prose (never checked).
 
-**The check.** A queued claim is checked by one `claude -p` run (the `runner`, `check_model`,
+**The check.** A claim is checked by one `claude -p` run (the `runner`, `check_model`,
 `check_timeout`) from the project root with Read, Grep and Glob, that searches the repository for
 the code the sentence is about and answers `right`, `wrong` or `cannot_tell`, one sentence of why,
 and the code it rests on (path, unit or line). It is told to judge what the sentence says is true
@@ -287,63 +306,151 @@ of the code now and to ignore any wish or request in it. The plans folder, `.oli
 stops Grep and Glob there), and the prompt says why. A sentence with an anchor you typed
 (`@path:Unit`) is checked the same way; the anchor is passed as a place to start, not the answer.
 
+**The progress check.** A step is checked by the same run with another question: the prompt
+gives the heading, the lead, the step with its continuation rows, whether it is ticked, and a
+typed anchor as a place to start, and asks for one of four verdicts with the code it rests on:
+
+- **done**: the code already does all of what the step says (evidence required);
+- **open**: it does not yet, and doing it as written would get what the step says (the code it
+  would change, when there is any);
+- **misfit**: the step as written rests on something that is not so in the code, or would not
+  get what it says (the means it names does not cover what it is for; evidence required). A step
+  that also states something about the code now is a misfit when that statement is false;
+- **cannot_tell**: the code cannot settle it.
+
+A `done` or `misfit` whose citation the engine cannot find becomes could-not-tell, as for a
+claim; an `open` citing code that is not there keeps its verdict and drops the citation.
+
 Before a verdict shows, the engine checks every citation: the path is inside the project,
 outside the fences (both as written and with symbolic links followed), and exists; the unit is in that file, or, when no unit is named, the line is inside it (a named unit that is not there is not found, whatever the line). Any citation
 it cannot find turns the verdict into "Could not tell · cited code not found": a `✓` or `✗` never
 rests on code the engine could not find. The first unit cited is kept as the sentence's evidence
-unit, with its fingerprint.
+unit, with its fingerprint, and every citation found keeps a print: the unit's fingerprint (named,
+or around the cited line), else a hash of the whole file.
+
+**One automatic chance.** A sentence you write in the editor is owed one automatic check: the next
+save checks it, under `pass_budget` and `pass_cost`. Anything else is **backlog**: a sentence that
+was already in the file when you opened it (an old plan, a pull, a paste from outside), and one a
+save could not reach because a cap or your cancel stopped it (it had its chance). Backlog is
+triaged and marked `○`, never checked by itself; *Check this* or *Check the plan* checks it. A
+check that fails (the runner missing, a timeout, a reply with no verdict) is tried once more after
+ten minutes, then it is backlog too. So opening a plan costs only triage, and a save costs at most
+what you wrote since the last one. A plan stored before this rule (no `owed` in its entries) reads
+as backlog.
 
 **When it runs.**
 
 | event | triage | checks |
 |---|---|---|
-| plan opened, no store yet | every sentence | none |
-| plan opened, store present | sentences not seen | the queued ones, under the caps |
-| save | sentences not seen | the queued ones, under the caps |
-| `olifant/plans/idle` (durandal.nvim: a second after you stop typing, never in insert mode) | sentences not seen | none |
-| *Check this* | (the sentence, if not seen) | that sentence, ignoring both caps |
+| plan opened | sentences not seen (backlog) | none |
+| `olifant/plans/idle` (durandal.nvim: a second after you stop typing, never in insert mode) | sentences not seen (owed) | none |
+| save | sentences not seen (owed) | the owed ones, under the caps; with `recheck = "save"`, then the stale ones |
+| *Check this*, *Re-check* | (the sentence, if not seen) | that sentence, ignoring both caps |
+| *Check the plan* | none | every unchecked and stale sentence, under `check_cost` |
 
-Checks run one at a time and stop at `pass_budget` seconds or `pass_cost` dollars; the rest stay
-queued for the next save. One pass runs per plan. Typing and idling stop nothing: an idle while
-a save's or an open's pass runs waits for it to end, then triages. A new save or open replaces the
-running pass: it starts no new check, and the one in flight finishes and is kept if its sentence
-is still in the plan (its cost is counted either way); a sentence one pass is checking is not
-checked by another. Cancelling the "checking" progress stops the check in flight too. A check that fails (the
-runner missing, a timeout, a reply with no verdict) is recorded and tried again after ten minutes.
-Each check is an errand record (`verb: check`, `auto: true` when the pass asked), so `plans cost`
-counts it; each pass that asked Jev or checked anything adds a `pass` record (its mode, sentences,
-triaged, routes, checks and verdicts, failures, what is left queued, seconds, Jev calls, cost).
+Save checks run one at a time and stop at `pass_budget` seconds or `pass_cost` dollars. One pass
+runs per plan. Typing and idling stop nothing: an idle while a save's or an open's pass runs waits
+for it to end, then triages. A new save or open replaces the running pass: it starts no new check,
+the one in flight finishes and is kept if its sentence is still in the plan (its cost is counted
+either way), and what the replaced pass had not reached stays owed for the new one. A sentence one
+check is on is not taken by another: each check holds its sentence until its verdict is stored.
+Cancelling the "checking" progress stops the check in flight too. Each check is an errand record
+(`verb: check`, its `mode`, `verify` or `progress`, and its `verdict`; `auto: true` when the pass
+asked), so `plans cost` counts it; each pass that asked Jev or checked anything adds a `pass`
+record (its mode, sentences, triaged, routes, checks and verdicts, failures, what is left queued,
+seconds, Jev calls, cost).
+
+**Stale verdicts.** A verdict rests on the prints of the code it cited. When any of them differs
+from the tree now (the unit's body changed, the unit or file is gone, or, for a whole-file print,
+anything in the file changed), the verdict is **stale**: it keeps its sign, dimmed, and the hover
+says `Right when checked · the code changed since` (or `Wrong`, `Done`, `Would not work`). A stale
+open step shows `○` again: `The code this step would change has changed · Check this`. The server
+reads each cited file once and keeps what it read until the file changes on disk (your editor's
+file watching: a checkout, a formatter) or in the editor, so editing the plan reads no code, and a
+code change turns the margin stale without touching the plan. Nothing is re-bought by itself:
+*Re-check* (a code action with its estimate, and `<leader>mps` on a stale sentence) and *Check the
+plan* check it again; `[plans] recheck = "save"` lets each save re-check stale verdicts after the
+owed sentences, under the same caps. *Show why* says when the check ran (`Checked 2026-11-11 14:02
+by …`), so an old verdict reads as old.
+
+Two honest limits. A verdict about absence ("there is no AI in the codebase") rests on whole files
+or on nothing, so new code elsewhere does not make it stale. And a citation of a whole file (a
+template, a stylesheet, a line outside any unit) goes stale on any edit to that file.
+
+**Check the plan.** One action checks what is left: every sentence routed to a check with none yet
+(owed or backlog; ticked steps excluded) and every stale verdict, in plan order, three at a time.
+Its title says what and how much: *Check the plan (12 unchecked, 3 stale, ~$1.50)*, the estimate
+the sum over those sentences of the mean cost of the last 20 checks of their kind (else $0.10, or
+$0.01 for haiku). It stops before the check that would pass `[plans] check_cost` (default $5.00;
+there is no seconds cap) and says `Stopped at $5.00 · 9 left`. It runs under the "checking"
+progress with a count (`checking 4 of 15`); cancelling it stops it after the checks in flight,
+which are kept. A save while it runs does not stop it, and the save's own pass skips the sentences
+it holds. A second *Check the plan* on the same plan while one runs is refused (`Already checking
+this plan`). When checks can run, the plan's first heading (row 0 when it has none) carries an
+information diagnostic, `plan-unchecked`: `12 unchecked, 3 stale · Check the plan` (a part that is
+0 is left out).
 
 **How well it does.** Measured on 27 sentences from a real project's plans (labelled from its
-code): the kind agrees with the label on 25; no question, step or opinion was sent to a check;
-every claim checked got the labelled verdict with a citation at the right code, and none was
-marked right or wrong against its label; a check cost $0.10 on average (sonnet, 15 to 25
-seconds). One claim about what a fix would take ("we would have to … redeploy everything") is
-read as process and not checked. Contested lines can go either way.
+code): the kind agrees with the label on 25; no question, step or opinion was sent to a claim
+check; every claim checked got the labelled verdict with a citation at the right code but one,
+and none was marked right or wrong against its label; a check cost $0.10 on average (sonnet, 15
+to 25 seconds). One claim about what a fix would take ("we would have to … redeploy everything")
+is read as process and not checked. Contested lines can go either way. The one claim that misses
+its citation cites "units" that are no names in the file ("click handler for …"), which the
+engine counts as not found.
+
+The step gate, on the corpus's 13 step lines (labels from the code): the four known steps are
+right (three done; the misfit names the Staff role that `is_staff` misses); of the nine labelled
+steps that are not ideas, seven get their label, one is set aside by triage (about-code 0.56) and
+one comes back could-not-tell because a cited line was not in its file; none is marked done or
+misfit against its label; none of the four idea lines ("use AI to …") reaches a check; a progress
+check costs $0.12 on average. That run missed two of its bars by a little (one step too many off,
+$0.002 over the cost bar) and waits for a ruling.
 
 **The margin.** One diagnostic per sentence, over the sentence's range (source `olifant-plan`):
 
 | code | severity | message |
 |---|---|---|
-| `claim-queued` | hint | `○ Unchecked claim · saved passes check it, or Check this` |
+| `claim-queued` | hint | `○ Unchecked · the next save checks it` (owed) or `○ Unchecked · Check this, or Check the plan` (backlog) |
 | `claim-checking` | hint | `… Checking` |
 | `claim-right` | hint | `✓ Right · <why> · <path>:<unit>` |
 | `claim-wrong` | warning | `✗ Wrong · <why> · <path>:<unit>` |
 | `claim-unsure` | hint | `? Could not tell · <why>` |
+| `step-done` | hint | `✓ Done in the code · <why> · <path>:<unit> · Mark done?` (no `Mark done?` on a prose step) |
+| `step-misfit` | warning | `! As written this would not work · <why> · <path>:<unit>` |
+| `step-open` | hover only | `Still open · <why>` |
+| `step-unsure` | hover only | `Could not tell · <why>` |
+| `step-ticked` | warning | `! Ticked, but the code does not do this yet · <why>` (a ticked step you checked by hand) |
+| `step-ticked-done` | hover only | `Done in the code · <why> · <path>:<unit>` |
+| `claim-right-stale`, `claim-wrong-stale` | hint | `✓ Right when checked · the code changed since · <why> · <path>:<unit>` (`✗ Wrong when checked …`) |
+| `step-done-stale`, `step-misfit-stale` | hint | `✓ Done when checked · the code changed since · …` (`! Would not work when checked …`) |
+| `step-stale` | hint | `○ The code this step would change has changed · Check this` |
+| `plan-unchecked` | information | `12 unchecked, 3 stale · Check the plan`, on the first heading |
 
-`claim-queued` shows only when checks can run (the runner is found and neither cap is 0); a
-failed check shows as queued. Prose, questions, steps and AI off show nothing. Hover (`K`) on a
-row lists each of its sentences' lines, without the glyph; when one is checked it ends with
+`claim-queued` and `plan-unchecked` show only when checks can run (the runner is found and neither
+cap is 0); a failed check shows as queued. An open step, and a step the checker could not tell
+about, are silent in the margin (an open step is the normal state): their line is on hover only.
+Prose, questions and AI off show nothing. Hover (`K`) on a row lists each of its sentences'
+lines, without the glyph; when one is checked it ends with
 `gd: the code · Keep this verdict: <leader>mpk` (the server does not know your key: it names
 durandal.nvim's default). The claim's words carry the
 semantic-token modifiers `checked` and `wrong`.
 
 **The actions** (code actions on the sentence under the cursor):
 
-- *Check this (sonnet, ~$0.10)* on a claim not yet checked, or one the triage set aside: one check
-  now, whatever the caps. The estimate is the mean cost of the last 20 checks (else $0.10, or
-  $0.01 for haiku).
+- *Check this (sonnet, ~$0.10)* on any sentence with no check (a claim, a step ticked or not, one
+  the triage set aside; not a question): one check now, whatever the caps, a claim check or a
+  progress check by its triage. The estimate is the mean cost of the last 20 checks of that kind
+  (else $0.10, or $0.01 for haiku), read from `errands.jsonl` once and kept as checks are made.
+- *Re-check (sonnet, ~$0.10)* on a stale verdict: the same, again.
+- *Check the plan (12 unchecked, 3 stale, ~$1.50)* on any row of a plan with something to check
+  ([above](#checked-as-you-go)).
 - *Show the code here* on a checked sentence: opens the first cited code.
+- *Mark done* on a step the checker found done: today's action ([the loop](#the-loop)). A step
+  with no anchor of its own gets the unit its check cited as its working unit: *Mark done* writes
+  that anchor with its `✓ <fingerprint>`, *Show the code here* (`<leader>mpe`) shows that unit, a
+  stub (`<leader>ms`) goes to its tests, and a `do` on the step is grounded in every unit the
+  check cited. A typed anchor still wins.
 - *Keep this verdict* on a checked sentence (right or wrong; not on *could not tell*): writes
   the verdict into the plan as one evidence line after the sentence's last row, `- ✓ <why>
   (<path>:<unit>)` or `- ✗ …`, one level under a bullet or step, at the sentence's indent under
@@ -481,6 +588,25 @@ view. The columns:
   A model with tokens but no price is named on stderr once and counted as $0, so nothing inflates
   silently. A missing transcript directory is a note on stderr; the errand columns still print.
 
+`--checks` shows what the plan checker cost and found instead, one row per plan from its `pass` and
+`check` records (honouring `--plan`, `--since`, `--branch` and `--json`):
+
+```
+plan        sentences  triage $  claims  right/wrong/?  claims $  steps  done/open/misfit  steps $  automatic $  asked $  failed  total $
+plans/p.md          5      0.00       2          1/1/0      0.30      3             1/1/1     0.30         0.30     0.30       1     0.60
+plans/q.md          2      0.00       1          0/0/1      0.05      -                 -        -         0.00     0.05       0     0.05
+```
+
+`sentences` is what the passes triaged; `triage $` is 0 today (Jev is not priced yet). `claims` and
+`steps` count the answered checks of each kind with their verdicts (`?` is could not tell; a `check`
+record with no `mode` counts as a claim), and their `$` every check of that kind, failed ones too;
+a plan with none of a kind shows `-`. `automatic $` is what the save pass spent, `asked $` what
+*Check this*, *Re-check* and *Check the plan* spent, `failed` the checks that did not answer,
+`total $` the sum. `--json` prints `{"checks": [...]}`, each row with `plan`, `sentences`,
+`triage_cost`, `claims` and `steps` (each `n`, its verdict counts and `cost`), `automatic`,
+`asked`, `failed` and `total`. A pass record carries no branch, so `--branch` keeps its sentences
+only for `?`.
+
 A claim pass that called a model appends a `resolve` record: `id`, `at`, `plan`, `seen` (the lines
 it worked on), `by_rung` (how many resolved in each round, `jev-1`, `jev-2`, `jev-3`, or `none`),
 `checked`, `right`, `wrong`, `elsewhere`, `more` (lines left for the budget), `seconds`, `calls` (every Jev round and every chat rung asked, one
@@ -504,8 +630,10 @@ The fair comparison is a head-to-head: the same change made both ways.
 | `<leader>mpx` | on a step (or a line under it): mark it done (ticked, `✓` its unit now, a live excerpt frozen) or reopen it (code actions "Mark done" / "Reopen step") |
 | `<leader>mpe` | on a step: its unit's code under it as an excerpt ("Show the code here"; frozen at once under a ticked step), or, where there is one, open or close its fold; where it cannot, the reason (LSP `disabled`). In a fold of done work or an answered question, it (like `zo`) opens or closes that fold |
 | `plans = { conceal, glyphs, fold_done }` | the reading layer ([above](#how-a-plan-reads)): `conceal = true` hides markers, paths and hashes off the cursor line (off by default); override a glyph or a verdict sign (`glyphs.checking` is a list of spinner frames); close done work on entry |
-| the sign column | one sign per row from the claim pass: `○`, a spinner (`⠋⠙⠹…`, 100 ms a frame) while checking, `✓ ✗ ?` (a row with several sentences shows its worst, `✗ › ? › checking › ○ › ✓`), other olifant diagnostics by severity; a row holding two or more checked sentences also shows a dim mark after each (`DurandalPlanMark`, linked to `Comment`; the sign's glyph, the spinner frame while checking), the sign keeping the worst; a wrong claim is undercurled; the sentence being checked is highlighted (`DurandalPlanChecking`: the cursor line's background, dotted underneath) until its verdict lands |
+| the sign column | one sign per row from the claim pass: `○`, a spinner (`⠋⠙⠹…`, 100 ms a frame) while checking, `✓ ✗ ?`, `!` for a misfit or a ticked step not done (a row with several sentences shows its worst, `✗ › ! › ? › checking › ○ › ✓`, a stale verdict last), a stale verdict's glyph dimmed (`DurandalPlanStale`, linked to `Comment`, no undercurl), no sign for the plan's `plan-unchecked` summary, other olifant diagnostics by severity; a row holding two or more checked sentences also shows a dim mark after each (`DurandalPlanMark`, linked to `Comment`; the sign's glyph, the spinner frame while checking), the sign keeping the worst; a wrong claim and a misfit step are undercurled; the sentence being checked is highlighted (`DurandalPlanChecking`: the cursor line's background, dotted underneath) until its verdict lands |
 | `<leader>mpk` | keep the checked verdict here as an evidence line (the code action *Keep this verdict*; `keys.plan_keep`) |
+| `<leader>mps` | check the sentence here: *Re-check* on a stale verdict, else *Check this* (`keys.plan_check`); says `check: nothing to check here` otherwise |
+| `<leader>mpS` | *Check the plan* (`keys.plan_check_all`); says `check: nothing left to check in this plan` otherwise |
 | `<leader>ms` / `<leader>mt` | on a step: stub a test under it / run its tests and tick it |
 | `<leader>mpr` | review the `do` or the reading of the step here (else the plan's first) |
 | `<leader>mp<CR>` | start a step under this line (the engine's "New step below") |
@@ -514,7 +642,7 @@ The fair comparison is a head-to-head: the same change made both ways.
 
 A plan buffer tells the engine it went quiet (`olifant/plans/idle`) one second after a change,
 counted from leaving insert mode, so the claim pass triages while you read, not while you type;
-checks wait for a save.
+checks wait for a save, and only what you wrote since is checked.
 
 `:Durandal plan` marks the buffer as a plan; `:Durandal plan cancel` cancels the errands running
 in it. A finished `do` opens the files it changed in the quickfix list.
