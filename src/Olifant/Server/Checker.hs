@@ -8,6 +8,12 @@
 module Olifant.Server.Checker
   ( Judgement (..)
   , judgementName
+  , judgementNamed
+  , CheckMode (..)
+  , checkModeName
+  , checkModeOf
+  , Print (..)
+  , fileHash
   , Citation (..)
   , CheckReply (..)
   , Confirmed (..)
@@ -32,6 +38,7 @@ import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KM
 import Data.ByteString qualified as BS
 import Data.ByteString.Lazy qualified as BL
+import Data.Bits (xor)
 import Data.Char (isDigit, toLower)
 import Data.List (isPrefixOf, sortOn)
 import Data.Maybe (isNothing, listToMaybe)
@@ -39,6 +46,8 @@ import Data.Scientific (toRealFloat)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
+import Data.Word (Word64)
+import Numeric (showHex)
 import Olifant.App (Ports (..), Project (..))
 import Olifant.Catalog (Catalog (..), PlansConfig (..))
 import Olifant.Language.Adapter (languageFor)
@@ -48,6 +57,7 @@ import Olifant.Process (Cancel)
 import Olifant.Server.Confine (confined, safely)
 import Olifant.Server.Errand (RunFailure (..), RunResult (..), Status (..), Verb (Check), checkFences, runClaude)
 import Olifant.Server.State (ServerConfig (..), ServerState (..))
+import Olifant.Server.Triage (Triage (..))
 import Olifant.Server.Unit (Named (..), fingerprint, unitLookupIn, unitsWithKinds)
 import Olifant.Workspace (Workspace (..), normalisePath)
 import System.Directory (canonicalizePath)
@@ -61,7 +71,9 @@ data UnitRef = UnitRef {urPath :: FilePath, urName :: Text}
 refText :: UnitRef -> Text
 refText r = T.pack (urPath r) <> ":" <> urName r
 
-data Judgement = JRight | JWrong | JCannotTell
+-- | A verdict: right, wrong (a claim), done, open, misfit (a step's
+-- progress), or cannot tell (either).
+data Judgement = JRight | JWrong | JCannotTell | JDone | JOpen | JMisfit
   deriving (Eq, Show)
 
 judgementName :: Judgement -> Text
@@ -69,6 +81,40 @@ judgementName = \case
   JRight -> "right"
   JWrong -> "wrong"
   JCannotTell -> "cannot_tell"
+  JDone -> "done"
+  JOpen -> "open"
+  JMisfit -> "misfit"
+
+-- | A verdict by its JSON word.
+judgementNamed :: Text -> Maybe Judgement
+judgementNamed t = lookup t [(judgementName j, j) | j <- [JRight, JWrong, JCannotTell, JDone, JOpen, JMisfit]]
+
+-- | What a check asks: whether a claim is so ('CheckClaim', JSON "verify"),
+-- or how far the code has got with a step ('CheckProgress', "progress").
+data CheckMode = CheckClaim | CheckProgress
+  deriving (Eq, Ord, Show)
+
+checkModeName :: CheckMode -> Text
+checkModeName = \case
+  CheckClaim -> "verify"
+  CheckProgress -> "progress"
+
+-- | The mode a sentence is checked in: a step's progress, else a claim.
+checkModeOf :: Triage -> CheckMode
+checkModeOf t = if trKind t == "step" then CheckProgress else CheckClaim
+
+-- | One confirmed citation's print: the unit's 'fingerprint' when it named
+-- or fell inside one, else the whole file's 'fileHash' (unit Nothing).
+data Print = Print {ptPath :: FilePath, ptUnit :: Maybe Text, ptHash :: Text}
+  deriving (Eq, Ord, Show)
+
+-- | A file's hash: 7 hex of FNV-1a 64 over its whole text (as 'fingerprint'
+-- hashes a unit).
+fileHash :: Text -> Text
+fileHash t = T.pack (take 7 (pad (showHex (BS.foldl' step 14695981039346656037 (TE.encodeUtf8 t)) "")))
+  where
+    step h b = (h `xor` fromIntegral b) * 1099511628211 :: Word64
+    pad x = replicate (16 - length x) '0' ++ x
 
 -- | Where a verdict rests: a path, and a unit or a line (1-based) in it.
 data Citation = Citation {ciPath :: FilePath, ciUnit :: Maybe Text, ciLine :: Maybe Int}
@@ -78,10 +124,11 @@ data CheckReply = CheckReply {crJudgement :: Judgement, crWhy :: Text, crEvidenc
   deriving (Eq, Show)
 
 -- | A reply after its citations were checked: the first cited unit found,
--- with its fingerprint, is the sentence's evidence unit.
+-- with its fingerprint, is the sentence's evidence unit; every citation
+-- found has its print ('Print'), so a later change to any of them shows.
 data Confirmed = Confirmed
   { cfJudgement :: Judgement, cfWhy :: Text, cfEvidence :: [Citation]
-  , cfUnit :: Maybe UnitRef, cfFingerprint :: Maybe Text }
+  , cfUnit :: Maybe UnitRef, cfFingerprint :: Maybe Text, cfPrints :: [Print] }
   deriving (Eq, Show)
 
 type Checker = Sentence -> IO (Either RunFailure RunResult)
@@ -178,8 +225,8 @@ confirm s p fs r = do
       unit = listToMaybe found
   pure $
     if any isNothing checked
-      then Confirmed JCannotTell (if crJudgement r == JCannotTell then crWhy r else "cited code not found") (crEvidence r) Nothing Nothing
-      else Confirmed (crJudgement r) (crWhy r) (crEvidence r) (fst <$> unit) (snd <$> unit)
+      then Confirmed JCannotTell (if crJudgement r == JCannotTell then crWhy r else "cited code not found") (crEvidence r) Nothing Nothing []
+      else Confirmed (crJudgement r) (crWhy r) (crEvidence r) (fst <$> unit) (snd <$> unit) []
   where
     root = prRoot p
     relOf path

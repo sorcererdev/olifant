@@ -53,15 +53,16 @@ import Data.Set (Set)
 import Data.Set qualified as S
 import Olifant.Plans (Line (..))
 import Olifant.Plans.Sentences (Sentence (..), sentenceKey, sentencesJoined)
-import Olifant.Server.Checker (Citation (..), Confirmed (..), Judgement (..), UnitRef (..), judgementName)
+import Olifant.Server.Checker (CheckMode (..), Citation (..), Confirmed (..), Judgement (..), Print (..), UnitRef (..), checkModeName, judgementName, judgementNamed)
 import Olifant.Server.Triage (Route (..), Triage (..), routeName)
 import Olifant.Workspace (Workspace (..), normalisePath)
 import System.FilePath (dropExtension, isAbsolute, makeRelative, takeExtension, (</>))
 import System.IO.Unsafe (unsafePerformIO)
 
 -- | One check as stored: the confirmed verdict, the model that made it, its
--- cost (when the runner said), its seconds, and when.
-data CheckRecord = CheckRecord {cjConfirmed :: Confirmed, cjModel :: Text, cjCost :: Maybe Double, cjSeconds :: Double, cjAt :: UTCTime}
+-- cost (when the runner said), its seconds, when, and its mode (absent in
+-- JSON: a claim).
+data CheckRecord = CheckRecord {cjConfirmed :: Confirmed, cjModel :: Text, cjCost :: Maybe Double, cjSeconds :: Double, cjAt :: UTCTime, cjMode :: CheckMode}
   deriving stock (Eq, Show)
 
 -- | A check that failed (the runner, or a reply with no verdict), and when.
@@ -70,9 +71,11 @@ data Failure = Failure {fuWhy :: Text, fuAt :: UTCTime}
 
 -- | What the pass knows of one sentence, and since when it is no longer in
 -- the plan (kept for 'keepGone', so an undo finds its triage and check).
+-- 'seOwed': the sentence is owed its one automatic check (first seen on an
+-- idle or save pass, not checked yet); absent in JSON is False (backlog).
 data SentenceEntry = SentenceEntry
   { seTriage :: Triage, seRoute :: Route, seCheck :: Maybe CheckRecord
-  , seFailure :: Maybe Failure, seAt :: UTCTime, seGone :: Maybe UTCTime }
+  , seFailure :: Maybe Failure, seAt :: UTCTime, seGone :: Maybe UTCTime, seOwed :: Bool }
   deriving stock (Eq, Show)
 
 -- | A plan's entries by 'sentenceKey'.
@@ -159,7 +162,7 @@ claimsLock = unsafePerformIO (newMVar ())
 
 entryJson :: SentenceEntry -> Value
 entryJson e =
-  object
+  object $
     [ "triage" .= object ["kind" .= trKind t, "p" .= trKindP t, "about" .= trAboutCode t, "by" .= trBy t]
     , "route" .= routeName (seRoute e)
     , "check" .= fmap checkJson (seCheck e)
@@ -167,6 +170,7 @@ entryJson e =
     , "at" .= seAt e
     , "gone" .= seGone e
     ]
+      ++ ["owed" .= True | seOwed e]
   where
     t = seTriage e
     refJson r = object ["path" .= urPath r, "name" .= urName r]
@@ -178,6 +182,8 @@ entryJson e =
             , "evidence" .= [object ["path" .= ciPath x, "unit" .= ciUnit x, "line" .= ciLine x] | x <- cfEvidence cf]
             , "unit" .= fmap refJson (cfUnit cf)
             , "fingerprint" .= cfFingerprint cf
+            , "prints" .= [object ["path" .= ptPath x, "unit" .= ptUnit x, "hash" .= ptHash x] | x <- cfPrints cf]
+            , "mode" .= checkModeName (cjMode c)
             , "model" .= cjModel c
             , "cost" .= cjCost c
             , "seconds" .= cjSeconds c
@@ -193,6 +199,7 @@ entry = withObject "entry" $ \o ->
     <*> (o .:? "failure" >>= traverse (withObject "failure" (\f -> Failure <$> f .: "why" <*> f .: "at")))
     <*> o .: "at"
     <*> o .:? "gone"
+    <*> (fromMaybe False <$> o .:? "owed")
   where
     triage = withObject "triage" $ \t -> Triage <$> t .: "kind" <*> t .: "p" <*> t .: "about" <*> t .: "by"
     route = \case
@@ -204,13 +211,16 @@ entry = withObject "entry" $ \o ->
     ref = withObject "unit" $ \r -> UnitRef <$> r .: "path" <*> r .: "name"
     citation = withObject "citation" $ \c -> Citation <$> c .: "path" <*> c .:? "unit" <*> c .:? "line"
     check = withObject "check" $ \c -> do
-      j <- (c .: "verdict" :: Parser Text) >>= \case
-        "right" -> pure JRight
-        "wrong" -> pure JWrong
-        "cannot_tell" -> pure JCannotTell
-        _ -> fail "a verdict"
+      j <- (c .: "verdict" :: Parser Text) >>= maybe (fail "a verdict") pure . judgementNamed
       cf <- Confirmed j <$> c .: "why" <*> (c .: "evidence" >>= mapM citation) <*> (c .:? "unit" >>= traverse ref) <*> c .:? "fingerprint"
-      CheckRecord cf <$> c .: "model" <*> c .:? "cost" <*> c .: "seconds" <*> c .: "at"
+        <*> (maybe (pure []) (mapM printOf) =<< c .:? "prints")
+      mode <- (c .:? "mode" :: Parser (Maybe Text)) >>= \case
+        Nothing -> pure CheckClaim
+        Just "verify" -> pure CheckClaim
+        Just "progress" -> pure CheckProgress
+        Just _ -> fail "a check mode"
+      CheckRecord cf <$> c .: "model" <*> c .:? "cost" <*> c .: "seconds" <*> c .: "at" <*> pure mode
+    printOf = withObject "print" $ \x -> Print <$> x .: "path" <*> x .:? "unit" <*> x .: "hash"
 
 -- | How long the entry of a sentence no longer in the plan is kept: an
 -- edit undone, or a sentence cut and pasted back, finds its triage and its
@@ -251,7 +261,7 @@ queued now ss store = go S.empty ss
 
 -- | The keys with a right or wrong check (a checked belief answers its question).
 checkedKeys :: ClaimStore -> Set Text
-checkedKeys = M.keysSet . M.filter (\e -> maybe False ((/= JCannotTell) . cfJudgement . cjConfirmed) (seCheck e))
+checkedKeys = M.keysSet . M.filter (\e -> maybe False ((`elem` [JRight, JWrong]) . cfJudgement . cjConfirmed) (seCheck e))
 
 -- | A plan's store as the server holds it (ROOT, the plan's path): read
 -- from disk on first use.

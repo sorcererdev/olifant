@@ -20,6 +20,7 @@ import Olifant.Server (ServerState, newServerState, projectFor)
 import Olifant.Server.State (ServerState (..))
 import Olifant.Server.Checker
 import Olifant.Server.Errand (RunResult (..))
+import Olifant.Server.Triage (Triage (..))
 import Olifant.Workspace (diskWorkspace, memoryWorkspace)
 import System.Directory (canonicalizePath, createDirectoryIfMissing, createDirectoryLink, doesDirectoryExist, getCurrentDirectory, listDirectory)
 import System.FilePath (makeRelative, takeDirectory, (</>))
@@ -33,6 +34,17 @@ one t = case reverse (sentences (parsePlan t)) of
 
 spec :: Spec
 spec = describe "Olifant.Server.Checker" $ do
+  it "a step is checked for progress, anything else as a claim" $ do
+    checkModeOf (Triage "step" 0.9 0.9 "jev") `shouldBe` CheckProgress
+    checkModeOf (Triage "claim" 0.9 0.9 "jev") `shouldBe` CheckClaim
+    map checkModeName [CheckClaim, CheckProgress] `shouldBe` ["verify", "progress"]
+  it "fileHash is stable and changes with one character" $ do
+    fileHash "a\nb\n" `shouldBe` fileHash "a\nb\n"
+    T.length (fileHash "a\nb\n") `shouldBe` 7
+    fileHash "a\nb\n" `shouldNotBe` fileHash "a\nc\n"
+  it "every verdict has a JSON word that reads back" $
+    map (judgementNamed . judgementName) [JRight, JWrong, JCannotTell, JDone, JOpen, JMisfit]
+      `shouldBe` map Just [JRight, JWrong, JCannotTell, JDone, JOpen, JMisfit]
   it "fences the plans dir, .olifant and not_evidence" $
     fences defaultPlans {pcDir = "plans", pcNotEvidence = ["docs", "book"]} `shouldBe` ["plans", ".olifant", "docs", "book"]
 

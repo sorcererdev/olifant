@@ -24,7 +24,7 @@ import Olifant.Server.Claims (CheckRecord (..), Failure (..), SentenceEntry (..)
 import Olifant.Plans.Sentences (sentences, sentencesWith)
 import Olifant.Server.Triage (Route (..), Triage (..))
 import Olifant.Server.Errand (Belief (..), BeliefCheck (..))
-import Olifant.Server.Checker (Citation (..), Confirmed (..), Judgement (..), UnitRef (..))
+import Olifant.Server.Checker (CheckMode (..), Citation (..), Confirmed (..), Judgement (..), UnitRef (..))
 import Olifant.Server.Unit (Named (..))
 import Olifant.Workspace (memoryWorkspace)
 import System.Directory (canonicalizePath, doesDirectoryExist, listDirectory)
@@ -203,7 +203,7 @@ spec = describe "Olifant.Server.Plans (anchors in the server)" $ do
     let checkOf e = case seCheck e of
           Just c -> c
           Nothing -> error "no check"
-        two = queuedEntry {seCheck = Just (CheckRecord (Confirmed JWrong "it drops D" [Citation "app/x.py" (Just "f") (Just 2), Citation "app/y.py" (Just "g") Nothing] (Just (UnitRef "app/x.py" "f")) Nothing) "m" Nothing 1 at0)}
+        two = queuedEntry {seCheck = Just (CheckRecord (Confirmed JWrong "it drops D" [Citation "app/x.py" (Just "f") (Just 2), Citation "app/y.py" (Just "g") Nothing] (Just (UnitRef "app/x.py" "f")) Nothing []) "m" Nothing 1 at0 CheckClaim)}
         insertOf (TextEdit r t) = ((r ^. L.start . L.line, r ^. L.start . L.character), (r ^. L.end . L.line, r ^. L.end . L.character), t)
         one_ ls = case sentences ls of
           x : _ -> x
@@ -280,11 +280,11 @@ at0 = UTCTime (fromGregorian 2026 11 7) 0
 
 -- | A verify sentence with no check yet.
 queuedEntry :: SentenceEntry
-queuedEntry = SentenceEntry (Triage "claim" 0.9 0.9 "jev") Verify Nothing Nothing at0 Nothing
+queuedEntry = SentenceEntry (Triage "claim" 0.9 0.9 "jev") Verify Nothing Nothing at0 Nothing False
 
 -- | A verify sentence checked J, with WHY, citing src/a.py:Foo.
 verdictEntry :: Judgement -> Text -> SentenceEntry
-verdictEntry j why = queuedEntry {seCheck = Just (CheckRecord (Confirmed j why [Citation "src/a.py" (Just "Foo") Nothing] (Just (UnitRef "src/a.py" "Foo")) (Just "abc1234")) "claude-sonnet-5-5" (Just 0.1) 12 at0)}
+verdictEntry j why = queuedEntry {seCheck = Just (CheckRecord (Confirmed j why [Citation "src/a.py" (Just "Foo") Nothing] (Just (UnitRef "src/a.py" "Foo")) (Just "abc1234") []) "claude-sonnet-5-5" (Just 0.1) 12 at0 CheckClaim)}
 
 -- | /r1 with the python pack, `src/a.py` (class Foo with def bar) and a
 -- plan; a syntax whose units are Foo (lines 0-2) and Foo.bar (1-2).

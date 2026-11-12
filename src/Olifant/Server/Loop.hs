@@ -83,7 +83,7 @@ import Olifant.Server.State (ServerState (..), appendStepLine, projectFor)
 import Olifant.Server.Telemetry (Decision (..), ErrandRecord (..), OutcomeRecord (..), PassRecord (..), ReconcileRecord (..), Record (..), appendRecord, errandId, readRecords, recordsPath)
 import Olifant.Server.Claims (CheckRecord (..), ClaimStore, Failure (..), SentenceEntry (..), claimsOf, claimsPath, joinsOf, pruneClaims, pruneOrphanClaims, queued, sentencesOf, updateClaims, updateJoins)
 import Olifant.Plans.Sentences (Sentence (..), joinCandidates, pairKey, sentenceKey, sentencesJoined)
-import Olifant.Server.Checker (Checker, Confirmed (..), Judgement (..), checkPrompt, checkerUnder, confirm, fences, parseCheckReply)
+import Olifant.Server.Checker (CheckMode (..), Checker, Confirmed (..), Judgement (..), checkPrompt, checkerUnder, confirm, fences, parseCheckReply)
 import Olifant.Server.Errand (RunFailure (..), RunResult (..), Status (..))
 import Olifant.Server.Triage (Triage (..), decideJoins, route, routeName, triage)
 import Olifant.Server.Unit (Named (..), fingerprint, unitsOf)
@@ -665,7 +665,7 @@ claimPass token mode path s0 = do
                   then pure (st, n, calls, stop)
                   else do
                     tr <- triage jev x
-                    let e = SentenceEntry tr (route tr) Nothing Nothing now Nothing
+                    let e = SentenceEntry tr (route tr) Nothing Nothing now Nothing False
                     triageAll (M.insert (key x) e st) (n + 1) (calls + (if trBy tr == "jev" then 1 else 0)) rest
           (triagedStore, triaged, jevCalls, stoppedEarly) <- triageAll M.empty (0 :: Int) joinCalls fresh
           -- merged into the store as it is now (Check this may have written meanwhile)
@@ -754,7 +754,7 @@ checkOne token path wanted s0 =
           store0 <- claimsOf s root path
           unless (M.member wanted store0) $ do
             tr <- triage (rgJev (rungsFor s {ssCancel = token} p False)) x
-            void (updateClaims s root path (M.insertWith (\_ old -> old) wanted (SentenceEntry tr (route tr) Nothing Nothing now Nothing)))
+            void (updateClaims s root path (M.insertWith (\_ old -> old) wanted (SentenceEntry tr (route tr) Nothing Nothing now Nothing False)))
           (result, _) <- whileChecking s held wanted (checkSentence s p cfg (checkerUnder s token cfg root) False now rel x)
           cancelled token >>= \case
             True -> pure (s, Left "cancelled")
@@ -808,7 +808,7 @@ checkSentence s p cfg checker auto now plan x = do
             , erSession = mrr >>= rrSession, erSeconds = rrSeconds <$> mrr, erTurns = mrr >>= rrTurns, erTokens = mrr >>= rrTokens
             , erCost = mrr >>= rrCost, erModels = maybe [] rrModels mrr, erPromptChars = T.length (checkPrompt x), erGrounded = 0
             , erBlocks = 0, erLines = 0, erDropped = 0, erUnresolved = 0, erChanged = 0, erDenials = maybe 0 rrDenials mrr
-            , erParent = Nothing, erAuto = auto }
+            , erParent = Nothing, erAuto = auto, erMode = Nothing, erVerdict = Nothing }
   case r of
     Left f -> do
       record (rfStatus f) (Just (rfWhy f)) Nothing
@@ -824,4 +824,4 @@ checkSentence s p cfg checker auto now plan x = do
           c <- confirm s p (fences cfg) reply
           record Ok Nothing (Just rr)
           let model = maybe (pcCheckModel cfg) fst (listToMaybe (rrModels rr))
-          pure (Right (CheckRecord c model (rrCost rr) (rrSeconds rr) now), cost)
+          pure (Right (CheckRecord c model (rrCost rr) (rrSeconds rr) now CheckClaim), cost)

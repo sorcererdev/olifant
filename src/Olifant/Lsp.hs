@@ -1741,6 +1741,9 @@ whyFile env path key =
                 JRight -> "Right"
                 JWrong -> "Wrong"
                 JCannotTell -> "Could not tell"
+                JDone -> "Done in the code"
+                JOpen -> "Still open"
+                JMisfit -> "As written this would not work"
               file = prRoot p </> ".olifant/state/why" </> keyHash key <> ".md"
               body =
                 T.unlines $
