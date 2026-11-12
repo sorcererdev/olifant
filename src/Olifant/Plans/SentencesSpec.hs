@@ -22,6 +22,21 @@ spec = describe "Olifant.Plans.Sentences" $ do
     snText s `shouldBe` "Fix it. It should not shift."
     (snRow s, snCol s, snEndRow s, snEndCol s) `shouldBe` (0, 6, 0, 34)
 
+  it "continuation rows join their step" $ do
+    let ls = parsePlan "- [ ] move the hint\n  so it does not shift\n  the content\n"
+        [s] = sentences ls
+    snKind s `shouldBe` Step False
+    snText s `shouldBe` "move the hint so it does not shift the content"
+    (snRow s, snEndRow s) `shouldBe` (0, 2)
+    joinCandidates ls `shouldBe` []
+
+  it "a nested checkbox is its own step" $
+    map snKind (of_ ["- [ ] a", "  - [ ] b"]) `shouldBe` [Step False, Step False]
+
+  it "a blank row ends the step" $
+    map (\s -> (snKind s, snText s)) (of_ ["- [ ] a", "", "  later prose"])
+      `shouldBe` [(Step False, "a"), (Prose, "later prose")]
+
   it "keeps a question whole" $ do
     let [s] = of_ ["- ? Why is it slow? And when?"]
     snKind s `shouldBe` Question
