@@ -145,6 +145,10 @@ data ServerState = ServerState
     -- entry is dropped when the file changes on disk ('filesChanged') and
     -- not used once the editor's version differs
     ssCitePrints :: IORef (Map FilePath (Maybe Int, CitedFile))
+  , -- | per project root: the last 20 priced check costs per check mode
+    -- (its JSON name), newest first; read from `errands.jsonl` once, then
+    -- kept as checks are made. A root absent has not been read yet
+    ssEstimates :: IORef (Map FilePath (Map Text [Double]))
   }
 
 newServerState :: Ports -> IO ServerState
@@ -158,7 +162,8 @@ newServerState ports = do
   claims <- newIORef M.empty
   checking <- newIORef M.empty
   cited <- newIORef M.empty
-  pure (ServerState ports M.empty M.empty cache defaultServerConfig M.empty 0 0 M.empty M.empty neverCancel M.empty M.empty M.empty M.empty bases decisions onDecided Nothing Nothing paused M.empty units claims checking cited)
+  estimates <- newIORef M.empty
+  pure (ServerState ports M.empty M.empty cache defaultServerConfig M.empty 0 0 M.empty M.empty neverCancel M.empty M.empty M.empty M.empty bases decisions onDecided Nothing Nothing paused M.empty units claims checking cited estimates)
 
 -- | A file's base text, from the cache while no file changed since.
 cachedBase :: ServerState -> FilePath -> Text -> FilePath -> IO (Either Text (Text, Maybe Text))

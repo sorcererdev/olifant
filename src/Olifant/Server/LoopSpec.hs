@@ -1064,6 +1064,66 @@ claimPassSpec = describe "Olifant.Server.Loop (claimPass)" $ describe "claimPass
       (_, a) <- pass OpenPass dir s
       verdictOf a "The helper returns one." `shouldBe` Nothing
       checksAsked dir `shouldReturn` []
+  describe "Check the plan" $ do
+    let keysN k = ["Claim number " <> tshow n <> " holds." | n <- [1 .. k :: Int]]
+        planN k = T.unlines (keysN k)
+        slow = object ["text" .= ("I read it.\n```json\n{\"verdict\": \"right\", \"why\": \"it returns 1\", \"evidence\": [{\"path\": \"" <> T.pack table <> "\", \"unit\": \"helper\"}]}\n```" :: Text), "cost" .= (0.1 :: Double), "delay" .= (0.3 :: Double)]
+        sweep dir s = checkPlan neverCancel (\_ _ -> pure ()) (dir </> "plans/t.md") s
+    it "the sweep checks three at a time" $
+      withPass (planN 5) "" [(k, slow) | k <- keysN 5] $ \dir s -> do
+        (s1, _) <- pass OpenPass dir s
+        most <- newIORef (0 :: Int)
+        done <- newIORef False
+        watcher <- async (let go = do
+                                n <- sum . map S.size . M.elems <$> readIORef (ssChecking s1)
+                                modifyIORef most (max n)
+                                fin <- readIORef done
+                                if fin then pure () else threadDelay 5000 >> go
+                          in go)
+        (_, r) <- sweep dir s1
+        modifyIORef done (const True)
+        _ <- waitCatch watcher
+        fmap swChecked r `shouldBe` Right 5
+        readIORef most `shouldReturn` 3
+        asked' <- checksAsked dir
+        sort asked' `shouldBe` sort (keysN 5)
+        sort (take 3 asked') `shouldBe` sort (take 3 (keysN 5))
+    it "the sweep stops at check_cost" $
+      withPass (planN 6) "[plans]\ncheck_cost = 0.25\n" [(k, reply "right") | k <- keysN 6] $ \dir s -> do
+        (s1, _) <- pass OpenPass dir s
+        (_, r) <- sweep dir s1
+        r `shouldBe` Right (Sweep 2 4 0.2 True)
+    it "the sweep skips ticked steps and checks stale verdicts" $
+      withPass "- [x] Make the helper return one\nThe helper returns one.\nAnother claim holds.\n" "" [("Make the helper return one", reply "done"), ("The helper returns one.", reply "right"), ("Another claim holds.", reply "right")] $ \dir s -> do
+        (s1, _) <- pass OpenPass dir s
+        _ <- checkOne neverCancel (dir </> "plans/t.md") "The helper returns one." s1
+        TIO.writeFile (dir </> table) (T.replace "return 1" "return 2" tableText)
+        s2 <- filesChanged [dir </> table] s1
+        (_, r) <- sweep dir s2
+        fmap swChecked r `shouldBe` Right 2
+        checksAsked dir `shouldReturn` ["The helper returns one.", "The helper returns one.", "Another claim holds."]
+    it "a save during a sweep checks nothing the sweep holds" $
+      withPass (planN 5) "" [(k, slow) | k <- keysN 5] $ \dir s -> do
+        (s1, _) <- pass IdlePass dir s
+        running <- async (sweep dir s1)
+        let waitAsked = checksAsked dir >>= \ks -> if not (null ks) then pure () else threadDelay 10000 >> waitAsked
+        waitAsked
+        _ <- pass SavePass dir s1
+        _ <- waitCatch running
+        asked' <- checksAsked dir
+        length asked' `shouldBe` S.size (S.fromList asked')
+        S.fromList asked' `shouldBe` S.fromList (keysN 5)
+    it "cancelling the sweep keeps the checks that finished" $
+      withPass (planN 6) "" [(k, slow) | k <- keysN 6] $ \dir s -> do
+        (s1, _) <- pass OpenPass dir s
+        (token, trip) <- newCancel
+        _ <- async (let go = checksAsked dir >>= \ks -> if length ks >= 3 then trip else threadDelay 10000 >> go in go)
+        (_, r) <- checkPlan token (\_ _ -> pure ()) (dir </> "plans/t.md") s1
+        either id (const "answered") r `shouldBe` "cancelled"
+        stored <- readClaims (ssPorts s) dir "plans/t.md"
+        asked' <- checksAsked dir
+        length [k | k <- keysN 6, Just e <- [M.lookup k stored], isJust (seCheck e)] `shouldBe` length asked'
+        (length asked' < 6) `shouldBe` True
   describe "recheck" $ do
     let editHelper dir s = do
           TIO.writeFile (dir </> table) (T.replace "return 1" "return 2" tableText)

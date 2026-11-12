@@ -48,11 +48,18 @@ module Olifant.Server.Loop
   , checkSentence
   , checkOne
   , unpricedCheck
+    -- * Check the plan
+  , Sweep (..)
+  , sweepWidth
+  , checkPlan
+  , sweepTargets
+  , estimatesOf
+  , estimateFor
   ) where
 
 import Data.Time (UTCTime)
-import Control.Exception (bracket_)
-import Control.Monad (forM, join, unless, void, when)
+import Control.Exception (bracket_, finally)
+import Control.Monad (forM, forM_, join, unless, void, when)
 import Data.Aeson (Value, object, (.=))
 import Data.Bifunctor (bimap)
 import Data.Containers.ListUtils (nubOrd, nubOrdOn)
@@ -82,7 +89,8 @@ import Olifant.Server.LoopTypes
 import Olifant.Server.Plans (Resolved (..), confined, currentBranch, gitOut, gitText, resolveAnchor, safely)
 import Olifant.Server.State (ServerState (..), appendStepLine, projectFor)
 import Olifant.Server.Telemetry (Decision (..), ErrandRecord (..), OutcomeRecord (..), PassRecord (..), ReconcileRecord (..), Record (..), appendRecord, errandId, readRecords, recordsPath)
-import Olifant.Server.Claims (CheckRecord (..), ClaimStore, Failure (..), SentenceEntry (..), claimsOf, claimsPath, joinsOf, pruneClaims, pruneOrphanClaims, queued, sentencesOf, updateClaims, updateJoins)
+import Olifant.Server.Claims (CheckRecord (..), ClaimStore, Failure (..), SentenceEntry (..), claimsOf, claimsPath, joinsOf, pruneClaims, pruneOrphanClaims, queued, sentencesOf, unchecked, updateClaims, updateJoins)
+import Control.Concurrent.Async qualified as Async
 import Olifant.Plans.Sentences (Sentence (..), joinCandidates, pairKey, sentenceKey, sentencesJoined)
 import Olifant.Server.Checker (CheckMode (..), Checker, Confirmed (..), Judgement (..), checkModeName, checkModeOf, judgementName, checkPrompt, checkerUnder, confirm, fences, parseCheckReply)
 import Olifant.Server.Errand (RunFailure (..), RunResult (..), Status (..))
@@ -696,27 +704,36 @@ claimPass token mode path s0 = do
                     -- the mean of the runs that cost something: a run that never
                     -- started ($0) says nothing about the next check's price
                     estimate = if ptPriced tally > 0 then spent / fromIntegral (ptPriced tally) else unpricedCheck
-                -- a sentence another pass (or Check this) is checking now, or
-                -- has checked since this pass read the store, is not checked again
-                busy <- S.member (key x) . M.findWithDefault S.empty held <$> readIORef (ssChecking s)
-                ready <- if key x `S.member` staleSet then pure True else not . null . queued now [x] <$> claimsOf s root path
-                let elsewhere = busy || not ready
                 if stop
                   then pure (st, tally, True)
                   else
                     if t >= budget || spent + estimate > costCap + 1e-9
                       then pure (st, tally, False)
-                      else if elsewhere then checkAll st tally rest else do
-                        modifyIORef' tried (S.insert (key x))
-                        mode' <- maybe CheckClaim (checkModeOf . seTriage) . M.lookup (key x) <$> claimsOf s root path
-                        result <- whileChecking s held (key x) (checkSentence s p cfg checker True now rel mode' x)
-                        -- the check in flight finished (a cancel stops the pass
-                        -- before the next one, it does not kill this one): kept
-                        -- while its sentence is in the plan, paid for either way
-                        killed <- cancelled (ssCancel s)
-                        there <- S.member (key x) <$> keysNow
-                        st' <- if killed || not there then pure st else updateClaims s root path (M.adjust (landed (fst result)) (key x))
-                        checkAll st' (tallied tally result) rest
+                      else do
+                        -- a sentence another pass (Check this, Check the plan) is
+                        -- checking now, or has checked since this pass read the
+                        -- store, is not checked again: the key is taken atomically
+                        -- and the check lands before it is let go
+                        got <- holdKey s held (key x)
+                        outcome <-
+                          if not got then pure Nothing else
+                            (do
+                              ready <- if key x `S.member` staleSet then pure True else not . null . queued now [x] <$> claimsOf s root path
+                              if not ready then pure Nothing else do
+                                modifyIORef' tried (S.insert (key x))
+                                mode' <- maybe CheckClaim (checkModeOf . seTriage) . M.lookup (key x) <$> claimsOf s root path
+                                result <- checkSentence s p cfg checker True now rel mode' x
+                                -- the check in flight finished (a cancel stops the pass
+                                -- before the next one, it does not kill this one): kept
+                                -- while its sentence is in the plan, paid for either way
+                                killed <- cancelled (ssCancel s)
+                                there <- S.member (key x) <$> keysNow
+                                st' <- if killed || not there then pure st else updateClaims s root path (M.adjust (landed (fst result)) (key x))
+                                pure (Just (st', result)))
+                              `finally` releaseKey s held (key x)
+                        case outcome of
+                          Nothing -> checkAll st tally rest
+                          Just (st', result) -> checkAll st' (tallied tally result) rest
           (store2a, tally, cancelledMid) <- checkAll store1 (PassTally 0 0 0 0 0 0 0) queue
           -- what the pass did not reach (a cap, a cancel) had its chance: backlog.
           -- A pass a newer one replaced (stopped, not killed) leaves it owed: the
@@ -775,12 +792,15 @@ checkOne token path wanted s0 =
             tr <- triage (rgJev (rungsFor s {ssCancel = token} p False)) x
             void (updateClaims s root path (M.insertWith (\_ old -> old) wanted (SentenceEntry tr (route tr) Nothing Nothing now Nothing False)))
           mode <- maybe CheckClaim (checkModeOf . seTriage) . M.lookup wanted <$> claimsOf s root path
-          (result, _) <- whileChecking s held wanted (checkSentence s p cfg (checkerUnder s token cfg root) False now rel mode x)
-          cancelled token >>= \case
-            True -> pure (s, Left "cancelled")
-            False -> do
-              store2 <- updateClaims s root path (M.adjust (landed result) wanted)
-              pure (s, either (Left . fuWhy) (const (Right store2)) result)
+          -- landed before the key is let go, so no other check takes it meanwhile
+          r <- whileChecking s held wanted $ do
+            (result, _) <- checkSentence s p cfg (checkerUnder s token cfg root) False now rel mode x
+            cancelled token >>= \case
+              True -> pure (Left "cancelled")
+              False -> do
+                store2 <- updateClaims s root path (M.adjust (landed result) wanted)
+                pure (either (Left . fuWhy) (const (Right store2)) result)
+          pure (s, r)
 
 -- | A check's result in its sentence's entry. A first failure keeps the
 -- sentence owed (one retry after 'retryAfter'); a second makes it backlog.
@@ -839,6 +859,9 @@ checkSentence s p cfg checker auto now plan mode x = do
       pure (Left (Failure (rfWhy f) now), if rfStatus f == Timeout || isJust (rfSession f) then unpricedCheck else 0)
     Right rr -> do
       let cost = fromMaybe unpricedCheck (rrCost rr)
+      -- a priced check moves its mode's estimate (when the estimates were read)
+      forM_ (rrCost rr) $ \c ->
+        atomicModifyIORef' (ssEstimates s) (\m -> (M.adjust (M.insertWith (\new old -> take 20 (new ++ old)) (checkModeName mode) [c]) (prRoot p) m, ()))
       case parseCheckReply mode (rrText rr) of
         Left why -> do
           record Empty (Just why) Nothing (Just rr)
@@ -848,3 +871,128 @@ checkSentence s p cfg checker auto now plan mode x = do
           record Ok Nothing (Just (judgementName (cfJudgement c))) (Just rr)
           let model = maybe (pcCheckModel cfg) fst (listToMaybe (rrModels rr))
           pure (Right (CheckRecord c model (rrCost rr) (rrSeconds rr) now mode), cost)
+
+-- | How many checks *Check the plan* runs at once.
+sweepWidth :: Int
+sweepWidth = 3
+
+-- | What a *Check the plan* came to: checks made, targets left untried,
+-- dollars spent, and whether the ceiling stopped it.
+data Sweep = Sweep {swChecked :: Int, swLeft :: Int, swSpent :: Double, swStopped :: Bool}
+  deriving (Eq, Show)
+
+-- | The checks' estimates of a project (ROOT): the last 20 priced checks of
+-- each mode, newest first, read from `errands.jsonl` the first time, then
+-- kept as 'checkSentence' makes checks.
+estimatesOf :: ServerState -> FilePath -> IO (M.Map Text [Double])
+estimatesOf s root =
+  M.lookup root <$> readIORef (ssEstimates s) >>= \case
+    Just e -> pure e
+    Nothing -> do
+      txt <- fromMaybe "" <$> safely Nothing (readText (pFiles (ssPorts s)) (recordsPath root))
+      let priced = reverse [(fromMaybe "verify" (erMode e), c) | AnErrand e <- fst (readRecords txt), erVerb e == "check", Just c <- [erCost e]]
+          e0 = M.map (take 20) (M.fromListWith (flip (++)) [(m, [c]) | (m, c) <- priced])
+      atomicModifyIORef' (ssEstimates s) (\m -> case M.lookup root m of
+        Just theirs -> (m, theirs)
+        Nothing -> (M.insert root e0 m, e0))
+
+-- | What one check of MODE should cost: the mean of its recent priced
+-- checks, else $0.10 ($0.01 when the model is a haiku).
+estimateFor :: Text -> M.Map Text [Double] -> CheckMode -> Double
+estimateFor model es mode = case M.findWithDefault [] (checkModeName mode) es of
+  [] -> if "haiku" `T.isInfixOf` T.toLower model then 0.01 else unpricedCheck
+  cs -> sum cs / fromIntegral (length cs)
+
+-- | What *Check the plan* checks, in plan order, one per key: every sentence
+-- routed to a check with none yet ('unchecked': owed or backlog; not a
+-- ticked step), then (in plan order among them) every stale verdict that is
+-- not a ticked step's. Each with the mode it is checked in.
+sweepTargets :: UTCTime -> [Sentence] -> ClaimStore -> S.Set Text -> [(Sentence, CheckMode)]
+sweepTargets now ss store stale = [(x, modeOf x) | x <- firstOf [x | x <- ss, key x `S.member` wanted]]
+  where
+    key = sentenceKey . snText
+    wanted = S.fromList (map key (unchecked now ss store)) `S.union` S.fromList [key x | x <- ss, key x `S.member` stale, snKind x /= Step True]
+    modeOf x = maybe CheckClaim (checkModeOf . seTriage) (M.lookup (key x) store)
+    firstOf = go S.empty
+      where
+        go _ [] = []
+        go seen (x : xs)
+          | key x `S.member` seen = go seen xs
+          | otherwise = x : go (S.insert (key x) seen) xs
+
+-- | *Check the plan*: the plan at PATH's 'sweepTargets', 'sweepWidth' at a
+-- time, outside the caps of the save pass and under `[plans] check_cost`:
+-- before each check a worker reserves its estimate, and none starts when
+-- spent + reserved + its estimate would pass the ceiling. Each worker holds
+-- its key in 'ssChecking' (a key held elsewhere is skipped, as is one
+-- checked meanwhile), and each check lands as it finishes. PROGRESS gets
+-- (done, total) after each. Cancelled (TOKEN): no new check starts, those
+-- in flight land, the answer is Left.
+checkPlan :: Cancel -> (Int -> Int -> IO ()) -> FilePath -> ServerState -> IO (ServerState, Either Text Sweep)
+checkPlan token progress path s0 =
+  projectFor path s0 >>= \case
+    (s, Nothing) -> pure (s, Left "this plan is in no Olifant project")
+    (s, Just (_, p)) -> do
+      text <- case M.lookup path (ssDocs s) of
+        Just (_, t) -> pure t
+        Nothing -> fromMaybe "" <$> safely Nothing (readText (pFiles (ssPorts s)) path)
+      let root = prRoot p
+          cfg = catalogPlans (prCatalog p)
+          rel = makeRelative root (normalisePath path)
+          held = normalisePath path
+          key = sentenceKey . snText
+          checker = checkerUnder s token cfg root
+      now <- pNow (ssPorts s)
+      ss <- sentencesOf s root path (parsePlan text)
+      store <- claimsOf s root path
+      stale <- staleIn s p store
+      let targets = sweepTargets now ss store stale
+          total = length targets
+      -- (the targets not taken, dollars spent, dollars reserved, checks done, stopped by the ceiling)
+      st <- newIORef (targets, 0 :: Double, 0 :: Double, 0 :: Int, False)
+      made <- newIORef (0 :: Int)
+      let ceiling' = pcCheckCost cfg
+          -- the next target and its estimate, reserved; Nothing: stop
+          next = do
+            stop <- cancelled token
+            es <- estimatesOf s root
+            if stop then pure Nothing else
+              atomicModifyIORef' st $ \case
+                ((x, mode) : rest, spent, reserved, done, _)
+                  | let est = estimateFor (pcCheckModel cfg) es mode
+                  , spent + reserved + est <= ceiling' + 1e-9 -> ((rest, spent, reserved + est, done, False), Just (x, mode, est))
+                  | otherwise -> (((x, mode) : rest, spent, reserved, done, True), Nothing)
+                none@([], _, _, _, _) -> (none, Nothing)
+          worker =
+            next >>= \case
+              Nothing -> pure ()
+              Just (x, mode, est) -> do
+                got <- holdKey s held (key x)
+                (checked, cost) <-
+                  if not got then pure (False, 0) else
+                    (do
+                      stillWanted <- (\cur -> any ((== key x) . key . fst) (sweepTargets now [x] cur stale)) <$> claimsOf s root path
+                      if not stillWanted then pure (False, 0) else do
+                        (result, c) <- checkSentence s p cfg checker False now rel mode x
+                        killed <- cancelled (ssCancel s)
+                        unless killed (void (updateClaims s root path (M.adjust (landed result) (key x))))
+                        pure (True, c))
+                      `finally` releaseKey s held (key x)
+                (done, n) <- atomicModifyIORef' st (\(q, spent, reserved, d, stopped) -> ((q, spent + cost, reserved - est, d + 1, stopped), (d + 1, fromEnum checked)))
+                atomicModifyIORef' made (\m -> (m + n, ()))
+                progress done total
+                worker
+      Async.replicateConcurrently_ sweepWidth worker
+      (left, spent, _, _, stopped) <- readIORef st
+      checkedN <- readIORef made
+      stop <- cancelled token
+      pure (s, if stop then Left "cancelled" else Right (Sweep checkedN (length left) spent stopped))
+
+-- | Take KEY of the plan HELD for a check, unless something holds it already.
+holdKey :: ServerState -> FilePath -> Text -> IO Bool
+holdKey s held k =
+  atomicModifyIORef' (ssChecking s) $ \m ->
+    if k `S.member` M.findWithDefault S.empty held m then (m, False) else (M.insertWith S.union held (S.singleton k) m, True)
+
+releaseKey :: ServerState -> FilePath -> Text -> IO ()
+releaseKey s held k = atomicModifyIORef' (ssChecking s) (\m -> (M.update (nonEmpty . S.delete k) held m, ()))

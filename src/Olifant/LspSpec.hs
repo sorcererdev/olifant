@@ -4216,6 +4216,17 @@ claimPassSpec = describe "plans claim pass" $ do
         TIO.writeFile c checks
         act ports dir f [("decide_answers", String (T.pack f)), ("check_answers", String (T.pack c))]
       withPass = withPassOn claims
+      withPythonPlan plan answers checks act = withPython [("plans/t.md", plan), (table, tableText)] $ \ports dir -> do
+        TIO.appendFile (dir </> ".olifant/config.toml") config
+        let f = dir </> "answers.json"
+            c = dir </> "checks.json"
+        TIO.writeFile f answers
+        TIO.writeFile c checks
+        act ports dir f [("decide_answers", String (T.pack f)), ("check_answers", String (T.pack c))]
+      replyFor delay key = "\"" <> key <> "\": {\"text\": \"```json\\n{\\\"verdict\\\": \\\"right\\\", \\\"why\\\": \\\"w\\\", \\\"evidence\\\": [{\\\"path\\\": \\\"" <> T.pack table <> "\\\", \\\"unit\\\": \\\"helper\\\"}]}\\n```\", \"cost\": 0.1, \"delay\": " <> delay <> "}"
+      threeKeys = ["the helper returns one", "a second claim holds", "a third claim holds"]
+      checks3 = "{\"replies\": {" <> T.intercalate ", " (map (replyFor "0") threeKeys) <> "}}"
+      slow3 = "{\"replies\": {" <> T.intercalate ", " (map (replyFor "2") threeKeys) <> "}}"
       titles as = [a ^. L.title | InR a <- as]
       refreshed = (() <$ message SMethod_WorkspaceDiagnosticRefresh) <|> (anyMessage >> refreshed)
       askedIn f = liftIO (doesFileExist (f <> ".asked") >>= \case True -> length . T.lines <$> TIO.readFile (f <> ".asked"); False -> pure 0)
@@ -4306,7 +4317,7 @@ claimPassSpec = describe "plans claim pass" $ do
         after <- pullDiagnostics p
         let codesOf ds = [d ^. L.code | d <- ds, d ^. L.source == Just "olifant-plan"]
         pure (codesOf before, codesOf after)
-      codes `shouldBe` ([Just (InR "claim-right")], [Just (InR "claim-right-stale")])
+      codes `shouldBe` ([Just (InR "claim-right")], [Just (InR "claim-right-stale"), Just (InR "plan-unchecked")])
   it "a plan edit reads no cited file" $
     withPass right $ \ports dir _ cfg -> do
       reads <- newIORef (0 :: Int)
@@ -4337,6 +4348,54 @@ claimPassSpec = describe "plans claim pass" $ do
       titles' `shouldSatisfy` elem "Show why"
       stored <- readClaims plainPorts dir "plans/t.md"
       (cfJudgement . cjConfirmed <$> (M.lookup "the helper returns one" stored >>= seCheck)) `shouldBe` Just JRight
+  it "Check this on steps ticked or not and on an aside sentence; Check the plan names what it would check" $
+    withPython [("plans/t.md", "- [ ] make it\n- [x] made it\nThe helper returns one.\n"), (table, tableText)] $ \ports dir -> do
+      (ts, _) <- inProcessWithConfig [] ports dir $ do
+        p <- openDoc "plans/t.md" "markdown"
+        refreshed
+        forM [0, 1, 2] $ \r -> titles <$> getCodeActions p (Range (Position r 4) (Position r 4))
+      map (filter (\t -> "Check" `T.isPrefixOf` t)) ts
+        `shouldBe` replicate 2 ["Check this (sonnet, ~$0.10)", "Check the plan (1 unchecked, ~$0.10)"] ++ [["Check this (sonnet, ~$0.10)", "Check the plan (1 unchecked, ~$0.10)"]]
+  it "two unchecked and one stale: Re-check on the stale one, Check the plan and the summary count both" $
+    withPythonPlan "- the helper returns one\n- a second claim holds\n- a third claim holds\n" claims checks3 $ \ports dir _ cfg -> do
+      ((acts, summary), _) <- inProcessWithConfig cfg ports dir $ do
+        p <- openDoc "plans/t.md" "markdown"
+        refreshed
+        _ <- request SMethod_WorkspaceExecuteCommand (ExecuteCommandParams Nothing "olifant.checkSentence" (Just [toJSON (getUri (p ^. L.uri)), String "the helper returns one"]))
+        liftIO (TIO.writeFile (dir </> table) (T.replace "return 1" "return 2" tableText))
+        sendNotification SMethod_WorkspaceDidChangeWatchedFiles (DidChangeWatchedFilesParams [FileEvent (filePathToUri (dir </> table)) FileChangeType_Changed])
+        ds <- pullDiagnostics p
+        as <- titles <$> getCodeActions p (Range (Position 0 4) (Position 0 4))
+        pure (as, [(d ^. L.code, d ^. L.severity, d ^. L.message, d ^. L.range . L.start . L.line) | d <- ds, d ^. L.code == Just (InR "plan-unchecked")])
+      filter (\t -> any (`T.isPrefixOf` t) ["Re-check", "Check"]) acts `shouldBe` ["Re-check (sonnet, ~$0.10)", "Check the plan (2 unchecked, 1 stale, ~$0.30)"]
+      summary `shouldBe` [(Just (InR "plan-unchecked"), Just DiagnosticSeverity_Information, "2 unchecked, 1 stale · Check the plan", 0)]
+  it "a second sweep on the same plan is refused" $
+    withPythonPlan "- the helper returns one\n- a second claim holds\n- a third claim holds\n" claims slow3 $ \ports dir _ cfg -> do
+      ((secondFirst, n), _) <- inProcessWithConfig cfg ports dir $ do
+        p <- openDoc "plans/t.md" "markdown"
+        refreshed
+        let go = ExecuteCommandParams Nothing "olifant.checkPlan" (Just [toJSON (getUri (p ^. L.uri))])
+        one <- sendRequest SMethod_WorkspaceExecuteCommand go
+        two <- sendRequest SMethod_WorkspaceExecuteCommand go
+        -- the second answers at once (a message says why), the first after its checks
+        let answered i = (() <$ responseForId SMethod_WorkspaceExecuteCommand i) <|> (anyMessage >> answered i)
+        answered two
+        firstDone <- liftIO (doesFileExist (dir </> "checks.json.asked") >>= \case True -> length . T.lines <$> TIO.readFile (dir </> "checks.json.asked"); False -> pure 0)
+        answered one
+        (firstDone < 6,) <$> askedIn (dir </> "checks.json")
+      (secondFirst, n) `shouldBe` (True, 3)
+  it "estimates are read from errands.jsonl once" $
+    withPass right $ \ports dir _ cfg -> do
+      reads <- newIORef (0 :: Int)
+      let disk = pFiles ports
+          counting = disk {readText = \path -> when ("errands.jsonl" `isSuffixOf` path) (atomicModifyIORef' reads (\n -> (n + 1, ()))) >> readText disk path}
+      (n, _) <- inProcessWithConfig cfg ports {pFiles = counting} dir $ do
+        p <- openDoc "plans/t.md" "markdown"
+        refreshed
+        liftIO (writeIORef reads 0)
+        forM_ [1 :: Int, 2, 3] $ \_ -> getCodeActions p (Range (Position 0 4) (Position 0 4))
+        liftIO (readIORef reads)
+      n `shouldBe` 1
   it "(h) with no Jev, a paragraph is aside and still offers Check this" $
     withPython [("plans/t.md", "The helper returns one.\n"), (table, tableText)] $ \ports dir -> do
       (ts, _) <- inProcessWithConfig [] ports dir $ do

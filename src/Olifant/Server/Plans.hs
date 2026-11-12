@@ -18,6 +18,8 @@ module Olifant.Server.Plans
   , claimHover
   , claimLine
   , whyBody
+  , planCounts
+  , countsText
   , keepFooter
   , citationLocations
   , keepEdit
@@ -53,7 +55,7 @@ import Olifant.Plans (Kind (..), childrenOf, testState)
 import Olifant.Process (Cancel, runBytes)
 import Olifant.Server.Errand (Belief (..), BeliefCheck (..), Block (..), Ghost (..), Grounded (..), RunFailure (..), RunResult (..), Status (..), Verb (..), cutBody, doAnswered, doTestCommand, doTestTools, errandPromptWith, projectUnitWords, groundingLimit, parseAnswer, runClaude, statusName)
 import Olifant.Server.LoopTypes (Fact (..))
-import Data.Time (getCurrentTimeZone)
+import Data.Time (UTCTime, getCurrentTimeZone)
 import Olifant.Server.Journal (DoEnd (..), doEvent)
 import Olifant.Server.Journal qualified as Journal
 import Olifant.Server.Review (Review (..), archiveErrand, changeSince, keptDiff, saveReview, takeRef, testsOfFacts)
@@ -71,7 +73,7 @@ import Olifant.Plans (Anchor (..), Line (..), Section (..), Verdict (..), parseP
 import Olifant.Server.State (ServerConfig (..), ServerState (..))
 import System.Directory (doesFileExist, findExecutable)
 import Olifant.Server.Confine (confined, safely)
-import Olifant.Server.Claims (CheckRecord (..), ClaimStore, SentenceEntry (..), checkable, lineKey, claimsOf, sentencesOf)
+import Olifant.Server.Claims (CheckRecord (..), ClaimStore, SentenceEntry (..), checkable, lineKey, claimsOf, sentencesOf, unchecked)
 import Olifant.Server.Triage (Route (..))
 import Olifant.Server.Checker (CheckMode (..), Citation (..), Confirmed (..), Judgement (..), Print (..), evidenceText, judgementName)
 import Olifant.Server.Stale (CitedFile (..), citedPrints, printsNow, staleKeys)
@@ -144,6 +146,7 @@ planDiagnostics s p path text = do
   -- the cited files as they are now (read once, kept until they change)
   let prints = citedPrints store
   now <- printsNow s p (map ptPath prints)
+  clock <- pNow (ssPorts s)
   let stale = staleKeys now store
       citedNow = M.fromList [((path, fromMaybe "" (ptUnit pr)), maybe (cdHash f) (\u -> M.lookup u (cdUnits f)) (ptUnit pr)) | pr <- prints, let path = normalisePath (ptPath pr), Just f <- [M.lookup path now]]
   let rows = T.splitOn "\n" text
@@ -153,6 +156,7 @@ planDiagnostics s p path text = do
          in d & L.range .~ Range (Position r0 (utf16At (fromIntegral r0) (fromIntegral c0))) (Position r1 (utf16At (fromIntegral r1) (fromIntegral c1)))
   pure
     ( mapMaybe (\(l, a) -> diagnose ls l a =<< M.lookup (key a) resolved) anchored ++ map inUtf16 (claimHints can store checking stale ss)
+        ++ [summary | can, Just summary <- [planSummary ls (planCounts clock ss store stale)]]
     , M.union (M.map (\r -> rsFingerprint r <* rsUnit r) resolved) citedNow )
   where
     diagnose ls l a r = case (rsUnit r, lnVerdict l, rsFingerprint r) of
@@ -277,6 +281,29 @@ whyBody key ch =
       JDone -> "Done in the code"
       JOpen -> "Still open"
       JMisfit -> "As written this would not work"
+
+-- | What *Check the plan* would check: (unchecked, stale) sentences, one
+-- per key; ticked steps are in neither.
+planCounts :: UTCTime -> [Sentence] -> ClaimStore -> S.Set Text -> (Int, Int)
+planCounts now ss store stale =
+  ( length (unchecked now ss store)
+  , S.size (S.fromList [k | x <- ss, let k = sentenceKey (snText x), k `S.member` stale, snKind x /= Step True]) )
+
+-- | "12 unchecked, 3 stale": the parts that are not 0.
+countsText :: (Int, Int) -> Text
+countsText (n, m) = T.intercalate ", " ([T.pack (show n) <> " unchecked" | n > 0] ++ [T.pack (show m) <> " stale" | m > 0])
+
+-- | The plan's summary (`plan-unchecked`, information) on its first heading
+-- (row 0 when it has none): "12 unchecked, 3 stale · Check the plan". None
+-- when there is nothing to check.
+planSummary :: [Line] -> (Int, Int) -> Maybe Diagnostic
+planSummary ls counts@(n, m)
+  | n + m == 0 = Nothing
+  | otherwise =
+      let target = find (\l -> case lnKind l of Heading _ -> True; _ -> False) ls
+          row = maybe 0 lnRow target
+          width = maybe 0 (utf16Length . lnText) target
+       in Just (Diagnostic (Range (Position (fromIntegral row) 0) (Position (fromIntegral row) (fromIntegral width))) (Just DiagnosticSeverity_Information) (Just (InR "plan-unchecked")) Nothing (Just "olifant-plan") (countsText counts <> " · Check the plan") Nothing Nothing Nothing)
 
 -- | The last line of a checked sentence's hover. The server does not know
 -- the client's key for *Keep this verdict*; durandal.nvim's default is named.

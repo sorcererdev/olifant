@@ -32,6 +32,8 @@ module Olifant.Server.Checker
   ) where
 
 import Control.Concurrent (threadDelay)
+import Control.Concurrent.MVar (MVar, newMVar, withMVar)
+import System.IO.Unsafe (unsafePerformIO)
 import Control.Exception (SomeException, try)
 import Data.Aeson (Value (..), eitherDecodeStrict, encode, object, (.=))
 import Data.Aeson.Key qualified as Key
@@ -312,8 +314,10 @@ liveChecker token cfg root mode s = runClaude token cfg {pcTimeout = pcCheckTime
 recordedChecker :: FilePath -> Checker
 recordedChecker file mode s = do
   let key = sentenceKey (snText s)
-  appendFile (file <> ".asked") (T.unpack key <> "\n")
-  BS.appendFile (file <> ".prompts") (TE.encodeUtf8 (checkPrompt mode s <> "\n"))
+  -- checks run side by side (Check the plan): one writer at a time
+  withMVar recordLock $ \() -> do
+    appendFile (file <> ".asked") (T.unpack key <> "\n")
+    BS.appendFile (file <> ".prompts") (TE.encodeUtf8 (checkPrompt mode s <> "\n"))
   replies <- readReplies file
   case KM.lookup (Key.fromText key) replies of
     Just v | Just r <- resultOf v -> do
@@ -337,10 +341,15 @@ replayChecker file live mode s = do
     Just run ->
       run mode s >>= \case
         Left f -> pure (Left f)
-        Right r -> do
+        Right r -> withMVar recordLock $ \() -> do
+          replies' <- readReplies file
           let entry = object (["text" .= rrText r, "seconds" .= rrSeconds r, "models" .= map fst (rrModels r)] ++ ["cost" .= c | Just c <- [rrCost r]])
-          BL.writeFile file (encode (object ["replies" .= Object (KM.insert (Key.fromText key) entry replies)]) <> "\n")
+          BL.writeFile file (encode (object ["replies" .= Object (KM.insert (Key.fromText key) entry replies')]) <> "\n")
           pure (Right r)
+
+{-# NOINLINE recordLock #-}
+recordLock :: MVar ()
+recordLock = unsafePerformIO (newMVar ())
 
 -- | The recorded checker when the server has `scCheckAnswers` (tests), else the live one.
 checkerUnder :: ServerState -> Cancel -> PlansConfig -> FilePath -> Checker
