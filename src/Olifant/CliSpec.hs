@@ -34,7 +34,7 @@ import Olifant.Generator (GeneratorId (..))
 import Olifant.Language (Language (..), Syntax, noChecker, noRunner, noSyntax, noVerifier)
 import Olifant.Workspace (memoryWorkspace)
 import Olifant.Server.Errand (Status (..))
-import Olifant.Server.Telemetry (ErrandRecord (..), OutcomeRecord (..), ReconcileRecord (..), Record (..), ResolveRecord (..), recordJson)
+import Olifant.Server.Telemetry (ErrandRecord (..), OutcomeRecord (..), PassRecord (..), ReconcileRecord (..), Record (..), ResolveRecord (..), recordJson)
 import System.Exit (ExitCode (..))
 import Olifant.Language.AstGrep (astGrepSyntax)
 import Olifant.Language.TreeSitter (treeSitterAnchors)
@@ -1666,6 +1666,50 @@ plansCostSpec = describe "plans cost" $ do
     T.words (T.lines out !! 1) `shouldBe` ["feat", "2", "0", "0.0", "1/2", "(0", "?)", "0.07", "1", "0.01", "0.08"]
     map (head . T.words) (drop 2 (T.lines out)) `shouldBe` ["main", "?"]
     T.words (T.lines out !! 3) `shouldBe` ["?", "0", "0", "0.0", "0/0", "(0", "?)", "0.00", "1", "0.00", "0.00"]
+  describe "--checks" $ do
+    let check i plan mode verdict auto status cost =
+          AnErrand
+            ErrandRecord
+              { erId = i, erAt = at 25 9, erVerb = "check", erPlan = plan, erRow = 1, erSection = "S"
+              , erBranch = Nothing, erModel = "sonnet", erStatus = status, erWhy = Nothing
+              , erSession = Nothing, erSeconds = Just 10, erTurns = Nothing, erTokens = Nothing
+              , erCost = cost, erModels = [], erPromptChars = 100, erGrounded = 0
+              , erBlocks = 0, erLines = 0, erDropped = 0, erUnresolved = 0, erChanged = 0, erDenials = 0, erParent = Nothing
+              , erAuto = auto, erMode = mode, erVerdict = verdict }
+        passOf plan triaged = APass (PassRecord ("pass-" <> T.pack plan) (at 25 8) plan "save" 9 triaged [] 0 0 0 0 0 0 1 1 0)
+        checksRecords =
+          [ passOf "plans/p.md" 5, passOf "plans/q.md" 2
+          , check "C1" "plans/p.md" Nothing (Just "right") True Ok (Just 0.1)
+          , check "C2" "plans/p.md" (Just "verify") (Just "wrong") False Ok (Just 0.2)
+          , check "C3" "plans/p.md" (Just "progress") (Just "done") True Ok (Just 0.1)
+          , check "C4" "plans/p.md" (Just "progress") (Just "open") False Ok (Just 0.1)
+          , check "C5" "plans/p.md" (Just "progress") (Just "misfit") True Ok (Just 0.1)
+          , check "C6" "plans/p.md" (Just "progress") Nothing True Error Nothing
+          , check "C7" "plans/q.md" (Just "verify") (Just "cannot_tell") False Ok (Just 0.05) ]
+        runC args = runWith "" (project ++ [records checksRecords []]) False (["plans", "cost", "--checks"] ++ args)
+    it "one row per plan: triage, claims, steps, automatic and asked, failed, total" $ do
+      (code, out, _, _) <- runC []
+      code `shouldBe` ExitSuccess
+      T.words (T.lines out !! 0) `shouldBe` ["plan", "sentences", "triage", "$", "claims", "right/wrong/?", "claims", "$", "steps", "done/open/misfit", "steps", "$", "automatic", "$", "asked", "$", "failed", "total", "$"]
+      T.words (T.lines out !! 1) `shouldBe` ["plans/p.md", "5", "0.00", "2", "1/1/0", "0.30", "3", "1/1/1", "0.30", "0.30", "0.30", "1", "0.60"]
+      T.words (T.lines out !! 2) `shouldBe` ["plans/q.md", "2", "0.00", "1", "0/0/1", "0.05", "-", "-", "-", "0.00", "0.05", "0", "0.05"]
+    it "--plan narrows it to one plan" $ do
+      (_, out, _, _) <- runC ["--plan", "plans/q.md"]
+      map (head . T.words) (drop 1 (T.lines out)) `shouldBe` ["plans/q.md"]
+    it "--json gives the same rows" $ do
+      (_, out, _, _) <- runC ["--json"]
+      case decodeStrict (TE.encodeUtf8 out) >>= lookupKey "checks" of
+        Just (Array rs) -> case toList rs of
+          [p, _] -> do
+            lookupKey "plan" p `shouldBe` Just (String "plans/p.md")
+            lookupKey "sentences" p `shouldBe` Just (Number 5)
+            (lookupKey "claims" p >>= lookupKey "right") `shouldBe` Just (Number 1)
+            (lookupKey "steps" p >>= lookupKey "misfit") `shouldBe` Just (Number 1)
+            lookupKey "failed" p `shouldBe` Just (Number 1)
+            fmap (\case Number n -> abs (realToFrac n - 0.6 :: Double) < 1e-9; _ -> False) (lookupKey "total" p) `shouldBe` Just True
+            map (\k -> isJust (lookupKey k p)) ["triage_cost", "automatic", "asked"] `shouldBe` [True, True, True]
+          other -> expectationFailure ("two rows, got " <> show (length other))
+        _ -> expectationFailure "no checks rows"
   it "a resolve record leaves plans cost as it was, by branch and by plan" $ do
     let resolveRec = AResolve (ResolveRecord "resolve-plans/p.md:0@x" (at 25 13) "plans/p.md" 3 [("jev-1", 2), ("none", 1)] 2 1 1 0 0 1.5 5 [])
     let shown (code, out, err, _) = (code, out, err)

@@ -10,6 +10,7 @@ import Numeric (showFFloat)
 import Olifant.Server.Errand (Tokens (..))
 import Olifant.Server.Errand qualified as Errand
 import Olifant.Server.Telemetry (ErrandRecord (..), OutcomeRecord (..), ReconcileRecord (..), Record (..), readRecords, recordJson, recordsPath)
+import Olifant.Server.Telemetry qualified as Tel
 import Olifant.Transcripts (Message (..), messageCost, readTranscripts, slugOf)
 import Control.Applicative ((<|>))
 import Control.Exception qualified as E
@@ -577,7 +578,8 @@ runCommand rt cwd fmt cat = \case
           Right gens0 -> placeCursor rt cwd cat g gens0 >>= \case
             Left why -> failWith rt fmt 2 "usage" why Nothing []
             Right gens -> runStepsWith [] (any isSnippet gens0) rt cwd fmt cat g [] (zipWith (\gen s -> Step gen (M.fromList (specSets s))) gens ss)
-  PlansCostCmd onlyBranch since asJson transcripts by onlyPlan -> runPlansCost rt cat onlyBranch since asJson transcripts by onlyPlan
+  PlansCostCmd onlyBranch since asJson _ _ onlyPlan True -> runChecksCost rt onlyBranch since asJson onlyPlan
+  PlansCostCmd onlyBranch since asJson transcripts by onlyPlan False -> runPlansCost rt cat onlyBranch since asJson transcripts by onlyPlan
   FixCmd rule file (line, _) n given g ->
     fixSteps (portsOf rt) (projectOf rt cat) rule (projectPath rt cwd file) line n given >>= \case
       Left (FixNotFound why) -> failWith rt fmt 3 "finding_not_found" why (Just "run `olifant check --file` to see the findings") []
@@ -649,6 +651,76 @@ runPlansCost rt cat onlyBranch since asJson transcripts by onlyPlan = do
           ++ [ "landings" .= [object (["label" .= ldLabel l, "commit" .= ldCommit l, "subject" .= ldSubject l, "at" .= stamp (ldAt l)] ++ rowPairs r) | (l, r) <- prLandings p]
              , "open" .= fmap rowFields (prOpen p) ]
     stamp = T.pack . formatTime defaultTimeLocale "%Y-%m-%dT%H:%M:%SZ"
+
+-- | `plans cost --checks`: per plan, from its `pass` and `check` records:
+-- the sentences triaged and what triage cost (Jev is unpriced today: 0),
+-- the claim checks (a check with no mode is one) and their verdicts, the
+-- step checks and theirs, what the automatic pass and the user's asks
+-- spent, the failed runs, and the total.
+runChecksCost :: Runtime -> Maybe Text -> Maybe Day -> Bool -> Maybe FilePath -> IO ExitCode
+runChecksCost rt onlyBranch since asJson onlyPlan = do
+  let root = rtProjectDir rt
+  (records, _) <- maybe ([], 0) readRecords <$> readText (rtRoot rt) (recordsPath root)
+  let wanted plan = maybe True (== plan) onlyPlan
+      checks = [e | AnErrand e <- records, erVerb e == "check", after since (erAt e), wanted (erPlan e), maybe True (== branchName (erBranch e)) onlyBranch]
+      passes = [r | APass r <- records, after since (Tel.prAt r), wanted (Tel.prPlan r), maybe True (== "?") onlyBranch]
+      plans = nub (map Tel.prPlan passes ++ map erPlan checks)
+      rows = [checksRow plan [r | r <- passes, Tel.prPlan r == plan] [e | e <- checks, erPlan e == plan] | plan <- plans]
+  if asJson
+    then rtOut rt (encodeJson (object ["checks" .= map checksJson rows]) <> "\n")
+    else rtOut rt (checksTable rows)
+  pure ExitSuccess
+
+-- | One plan's checks: what `plans cost --checks` shows.
+data ChecksRow = ChecksRow
+  { crPlan :: FilePath, crSentences :: Int, crTriageCost :: Double
+  , crClaims :: (Int, Int, Int, Int, Double), crSteps :: (Int, Int, Int, Int, Double)
+  , crAutomatic :: Double, crAsked :: Double, crFailed :: Int }
+
+checksRow :: FilePath -> [Tel.PassRecord] -> [ErrandRecord] -> ChecksRow
+checksRow plan ps es =
+  ChecksRow
+    { crPlan = plan, crSentences = sum (map Tel.prTriaged ps), crTriageCost = 0
+    , crClaims = tally claims ["right", "wrong", "cannot_tell"], crSteps = tally steps ["done", "open", "misfit"]
+    , crAutomatic = sum [cost e | e <- es, erAuto e], crAsked = sum [cost e | e <- es, not (erAuto e)]
+    , crFailed = length [() | e <- es, erStatus e /= Errand.Ok] }
+  where
+    cost = fromMaybe 0 . erCost
+    claims = [e | e <- es, fromMaybe "verify" (erMode e) == "verify"]
+    steps = [e | e <- es, erMode e == Just "progress"]
+    tally xs [a, b, c] =
+      let ok = [e | e <- xs, erStatus e == Errand.Ok]
+          n w = length [() | e <- ok, erVerdict e == Just w]
+       in (length ok, n a, n b, n c, sum (map cost xs))
+    tally _ _ = (0, 0, 0, 0, 0)
+
+checksJson :: ChecksRow -> Value
+checksJson r =
+  object
+    [ "plan" .= crPlan r, "sentences" .= crSentences r, "triage_cost" .= crTriageCost r
+    , "claims" .= (let (n, a, b, c, d) = crClaims r in object ["n" .= n, "right" .= a, "wrong" .= b, "cannot_tell" .= c, "cost" .= d])
+    , "steps" .= (let (n, a, b, c, d) = crSteps r in object ["n" .= n, "done" .= a, "open" .= b, "misfit" .= c, "cost" .= d])
+    , "automatic" .= crAutomatic r, "asked" .= crAsked r, "failed" .= crFailed r, "total" .= checksTotal r ]
+
+checksTotal :: ChecksRow -> Double
+checksTotal r = crTriageCost r + crAutomatic r + crAsked r
+
+checksTable :: [ChecksRow] -> Text
+checksTable rows = T.unlines (map line (header : map cells rows))
+  where
+    header = ["plan", "sentences", "triage $", "claims", "right/wrong/?", "claims $", "steps", "done/open/misfit", "steps $", "automatic $", "asked $", "failed", "total $"]
+    cells r =
+      [T.pack (crPlan r), tshow (crSentences r), money (crTriageCost r)] ++ kind (crClaims r) ++ kind (crSteps r)
+        ++ [money (crAutomatic r), money (crAsked r), tshow (crFailed r), money (checksTotal r)]
+    -- a plan with no checks of a kind shows `-`
+    kind (n, a, b, c, d)
+      | n == 0 && d == 0 = ["-", "-", "-"]
+      | otherwise = [tshow n, tshow a <> "/" <> tshow b <> "/" <> tshow c, money d]
+    tshow = T.pack . show
+    money x = T.pack (showFFloat (Just 2) x "")
+    widths = foldr (zipWith max . map T.length) (map (const 0) header) (header : map cells rows)
+    line cs = T.stripEnd (T.intercalate "  " (zipWith3 pad [0 :: Int ..] widths cs))
+    pad i w c = if i == 0 then T.justifyLeft w ' ' c else T.justifyRight w ' ' c
 
 -- | One line of `plans cost`: a branch, a plan, or a landing. Accepted, decided and undecided
 -- count ghost blocks of the bucket's answered (ok) errands.
