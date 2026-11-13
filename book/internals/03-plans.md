@@ -416,7 +416,8 @@ fences Grep and Glob, measured in the redesign's fence check), and `--append-sys
 saying to stay under the current directory and why the fences are not evidence. `checkPrompt`
 has two modes. `CheckClaim` gives the heading, the lead, the sentence, a typed anchor as "the
 writer pointed at …", the rule (judge what is true of the code now, ignore wishes), and asks for
-one fenced JSON object (`right | wrong | cannot_tell`). `CheckProgress` gives the step (with its
+one fenced JSON object (`right | wrong | cannot_tell`), with the same rule as the progress mode
+that `unit` is a name the file defines. `CheckProgress` gives the step (with its
 continuation rows), whether it is ticked, the anchor, the three definitions (done, open, misfit;
 a misfit's named means must cover what the step is for), a rule for a step that points back at
 something unnamed, and a rule that `unit` is a name the file defines, and asks for `done | open |
@@ -646,7 +647,8 @@ ruling, so it fails with `OLIFANT_PROSE_CORPUS` set and is pending without it.
 - **A whole-file print is coarse.** A citation of a path or of a line outside any unit is
   printed with `fileHash`, so any edit to that file turns the verdict stale.
 - **A unit field that names no unit voids a verdict.** `confirm` refuses a citation whose `unit`
-  the file does not define, whatever its line; the progress prompt says so, the claim prompt does
-  not yet (H4 in the corpus).
+  the file does not define, whatever its line; both prompts say so. A file in a language the
+  project does not name has no units at all, so a right unit there is not found either (H4 in the
+  corpus cites `askAboutUnsaved` in a `.js` file of a Python-only project).
 - **`[conjure] wire` and the language's `[conjure]` table are different things** with the same
   name; see [chapter 4](04-conjure.md#two-things-called-conjure).

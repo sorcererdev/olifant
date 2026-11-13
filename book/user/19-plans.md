@@ -396,16 +396,16 @@ check; every claim checked got the labelled verdict with a citation at the right
 and none was marked right or wrong against its label; a check cost $0.10 on average (sonnet, 15
 to 25 seconds). One claim about what a fix would take ("we would have to … redeploy everything")
 is read as process and not checked. Contested lines can go either way. The one claim that misses
-its citation cites "units" that are no names in the file ("click handler for …"), which the
-engine counts as not found.
+its citation names a real function in a JavaScript file, but the project lists only Python, so
+the engine finds no units in that file and counts the citation as not found.
 
 The step gate, on the corpus's 13 step lines (labels from the code): the four known steps are
 right (three done; the misfit names the Staff role that `is_staff` misses); of the nine labelled
-steps that are not ideas, seven get their label, one is set aside by triage (about-code 0.56) and
-one comes back could-not-tell because a cited line was not in its file; none is marked done or
-misfit against its label; none of the four idea lines ("use AI to …") reaches a check; a progress
-check costs $0.12 on average. That run missed two of its bars by a little (one step too many off,
-$0.002 over the cost bar) and waits for a ruling.
+steps that are not ideas, seven get their label, one is set aside by triage (about-code 0.56, a
+known miss, as the process-like claim above is) and one comes back could-not-tell because a cited
+line was not in its file; none is marked done or misfit against its label; none of the four idea
+lines ("use AI to …") reaches a check; a progress check costs $0.12 on average (the bar is
+$0.125).
 
 **The margin.** One diagnostic per sentence, over the sentence's range (source `olifant-plan`):
 

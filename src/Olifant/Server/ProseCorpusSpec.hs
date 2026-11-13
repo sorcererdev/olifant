@@ -53,6 +53,13 @@ checksRecording = "src/Olifant/Server/testdata/prose-corpus-checks.json"
 knownMisses :: [Text]
 knownMisses = ["A4"]
 
+-- | Labelled steps the triage is known to set aside (user ruling 2026-11-12): R4, "For
+-- displaying the values, we should make displaying columns configurable …", reads to Jev as not
+-- about code (about-code 0.56), so it gets no progress check. It counts outside the step bar, as
+-- A4 is outside the claim bar, and is asserted Aside.
+knownStepMisses :: [Text]
+knownStepMisses = ["R4"]
+
 corpusCommit :: String
 corpusCommit = "8488bb80"
 
@@ -158,7 +165,8 @@ measure checkout = do
       known = [(enId (rwEntry r), judged r, maybe False (T.isInfixOf "Staff" . cfWhy) (rwVerdict r)) | r <- steps, enId (rwEntry r) `elem` ["H2", "R2", "X1", "S4"]]
       knownRight = length [() | (i, j, staff) <- known, if i == "S4" then j == Just "misfit" && staff else j == Just "done"]
       notIdeas = [r | r <- steps, not (enIdea (rwEntry r))]
-      stepsOff = [enId (rwEntry r) | r <- notIdeas, judged r /= enProgress (rwEntry r)]
+      stepsOff = [enId (rwEntry r) | r <- notIdeas, judged r /= enProgress (rwEntry r), enId (rwEntry r) `notElem` knownStepMisses]
+      knownStepRoutes = [(enId (rwEntry r), rwRoute r) | r <- steps, enId (rwEntry r) `elem` knownStepMisses]
       stepsWrongSure = [enId (rwEntry r) | r <- notIdeas, Just j <- [judged r], j `elem` ["done", "misfit"], Just j /= enProgress (rwEntry r)]
       ideasRouted = [enId (rwEntry r) | r <- steps, enIdea (rwEntry r), rwRoute r == Progress]
       stepCosts = [fromMaybe 0.10 (rwCost r) | r <- steps, rwRoute r == Progress]
@@ -183,9 +191,11 @@ measure checkout = do
   -- the step gate
   unless (knownRight == 4) (expectationFailure ("known steps " <> show knownRight <> " of 4: " <> show known))
   unless (length stepsOff <= 1) (expectationFailure ("labelled steps off: " <> show stepsOff))
+  knownStepRoutes `shouldBe` [(k, Aside) | k <- knownStepMisses]
   stepsWrongSure `shouldBe` []
   unless (length ideasRouted <= 2) (expectationFailure ("idea lines routed to a check: " <> show ideasRouted))
-  unless (stepMean <= 0.12) (expectationFailure (printf "mean cost a progress check $%.3f, over $0.12" stepMean))
+  -- the bar is $0.125 (user ruling 2026-11-12; the plan had $0.12)
+  unless (stepMean <= 0.125) (expectationFailure (printf "mean cost a progress check $%.3f, over $0.125" stepMean))
   where
     citedAt r = case (rwVerdict r, enVerdict (rwEntry r)) of
       (Just c, Just v) | v `elem` ["right", "wrong"] ->

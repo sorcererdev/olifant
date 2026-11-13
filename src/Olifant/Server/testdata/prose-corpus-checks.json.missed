@@ -1,0 +1,5 @@
+There is no AI in the codebase yet.
+WebFetcher retries a failed request three times
+The collector retries a failed request three times.
+Typed numbers are discarded without warning. I typed 1,204 and 388, clicked “Skip for now”, went back, and the boxes were empty.
+It seems like users can not self assign a hand entry

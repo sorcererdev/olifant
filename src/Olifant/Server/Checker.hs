@@ -194,7 +194,8 @@ checkPrompt CheckClaim s =
          , "```json"
          , "{\"verdict\": \"right | wrong | cannot_tell\", \"why\": \"<one sentence>\", \"evidence\": [{\"path\": \"<path relative to the current directory>\", \"unit\": \"<function or class name, or null>\", \"line\": <line number, or null>}]}"
          , "```"
-         , "For right or wrong, give at least one evidence entry: the code the verdict rests on." ]
+         , "For right or wrong, give at least one evidence entry: the code the verdict rests on."
+         , "In evidence, \"unit\" is the exact name of one function, class or method as the file defines it (Class.method for a method), or null. For anything else (a template, a heading, part of a function, several names) give null and the line. A unit the file does not define voids the verdict." ]
 
 -- | The last ```json block, else the first `{` from which the rest of the
 -- reply decodes as an object. A verdict of the other mode is refused, and
