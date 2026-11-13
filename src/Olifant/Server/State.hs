@@ -143,8 +143,9 @@ data ServerState = ServerState
   , -- | per cited file (absolute path): what it is now, with the editor's
     -- version it was read at (Nothing: from disk). Read through once; an
     -- entry is dropped when the file changes on disk ('filesChanged') and
-    -- not used once the editor's version differs
-    ssCitePrints :: IORef (Map FilePath (Maybe Int, CitedFile))
+    -- not used once the editor's version differs. The count is of those
+    -- changes: a reading is kept only when none came while it was read
+    ssCitePrints :: IORef (Int, Map FilePath (Maybe Int, CitedFile))
   , -- | per project root: the last 20 priced check costs per check mode
     -- (its JSON name), newest first; read from `errands.jsonl` once, then
     -- kept as checks are made. A root absent has not been read yet
@@ -161,7 +162,7 @@ newServerState ports = do
   units <- newIORef M.empty
   claims <- newIORef M.empty
   checking <- newIORef M.empty
-  cited <- newIORef M.empty
+  cited <- newIORef (0, M.empty)
   estimates <- newIORef M.empty
   pure (ServerState ports M.empty M.empty cache defaultServerConfig M.empty 0 0 M.empty M.empty neverCancel M.empty M.empty M.empty M.empty bases decisions onDecided Nothing Nothing paused M.empty units claims checking cited estimates)
 
@@ -282,7 +283,8 @@ catalogChanged root s = case slotOf root s of
 filesChanged :: [FilePath] -> ServerState -> IO ServerState
 filesChanged paths s0 = do
   -- a cited file read before is read again
-  modifyIORef' (ssCitePrints s0) (\m -> foldr (M.delete . normalisePath) m paths)
+  -- (one step with the count, so a reading in flight is not kept)
+  atomicModifyIORef' (ssCitePrints s0) (\(n, m) -> ((n + 1, foldr (M.delete . normalisePath) m paths), ()))
   foldr (\root next -> next >>= catalogChanged root) (pure s) affected
   where
     s = s0 {ssFilesStamp = ssFilesStamp s0 + 1, ssGeneration = ssGeneration s0 + 1}

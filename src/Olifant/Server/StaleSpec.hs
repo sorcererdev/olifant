@@ -5,7 +5,9 @@ import Data.Map.Strict qualified as M
 import Data.Set qualified as S
 import Data.Text (Text)
 import Data.Time (UTCTime (..), fromGregorian)
-import Olifant.App (Ports (..), Project)
+import Control.Monad (void, when)
+import Data.IORef (atomicModifyIORef', newIORef)
+import Olifant.App (Ports (..), Project (..))
 import Olifant.Catalog (defaultPlans)
 import Olifant.Server.Checker (CheckMode (..), CheckReply (..), Citation (..), Confirmed (..), Judgement (..), Print (..), confirm, fences)
 import Olifant.Server.CheckerSpec (checkerServer)
@@ -85,3 +87,16 @@ spec = describe "Olifant.Server.Stale" $ do
     s1 <- filesChanged ["/r1/src/a.py"] s
     now2 <- printsNow s1 proj ["src/a.py"]
     staleKeys now2 store `shouldBe` S.fromList ["a"]
+  it "a file changed on disk while it is being read is read again: the old print is not kept" $ do
+    (s, proj) <- checkerServer
+    c <- checkOf s proj JRight [Citation "src/a.py" (Just "Foo.bar") Nothing]
+    fired <- newIORef False
+    -- the change lands (and 'filesChanged' runs) after the read, before the cache insert
+    let ws = prWorkspace proj
+        racing = ws {readText = \rel -> do
+          t <- readText ws rel
+          first <- atomicModifyIORef' fired (\f -> (True, not f))
+          when first (void (rewrite s "/r1/src/a.py" "class Foo:\n    def bar(self):\n        return 2\n"))
+          pure t}
+    staleNow s proj {prWorkspace = racing} c `shouldReturn` False
+    staleNow s proj c `shouldReturn` True

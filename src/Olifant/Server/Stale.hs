@@ -40,12 +40,14 @@ printsNow s p rels = M.fromList <$> mapM one (S.toList (S.fromList (map normalis
     one rel = do
       let abs' = normalisePath (prRoot p </> rel)
           version = fst <$> M.lookup abs' (ssDocs s)
-      known <- M.lookup abs' <$> readIORef (ssCitePrints s)
-      case known of
+      (changes, cache) <- readIORef (ssCitePrints s)
+      case M.lookup abs' cache of
         Just (v, c) | v == version -> pure (rel, c)
         _ -> do
           c <- readCited rel
-          atomicModifyIORef' (ssCitePrints s) (\m -> (M.insert abs' (version, c) m, ()))
+          -- kept only when no file changed while it was read: else the
+          -- reading may be of the old text, and the next ask reads again
+          atomicModifyIORef' (ssCitePrints s) (\(n, m) -> ((n, if n == changes then M.insert abs' (version, c) m else m), ()))
           pure (rel, c)
     readCited rel =
       safely Nothing (readText (prWorkspace p) rel) >>= \case

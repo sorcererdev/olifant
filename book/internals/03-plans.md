@@ -404,7 +404,9 @@ each priced check after that; `estimateFor` is the mean, else `unpricedCheck` ($
 while the entry's editor version (Nothing: read from disk) is the document's now, else read
 through `prWorkspace` and parsed once (`unitsWithKinds`) and kept. `State.filesChanged` (the
 client's watched files: `Lsp.watch` registers `**/*` under each project root on open) drops the
-entries of the changed paths; an edit of the plan touches none, so a pull after it reads no cited
+entries of the changed paths and bumps the cache's change count in the same step; `printsNow`
+keeps a reading only when the count is what it was before the read (a file changed while it was
+read may have been read as it was: the next ask reads it again); an edit of the plan touches none, so a pull after it reads no cited
 file. `isStale` is any print whose file or unit is gone or whose hash differs; a check with no
 prints (milestone 1) or one that could not tell is never stale. `staleKeys` is the stale entries
 of a store.
@@ -559,7 +561,7 @@ in the main checkout (the git-backed specs refuse worktrees).
 | `Plans/SentencesSpec` | the splitter: steps whole with their continuation rows (a nested checkbox its own step, a blank row ending it), what gives no sentence, paragraphs across rows, numbered lines, abbreviations, versions, code spans, URLs, keys, leads |
 | `Server/TriageSpec` | the route table, the grammar, no Jev, the shared state and no unsure |
 | `Server/CheckerSpec` | fences, both prompts, both reply readers, `checkModeOf`, `fileHash`, `confirm` (a print per citation; an `open` drops a missing citation) (fenced or missing citations cannot tell, a symlink into a fence or out of the root too), the runner with the shim, recorded replies |
-| `Server/StaleSpec` | a changed unit, a gone unit or file, a whole-file print, no prints, the cache read once until `filesChanged` |
+| `Server/StaleSpec` | a changed unit, a gone unit or file, a whole-file print, no prints, the cache read once until `filesChanged`, a change during a read not cached |
 | `Server/ClaimsSpec` | store v2: round trip (owed, modes, prints; a milestone 1 store read as backlog), a version-1 file read as empty, atomic writes, concurrent `updateClaims`, orphans, `pruneClaims`, `queued` and `unchecked`, `checkedKeys` |
 | `Server/LoopSpec` `claimPassSpec` | the pass: idle triages only, save checks once what was written, an open never checks (an m1 store neither), a step gets a progress check and a ticked one none, what the cost cap leaves is backlog, a failure retried once, `recheck = "save"`, *Check the plan* (three at a time, a check that throws, the ceiling, ticked steps skipped and stale ones checked, a save during it, a cancel), a failure waits ten minutes, a cancel lets the check in flight land (or drops it when its sentence changed), a key held elsewhere is skipped, Check this during a pass, nothing written to the plan, a typed anchor in the prompt, budget 0, no Jev |
 | `Server/ProseCorpusSpec` | the milestone gate on the prose corpus (below) |
