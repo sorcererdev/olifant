@@ -58,7 +58,7 @@ module Olifant.Server.Loop
   ) where
 
 import Data.Time (UTCTime)
-import Control.Exception (finally)
+import Control.Exception (SomeAsyncException, SomeException, displayException, finally, fromException, throwIO, try)
 import Control.Monad (forM, forM_, join, unless, void, when)
 import Data.Aeson (Value, object, (.=))
 import Data.Bifunctor (bimap)
@@ -979,9 +979,14 @@ checkPlan token progress path s0 =
                       -- Check this or a save pass may have re-checked it since)
                       stillWanted <- (\cur -> any ((== key x) . key . fst) (sweepTargets now [x] cur (S.filter (sameCheck store cur) stale))) <$> claimsOf s root path
                       if not stillWanted then pure (False, 0) else do
-                        (result, c) <- checkSentence s p cfg checker False now rel mode x
+                        -- a check that throws (an IO error writing its record, say) is a
+                        -- failed check, its estimate counted as spent: the other workers'
+                        -- checks go on and land. A cancel (async) still ends the sweep
+                        (result, c) <- trySync (checkSentence s p cfg checker False now rel mode x) <&> \case
+                          Right rc -> rc
+                          Left e -> (Left (Failure ("the check failed: " <> T.pack (displayException e)) now), est)
                         killed <- cancelled (ssCancel s)
-                        unless killed (void (updateClaims s root path (M.adjust (landed result) (key x))))
+                        unless killed (void (trySync (updateClaims s root path (M.adjust (landed result) (key x)))))
                         pure (True, c))
                       `finally` releaseKey s held (key x)
                 (done, n) <- atomicModifyIORef' st (\(q, spent, reserved, d, stopped) -> ((q, spent + cost, reserved - est, d + 1, stopped), (d + 1, fromEnum checked)))
@@ -993,6 +998,14 @@ checkPlan token progress path s0 =
       checkedN <- readIORef made
       stop <- (||) <$> cancelled token <*> cancelled (ssCancel s)
       pure (s, if stop then Left "cancelled" else Right (Sweep checkedN (length left) spent stopped))
+
+-- | IO's synchronous exceptions as a value; an asynchronous one (a cancel)
+-- goes on up.
+trySync :: IO a -> IO (Either SomeException a)
+trySync io =
+  try io >>= \case
+    Left e | Just (_ :: SomeAsyncException) <- fromException e -> throwIO e
+    r -> pure r
 
 -- | Whether KEY's entry holds the same check in both stores.
 sameCheck :: ClaimStore -> ClaimStore -> Text -> Bool

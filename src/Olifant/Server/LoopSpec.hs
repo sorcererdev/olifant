@@ -1096,6 +1096,14 @@ claimPassSpec = describe "Olifant.Server.Loop (claimPass)" $ describe "claimPass
         asked' <- checksAsked dir
         sort asked' `shouldBe` sort (keysN 5)
         sort (take 3 asked') `shouldBe` sort (take 3 (keysN 5))
+    it "a check that throws is a failed check: the others in flight land, the sweep answers" $
+      withPass (planN 3) "" ([(k, slow) | k <- take 2 (keysN 3)] ++ [(keysN 3 !! 2, object ["throw" .= ("disk full" :: Text)])]) $ \dir s -> do
+        (s1, _) <- pass OpenPass dir s
+        (_, r) <- sweep dir s1
+        fmap swChecked r `shouldBe` Right 3
+        stored <- readClaims (ssPorts s) dir "plans/t.md"
+        [isJust (M.lookup k stored >>= seCheck) | k <- take 2 (keysN 3)] `shouldBe` [True, True]
+        isJust (M.lookup (keysN 3 !! 2) stored >>= seFailure) `shouldBe` True
     it "the sweep stops at check_cost" $
       withPass (planN 6) "[plans]\ncheck_cost = 0.25\n" [(k, reply "right") | k <- keysN 6] $ \dir s -> do
         (s1, _) <- pass OpenPass dir s

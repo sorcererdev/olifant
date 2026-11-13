@@ -386,7 +386,9 @@ target's mode and takes it only while spent + reserved + that estimate stays wit
 check_cost`, else it marks the sweep stopped and leaves the target queued. Each holds its key
 (`holdKey`), checks it again against the held store (a stale target re-checked since, by *Check
 this* or a save pass, `sameCheck`: skipped), runs `checkSentence` (not automatic), lands
-it and lets go; the callback gets (done, total). A tripped token stops new checks; those in
+it and lets go; the callback gets (done, total). A check that throws a synchronous exception
+(`trySync`: an IO error writing its record, say) lands as a `Failure`, its estimate counted as
+spent, so the other workers' checks go on; an asynchronous one (a cancel) still ends the sweep. A tripped token stops new checks; those in
 flight land (the checker runs under `ssCancel`, the request's cancel, which kills them). In
 `Lsp`, `olifant.checkPlan` runs `checkPlan` on its own thread with a stop token of its own:
 cancelling the progress kills the thread `planProgress` runs on, so the handler only trips the
@@ -559,7 +561,7 @@ in the main checkout (the git-backed specs refuse worktrees).
 | `Server/CheckerSpec` | fences, both prompts, both reply readers, `checkModeOf`, `fileHash`, `confirm` (a print per citation; an `open` drops a missing citation) (fenced or missing citations cannot tell, a symlink into a fence or out of the root too), the runner with the shim, recorded replies |
 | `Server/StaleSpec` | a changed unit, a gone unit or file, a whole-file print, no prints, the cache read once until `filesChanged` |
 | `Server/ClaimsSpec` | store v2: round trip (owed, modes, prints; a milestone 1 store read as backlog), a version-1 file read as empty, atomic writes, concurrent `updateClaims`, orphans, `pruneClaims`, `queued` and `unchecked`, `checkedKeys` |
-| `Server/LoopSpec` `claimPassSpec` | the pass: idle triages only, save checks once what was written, an open never checks (an m1 store neither), a step gets a progress check and a ticked one none, what the cost cap leaves is backlog, a failure retried once, `recheck = "save"`, *Check the plan* (three at a time, the ceiling, ticked steps skipped and stale ones checked, a save during it, a cancel), a failure waits ten minutes, a cancel lets the check in flight land (or drops it when its sentence changed), a key held elsewhere is skipped, Check this during a pass, nothing written to the plan, a typed anchor in the prompt, budget 0, no Jev |
+| `Server/LoopSpec` `claimPassSpec` | the pass: idle triages only, save checks once what was written, an open never checks (an m1 store neither), a step gets a progress check and a ticked one none, what the cost cap leaves is backlog, a failure retried once, `recheck = "save"`, *Check the plan* (three at a time, a check that throws, the ceiling, ticked steps skipped and stale ones checked, a save during it, a cancel), a failure waits ten minutes, a cancel lets the check in flight land (or drops it when its sentence changed), a key held elsewhere is skipped, Check this during a pass, nothing written to the plan, a typed anchor in the prompt, budget 0, no Jev |
 | `Server/ProseCorpusSpec` | the milestone gate on the prose corpus (below) |
 | `LspSpec` (`plansSpec`, `plansLoopSpec`, `plansStage1Spec`, `doReviewSpec`, `claimPassSpec`) | every request, in process, over pipes |
 

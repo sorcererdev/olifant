@@ -314,7 +314,9 @@ liveChecker :: Cancel -> PlansConfig -> FilePath -> Checker
 liveChecker token cfg root mode s = runClaude token cfg {pcTimeout = pcCheckTimeout cfg} Check [] Nothing root (checkPrompt mode s)
 
 -- | Recorded replies (tests): `{"replies": {KEY: TEXT or {"text", "cost", "seconds"}}}`
--- by 'sentenceKey' (an object may add "delay", seconds). Each key asked is appended to FILE.asked and each prompt to
+-- by 'sentenceKey' (an object may add "delay", seconds; "gate", a path the reply
+-- waits for to exist; or "throw", a message the check raises as an IO error).
+-- Each key asked is appended to FILE.asked and each prompt to
 -- FILE.prompts; a key not in the file is a failure.
 recordedChecker :: FilePath -> Checker
 recordedChecker file mode s = do
@@ -325,7 +327,13 @@ recordedChecker file mode s = do
     BS.appendFile (file <> ".prompts") (TE.encodeUtf8 (checkPrompt mode s <> "\n"))
   replies <- readReplies file
   case KM.lookup (Key.fromText key) replies of
+    Just (Object o) | Just (String why) <- KM.lookup "throw" o -> ioError (userError (T.unpack why))
     Just v | Just r <- resultOf v -> do
+      -- "gate": the reply waits until the test makes this file (an order the test sets)
+      case v of
+        Object o | Just (String gate) <- KM.lookup "gate" o ->
+          let go = doesFileExist (T.unpack gate) >>= \there -> if there then pure () else threadDelay 2000 >> go in go
+        _ -> pure ()
       -- "delay": seconds the reply takes (a check in flight, for cancel tests)
       case v of
         Object o | Just (Number d) <- KM.lookup "delay" o -> threadDelay (round (toRealFloat d * 1000000 :: Double))
