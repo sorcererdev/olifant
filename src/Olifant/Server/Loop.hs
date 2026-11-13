@@ -91,6 +91,7 @@ import Olifant.Server.State (ServerState (..), appendStepLine, projectFor)
 import Olifant.Server.Telemetry (Decision (..), ErrandRecord (..), OutcomeRecord (..), PassRecord (..), ReconcileRecord (..), Record (..), appendRecord, errandId, readRecords, recordsPath)
 import Olifant.Server.Claims (CheckRecord (..), ClaimStore, Failure (..), SentenceEntry (..), claimsOf, claimsPath, joinsOf, pruneClaims, pruneOrphanClaims, queued, sentencesOf, unchecked, updateClaims, updateJoins)
 import Control.Concurrent.Async qualified as Async
+import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, readMVar)
 import Olifant.Plans.Sentences (Sentence (..), joinCandidates, pairKey, sentenceKey, sentencesJoined)
 import Olifant.Server.Checker (CheckMode (..), Checker, Confirmed (..), Judgement (..), checkModeName, checkModeOf, judgementName, checkPrompt, checkerUnder, confirm, fences, parseCheckReply)
 import Olifant.Server.Errand (RunFailure (..), RunResult (..), Status (..))
@@ -952,21 +953,26 @@ checkPlan token progress path s0 =
       stale <- staleIn s p store
       let targets = sweepTargets now ss store stale
           total = length targets
-      -- (the targets not taken, dollars spent, dollars reserved, checks done, stopped by the ceiling)
-      st <- newIORef (targets, 0 :: Double, 0 :: Double, 0 :: Int, False)
+      signal0 <- newEmptyMVar
+      st <- newIORef (Queue targets 0 0 0 0 False signal0)
       made <- newIORef (0 :: Int)
       let ceiling' = pcCheckCost cfg
-          -- the next target and its estimate, reserved; Nothing: stop
+          -- the next target and its estimate, reserved; Nothing: stop. A
+          -- target past the ceiling while checks are in flight waits for one
+          -- to land (it may come in under its estimate) and asks again
           next = do
             stop <- (||) <$> cancelled token <*> cancelled (ssCancel s)
             es <- estimatesOf s root
             if stop then pure Nothing else
-              atomicModifyIORef' st $ \case
-                ((x, mode) : rest, spent, reserved, done, _)
+              atomicModifyIORef' st (\q -> case quTargets q of
+                (x, mode) : rest
                   | let est = estimateFor (pcCheckModel cfg) es mode
-                  , spent + reserved + est <= ceiling' + 1e-9 -> ((rest, spent, reserved + est, done, False), Just (x, mode, est))
-                  | otherwise -> (((x, mode) : rest, spent, reserved, done, True), Nothing)
-                none@([], _, _, _, _) -> (none, Nothing)
+                  , quSpent q + quReserved q + est <= ceiling' + 1e-9 ->
+                      (q {quTargets = rest, quReserved = quReserved q + est, quInFlight = quInFlight q + 1, quStopped = False}, Right (Just (x, mode, est)))
+                  | quInFlight q > 0 -> (q, Left (quLanded q))
+                  | otherwise -> (q {quStopped = True}, Right Nothing)
+                [] -> (q, Right Nothing))
+                >>= either (\landing -> readMVar landing >> next) pure
           worker =
             next >>= \case
               Nothing -> pure ()
@@ -989,15 +995,31 @@ checkPlan token progress path s0 =
                         unless killed (void (trySync (updateClaims s root path (M.adjust (landed result) (key x)))))
                         pure (True, c))
                       `finally` releaseKey s held (key x)
-                (done, n) <- atomicModifyIORef' st (\(q, spent, reserved, d, stopped) -> ((q, spent + cost, reserved - est, d + 1, stopped), (d + 1, fromEnum checked)))
-                atomicModifyIORef' made (\m -> (m + n, ()))
+                fresh <- newEmptyMVar
+                (done, landing) <- atomicModifyIORef' st (\q -> (q {quSpent = quSpent q + cost, quReserved = quReserved q - est, quInFlight = quInFlight q - 1, quDone = quDone q + 1, quLanded = fresh}, (quDone q + 1, quLanded q)))
+                -- wake the workers waiting for a check to land
+                putMVar landing ()
+                atomicModifyIORef' made (\m -> (m + fromEnum checked, ()))
                 progress done total
                 worker
       Async.replicateConcurrently_ sweepWidth worker
-      (left, spent, _, _, stopped) <- readIORef st
+      q <- readIORef st
       checkedN <- readIORef made
       stop <- (||) <$> cancelled token <*> cancelled (ssCancel s)
-      pure (s, if stop then Left "cancelled" else Right (Sweep checkedN (length left) spent stopped))
+      pure (s, if stop then Left "cancelled" else Right (Sweep checkedN (length (quTargets q)) (quSpent q) (quStopped q)))
+
+-- | A sweep's shared queue: the targets not taken, dollars spent and
+-- reserved, the checks in flight and done, whether the ceiling stopped it,
+-- and the signal the next check to land fills (a fresh one after each).
+data Queue = Queue
+  { quTargets :: [(Sentence, CheckMode)]
+  , quSpent :: Double
+  , quReserved :: Double
+  , quInFlight :: Int
+  , quDone :: Int
+  , quStopped :: Bool
+  , quLanded :: MVar ()
+  }
 
 -- | IO's synchronous exceptions as a value; an asynchronous one (a cancel)
 -- goes on up.

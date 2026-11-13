@@ -380,10 +380,14 @@ checked now"`, nothing run) and lands the check before `releaseKey`.
 **Check the plan.** `Loop.checkPlan` (`Cancel -> (Int -> Int -> IO ()) -> FilePath ->
 ServerState -> IO (ServerState, Either Text Sweep)`) takes `sweepTargets`: `unchecked` (owed or
 backlog) then the stale keys (`staleIn`), not ticked steps, plan order, one per key, each with
-its mode. `sweepWidth` (3) workers (`Async.replicateConcurrently_`) share one `IORef` of the
-queue, the dollars spent and the dollars reserved: a worker reserves `estimateFor` the next
-target's mode and takes it only while spent + reserved + that estimate stays within `[plans]
-check_cost`, else it marks the sweep stopped and leaves the target queued. Each holds its key
+its mode. `sweepWidth` (3) workers (`Async.replicateConcurrently_`) share one `IORef` of a
+`Queue`: the targets, the dollars spent and reserved, the checks in flight and done, and an
+`MVar` the next check to land fills (each landing swaps in a fresh one in the same step). A
+worker reserves `estimateFor` the next target's mode and takes it only while spent + reserved +
+that estimate stays within `[plans] check_cost`. Past it, while checks are in flight, the worker
+waits on that `MVar` and asks again (a check that lands under its estimate, or lowers the
+estimate, may make room); with none in flight it marks the sweep stopped, leaves the target
+queued and quits. Each holds its key
 (`holdKey`), checks it again against the held store (a stale target re-checked since, by *Check
 this* or a save pass, `sameCheck`: skipped), runs `checkSentence` (not automatic), lands
 it and lets go; the callback gets (done, total). A check that throws a synchronous exception
@@ -563,7 +567,7 @@ in the main checkout (the git-backed specs refuse worktrees).
 | `Server/CheckerSpec` | fences, both prompts, both reply readers, `checkModeOf`, `fileHash`, `confirm` (a print per citation; an `open` drops a missing citation) (fenced or missing citations cannot tell, a symlink into a fence or out of the root too), the runner with the shim, recorded replies |
 | `Server/StaleSpec` | a changed unit, a gone unit or file, a whole-file print, no prints, the cache read once until `filesChanged`, a change during a read not cached |
 | `Server/ClaimsSpec` | store v2: round trip (owed, modes, prints; a milestone 1 store read as backlog), a version-1 file read as empty, atomic writes, concurrent `updateClaims`, orphans, `pruneClaims`, `queued` and `unchecked`, `checkedKeys` |
-| `Server/LoopSpec` `claimPassSpec` | the pass: idle triages only, save checks once what was written, an open never checks (an m1 store neither), a step gets a progress check and a ticked one none, what the cost cap leaves is backlog, a failure retried once, `recheck = "save"`, *Check the plan* (three at a time, a check that throws, the ceiling, ticked steps skipped and stale ones checked, a save during it, a cancel), a failure waits ten minutes, a cancel lets the check in flight land (or drops it when its sentence changed), a key held elsewhere is skipped, Check this during a pass, nothing written to the plan, a typed anchor in the prompt, budget 0, no Jev |
+| `Server/LoopSpec` `claimPassSpec` | the pass: idle triages only, save checks once what was written, an open never checks (an m1 store neither), a step gets a progress check and a ticked one none, what the cost cap leaves is backlog, a failure retried once, `recheck = "save"`, *Check the plan* (three at a time, a check that throws, the ceiling, a worker waiting under it for a landing, ticked steps skipped and stale ones checked, a save during it, a cancel), a failure waits ten minutes, a cancel lets the check in flight land (or drops it when its sentence changed), a key held elsewhere is skipped, Check this during a pass, nothing written to the plan, a typed anchor in the prompt, budget 0, no Jev |
 | `Server/ProseCorpusSpec` | the milestone gate on the prose corpus (below) |
 | `LspSpec` (`plansSpec`, `plansLoopSpec`, `plansStage1Spec`, `doReviewSpec`, `claimPassSpec`) | every request, in process, over pipes |
 

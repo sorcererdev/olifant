@@ -1109,6 +1109,29 @@ claimPassSpec = describe "Olifant.Server.Loop (claimPass)" $ describe "claimPass
         (s1, _) <- pass OpenPass dir s
         (_, r) <- sweep dir s1
         r `shouldBe` Right (Sweep 2 4 0.2 True)
+    it "a worker that cannot afford the next target waits for a check in flight, then takes it" $ do
+      let gated g = object ["text" .= ("I read it.\n```json\n{\"verdict\": \"right\", \"why\": \"it returns 1\", \"evidence\": [{\"path\": \"" <> T.pack table <> "\", \"unit\": \"helper\"}]}\n```" :: Text), "cost" .= (0.01 :: Double), "gate" .= g]
+      withSystemTempDirectory "gates" $ \gates -> do
+        let g1 = gates </> "g1"
+            g2 = gates </> "g2"
+            (k1, k2, k3, k4, k5) = case keysN 5 of
+              [a, b, c, d, e] -> (a, b, c, d, e)
+              _ -> error "five keys"
+        withPass (planN 5) "[plans]\ncheck_cost = 0.25\n" ((k1, gated g1) : [(k, gated g2) | k <- [k2, k3, k4, k5]]) $ \dir s -> do
+          (s1, _) <- pass OpenPass dir s
+          running <- async (sweep dir s1)
+          let until' want = let go = checksAsked dir >>= \ks -> if all (`elem` ks) want then pure () else threadDelay 5000 >> go in go
+          -- two reserve $0.10 each; the third cannot ($0.30 > $0.25)
+          until' [k1, k2]
+          -- the first lands at $0.01: the estimate drops, and both the first's
+          -- worker and the waiting third take a target while the second runs
+          TIO.writeFile g1 ""
+          widened <- timeout 20000000 (until' [k3, k4])
+          TIO.writeFile g2 ""
+          r <- waitCatch running
+          widened `shouldBe` Just ()
+          let shape = fmap (\w -> (swChecked w, swLeft w, round (swSpent w * 100) :: Int, swStopped w))
+          either (const Nothing) (Just . shape . snd) r `shouldBe` Just (Right (5, 0, 5, False))
     it "the sweep skips ticked steps and checks stale verdicts" $
       withPass "- [x] Make the helper return one\nThe helper returns one.\nAnother claim holds.\n" "" [("Make the helper return one", reply "done"), ("The helper returns one.", reply "right"), ("Another claim holds.", reply "right")] $ \dir s -> do
         (s1, _) <- pass OpenPass dir s
