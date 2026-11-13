@@ -718,7 +718,12 @@ claimPass token mode path s0 = do
                         outcome <-
                           if not got then pure Nothing else
                             (do
-                              ready <- if key x `S.member` staleSet then pure True else not . null . queued now [x] <$> claimsOf s root path
+                              cur <- claimsOf s root path
+                              -- a stale one still holds the check it was stale for (a
+                              -- Check this or a sweep may have re-checked it since)
+                              let ready
+                                    | key x `S.member` staleSet = sameCheck store1 cur (key x)
+                                    | otherwise = not (null (queued now [x] cur))
                               if not ready then pure Nothing else do
                                 modifyIORef' tried (S.insert (key x))
                                 mode' <- maybe CheckClaim (checkModeOf . seTriage) . M.lookup (key x) <$> claimsOf s root path
@@ -971,7 +976,9 @@ checkPlan token progress path s0 =
                 (checked, cost) <-
                   if not got then pure (False, 0) else
                     (do
-                      stillWanted <- (\cur -> any ((== key x) . key . fst) (sweepTargets now [x] cur stale)) <$> claimsOf s root path
+                      -- a stale target still holds the check it was stale for (a
+                      -- Check this or a save pass may have re-checked it since)
+                      stillWanted <- (\cur -> any ((== key x) . key . fst) (sweepTargets now [x] cur (S.filter (sameCheck store cur) stale))) <$> claimsOf s root path
                       if not stillWanted then pure (False, 0) else do
                         (result, c) <- checkSentence s p cfg checker False now rel mode x
                         killed <- cancelled (ssCancel s)
@@ -987,6 +994,10 @@ checkPlan token progress path s0 =
       checkedN <- readIORef made
       stop <- cancelled token
       pure (s, if stop then Left "cancelled" else Right (Sweep checkedN (length left) spent stopped))
+
+-- | Whether KEY's entry holds the same check in both stores.
+sameCheck :: ClaimStore -> ClaimStore -> Text -> Bool
+sameCheck before after k = (M.lookup k before >>= seCheck) == (M.lookup k after >>= seCheck)
 
 -- | Take KEY of the plan HELD for a check, unless something holds it already.
 holdKey :: ServerState -> FilePath -> Text -> IO Bool

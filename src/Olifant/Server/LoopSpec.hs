@@ -1139,6 +1139,31 @@ claimPassSpec = describe "Olifant.Server.Loop (claimPass)" $ describe "claimPass
     let editHelper dir s = do
           TIO.writeFile (dir </> table) (T.replace "return 1" "return 2" tableText)
           filesChanged [dir </> table] s
+        -- until KEY is held in 'ssChecking' (a check of it in flight)
+        holding s k = let go = M.foldr (\ks acc -> acc || k `S.member` ks) False <$> readIORef (ssChecking s) >>= \h -> if h then pure () else threadDelay 5000 >> go in go
+        claims3 = ["Claim number " <> tshow n <> " holds." | n <- [1 .. 3 :: Int]]
+        slowFor d = object ["text" .= ("I read it.\n```json\n{\"verdict\": \"right\", \"why\": \"it returns 1\", \"evidence\": [{\"path\": \"" <> T.pack table <> "\", \"unit\": \"helper\"}]}\n```" :: Text), "cost" .= (0.1 :: Double), "delay" .= (d :: Double)]
+    it "a stale verdict re-checked during a sweep is not checked again by the sweep" $
+      withPass (T.unlines claims3 <> "The helper returns one.\n") "" ([(k, slowFor 1) | k <- claims3] ++ [("The helper returns one.", reply "right")]) $ \dir s -> do
+        (s1, _) <- pass OpenPass dir s
+        _ <- checkOne neverCancel (dir </> "plans/t.md") "The helper returns one." s1
+        s2 <- editHelper dir s1
+        running <- async (checkPlan neverCancel (\_ _ -> pure ()) (dir </> "plans/t.md") s2)
+        -- the sweep's three workers busy with the claims; the stale one waits
+        mapM_ (holding s2) claims3
+        _ <- checkOne neverCancel (dir </> "plans/t.md") "The helper returns one." s2
+        _ <- waitCatch running
+        length . filter (== "The helper returns one.") <$> checksAsked dir `shouldReturn` 2
+    it "with recheck = \"save\", a stale verdict re-checked during the save pass is not checked again by it" $
+      withPass "Claim number 1 holds.\nThe helper returns one.\n" "[plans]\nrecheck = \"save\"\n" [("Claim number 1 holds.", slowFor 1), ("The helper returns one.", reply "right")] $ \dir s -> do
+        (s1, _) <- pass IdlePass dir s
+        _ <- checkOne neverCancel (dir </> "plans/t.md") "The helper returns one." s1
+        s2 <- editHelper dir s1
+        running <- async (pass SavePass dir s2)
+        holding s2 "Claim number 1 holds."
+        _ <- checkOne neverCancel (dir </> "plans/t.md") "The helper returns one." s2
+        _ <- waitCatch running
+        length . filter (== "The helper returns one.") <$> checksAsked dir `shouldReturn` 2
     it "with recheck = \"save\", a save re-checks a stale verdict" $
       withPass plan "[plans]\nrecheck = \"save\"\n" [("The helper returns one.", reply "right")] $ \dir s -> do
         (s1, _) <- pass SavePass dir s

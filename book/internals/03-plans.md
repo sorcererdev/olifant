@@ -350,7 +350,8 @@ the whole of it:
    order, one per key), then with `[plans] recheck = "save"` the stale sentences
    (`Stale.staleIn`, not ticked steps), one at a time. Each key is taken atomically
    (`holdKey` on `ssChecking`: a key another pass, `checkOne` or a sweep holds is skipped) and
-   asked again against the held store (checked since: skipped). Before each: stop when
+   asked again against the held store (checked since: skipped; a stale key whose check is no
+   longer the one it was stale for, `sameCheck`: skipped). Before each: stop when
    the token is tripped, when `pass_budget` seconds are spent, or when the
    spend so far plus the estimate (this pass's mean over the runs that cost something, a run that never started costing $0; else `unpricedCheck`) would pass
    `pass_cost`. `checkSentence` takes the mode (`checkModeOf` of the entry's triage), runs
@@ -382,7 +383,8 @@ its mode. `sweepWidth` (3) workers (`Async.replicateConcurrently_`) share one `I
 queue, the dollars spent and the dollars reserved: a worker reserves `estimateFor` the next
 target's mode and takes it only while spent + reserved + that estimate stays within `[plans]
 check_cost`, else it marks the sweep stopped and leaves the target queued. Each holds its key
-(`holdKey`), checks it again against the held store, runs `checkSentence` (not automatic), lands
+(`holdKey`), checks it again against the held store (a stale target re-checked since, by *Check
+this* or a save pass, `sameCheck`: skipped), runs `checkSentence` (not automatic), lands
 it and lets go; the callback gets (done, total). A tripped token stops new checks; those in
 flight land. `Sweep` is checks made, targets left, spent, and whether the ceiling stopped it.
 `estimatesOf` reads `errands.jsonl` once per project root into `ssEstimates` (the last 20 priced
