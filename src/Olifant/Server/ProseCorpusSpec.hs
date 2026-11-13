@@ -60,6 +60,14 @@ knownMisses = ["A4"]
 knownStepMisses :: [Text]
 knownStepMisses = ["R4"]
 
+-- | Labelled claims whose reply is right but whose citation olifant cannot confirm (user ruling
+-- 2026-11-12): H4's reply says wrong (as labelled) and cites desk.js:askAboutUnsaved, but olifant
+-- has no JavaScript language, so the unit citation is voided and it reads cannot_tell. Outside
+-- the "claims right with citation" bar, as A4 is outside the claim bar; asserted cannot_tell, so
+-- a future JavaScript language makes this test speak up. Backlog: all languages.
+knownCitationMisses :: [Text]
+knownCitationMisses = ["H4"]
+
 corpusCommit :: String
 corpusCommit = "8488bb80"
 
@@ -156,7 +164,8 @@ measure checkout = do
       nonClaimsChecked = [enId (rwEntry r) | r <- c2, enKind (rwEntry r) /= "claim", rwRoute r == Verify]
       uncontested = [r | r <- rows, enKind (rwEntry r) == "claim", not (enContested (rwEntry r)), isJust (enVerdict (rwEntry r))]
       judged r = judgementName . cfJudgement <$> rwVerdict r
-      wrongVerdict = [enId (rwEntry r) | r <- uncontested, rwRoute r == Verify, judged r /= enVerdict (rwEntry r) || not (citedAt r)]
+      wrongVerdict = [enId (rwEntry r) | r <- uncontested, rwRoute r == Verify, judged r /= enVerdict (rwEntry r) || not (citedAt r), enId (rwEntry r) `notElem` knownCitationMisses]
+      knownCitations = [(enId (rwEntry r), judged r) | r <- rows, enId (rwEntry r) `elem` knownCitationMisses]
       wrongSure = [enId (rwEntry r) | r <- uncontested, Just j <- [judged r], j `elem` ["right", "wrong"], Just j /= enVerdict (rwEntry r)]
       costs = [fromMaybe 0.10 (rwCost r) | r <- rows, rwRoute r == Verify]
       -- the step gate (2a)
@@ -186,6 +195,7 @@ measure checkout = do
   knownRoutes `shouldBe` [(k, Aside) | k <- knownMisses]
   unless (length nonClaimsChecked <= 1) (expectationFailure ("non-claims routed to a check: " <> show nonClaimsChecked))
   wrongVerdict `shouldBe` []
+  knownCitations `shouldBe` [(k, Just "cannot_tell") | k <- knownCitationMisses]
   wrongSure `shouldBe` []
   unless (meanCost <= 0.12) (expectationFailure (printf "mean cost a check $%.3f, over $0.12" meanCost))
   -- the step gate

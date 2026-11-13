@@ -397,7 +397,7 @@ and none was marked right or wrong against its label; a check cost $0.10 on aver
 to 25 seconds). One claim about what a fix would take ("we would have to … redeploy everything")
 is read as process and not checked. Contested lines can go either way. The one claim that misses
 its citation names a real function in a JavaScript file, but the project lists only Python, so
-the engine finds no units in that file and counts the citation as not found.
+the engine finds no units in that file and counts the citation as not found. That claim (H4) is a known miss until olifant reads JavaScript (user ruling 2026-11-12; all languages are on the backlog); the gate asserts it reads could-not-tell.
 
 The step gate, on the corpus's 13 step lines (labels from the code): the four known steps are
 right (three done; the misfit names the Staff role that `is_staff` misses); of the nine labelled
