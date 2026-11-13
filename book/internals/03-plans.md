@@ -387,7 +387,10 @@ check_cost`, else it marks the sweep stopped and leaves the target queued. Each 
 (`holdKey`), checks it again against the held store (a stale target re-checked since, by *Check
 this* or a save pass, `sameCheck`: skipped), runs `checkSentence` (not automatic), lands
 it and lets go; the callback gets (done, total). A tripped token stops new checks; those in
-flight land. `Sweep` is checks made, targets left, spent, and whether the ceiling stopped it.
+flight land (the checker runs under `ssCancel`, the request's cancel, which kills them). In
+`Lsp`, `olifant.checkPlan` runs `checkPlan` on its own thread with a stop token of its own:
+cancelling the progress kills the thread `planProgress` runs on, so the handler only trips the
+token, waits for the sweep, and refreshes the diagnostics. `Sweep` is checks made, targets left, spent, and whether the ceiling stopped it.
 `estimatesOf` reads `errands.jsonl` once per project root into `ssEstimates` (the last 20 priced
 `check` records per mode, newest first; no `mode` is `verify`), and `checkSentence` prepends
 each priced check after that; `estimateFor` is the mean, else `unpricedCheck` ($0.01 for haiku).

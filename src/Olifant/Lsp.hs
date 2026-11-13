@@ -11,7 +11,7 @@ import Data.Char (isSpace)
 import Control.Concurrent (forkIO, threadDelay)
 import Data.Word (Word64)
 import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar, readMVar, tryPutMVar, tryTakeMVar)
-import Control.Exception (SomeAsyncException, SomeException, catch, displayException, finally, fromException, throwIO, try)
+import Control.Exception (SomeAsyncException, SomeException, catch, displayException, finally, fromException, onException, throwIO, try)
 import Olifant.Language.Grammar (GrammarUnavailable (..))
 import Olifant.Process (Cancel, cancelled, eitherCancel, neverCancel, newCancel)
 import Olifant.Recognize qualified as Recognize
@@ -405,11 +405,20 @@ handlers env =
                 sendNotification SMethod_WindowShowMessage (ShowMessageParams MessageType_Info "Already checking this plan")
                 respond (Right (InR Null))
               else inBackground env req respond $ \job -> do
+                lspEnv <- getLspEnv
+                (stop, stopTrip) <- liftIO newCancel
                 let release = atomicModifyIORef' (envSweeps env) (\m -> (S.delete path m, ()))
-                    work report = withSnapshotState job (checkPlan (envCancel job) (\d t -> report (Said ("checking " <> T.pack (show d) <> " of " <> T.pack (show t)))) path) `finally` release
+                    refresh = do
+                      void (sendRequest SMethod_WorkspaceDiagnosticRefresh Nothing (\_ -> pure ()))
+                      semanticTokensChanged
+                    -- the sweep runs on its own thread: cancelling the progress
+                    -- (which kills the thread it runs on) only stops it, and the
+                    -- checks in flight finish and land before the answer
+                    work report = do
+                      sweep <- Async.async (withSnapshotState job (checkPlan stop (\d t -> cancelled stop >>= \c -> unless c (report (Said ("checking " <> T.pack (show d) <> " of " <> T.pack (show t))))) path) `finally` release)
+                      Async.wait sweep `onException` (stopTrip >> void (Async.waitCatch sweep) >> runLspT lspEnv refresh)
                 r <- planProgress "checking" work
-                void (sendRequest SMethod_WorkspaceDiagnosticRefresh Nothing (\_ -> pure ()))
-                semanticTokensChanged
+                refresh
                 case snd r of
                   Right sw | swStopped sw -> do
                     cap <- liftIO (planCheckCost env path)

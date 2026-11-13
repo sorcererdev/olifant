@@ -4419,6 +4419,25 @@ claimPassSpec = describe "plans claim pass" $ do
         when secondFirst (answered one)
         (secondFirst,) <$> askedIn (dir </> "checks.json")
       (secondFirst, n) `shouldBe` (True, 3)
+  it "cancelling Check the plan's progress lets the checks in flight land" $
+    withPythonPlan "- the helper returns one\n- a second claim holds\n- a third claim holds\n" claims slow3 $ \ports dir _ cfg -> do
+      _ <- inProcessWithConfig cfg ports dir $ do
+        p <- openDoc "plans/t.md" "markdown"
+        refreshed
+        one <- sendRequest SMethod_WorkspaceExecuteCommand (ExecuteCommandParams Nothing "olifant.checkPlan" (Just [toJSON (getUri (p ^. L.uri))]))
+        let created :: FromServerMessage -> Maybe ProgressToken
+            created = \case
+              FromServerMess SMethod_WindowWorkDoneProgressCreate req -> Just (req ^. L.params . L.token)
+              _ -> Nothing
+            awaitCreate = satisfyMaybe created <|> (anyMessage >> awaitCreate)
+        token <- awaitCreate
+        -- the three checks in flight (each takes 2 s)
+        _ <- waitFor ((>= 3) . length <$> recordedAsked (dir </> "checks.json"))
+        sendNotification SMethod_WindowWorkDoneProgressCancel (WorkDoneProgressCancelParams token)
+        let answered = (() <$ responseForId SMethod_WorkspaceExecuteCommand one) <|> (anyMessage >> answered)
+        answered
+      stored <- readClaims plainPorts dir "plans/t.md"
+      length [() | e <- M.elems stored, isJust (seCheck e)] `shouldBe` 3
   it "estimates are read from errands.jsonl once" $
     withPass right $ \ports dir _ cfg -> do
       reads <- newIORef (0 :: Int)

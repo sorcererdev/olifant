@@ -943,7 +943,9 @@ checkPlan token progress path s0 =
           rel = makeRelative root (normalisePath path)
           held = normalisePath path
           key = sentenceKey . snText
-          checker = checkerUnder s token cfg root
+          -- the checks in flight are killed by the server's own cancel (the
+          -- request's), not by TOKEN: a stopped sweep lets them land
+          checker = checkerUnder s (ssCancel s) cfg root
       now <- pNow (ssPorts s)
       ss <- sentencesOf s root path (parsePlan text)
       store <- claimsOf s root path
@@ -956,7 +958,7 @@ checkPlan token progress path s0 =
       let ceiling' = pcCheckCost cfg
           -- the next target and its estimate, reserved; Nothing: stop
           next = do
-            stop <- cancelled token
+            stop <- (||) <$> cancelled token <*> cancelled (ssCancel s)
             es <- estimatesOf s root
             if stop then pure Nothing else
               atomicModifyIORef' st $ \case
@@ -989,7 +991,7 @@ checkPlan token progress path s0 =
       Async.replicateConcurrently_ sweepWidth worker
       (left, spent, _, _, stopped) <- readIORef st
       checkedN <- readIORef made
-      stop <- cancelled token
+      stop <- (||) <$> cancelled token <*> cancelled (ssCancel s)
       pure (s, if stop then Left "cancelled" else Right (Sweep checkedN (length left) spent stopped))
 
 -- | Whether KEY's entry holds the same check in both stores.
