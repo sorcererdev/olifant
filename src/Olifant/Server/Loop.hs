@@ -58,7 +58,7 @@ module Olifant.Server.Loop
   ) where
 
 import Data.Time (UTCTime)
-import Control.Exception (bracket_, finally)
+import Control.Exception (finally)
 import Control.Monad (forM, forM_, join, unless, void, when)
 import Data.Aeson (Value, object, (.=))
 import Data.Bifunctor (bimap)
@@ -797,14 +797,19 @@ checkOne token path wanted s0 =
             tr <- triage (rgJev (rungsFor s {ssCancel = token} p False)) x
             void (updateClaims s root path (M.insertWith (\_ old -> old) wanted (SentenceEntry tr (route tr) Nothing Nothing now Nothing False)))
           mode <- maybe CheckClaim (checkModeOf . seTriage) . M.lookup wanted <$> claimsOf s root path
-          -- landed before the key is let go, so no other check takes it meanwhile
-          r <- whileChecking s held wanted $ do
-            (result, _) <- checkSentence s p cfg (checkerUnder s token cfg root) False now rel mode x
-            cancelled token >>= \case
-              True -> pure (Left "cancelled")
-              False -> do
-                store2 <- updateClaims s root path (M.adjust (landed result) wanted)
-                pure (either (Left . fuWhy) (const (Right store2)) result)
+          -- taken atomically (a key a pass or a sweep is checking now is
+          -- refused: its check lands), and landed before it is let go
+          got <- holdKey s held wanted
+          r <-
+            if not got then pure (Left "this sentence is being checked now") else
+              (do
+                (result, _) <- checkSentence s p cfg (checkerUnder s token cfg root) False now rel mode x
+                cancelled token >>= \case
+                  True -> pure (Left "cancelled")
+                  False -> do
+                    store2 <- updateClaims s root path (M.adjust (landed result) wanted)
+                    pure (either (Left . fuWhy) (const (Right store2)) result))
+                `finally` releaseKey s held wanted
           pure (s, r)
 
 -- | A check's result in its sentence's entry. A first failure keeps the
@@ -813,14 +818,6 @@ landed :: Either Failure CheckRecord -> SentenceEntry -> SentenceEntry
 landed r e = either failed (\c -> e {seCheck = Just c, seFailure = Nothing, seOwed = False}) r
   where
     failed f = e {seFailure = Just f, seOwed = seOwed e && isNothing (seFailure e)}
-
--- | WORK with KEY of the plan HELD marked as being checked ('ssChecking'),
--- the mark taken off however WORK ends.
-whileChecking :: ServerState -> FilePath -> Text -> IO a -> IO a
-whileChecking s held k =
-  bracket_
-    (atomicModifyIORef' (ssChecking s) (\m -> (M.insertWith S.union held (S.singleton k) m, ())))
-    (atomicModifyIORef' (ssChecking s) (\m -> (M.update (nonEmpty . S.delete k) held m, ())))
 
 -- | A set, unless empty.
 nonEmpty :: S.Set a -> Maybe (S.Set a)

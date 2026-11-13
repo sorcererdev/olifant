@@ -374,7 +374,8 @@ the whole of it:
 
 `checkOne` is *Check this* and *Re-check*: one sentence by key, triaged first when unseen, checked
 whatever its route and the caps (in its triage's mode), recorded as a `check` errand that is not
-automatic, landed inside its `whileChecking`.
+automatic. It takes its key with `holdKey` (held elsewhere: `Left "this sentence is being
+checked now"`, nothing run) and lands the check before `releaseKey`.
 
 **Check the plan.** `Loop.checkPlan` (`Cancel -> (Int -> Int -> IO ()) -> FilePath ->
 ServerState -> IO (ServerState, Either Text Sweep)`) takes `sweepTargets`: `unchecked` (owed or

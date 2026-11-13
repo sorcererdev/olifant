@@ -353,7 +353,8 @@ runs per plan. Typing and idling stop nothing: an idle while a save's or an open
 for it to end, then triages. A new save or open replaces the running pass: it starts no new check,
 the one in flight finishes and is kept if its sentence is still in the plan (its cost is counted
 either way), and what the replaced pass had not reached stays owed for the new one. A sentence one
-check is on is not taken by another: each check holds its sentence until its verdict is stored.
+check is on is not taken by another: each check holds its sentence until its verdict is stored
+(*Check this* on a sentence showing `…` says `this sentence is being checked now`).
 Cancelling the "checking" progress stops the check in flight too. Each check is an errand record
 (`verb: check`, its `mode`, `verify` or `progress`, and its `verdict`; `auto: true` when the pass
 asked), so `plans cost` counts it; each pass that asked Jev or checked anything adds a `pass`

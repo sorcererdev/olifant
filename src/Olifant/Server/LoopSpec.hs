@@ -1309,6 +1309,19 @@ claimPassSpec = describe "Olifant.Server.Loop (claimPass)" $ describe "claimPass
       let checkedOf k = cfJudgement . cjConfirmed <$> (M.lookup k stored >>= seCheck)
       map checkedOf ["First claim holds.", "Second claim holds."] `shouldBe` [Just JRight, Just JWrong]
       checksAsked dir `shouldReturn` ["First claim holds.", "Second claim holds."]
+  it "Check this on a sentence a sweep is checking is refused, and the sweep's hold stands" $ do
+    let slow = object ["text" .= ("I read it.\n```json\n{\"verdict\": \"right\", \"why\": \"it returns 1\", \"evidence\": [{\"path\": \"" <> T.pack table <> "\", \"unit\": \"helper\"}]}\n```" :: Text), "cost" .= (0.1 :: Double), "delay" .= (1 :: Double)]
+    withPass plan "" [("The helper returns one.", slow)] $ \dir s -> do
+      (s1, _) <- pass OpenPass dir s
+      running <- async (checkPlan neverCancel (\_ _ -> pure ()) (dir </> "plans/t.md") s1)
+      let held = M.foldr S.union S.empty <$> readIORef (ssChecking s1)
+          holding = held >>= \h -> if "The helper returns one." `S.member` h then pure () else threadDelay 5000 >> holding
+      holding
+      (_, r) <- checkOne neverCancel (dir </> "plans/t.md") "The helper returns one." s1
+      stillHeld <- S.member "The helper returns one." <$> held
+      _ <- waitCatch running
+      (either Just (const Nothing) r, stillHeld) `shouldBe` (Just "this sentence is being checked now", True)
+      checksAsked dir `shouldReturn` ["The helper returns one."]
   it "a one-word edit and its undo keep the paid check: nothing is checked again" $
     withPass plan "" [("The helper returns one.", reply "right"), ("The helper returns two.", reply "wrong")] $ \dir s -> do
       (s1, _) <- pass SavePass dir s
