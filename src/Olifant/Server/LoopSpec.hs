@@ -16,11 +16,11 @@ import Olifant.Process (cancelAfter, newCancel, neverCancel)
 import Olifant.Server.Edits (FileEdit (..))
 import Olifant.Server.Errand (Block (..), Ghost (..))
 import Olifant.Server.Stub (StubAnswer (..))
-import Olifant.Server.State (ServerConfig (..), ServerState (..))
+import Olifant.Server.State (ServerConfig (..), ServerState (..), filesChanged)
 import Olifant.Server.Telemetry (ErrandRecord (..), OutcomeRecord (..), PassRecord (..), ReconcileRecord (..), Record (..), appendRecord, readRecords, recordsPath)
 import Olifant.Server.Claims (CheckRecord (..), SentenceEntry (..), readClaims, readJoins, storeClaims)
 import Olifant.Server.Claims qualified as C
-import Olifant.Server.Checker (Confirmed (..), Judgement (..), UnitRef (..))
+import Olifant.Server.Checker (CheckMode (..), Citation (..), Confirmed (..), Judgement (..), Print (..), UnitRef (..), recordedAsked)
 import Olifant.Server.Triage (Route (..), Triage (..))
 import Control.Concurrent (threadDelay)
 import Data.Maybe (isJust)
@@ -41,7 +41,8 @@ import Olifant.Fill (FillHole (..), FillRequest (..), Filler (..), ModelFiller (
 import Data.IORef (modifyIORef, newIORef, readIORef)
 import Olifant.Language (Failure (..), Runner (..), TestRun (..))
 import Olifant.Server.Loop
-import Olifant.Server.Plans (Resolved (..), resolveAnchor)
+import Olifant.Server.Plans (Resolved (..), claimHover, resolveAnchor)
+import Olifant.Plans.Sentences (sentences)
 import Olifant.Server.ReviewReadings (applyFactsText)
 import System.Directory (createDirectoryIfMissing)
 import System.FilePath (takeDirectory, (</>))
@@ -874,6 +875,16 @@ stepTestsSpec = describe "Olifant.Server.Loop (a step's tests)" $ do
       either id (const "stubbed") r1 `shouldBe` "the step has no anchor"
       (_, r2) <- stepStub (planPath dir) 9 s
       either id (const "stubbed") r2 `shouldBe` "the step's unit was not found"
+  it "(c2) stepStub on a checked step with no anchor stubs its cited unit; a typed anchor still wins" $
+    withLoop plan [] $ \s _ dir -> do
+      fp <- fpNow dir s "Table.label"
+      let check unit = CheckRecord (Confirmed JDone "it does" [Citation table (Just unit) Nothing] (Just (UnitRef table unit)) (Just fp) [Print table (Just unit) fp]) "sonnet" (Just 0.1) 1 (UTCTime (fromGregorian 2026 11 7) 0) CheckProgress
+          entry unit = SentenceEntry (Triage "step" 1 1 "grammar") Progress (Just (check unit)) Nothing (UTCTime (fromGregorian 2026 11 7) 0) Nothing False
+      storeClaims s dir (planPath dir) (M.fromList [("no anchor here", entry "Table.label"), ("the table is wrong", entry "Table.label")])
+      (_, r) <- stepStub (planPath dir) 8 s
+      fmap (saName . stAnswer) r `shouldBe` Right "test_no_anchor_here"
+      (_, r2) <- stepStub (planPath dir) 6 s
+      fmap stChild r2 `shouldSatisfy` either (const False) (T.isInfixOf "test_the_table_is_wrong")
   it "(d) stepTest on a step runs its tests: green ticks it at its fingerprint; on a test child, red keeps it open" $
     withLoopTested plan [(tableTest, tableTestText)] $ \s _ dir -> do
       fp <- fpNow dir s "Table.label"
@@ -990,10 +1001,8 @@ claimPassSpec = describe "Olifant.Server.Loop (claimPass)" $ describe "claimPass
         claimPass neverCancel mode (dir </> "plans/t.md") s >>= \case
           (s', Right a) -> pure (s', a)
           (_, Left e) -> fail (T.unpack e)
-      checksAsked dir = do
-        let f = checksFile dir <> ".asked"
-        there <- doesFileExist f
-        if there then T.lines <$> TIO.readFile f else pure []
+      -- read under the recorded checker's lock: a sweep may be appending
+      checksAsked dir = recordedAsked (checksFile dir)
       entry a k = M.lookup k (paStore a)
       verdictOf a k = cfJudgement . cjConfirmed <$> (entry a k >>= seCheck)
       passes dir = do
@@ -1030,6 +1039,16 @@ claimPassSpec = describe "Olifant.Server.Loop (claimPass)" $ describe "claimPass
         (_, a) <- pass IdlePass dir s
         M.keys (paStore a) `shouldBe` ["The helper returns", "one."]
         readJoins (ssPorts s) dir "plans/t.md" `shouldReturn` M.empty
+  it "Check this on a step records a progress check, and its errand line says so" $
+    withPass "- [ ] Make the helper return one\n" "" [("Make the helper return one", reply "done")] $ \dir s -> do
+      (_, r) <- checkOne neverCancel (dir </> "plans/t.md") "Make the helper return one" s
+      store <- either (fail . T.unpack) pure r
+      let ch = M.lookup "Make the helper return one" store >>= seCheck
+      fmap (\c -> (cjMode c, cfJudgement (cjConfirmed c))) ch `shouldBe` Just (CheckProgress, JDone)
+      (_, es) <- passes dir
+      map (\e -> (erVerb e, erMode e, erVerdict e)) es `shouldBe` [("check", Just "progress", Just "done")]
+      prompts <- TIO.readFile (checksFile dir <> ".prompts")
+      prompts `shouldSatisfy` T.isInfixOf "done | open | misfit | cannot_tell"
   it "idle triages and checks nothing" $
     withPass plan "" [("The helper returns one.", reply "right")] $ \dir s -> do
       (_, a) <- pass IdlePass dir s
@@ -1053,22 +1072,200 @@ claimPassSpec = describe "Olifant.Server.Loop (claimPass)" $ describe "claimPass
       (_, a) <- pass OpenPass dir s
       verdictOf a "The helper returns one." `shouldBe` Nothing
       checksAsked dir `shouldReturn` []
-  it "open with a store checks what is queued" $
+  describe "Check the plan" $ do
+    let keysN k = ["Claim number " <> tshow n <> " holds." | n <- [1 .. k :: Int]]
+        planN k = T.unlines (keysN k)
+        slow = object ["text" .= ("I read it.\n```json\n{\"verdict\": \"right\", \"why\": \"it returns 1\", \"evidence\": [{\"path\": \"" <> T.pack table <> "\", \"unit\": \"helper\"}]}\n```" :: Text), "cost" .= (0.1 :: Double), "delay" .= (0.3 :: Double)]
+        sweep dir s = checkPlan neverCancel (\_ _ -> pure ()) (dir </> "plans/t.md") s
+    it "the sweep checks three at a time" $
+      withPass (planN 5) "" [(k, slow) | k <- keysN 5] $ \dir s -> do
+        (s1, _) <- pass OpenPass dir s
+        most <- newIORef (0 :: Int)
+        done <- newIORef False
+        watcher <- async (let go = do
+                                n <- sum . map S.size . M.elems <$> readIORef (ssChecking s1)
+                                modifyIORef most (max n)
+                                fin <- readIORef done
+                                if fin then pure () else threadDelay 5000 >> go
+                          in go)
+        (_, r) <- sweep dir s1
+        modifyIORef done (const True)
+        _ <- waitCatch watcher
+        fmap swChecked r `shouldBe` Right 5
+        readIORef most `shouldReturn` 3
+        asked' <- checksAsked dir
+        sort asked' `shouldBe` sort (keysN 5)
+        sort (take 3 asked') `shouldBe` sort (take 3 (keysN 5))
+    it "a check that throws is a failed check: the others in flight land, the sweep answers" $
+      withPass (planN 3) "" ([(k, slow) | k <- take 2 (keysN 3)] ++ [(keysN 3 !! 2, object ["throw" .= ("disk full" :: Text)])]) $ \dir s -> do
+        (s1, _) <- pass OpenPass dir s
+        (_, r) <- sweep dir s1
+        fmap swChecked r `shouldBe` Right 3
+        stored <- readClaims (ssPorts s) dir "plans/t.md"
+        [isJust (M.lookup k stored >>= seCheck) | k <- take 2 (keysN 3)] `shouldBe` [True, True]
+        isJust (M.lookup (keysN 3 !! 2) stored >>= seFailure) `shouldBe` True
+    it "the sweep stops at check_cost" $
+      withPass (planN 6) "[plans]\ncheck_cost = 0.25\n" [(k, reply "right") | k <- keysN 6] $ \dir s -> do
+        (s1, _) <- pass OpenPass dir s
+        (_, r) <- sweep dir s1
+        r `shouldBe` Right (Sweep 2 4 0.2 True)
+    it "a worker that cannot afford the next target waits for a check in flight, then takes it" $ do
+      let gated g = object ["text" .= ("I read it.\n```json\n{\"verdict\": \"right\", \"why\": \"it returns 1\", \"evidence\": [{\"path\": \"" <> T.pack table <> "\", \"unit\": \"helper\"}]}\n```" :: Text), "cost" .= (0.01 :: Double), "gate" .= g]
+      withSystemTempDirectory "gates" $ \gates -> do
+        let g1 = gates </> "g1"
+            g2 = gates </> "g2"
+            (k1, k2, k3, k4, k5) = case keysN 5 of
+              [a, b, c, d, e] -> (a, b, c, d, e)
+              _ -> error "five keys"
+        withPass (planN 5) "[plans]\ncheck_cost = 0.25\n" ((k1, gated g1) : [(k, gated g2) | k <- [k2, k3, k4, k5]]) $ \dir s -> do
+          (s1, _) <- pass OpenPass dir s
+          running <- async (sweep dir s1)
+          let until' want = let go = checksAsked dir >>= \ks -> if all (`elem` ks) want then pure () else threadDelay 5000 >> go in go
+          -- two reserve $0.10 each; the third cannot ($0.30 > $0.25)
+          until' [k1, k2]
+          -- the first lands at $0.01: the estimate drops, and both the first's
+          -- worker and the waiting third take a target while the second runs
+          TIO.writeFile g1 ""
+          widened <- timeout 20000000 (until' [k3, k4])
+          TIO.writeFile g2 ""
+          r <- waitCatch running
+          widened `shouldBe` Just ()
+          let shape = fmap (\w -> (swChecked w, swLeft w, round (swSpent w * 100) :: Int, swStopped w))
+          either (const Nothing) (Just . shape . snd) r `shouldBe` Just (Right (5, 0, 5, False))
+    it "the sweep skips ticked steps and checks stale verdicts" $
+      withPass "- [x] Make the helper return one\nThe helper returns one.\nAnother claim holds.\n" "" [("Make the helper return one", reply "done"), ("The helper returns one.", reply "right"), ("Another claim holds.", reply "right")] $ \dir s -> do
+        (s1, _) <- pass OpenPass dir s
+        _ <- checkOne neverCancel (dir </> "plans/t.md") "The helper returns one." s1
+        TIO.writeFile (dir </> table) (T.replace "return 1" "return 2" tableText)
+        s2 <- filesChanged [dir </> table] s1
+        (_, r) <- sweep dir s2
+        fmap swChecked r `shouldBe` Right 2
+        -- Check this first, then the sweep's two side by side
+        asked' <- checksAsked dir
+        take 1 asked' `shouldBe` ["The helper returns one."]
+        sort (drop 1 asked') `shouldBe` ["Another claim holds.", "The helper returns one."]
+    it "a save during a sweep checks nothing the sweep holds" $
+      withPass (planN 5) "" [(k, slow) | k <- keysN 5] $ \dir s -> do
+        (s1, _) <- pass IdlePass dir s
+        running <- async (sweep dir s1)
+        let waitAsked = checksAsked dir >>= \ks -> if not (null ks) then pure () else threadDelay 10000 >> waitAsked
+        waitAsked
+        _ <- pass SavePass dir s1
+        _ <- waitCatch running
+        asked' <- checksAsked dir
+        length asked' `shouldBe` S.size (S.fromList asked')
+        S.fromList asked' `shouldBe` S.fromList (keysN 5)
+    it "cancelling the sweep keeps the checks that finished" $
+      withPass (planN 6) "" [(k, slow) | k <- keysN 6] $ \dir s -> do
+        (s1, _) <- pass OpenPass dir s
+        (token, trip) <- newCancel
+        _ <- async (let go = checksAsked dir >>= \ks -> if length ks >= 3 then trip else threadDelay 10000 >> go in go)
+        (_, r) <- checkPlan token (\_ _ -> pure ()) (dir </> "plans/t.md") s1
+        either id (const "answered") r `shouldBe` "cancelled"
+        stored <- readClaims (ssPorts s) dir "plans/t.md"
+        asked' <- checksAsked dir
+        length [k | k <- keysN 6, Just e <- [M.lookup k stored], isJust (seCheck e)] `shouldBe` length asked'
+        (length asked' < 6) `shouldBe` True
+  describe "recheck" $ do
+    let editHelper dir s = do
+          TIO.writeFile (dir </> table) (T.replace "return 1" "return 2" tableText)
+          filesChanged [dir </> table] s
+        -- until KEY is held in 'ssChecking' (a check of it in flight)
+        holding s k = let go = M.foldr (\ks acc -> acc || k `S.member` ks) False <$> readIORef (ssChecking s) >>= \h -> if h then pure () else threadDelay 5000 >> go in go
+        claims3 = ["Claim number " <> tshow n <> " holds." | n <- [1 .. 3 :: Int]]
+        slowFor d = object ["text" .= ("I read it.\n```json\n{\"verdict\": \"right\", \"why\": \"it returns 1\", \"evidence\": [{\"path\": \"" <> T.pack table <> "\", \"unit\": \"helper\"}]}\n```" :: Text), "cost" .= (0.1 :: Double), "delay" .= (d :: Double)]
+    it "a stale verdict re-checked during a sweep is not checked again by the sweep" $
+      withPass (T.unlines claims3 <> "The helper returns one.\n") "" ([(k, slowFor 1) | k <- claims3] ++ [("The helper returns one.", reply "right")]) $ \dir s -> do
+        (s1, _) <- pass OpenPass dir s
+        _ <- checkOne neverCancel (dir </> "plans/t.md") "The helper returns one." s1
+        s2 <- editHelper dir s1
+        running <- async (checkPlan neverCancel (\_ _ -> pure ()) (dir </> "plans/t.md") s2)
+        -- the sweep's three workers busy with the claims; the stale one waits
+        mapM_ (holding s2) claims3
+        _ <- checkOne neverCancel (dir </> "plans/t.md") "The helper returns one." s2
+        _ <- waitCatch running
+        length . filter (== "The helper returns one.") <$> checksAsked dir `shouldReturn` 2
+    it "with recheck = \"save\", a stale verdict re-checked during the save pass is not checked again by it" $
+      withPass "Claim number 1 holds.\nThe helper returns one.\n" "[plans]\nrecheck = \"save\"\n" [("Claim number 1 holds.", slowFor 1), ("The helper returns one.", reply "right")] $ \dir s -> do
+        (s1, _) <- pass IdlePass dir s
+        _ <- checkOne neverCancel (dir </> "plans/t.md") "The helper returns one." s1
+        s2 <- editHelper dir s1
+        running <- async (pass SavePass dir s2)
+        holding s2 "Claim number 1 holds."
+        _ <- checkOne neverCancel (dir </> "plans/t.md") "The helper returns one." s2
+        _ <- waitCatch running
+        length . filter (== "The helper returns one.") <$> checksAsked dir `shouldReturn` 2
+    it "with recheck = \"save\", a save re-checks a stale verdict" $
+      withPass plan "[plans]\nrecheck = \"save\"\n" [("The helper returns one.", reply "right")] $ \dir s -> do
+        (s1, _) <- pass SavePass dir s
+        s2 <- editHelper dir s1
+        (_, a) <- pass SavePass dir s2
+        checksAsked dir `shouldReturn` ["The helper returns one.", "The helper returns one."]
+        fmap prChecked (paRecord a) `shouldBe` Just 1
+    it "by default a stale verdict waits to be asked" $
+      withPass plan "" [("The helper returns one.", reply "right")] $ \dir s -> do
+        (s1, _) <- pass SavePass dir s
+        s2 <- editHelper dir s1
+        _ <- pass SavePass dir s2
+        checksAsked dir `shouldReturn` ["The helper returns one."]
+  it "an m1 store opened and saved checks nothing" $
     withPass plan "" [("The helper returns one.", reply "wrong")] $ \dir s -> do
-      (s1, _) <- pass IdlePass dir s
+      -- a milestone 1 store: version 2, no "owed"
+      createDirectoryIfMissing True (dir </> ".olifant/state/claims/plans")
+      TIO.writeFile (dir </> ".olifant/state/claims/plans/t.json") "{\"version\": 2, \"claims\": {\"The helper returns one.\": {\"triage\": {\"kind\": \"claim\", \"p\": 0.9, \"about\": 0.9, \"by\": \"jev\"}, \"route\": \"verify\", \"check\": null, \"failure\": null, \"at\": \"2026-11-07T00:00:00Z\", \"gone\": null}}}"
+      (s1, _) <- pass OpenPass dir s
+      (_, a) <- pass SavePass dir s1
+      checksAsked dir `shouldReturn` []
+      claimHover (paStore a) S.empty (sentences (parsePlan plan)) `shouldBe` Just "Unchecked · Check this, or Check the plan"
+  it "opening a plan with a store checks nothing" $
+    withPass plan "" [("The helper returns one.", reply "wrong")] $ \dir s -> do
+      (s1, a1) <- pass IdlePass dir s
+      fmap seOwed (entry a1 "The helper returns one.") `shouldBe` Just True
       (_, a) <- pass OpenPass dir s1
-      verdictOf a "The helper returns one." `shouldBe` Just JWrong
-  it "a big paste stops at the cost cap and resumes" $ do
-    let many = T.unlines ["Claim number " <> tshow n <> " holds." | n <- [1 .. 12 :: Int]]
-        keys = ["Claim number " <> tshow n <> " holds." | n <- [1 .. 12 :: Int]]
-    withPass many "" [(k, reply "right") | k <- keys] $ \dir s -> do
+      verdictOf a "The helper returns one." `shouldBe` Nothing
+      checksAsked dir `shouldReturn` []
+  it "a sentence written then saved is checked once" $
+    withPass plan "" [("The helper returns one.", reply "right")] $ \dir s -> do
+      (s1, _) <- pass IdlePass dir s
+      (s2, _) <- pass SavePass dir s1
+      _ <- pass SavePass dir s2
+      checksAsked dir `shouldReturn` ["The helper returns one."]
+  it "a step written then saved gets a progress check" $
+    withPass "- [ ] Make the helper return one\n" "" [("Make the helper return one", reply "done")] $ \dir s -> do
+      (s1, _) <- pass IdlePass dir s
+      (_, a) <- pass SavePass dir s1
+      fmap (\c -> (cjMode c, cfJudgement (cjConfirmed c))) (entry a "Make the helper return one" >>= seCheck) `shouldBe` Just (CheckProgress, JDone)
+  it "a ticked step is never checked automatically" $
+    withPass "- [x] Make the helper return one\n" "" [("Make the helper return one", reply "done")] $ \dir s -> do
+      (s1, _) <- pass IdlePass dir s
+      _ <- pass SavePass dir s1
+      checksAsked dir `shouldReturn` []
+  it "what the cost cap leaves is backlog" $ do
+    let many = T.unlines ["Claim number " <> tshow n <> " holds." | n <- [1 .. 6 :: Int]]
+        keys = ["Claim number " <> tshow n <> " holds." | n <- [1 .. 6 :: Int]]
+    withPass many "[plans]\npass_cost = 0.25\n" [(k, reply "right") | k <- keys] $ \dir s -> do
       (s1, a1) <- pass SavePass dir s
-      length [k | k <- keys, verdictOf a1 k == Just JRight] `shouldBe` 5
-      fmap prQueued (paRecord a1) `shouldBe` Just 7
-      (_, a2) <- pass SavePass dir s1
-      length [k | k <- keys, verdictOf a2 k == Just JRight] `shouldBe` 10
-      kinds <- asked dir
-      length (filter (== "sentence-kind") kinds) `shouldBe` 12
+      length [k | k <- keys, verdictOf a1 k == Just JRight] `shouldBe` 2
+      stored <- readClaims (ssPorts s) dir "plans/t.md"
+      [k | k <- keys, Just e <- [M.lookup k stored], seOwed e] `shouldBe` []
+      fmap prQueued (paRecord a1) `shouldBe` Just 0
+      _ <- pass SavePass dir s1
+      length <$> checksAsked dir `shouldReturn` 2
+  it "a failed check is retried once" $
+    withPass plan "" [] $ \dir s -> do
+      (s1, a1) <- pass SavePass dir s
+      fmap seOwed (entry a1 "The helper returns one.") `shouldBe` Just True
+      let aged st = do
+            now <- pNow (ssPorts s)
+            stored <- readClaims (ssPorts s) dir "plans/t.md"
+            storeClaims st dir (dir </> "plans/t.md") (M.adjust (\e -> e {seFailure = fmap (\f -> f {C.fuAt = addUTCTime (-660) now}) (seFailure e)}) "The helper returns one." stored)
+      aged s1
+      (s2, a2) <- pass SavePass dir s1
+      length <$> checksAsked dir `shouldReturn` 2
+      fmap seOwed (entry a2 "The helper returns one.") `shouldBe` Just False
+      aged s2
+      _ <- pass SavePass dir s2
+      length <$> checksAsked dir `shouldReturn` 2
   it "failures that cost nothing do not lower the estimate: the cap holds" $ do
     let plan6 = T.unlines ["Fails number " <> tshow n <> " here." | n <- [1 .. 3 :: Int]] <> T.unlines ["Claim number " <> tshow n <> " holds." | n <- [1 .. 3 :: Int]]
         dear = object ["text" .= ("I read it.\n```json\n{\"verdict\": \"right\", \"why\": \"it returns 1\", \"evidence\": [{\"path\": \"" <> T.pack table <> "\", \"unit\": \"helper\"}]}\n```" :: Text), "cost" .= (0.2 :: Double)]
@@ -1143,6 +1340,19 @@ claimPassSpec = describe "Olifant.Server.Loop (claimPass)" $ describe "claimPass
       let checkedOf k = cfJudgement . cjConfirmed <$> (M.lookup k stored >>= seCheck)
       map checkedOf ["First claim holds.", "Second claim holds."] `shouldBe` [Just JRight, Just JWrong]
       checksAsked dir `shouldReturn` ["First claim holds.", "Second claim holds."]
+  it "Check this on a sentence a sweep is checking is refused, and the sweep's hold stands" $ do
+    let slow = object ["text" .= ("I read it.\n```json\n{\"verdict\": \"right\", \"why\": \"it returns 1\", \"evidence\": [{\"path\": \"" <> T.pack table <> "\", \"unit\": \"helper\"}]}\n```" :: Text), "cost" .= (0.1 :: Double), "delay" .= (1 :: Double)]
+    withPass plan "" [("The helper returns one.", slow)] $ \dir s -> do
+      (s1, _) <- pass OpenPass dir s
+      running <- async (checkPlan neverCancel (\_ _ -> pure ()) (dir </> "plans/t.md") s1)
+      let held = M.foldr S.union S.empty <$> readIORef (ssChecking s1)
+          holding = held >>= \h -> if "The helper returns one." `S.member` h then pure () else threadDelay 5000 >> holding
+      holding
+      (_, r) <- checkOne neverCancel (dir </> "plans/t.md") "The helper returns one." s1
+      stillHeld <- S.member "The helper returns one." <$> held
+      _ <- waitCatch running
+      (either Just (const Nothing) r, stillHeld) `shouldBe` (Just "this sentence is being checked now", True)
+      checksAsked dir `shouldReturn` ["The helper returns one."]
   it "a one-word edit and its undo keep the paid check: nothing is checked again" $
     withPass plan "" [("The helper returns one.", reply "right"), ("The helper returns two.", reply "wrong")] $ \dir s -> do
       (s1, _) <- pass SavePass dir s

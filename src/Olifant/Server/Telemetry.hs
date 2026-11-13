@@ -40,7 +40,9 @@ data ErrandRecord = ErrandRecord
   , -- | the errand a reopen continued
     erParent :: Maybe Text
   , -- | asked by an automatic pass, not the user (`auto`, written only when true)
-    erAuto :: Bool }
+    erAuto :: Bool
+  , -- | a check's mode (`verify`, `progress`) and verdict, written only when known
+    erMode :: Maybe Text, erVerdict :: Maybe Text }
   deriving (Eq, Show)
 
 -- | A decision on one ghost block (0-based) of an errand's answer.
@@ -102,7 +104,7 @@ recordJson = \case
           [ ("branch" .=) <$> erBranch e, ("why" .=) <$> erWhy e, ("session" .=) <$> erSession e
           , ("seconds" .=) <$> erSeconds e, ("turns" .=) <$> erTurns e
           , ("tokens" .=) . object . tokensPairs <$> erTokens e, ("cost" .=) <$> erCost e
-          , ("parent" .=) <$> erParent e ]
+          , ("parent" .=) <$> erParent e, ("mode" .=) <$> erMode e, ("verdict" .=) <$> erVerdict e ]
         ++ [("auto", Bool True) | erAuto e]
   AnOutcome o ->
     object ["kind" .= ("outcome" :: Text), "id" .= orId o, "block" .= orBlock o, "at" .= stamp (orAt o), "outcome" .= orOutcome o]
@@ -162,6 +164,7 @@ parseRecord = parseMaybe $ \case
         <*> o .:? "cost" <*> pure models <*> o .: "prompt_chars" <*> o .: "grounded"
         <*> o .: "blocks" <*> o .: "lines" <*> o .: "dropped" <*> o .: "unresolved" <*> o .: "changed" <*> o .: "denials"
         <*> o .:? "parent" <*> (fromMaybe False <$> o .:? "auto")
+        <*> o .:? "mode" <*> o .:? "verdict"
     reconcileP o = do
       climbs <- o .: "climbs" >>= traverse (\case Object c -> (,) <$> c .: "rung" <*> c .: "seconds"; _ -> fail "a climb is not an object")
       decisions <- o .: "decisions" >>= traverse (\case Object d -> Decision <$> d .: "kind" <*> d .: "options" <*> d .:? "chosen" <*> d .:? "confidence" <*> d .: "rung"; _ -> fail "a decision is not an object")

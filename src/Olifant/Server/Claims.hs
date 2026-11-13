@@ -23,6 +23,10 @@ module Olifant.Server.Claims
   , pruneClaims
   , keepGone
   , queued
+  , unchecked
+  , checkable
+  , stepUnit
+  , stepCitations
   , retryAfter
   , checkedKeys
   , claimsOf
@@ -51,17 +55,19 @@ import Olifant.App (Ports (..))
 import Olifant.Server.State (ServerState (..))
 import Data.Set (Set)
 import Data.Set qualified as S
-import Olifant.Plans (Line (..))
-import Olifant.Plans.Sentences (Sentence (..), sentenceKey, sentencesJoined)
-import Olifant.Server.Checker (Citation (..), Confirmed (..), Judgement (..), UnitRef (..), judgementName)
+import Olifant.Plans (Anchor (..), Kind (Step), Line (..))
+import Olifant.Plans.Sentences (Sentence (..), sentenceKey, sentences, sentencesJoined)
+import Olifant.Server.Checker (CheckMode (..), Citation (..), Confirmed (..), Judgement (..), Print (..), UnitRef (..), checkModeName, judgementName, judgementNamed)
+import Data.List (nub)
 import Olifant.Server.Triage (Route (..), Triage (..), routeName)
 import Olifant.Workspace (Workspace (..), normalisePath)
 import System.FilePath (dropExtension, isAbsolute, makeRelative, takeExtension, (</>))
 import System.IO.Unsafe (unsafePerformIO)
 
 -- | One check as stored: the confirmed verdict, the model that made it, its
--- cost (when the runner said), its seconds, and when.
-data CheckRecord = CheckRecord {cjConfirmed :: Confirmed, cjModel :: Text, cjCost :: Maybe Double, cjSeconds :: Double, cjAt :: UTCTime}
+-- cost (when the runner said), its seconds, when, and its mode (absent in
+-- JSON: a claim).
+data CheckRecord = CheckRecord {cjConfirmed :: Confirmed, cjModel :: Text, cjCost :: Maybe Double, cjSeconds :: Double, cjAt :: UTCTime, cjMode :: CheckMode}
   deriving stock (Eq, Show)
 
 -- | A check that failed (the runner, or a reply with no verdict), and when.
@@ -70,9 +76,11 @@ data Failure = Failure {fuWhy :: Text, fuAt :: UTCTime}
 
 -- | What the pass knows of one sentence, and since when it is no longer in
 -- the plan (kept for 'keepGone', so an undo finds its triage and check).
+-- 'seOwed': the sentence is owed its one automatic check (first seen on an
+-- idle or save pass, not checked yet); absent in JSON is False (backlog).
 data SentenceEntry = SentenceEntry
   { seTriage :: Triage, seRoute :: Route, seCheck :: Maybe CheckRecord
-  , seFailure :: Maybe Failure, seAt :: UTCTime, seGone :: Maybe UTCTime }
+  , seFailure :: Maybe Failure, seAt :: UTCTime, seGone :: Maybe UTCTime, seOwed :: Bool }
   deriving stock (Eq, Show)
 
 -- | A plan's entries by 'sentenceKey'.
@@ -159,7 +167,7 @@ claimsLock = unsafePerformIO (newMVar ())
 
 entryJson :: SentenceEntry -> Value
 entryJson e =
-  object
+  object $
     [ "triage" .= object ["kind" .= trKind t, "p" .= trKindP t, "about" .= trAboutCode t, "by" .= trBy t]
     , "route" .= routeName (seRoute e)
     , "check" .= fmap checkJson (seCheck e)
@@ -167,6 +175,7 @@ entryJson e =
     , "at" .= seAt e
     , "gone" .= seGone e
     ]
+      ++ ["owed" .= True | seOwed e]
   where
     t = seTriage e
     refJson r = object ["path" .= urPath r, "name" .= urName r]
@@ -178,6 +187,8 @@ entryJson e =
             , "evidence" .= [object ["path" .= ciPath x, "unit" .= ciUnit x, "line" .= ciLine x] | x <- cfEvidence cf]
             , "unit" .= fmap refJson (cfUnit cf)
             , "fingerprint" .= cfFingerprint cf
+            , "prints" .= [object ["path" .= ptPath x, "unit" .= ptUnit x, "hash" .= ptHash x] | x <- cfPrints cf]
+            , "mode" .= checkModeName (cjMode c)
             , "model" .= cjModel c
             , "cost" .= cjCost c
             , "seconds" .= cjSeconds c
@@ -193,6 +204,7 @@ entry = withObject "entry" $ \o ->
     <*> (o .:? "failure" >>= traverse (withObject "failure" (\f -> Failure <$> f .: "why" <*> f .: "at")))
     <*> o .: "at"
     <*> o .:? "gone"
+    <*> (fromMaybe False <$> o .:? "owed")
   where
     triage = withObject "triage" $ \t -> Triage <$> t .: "kind" <*> t .: "p" <*> t .: "about" <*> t .: "by"
     route = \case
@@ -204,13 +216,16 @@ entry = withObject "entry" $ \o ->
     ref = withObject "unit" $ \r -> UnitRef <$> r .: "path" <*> r .: "name"
     citation = withObject "citation" $ \c -> Citation <$> c .: "path" <*> c .:? "unit" <*> c .:? "line"
     check = withObject "check" $ \c -> do
-      j <- (c .: "verdict" :: Parser Text) >>= \case
-        "right" -> pure JRight
-        "wrong" -> pure JWrong
-        "cannot_tell" -> pure JCannotTell
-        _ -> fail "a verdict"
+      j <- (c .: "verdict" :: Parser Text) >>= maybe (fail "a verdict") pure . judgementNamed
       cf <- Confirmed j <$> c .: "why" <*> (c .: "evidence" >>= mapM citation) <*> (c .:? "unit" >>= traverse ref) <*> c .:? "fingerprint"
-      CheckRecord cf <$> c .: "model" <*> c .:? "cost" <*> c .: "seconds" <*> c .: "at"
+        <*> (maybe (pure []) (mapM printOf) =<< c .:? "prints")
+      mode <- (c .:? "mode" :: Parser (Maybe Text)) >>= \case
+        Nothing -> pure CheckClaim
+        Just "verify" -> pure CheckClaim
+        Just "progress" -> pure CheckProgress
+        Just _ -> fail "a check mode"
+      CheckRecord cf <$> c .: "model" <*> c .:? "cost" <*> c .: "seconds" <*> c .: "at" <*> pure mode
+    printOf = withObject "print" $ \x -> Print <$> x .: "path" <*> x .:? "unit" <*> x .: "hash"
 
 -- | How long the entry of a sentence no longer in the plan is kept: an
 -- edit undone, or a sentence cut and pasted back, finds its triage and its
@@ -231,27 +246,41 @@ pruneClaims now ss = M.mapMaybeWithKey keep
       | Just t <- seGone e = if addUTCTime keepGone t > now then Just e else Nothing
       | otherwise = Just e {seGone = Just now}
 
--- | The sentences a pass may check, in plan order, one per key: routed to
--- verify, not checked, and not failed in the last 'retryAfter'. A sentence
--- with no entry is not queued (it is triaged first).
+-- | Whether a sentence is one a check is for and has none: routed to verify
+-- or progress, not a ticked step (you said it is done), and not checked.
+checkable :: Sentence -> SentenceEntry -> Bool
+checkable x e = seRoute e `elem` [Verify, Progress] && snKind x /= Step True && seCheck e == Nothing
+
+-- | The sentences the save pass checks, in plan order, one per key:
+-- 'checkable', owed their automatic check ('seOwed'), and not failed in the
+-- last 'retryAfter'. A sentence with no entry is not queued (it is
+-- triaged first).
 queued :: UTCTime -> [Sentence] -> ClaimStore -> [Sentence]
-queued now ss store = go S.empty ss
+queued now = pick (\x e -> seOwed e && ready now x e)
+
+-- | The sentences *Check the plan* may check, and the count it shows: as
+-- 'queued', owed or not.
+unchecked :: UTCTime -> [Sentence] -> ClaimStore -> [Sentence]
+unchecked now = pick (ready now)
+
+ready :: UTCTime -> Sentence -> SentenceEntry -> Bool
+ready now x e = checkable x e && maybe True (\f -> addUTCTime retryAfter (fuAt f) <= now) (seFailure e)
+
+-- | The sentences, in plan order and one per key (the first), whose entry OK says yes to.
+pick :: (Sentence -> SentenceEntry -> Bool) -> [Sentence] -> ClaimStore -> [Sentence]
+pick ok ss store = go S.empty ss
   where
     go _ [] = []
     go seen (s : rest)
       | k `S.member` seen = go seen rest
-      | Just e <- M.lookup k store, ready e = s : go (S.insert k seen) rest
+      | Just e <- M.lookup k store, ok s e = s : go (S.insert k seen) rest
       | otherwise = go (S.insert k seen) rest
       where
         k = sentenceKey (snText s)
-    ready e =
-      seRoute e == Verify
-        && seCheck e == Nothing
-        && maybe True (\f -> addUTCTime retryAfter (fuAt f) <= now) (seFailure e)
 
 -- | The keys with a right or wrong check (a checked belief answers its question).
 checkedKeys :: ClaimStore -> Set Text
-checkedKeys = M.keysSet . M.filter (\e -> maybe False ((/= JCannotTell) . cfJudgement . cjConfirmed) (seCheck e))
+checkedKeys = M.keysSet . M.filter (\e -> maybe False ((`elem` [JRight, JWrong]) . cfJudgement . cjConfirmed) (seCheck e))
 
 -- | A plan's store as the server holds it (ROOT, the plan's path): read
 -- from disk on first use.
@@ -324,3 +353,35 @@ joinsAt root plan = heldAt root plan <> "#joins"
 -- | A plan's absolute path, the server's key for its store.
 heldAt :: FilePath -> FilePath -> FilePath
 heldAt root plan = normalisePath (if isAbsolute plan then plan else root </> plan)
+
+-- | A step's working unit: the line's typed anchor if it has one, else the
+-- unit the check stored for the step's sentence (the 'Step' sentence that
+-- starts on the line's row) rests on first, as an anchor at no columns.
+stepUnit :: ClaimStore -> [Line] -> Line -> Maybe Anchor
+stepUnit store ls l = case lnAnchor l of
+  Just a -> Just a
+  Nothing -> do
+    c <- checkOf store ls l
+    u <- cfUnit c
+    pure (Anchor (urPath u) (urName u) 0 0)
+
+-- | Every unit a step's check confirmed (its prints with a unit, else its
+-- first unit), as anchors: what a `do` on the step is grounded in.
+stepCitations :: ClaimStore -> [Line] -> Line -> [Anchor]
+stepCitations store ls l = case checkOf store ls l of
+  Nothing -> []
+  Just c ->
+    let units = nub [(ptPath p, u) | p <- cfPrints c, Just u <- [ptUnit p]]
+        fallback = [(urPath u, urName u) | Just u <- [cfUnit c]]
+     in [Anchor path u 0 0 | (path, u) <- if null units then fallback else units]
+
+-- | The confirmed check of the step sentence that starts on L's row.
+checkOf :: ClaimStore -> [Line] -> Line -> Maybe Confirmed
+checkOf store ls l = do
+  x <- case [x | x <- sentences ls, snRow x == lnRow l, isStep (snKind x)] of
+    x : _ -> Just x
+    [] -> Nothing
+  e <- M.lookup (sentenceKey (snText x)) store
+  cjConfirmed <$> seCheck e
+  where
+    isStep = \case Step _ -> True; _ -> False

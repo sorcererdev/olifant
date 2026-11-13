@@ -24,7 +24,7 @@ import Olifant.Server.Claims (CheckRecord (..), Failure (..), SentenceEntry (..)
 import Olifant.Plans.Sentences (sentences, sentencesWith)
 import Olifant.Server.Triage (Route (..), Triage (..))
 import Olifant.Server.Errand (Belief (..), BeliefCheck (..))
-import Olifant.Server.Checker (Citation (..), Confirmed (..), Judgement (..), UnitRef (..))
+import Olifant.Server.Checker (CheckMode (..), Citation (..), Confirmed (..), Judgement (..), UnitRef (..))
 import Olifant.Server.Unit (Named (..))
 import Olifant.Workspace (memoryWorkspace)
 import System.Directory (canonicalizePath, doesDirectoryExist, listDirectory)
@@ -179,31 +179,88 @@ spec = describe "Olifant.Server.Plans (anchors in the server)" $ do
           , ("Unsure one.", (verdictEntry JCannotTell "cited code not found") {seCheck = fmap (\c -> c {cjConfirmed = (cjConfirmed c) {cfUnit = Nothing, cfEvidence = []}}) (seCheck (verdictEntry JCannotTell "cited code not found"))})
           , ("Failed one.", queuedEntry {seFailure = Just (Failure "timed out" at0)}), ("Aside one.", queuedEntry {seRoute = Aside}) ]
     it "one hint per sentence, by its check" $
-      map show' (claimHints True store (S.singleton "Checking one.") (ss ["Queued one.", "Right one.", "Wrong one.", "Unsure one.", "Failed one.", "Aside one.", "Checking one."]))
+      map show' (claimHints True store (S.singleton "Checking one.") S.empty (ss ["Queued one.", "Right one.", "Wrong one.", "Unsure one.", "Failed one.", "Aside one.", "Checking one."]))
         `shouldBe`
-          [ (Just (InR "claim-queued"), Just DiagnosticSeverity_Hint, "○ Unchecked claim · saved passes check it, or Check this")
+          [ (Just (InR "claim-queued"), Just DiagnosticSeverity_Hint, "○ Unchecked · Check this, or Check the plan")
           , (Just (InR "claim-right"), Just DiagnosticSeverity_Hint, "✓ Right · it returns 1 · src/a.py:Foo")
           , (Just (InR "claim-wrong"), Just DiagnosticSeverity_Warning, "✗ Wrong · it returns 2 · src/a.py:Foo")
           , (Just (InR "claim-unsure"), Just DiagnosticSeverity_Hint, "? Could not tell · cited code not found")
-          , (Just (InR "claim-queued"), Just DiagnosticSeverity_Hint, "○ Unchecked claim · saved passes check it, or Check this")
+          , (Just (InR "claim-queued"), Just DiagnosticSeverity_Hint, "○ Unchecked · Check this, or Check the plan")
           , (Just (InR "claim-checking"), Just DiagnosticSeverity_Hint, "… Checking") ]
+    it "an owed sentence says the next save checks it; an unticked step is unchecked too, a ticked one shows nothing" $ do
+      let stepE = queuedEntry {seTriage = Triage "step" 1 1 "grammar", seRoute = Progress}
+          st = M.fromList [("Owed one.", queuedEntry {seOwed = True}), ("a", stepE), ("b", stepE {seOwed = True})]
+      map show' (claimHints True st S.empty S.empty (ss ["Owed one.", "- [ ] a", "- [x] b"]))
+        `shouldBe`
+          [ (Just (InR "claim-queued"), Just DiagnosticSeverity_Hint, "○ Unchecked · the next save checks it")
+          , (Just (InR "claim-queued"), Just DiagnosticSeverity_Hint, "○ Unchecked · Check this, or Check the plan") ]
     it "no queued hint when checks cannot run" $
-      map show' (claimHints False store S.empty (ss ["Queued one.", "Right one."])) `shouldBe` [(Just (InR "claim-right"), Just DiagnosticSeverity_Hint, "✓ Right · it returns 1 · src/a.py:Foo")]
+      map show' (claimHints False store S.empty S.empty (ss ["Queued one.", "Right one."])) `shouldBe` [(Just (InR "claim-right"), Just DiagnosticSeverity_Hint, "✓ Right · it returns 1 · src/a.py:Foo")]
     it "a two-row sentence (rows joined) spans both rows; two sentences on a row are two hints" $ do
-      let ds = claimHints True (M.fromList [("Right one. Wrong one.", queuedEntry), ("Queued one. Right one.", queuedEntry), ("Queued one.", queuedEntry), ("Right one.", verdictEntry JRight "x")]) S.empty (sentencesWith (== 0) (parsePlan (T.unlines ["Queued one. Right", "one."])))
+      let ds = claimHints True (M.fromList [("Right one. Wrong one.", queuedEntry), ("Queued one. Right one.", queuedEntry), ("Queued one.", queuedEntry), ("Right one.", verdictEntry JRight "x")]) S.empty S.empty (sentencesWith (== 0) (parsePlan (T.unlines ["Queued one. Right", "one."])))
       map rangeOf ds `shouldBe` [(0, 0, 0, 11), (0, 12, 1, 4)]
       map (^. L.code) ds `shouldBe` [Just (InR "claim-queued"), Just (InR "claim-right")]
     it "the old resolved code and No unit found are gone" $ do
-      let all' = claimHints True store S.empty (ss ["Queued one.", "Right one.", "Wrong one.", "Unsure one."])
+      let all' = claimHints True store S.empty S.empty (ss ["Queued one.", "Right one.", "Wrong one.", "Unsure one."])
       [d | d <- all', d ^. L.code == Just (InR "claim-resolved")] `shouldBe` []
-      claimHover store (ss ["Queued one. Right one."]) `shouldBe` Just "Unchecked claim · saved passes check it, or Check this\n\nRight · it returns 1 · src/a.py:Foo\n\ngd: the code · Keep this verdict: <leader>mpk"
-      claimHover store (ss ["Aside one."]) `shouldBe` Nothing
-      fmap (T.isInfixOf "No unit found") (claimHover store (ss ["Right one."])) `shouldBe` Just False
+      claimHover store S.empty (ss ["Queued one. Right one."]) `shouldBe` Just "Unchecked · Check this, or Check the plan\n\nRight · it returns 1 · src/a.py:Foo\n\ngd: the code · Keep this verdict: <leader>mpk"
+      claimHover store S.empty (ss ["Aside one."]) `shouldBe` Nothing
+      fmap (T.isInfixOf "No unit found") (claimHover store S.empty (ss ["Right one."])) `shouldBe` Just False
+  describe "what a step shows, and stale verdicts" $ do
+    let ss = sentences . parsePlan . T.unlines
+        show' d = (d ^. L.code, d ^. L.severity, d ^. L.message)
+        stepE j why = (verdictEntry j why) {seTriage = Triage "step" 1 1 "grammar", seRoute = Progress, seCheck = fmap (\c -> c {cjMode = CheckProgress}) (seCheck (verdictEntry j why))}
+        line store stale t = [(c, sev, m) | x <- ss [t], Just (c, sev, m) <- [claimLine True store S.empty stale x]]
+        hints store stale t = map show' (claimHints True store S.empty stale (ss [t]))
+        one k e = M.fromList [(k, e)]
+    it "done on an unticked step: a hint that offers Mark done; on a prose step, no Mark done" $ do
+      hints (one "Do it" (stepE JDone "it does")) S.empty "- [ ] Do it"
+        `shouldBe` [(Just (InR "step-done"), Just DiagnosticSeverity_Hint, "✓ Done in the code · it does · src/a.py:Foo · Mark done?")]
+      hints (one "We do it." (stepE JDone "it does")) S.empty "We do it."
+        `shouldBe` [(Just (InR "step-done"), Just DiagnosticSeverity_Hint, "✓ Done in the code · it does · src/a.py:Foo")]
+    it "misfit: a warning" $
+      hints (one "Do it" (stepE JMisfit "is_staff misses Staff")) S.empty "- [ ] Do it"
+        `shouldBe` [(Just (InR "step-misfit"), Just DiagnosticSeverity_Warning, "! As written this would not work · is_staff misses Staff · src/a.py:Foo")]
+    it "open and cannot tell on a step: the hover only" $ do
+      let st = M.fromList [("Do it", stepE JOpen "not yet"), ("Do that", stepE JCannotTell "no idea")]
+      hints st S.empty "- [ ] Do it" `shouldBe` []
+      hints st S.empty "- [ ] Do that" `shouldBe` []
+      line st S.empty "- [ ] Do it" `shouldBe` [("step-open", DiagnosticSeverity_Hint, "Still open · not yet")]
+      line st S.empty "- [ ] Do that" `shouldBe` [("step-unsure", DiagnosticSeverity_Hint, "Could not tell · no idea")]
+      claimHover st S.empty (ss ["- [ ] Do it"]) `shouldBe` Just "Still open · not yet\n\ngd: the code · Keep this verdict: <leader>mpk"
+    it "a ticked step checked by hand: not done is a warning, done is the hover only" $ do
+      hints (one "Do it" (stepE JOpen "not yet")) S.empty "- [x] Do it"
+        `shouldBe` [(Just (InR "step-ticked"), Just DiagnosticSeverity_Warning, "! Ticked, but the code does not do this yet · not yet")]
+      hints (one "Do it" (stepE JMisfit "wrong role")) S.empty "- [x] Do it"
+        `shouldBe` [(Just (InR "step-ticked"), Just DiagnosticSeverity_Warning, "! Ticked, but the code does not do this yet · wrong role")]
+      hints (one "Do it" (stepE JDone "it does")) S.empty "- [x] Do it" `shouldBe` []
+      line (one "Do it" (stepE JDone "it does")) S.empty "- [x] Do it" `shouldBe` [("step-ticked-done", DiagnosticSeverity_Hint, "Done in the code · it does · src/a.py:Foo")]
+    it "stale right and wrong: a hint that says the code changed since" $ do
+      let st = M.fromList [("Right one.", verdictEntry JRight "it returns 1"), ("Wrong one.", verdictEntry JWrong "it returns 2")]
+          stale = S.fromList ["Right one.", "Wrong one."]
+      map show' (claimHints True st S.empty stale (ss ["Right one.", "Wrong one."]))
+        `shouldBe`
+          [ (Just (InR "claim-right-stale"), Just DiagnosticSeverity_Hint, "✓ Right when checked · the code changed since · it returns 1 · src/a.py:Foo")
+          , (Just (InR "claim-wrong-stale"), Just DiagnosticSeverity_Hint, "✗ Wrong when checked · the code changed since · it returns 2 · src/a.py:Foo") ]
+      claimHover st stale (ss ["Right one."]) `shouldBe` Just "Right when checked · the code changed since · it returns 1 · src/a.py:Foo\n\ngd: the code · Keep this verdict: <leader>mpk"
+    it "stale done, misfit and open steps" $ do
+      let stale = S.fromList ["Do it"]
+      hints (one "Do it" (stepE JDone "it does")) stale "- [ ] Do it"
+        `shouldBe` [(Just (InR "step-done-stale"), Just DiagnosticSeverity_Hint, "✓ Done when checked · the code changed since · it does · src/a.py:Foo")]
+      hints (one "Do it" (stepE JMisfit "wrong role")) stale "- [ ] Do it"
+        `shouldBe` [(Just (InR "step-misfit-stale"), Just DiagnosticSeverity_Hint, "! Would not work when checked · the code changed since · wrong role · src/a.py:Foo")]
+      hints (one "Do it" (stepE JOpen "not yet")) stale "- [ ] Do it"
+        `shouldBe` [(Just (InR "step-stale"), Just DiagnosticSeverity_Hint, "○ The code this step would change has changed · Check this")]
+  describe "Show why" $
+    it "says when the check ran, so an old verdict reads as old" $ do
+      let Just c = seCheck (verdictEntry JRight "it returns 1")
+      whyBody "Right one." c `shouldSatisfy` T.isInfixOf "Checked 2026-11-07 00:00"
+      whyBody "Right one." c `shouldSatisfy` T.isInfixOf "Right · it returns 1"
   describe "gd and Keep this verdict" $ do
     let checkOf e = case seCheck e of
           Just c -> c
           Nothing -> error "no check"
-        two = queuedEntry {seCheck = Just (CheckRecord (Confirmed JWrong "it drops D" [Citation "app/x.py" (Just "f") (Just 2), Citation "app/y.py" (Just "g") Nothing] (Just (UnitRef "app/x.py" "f")) Nothing) "m" Nothing 1 at0)}
+        two = queuedEntry {seCheck = Just (CheckRecord (Confirmed JWrong "it drops D" [Citation "app/x.py" (Just "f") (Just 2), Citation "app/y.py" (Just "g") Nothing] (Just (UnitRef "app/x.py" "f")) Nothing []) "m" Nothing 1 at0 CheckClaim)}
         insertOf (TextEdit r t) = ((r ^. L.start . L.line, r ^. L.start . L.character), (r ^. L.end . L.line, r ^. L.end . L.character), t)
         one_ ls = case sentences ls of
           x : _ -> x
@@ -237,10 +294,10 @@ spec = describe "Olifant.Server.Plans (anchors in the server)" $ do
       fmap insertOf (keepEdit ls2 (one_ ls2) second) `shouldBe` Nothing
     it "a checked sentence's hover ends with the footer; an unchecked one's does not" $ do
       let ss = sentences . parsePlan . T.unlines
-      claimHover (M.fromList [("Right one.", verdictEntry JRight "it returns 1")]) (ss ["Right one."])
+      claimHover (M.fromList [("Right one.", verdictEntry JRight "it returns 1")]) S.empty (ss ["Right one."])
         `shouldBe` Just "Right · it returns 1 · src/a.py:Foo\n\ngd: the code · Keep this verdict: <leader>mpk"
-      claimHover (M.fromList [("Queued one.", queuedEntry)]) (ss ["Queued one."])
-        `shouldBe` Just "Unchecked claim · saved passes check it, or Check this"
+      claimHover (M.fromList [("Queued one.", queuedEntry)]) S.empty (ss ["Queued one."])
+        `shouldBe` Just "Unchecked · Check this, or Check the plan"
   describe "planTokensWith (claim modifiers)" $
     it "a bare line's text carries checked or wrong from its check" $ do
       let e j = verdictEntry j "no"
@@ -280,11 +337,11 @@ at0 = UTCTime (fromGregorian 2026 11 7) 0
 
 -- | A verify sentence with no check yet.
 queuedEntry :: SentenceEntry
-queuedEntry = SentenceEntry (Triage "claim" 0.9 0.9 "jev") Verify Nothing Nothing at0 Nothing
+queuedEntry = SentenceEntry (Triage "claim" 0.9 0.9 "jev") Verify Nothing Nothing at0 Nothing False
 
 -- | A verify sentence checked J, with WHY, citing src/a.py:Foo.
 verdictEntry :: Judgement -> Text -> SentenceEntry
-verdictEntry j why = queuedEntry {seCheck = Just (CheckRecord (Confirmed j why [Citation "src/a.py" (Just "Foo") Nothing] (Just (UnitRef "src/a.py" "Foo")) (Just "abc1234")) "claude-sonnet-5-5" (Just 0.1) 12 at0)}
+verdictEntry j why = queuedEntry {seCheck = Just (CheckRecord (Confirmed j why [Citation "src/a.py" (Just "Foo") Nothing] (Just (UnitRef "src/a.py" "Foo")) (Just "abc1234") []) "claude-sonnet-5-5" (Just 0.1) 12 at0 CheckClaim)}
 
 -- | /r1 with the python pack, `src/a.py` (class Foo with def bar) and a
 -- plan; a syntax whose units are Foo (lines 0-2) and Foo.bar (1-2).

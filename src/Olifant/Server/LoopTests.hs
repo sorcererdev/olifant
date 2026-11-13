@@ -16,7 +16,7 @@ module Olifant.Server.LoopTests
 import Data.Char (isAlphaNum, isAscii)
 import Data.Map.Strict qualified as M
 import Data.Functor ((<&>))
-import Data.Maybe (fromMaybe, listToMaybe)
+import Data.Maybe (fromMaybe, isJust, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.App (Ports (..), Project (..))
@@ -25,6 +25,7 @@ import Olifant.Plans (Anchor (..), Kind (..), Line (..), TestState (..), Verdict
 import Olifant.Server.LoopTypes (Fact (..))
 import Olifant.Server.Plans (Resolved (..), confined, resolveAnchor, safely)
 import Olifant.Server.State (ServerState (..), projectFor)
+import Olifant.Server.Claims (claimsOf, stepUnit)
 import Olifant.Server.Stub (StubAnswer (..), stubWith, testNameIn)
 import Olifant.Server.Tests (TestsAnswer (..), TestsScope (..), testLineIn, testsRun)
 import Olifant.Catalog (catalogLanguages)
@@ -60,7 +61,7 @@ stepStub path row s0 =
   planAt path s0 >>= \case
     (s, Left why) -> pure (s, Left why)
     (s, Right (p, ls)) -> case drop row ls of
-      step : _ | Step _ <- lnKind step -> case lnAnchor step of
+      step : _ | Step _ <- lnKind step -> claimsOf s (prRoot p) path >>= \store -> case stepUnit store ls step of
         Nothing -> pure (s, Left "the step has no anchor")
         Just a ->
           resolveAnchor s p a >>= \r -> case rsUnit r of
@@ -73,7 +74,8 @@ stepStub path row s0 =
                     after = maybe row lnRow (listToMaybe (reverse (childrenOf ls row)))
                  in StepStub sa child (Insert after [child])
           where
-            said = T.take (anStart a) (lnText step)
+            -- the words before a typed anchor; the whole line when the unit is the check's
+            said = if isJust (lnAnchor step) then T.take (anStart a) (lnText step) else lnText step
       _ -> pure (s, Left "stub needs a step line")
   where
     io <&&> f = io >>= \(s', r) -> pure (s', f <$> r)

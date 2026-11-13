@@ -171,6 +171,7 @@ library
     Olifant.Server.ReviewReadings
     Olifant.Server.Sibling
     Olifant.Server.Site
+    Olifant.Server.Stale
     Olifant.Server.State
     Olifant.Server.Stub
     Olifant.Server.Suggest
@@ -397,6 +398,8 @@ test-suite spec
     Olifant.Server.Sibling
     Olifant.Server.SiblingSpec
     Olifant.Server.Site
+    Olifant.Server.Stale
+    Olifant.Server.StaleSpec
     Olifant.Server.State
     Olifant.Server.Stub
     Olifant.Server.Suggest

@@ -1,7 +1,8 @@
 {-# LANGUAGE OverloadedStrings #-}
 -- | The sentences of a plan: the units triage and the checker work on. Pure.
 --
--- Steps and questions are one sentence each, judged whole; headings are one
+-- Steps and questions are one sentence each, judged whole (a step's
+-- continuation rows, indented prose right under it, are part of it); headings are one
 -- sentence (the "· …" suffix dropped); test, also, evidence and journal lines,
 -- fenced code, front matter and lines that are only a link give none;
 -- everything else (paragraphs, numbered lines, bullets, blockquotes) is split.
@@ -136,6 +137,7 @@ units ls skipped = finish (foldl' step (0, Nothing, []) ls)
             | Just n <- numbered body -> new JoinProse True (marked n)
             | "> " `T.isPrefixOf` body || body == ">" ->
                 if fmap (uJoin . snd) cur == Just JoinQuote then cont (marked 1) else new JoinQuote True (marked 1)
+            | Just (_, u) <- cur, isStep (uKind u), ind > stepIndent u -> cont (lnRow l, ind, body)
             | onlyLink body -> (blk, Nothing, flush cur acc)
             | Just (_, u) <- cur, uJoin u == JoinProse -> cont (lnRow l, ind, body)
             | otherwise -> new JoinProse True (lnRow l, ind, body)
@@ -151,6 +153,8 @@ units ls skipped = finish (foldl' step (0, Nothing, []) ls)
           Just (b, u) -> (blk, Just (b, u { uSegs = uSegs u ++ [seg], uLines = uLines u ++ [l] }), acc)
           Nothing -> new JoinProse True seg
     flush cur acc = maybe acc (: acc) cur
+    isStep k = case k of { Step _ -> True; _ -> False }
+    stepIndent u = maybe 0 lnIndent (listToMaybe (uLines u))
     unit j sp _ l seg = Unit (lnKind l) sp j [seg] [l]
 
 -- | "1 - ", "1. ", "1) ": the marker's length.

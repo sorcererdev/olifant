@@ -34,7 +34,7 @@ import System.Exit (ExitCode (..))
 import System.Process (callProcess, proc, readCreateProcessWithExitCode)
 import Data.Text.IO qualified as TIO
 import Control.Monad.IO.Class (liftIO)
-import Data.List (isInfixOf, sort, sortOn)
+import Data.List (isInfixOf, isSuffixOf, sort, sortOn)
 import Data.Ord (Down (..))
 import Data.Time (UTCTime (..), diffUTCTime, fromGregorian, getCurrentTime)
 import Olifant.Server.Fixes qualified as Fx
@@ -63,7 +63,7 @@ import Olifant.Workspace (Workspace (listFiles, listFilesSkipping, readText), di
 import System.Environment (lookupEnv, setEnv, unsetEnv)
 import System.Directory (findExecutable, canonicalizePath, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getTemporaryDirectory, listDirectory, removeDirectory, removeFile, renameFile)
 import Olifant.Server.Claims (CheckRecord (..), SentenceEntry (..), claimsPath, readClaims)
-import Olifant.Server.Checker (Confirmed (..), Judgement (..))
+import Olifant.Server.Checker (Confirmed (..), Judgement (..), recordedAsked)
 import System.FilePath (makeRelative, normalise, takeDirectory, (</>), splitDirectories)
 import Olifant.Language.AstGrep (astGrepSyntax)
 import System.IO.Temp (withSystemTempDirectory)
@@ -2280,16 +2280,19 @@ plansLoopSpec = describe "plans, stage 2" $ do
           <&> \(TResponseMessage _ _ r) -> [a | Right (InL acts) <- [r], InR a <- acts]
         titled t = filter ((== t) . (^. L.title))
         reasons acts = [fmap (^. L.reason) (a ^. L.disabled) | a <- acts]
-    it "(x1) hover on a step's anchor shows its unit's code; off the anchor, nothing" $
+    it "(x1) hover on a step's anchor shows its unit's code; off the anchor, the step's check line" $
       withEditedPlan (T.unlines [stepLine "[ ]"]) "" $ \ports dir -> do
         ((on, off), _) <- inProcessWith ports dir $ do
           p <- openDoc "plans/t.md" "markdown"
+          -- the open's pass has triaged the step (else the hover off the anchor has nothing yet)
+          let refreshed = (() <$ message SMethod_WorkspaceDiagnosticRefresh) <|> (anyMessage >> refreshed)
+          refreshed
           (,) <$> getHover p (Position 0 12) <*> getHover p (Position 0 2)
         case on of
           Just h | InL (MarkupContent _ text) <- h ^. L.contents ->
             text `shouldBe` T.intercalate "\n" ["`" <> T.pack table <> ":label` · lines 1–2", "", "```python", "def label(id: str) -> str:", "    return \"t-\" + id", "```"]
           other -> expectationFailure ("hover: " <> show other)
-        off `shouldBe` Nothing
+        fmap (\h -> case h ^. L.contents of InL (MarkupContent _ md) -> md; _ -> "") off `shouldBe` Just "Unchecked · Check this, or Check the plan"
     it "(x2) Show the code here on an open anchored step, resolved, writes the fence below it at the plan's version; on a done step too (frozen), not on one that has one" $
       withEditedPlan (T.unlines ([stepLine "[ ]", stepLine "[x]", stepLine "[ ]"] ++ fenceOf ["x"])) "" $ \ports dir -> do
         ((open', resolved, done, has), _) <- inProcessWith ports dir $ do
@@ -2358,6 +2361,23 @@ plansLoopSpec = describe "plans, stage 2" $ do
         take 1 ls `shouldSatisfy` \xs -> length xs == 1 && all (maybe False ((== 7) . T.length) . T.stripPrefix ("- [x] s " <> anchorOf <> " \10003 ")) xs
         drop 1 ls `shouldBe` ["  - a note", "  ```python " <> anchorOf <> " · done", "  def label(id: str) -> str:", "      return \"t-\" + id", "  ```", "notes"]
         readings `shouldBe` Right (Just (Number 0))
+    it "(x11) a checked step with no anchor works on its cited unit: Show the code here shows it, Mark done stamps it" $
+      withEditedPlan "- [ ] s\n" "" $ \ports dir -> do
+        writeStore dir (storedStepCheck "s" table "label")
+        ((fence, after), _) <- inProcessWith ports dir $ do
+          p <- openDoc "plans/t.md" "markdown"
+          shows' <- filter ((== Just CodeActionKind_Source) . (^. L.kind)) <$> sourceActions p 0
+          resolved <- mapM resolveCodeAction shows'
+          marks <- titled "Mark done" <$> sourceOnly p 0
+          done <- mapM resolveCodeAction marks
+          forM_ [t | a <- done, Just e <- [a ^. L.edit], Just cs <- [e ^. L.documentChanges], InL te <- cs, InL t <- te ^. L.edits] (applyEdit p)
+          (concatMap startsAndTexts resolved,) <$> documentContents p
+        map snd fence `shouldSatisfy` \case
+          [t] -> ("```python " <> anchorOf) `T.isInfixOf` t && "return \"t-\" + id" `T.isInfixOf` t
+          _ -> False
+        take 1 (T.lines after) `shouldSatisfy` \case
+          [l] -> maybe False ((== 7) . T.length) (T.stripPrefix ("- [x] s " <> anchorOf <> " \10003 ") l)
+          _ -> False
     it "(x10) Reopen step on a ticked step: unticked, its verdict dropped; its frozen excerpt stays" $
       withEditedPlan (T.unlines ([stepLine "[x]" <> " \10003 abc1234", "  ```python " <> anchorOf <> " · done", "  x", "  ```"])) "" $ \ports dir -> do
         (after, _) <- inProcessWith ports dir $ do
@@ -2717,6 +2737,12 @@ plansStage1Spec = describe "olifant/plans (stage 1)" $ do
       [t | Just t <- map (lookupKey "text") (arr (lookupKey "facts" v))] `shouldSatisfy` \case
         [String child, String step] -> T.isSuffixOf "\9679" child && ("- [x] add a method" `T.isPrefixOf` step)
         _ -> False
+  it "do on a checked step with no anchor grounds the code its check cited" $
+    withPlan (planWith "- [ ] add a method") $ \ports dir -> do
+      writeStore dir (storedStepCheck "add a method" table "Table")
+      _ <- inProcessWith ports dir (errand doP 7)
+      (rs, _) <- records dir
+      [erGrounded r | AnErrand r <- rs, erVerb r == "do"] `shouldBe` [1]
   it "a runner failure leaves the plan alone and names the reason" $
     withPlan (T.replace "where is the table" "where is the table SHIM:FAIL" plan) $ \ports dir -> do
       (answer, _) <- inProcessWith ports dir (errand askP 3)
@@ -3290,6 +3316,17 @@ inProcessWithConfig extra ports dir session = do
   a <- runSessionWithHandles inWrite outRead defaultConfig {lspConfig = KM.fromList ([("debug", Bool True), ("debounce_ms", Number 100)] ++ extra)} fullLatestClientCaps dir session
   code <- timeout 5000000 (takeMVar done)
   pure (a, code)
+
+-- | A plan's store (version 2) holding one step's check: done, citing UNIT in PATH.
+storedStepCheck :: Text -> FilePath -> Text -> Text
+storedStepCheck key path unit =
+  "{\"version\": 2, \"claims\": {\"" <> key <> "\": {\"triage\": {\"kind\": \"step\", \"p\": 1, \"about\": 1, \"by\": \"grammar\"}, \"route\": \"progress\", \"check\": {\"verdict\": \"done\", \"why\": \"it does\", \"evidence\": [{\"path\": \"" <> T.pack path <> "\", \"unit\": \"" <> unit <> "\", \"line\": null}], \"unit\": {\"path\": \"" <> T.pack path <> "\", \"name\": \"" <> unit <> "\"}, \"fingerprint\": \"abc1234\", \"mode\": \"progress\", \"model\": \"sonnet\", \"cost\": 0.1, \"seconds\": 1, \"at\": \"2026-11-07T00:00:00Z\"}, \"failure\": null, \"at\": \"2026-11-07T00:00:00Z\", \"gone\": null}}}"
+
+-- | Write a plan's store under DIR before the server starts.
+writeStore :: FilePath -> Text -> IO ()
+writeStore dir body = do
+  createDirectoryIfMissing True (dir </> ".olifant/state/claims/plans")
+  TIO.writeFile (dir </> ".olifant/state/claims/plans/t.json") body
 
 debugState :: Session Value
 debugState =
@@ -4216,15 +4253,36 @@ claimPassSpec = describe "plans claim pass" $ do
         TIO.writeFile c checks
         act ports dir f [("decide_answers", String (T.pack f)), ("check_answers", String (T.pack c))]
       withPass = withPassOn claims
+      withPythonPlan plan answers checks act = withPython [("plans/t.md", plan), (table, tableText)] $ \ports dir -> do
+        TIO.appendFile (dir </> ".olifant/config.toml") config
+        let f = dir </> "answers.json"
+            c = dir </> "checks.json"
+        TIO.writeFile f answers
+        TIO.writeFile c checks
+        act ports dir f [("decide_answers", String (T.pack f)), ("check_answers", String (T.pack c))]
+      replyFor delay key = "\"" <> key <> "\": {\"text\": \"```json\\n{\\\"verdict\\\": \\\"right\\\", \\\"why\\\": \\\"w\\\", \\\"evidence\\\": [{\\\"path\\\": \\\"" <> T.pack table <> "\\\", \\\"unit\\\": \\\"helper\\\"}]}\\n```\", \"cost\": 0.1, \"delay\": " <> delay <> "}"
+      threeKeys = ["the helper returns one", "a second claim holds", "a third claim holds"]
+      checks3 = "{\"replies\": {" <> T.intercalate ", " (map (replyFor "0") threeKeys) <> "}}"
+      slow3 = "{\"replies\": {" <> T.intercalate ", " (map (replyFor "2") threeKeys) <> "}}"
       titles as = [a ^. L.title | InR a <- as]
       refreshed = (() <$ message SMethod_WorkspaceDiagnosticRefresh) <|> (anyMessage >> refreshed)
-      askedIn f = liftIO (doesFileExist (f <> ".asked") >>= \case True -> length . T.lines <$> TIO.readFile (f <> ".asked"); False -> pure 0)
+      -- read under the recorded checker's lock: a sweep may be appending
+      askedIn f = liftIO (length <$> recordedAsked f)
       waitFor cond = liftIO (let go n = cond >>= \ok -> if ok || n <= (0 :: Int) then pure ok else threadDelay 50000 >> go (n - 1) in go 200)
-  it "(a) open triages, save checks; nothing is written to the plan" $
+      -- the sentence written in the editor after the open: owed its automatic check
+      openWritten dir = do
+        liftIO (TIO.writeFile (dir </> "plans/t.md") "")
+        p <- openDoc "plans/t.md" "markdown"
+        -- the open's pass ends before the sentence is written
+        refreshed
+        changeDoc p [TextDocumentContentChangeEvent (InR (TextDocumentContentChangeWholeDocument "- the helper returns one\n"))]
+        -- as the editor's save writes it
+        liftIO (TIO.writeFile (dir </> "plans/t.md") "- the helper returns one\n")
+        pure p
+  it "(a) a sentence written in the editor is checked on save; nothing is written to the plan" $
     withPass right $ \ports dir _ cfg -> do
       (asked', _) <- inProcessWithConfig cfg ports dir $ do
-        p <- openDoc "plans/t.md" "markdown"
-        refreshed
+        p <- openWritten dir
         sendNotification SMethod_TextDocumentDidSave (DidSaveTextDocumentParams p Nothing)
         ok <- waitFor (doesFileExist (dir </> "checks.json.asked"))
         refreshed
@@ -4236,8 +4294,7 @@ claimPassSpec = describe "plans claim pass" $ do
   it "(b) checked wrong: a claim-wrong warning over the sentence, and hover shows why" $
     withPass wrong $ \ports dir _ cfg -> do
       ((ds, hover), _) <- inProcessWithConfig cfg ports dir $ do
-        p <- openDoc "plans/t.md" "markdown"
-        refreshed
+        p <- openWritten dir
         sendNotification SMethod_TextDocumentDidSave (DidSaveTextDocumentParams p Nothing)
         _ <- waitFor (doesFileExist (dir </> "checks.json.asked"))
         _ <- waitFor (maybe False (isJust . seCheck) . M.lookup "the helper returns one" <$> readClaims plainPorts dir "plans/t.md")
@@ -4248,8 +4305,7 @@ claimPassSpec = describe "plans claim pass" $ do
   it "(f) the actions: Check this on a queued claim; Show the code here and Show why once checked" $
     withPass right $ \ports dir _ cfg -> do
       ((before, after), _) <- inProcessWithConfig cfg ports dir $ do
-        p <- openDoc "plans/t.md" "markdown"
-        refreshed
+        p <- openWritten dir
         b <- titles <$> getCodeActions p (Range (Position 0 4) (Position 0 4))
         sendNotification SMethod_TextDocumentDidSave (DidSaveTextDocumentParams p Nothing)
         _ <- waitFor (maybe False (isJust . seCheck) . M.lookup "the helper returns one" <$> readClaims plainPorts dir "plans/t.md")
@@ -4266,8 +4322,7 @@ claimPassSpec = describe "plans claim pass" $ do
         keepOf as = [a | InR a <- as, a ^. L.title == "Keep this verdict"]
     withPass twoCited $ \ports dir _ cfg -> do
       ((unchecked, checked, kept, text, again, hover, edited), _) <- inProcessWithConfig cfg ports dir $ do
-        p <- openDoc "plans/t.md" "markdown"
-        refreshed
+        p <- openWritten dir
         u <- getDefinitions p (Position 0 4)
         sendNotification SMethod_TextDocumentDidSave (DidSaveTextDocumentParams p Nothing)
         _ <- waitFor (maybe False (isJust . seCheck) . M.lookup "the helper returns one" <$> readClaims plainPorts dir "plans/t.md")
@@ -4287,6 +4342,37 @@ claimPassSpec = describe "plans claim pass" $ do
       again `shouldBe` 0
       fmap (\h -> case h ^. L.contents of InL (MarkupContent _ md) -> last (T.lines md); _ -> "") hover `shouldBe` Just "gd: the code · Keep this verdict: <leader>mpk"
       (length (fst edited), spots (snd edited)) `shouldBe` (0, [])
+  it "a watched-file change turns a verdict stale" $
+    withPass right $ \ports dir _ cfg -> do
+      (codes, _) <- inProcessWithConfig cfg ports dir $ do
+        p <- openWritten dir
+        sendNotification SMethod_TextDocumentDidSave (DidSaveTextDocumentParams p Nothing)
+        _ <- waitFor (maybe False (isJust . seCheck) . M.lookup "the helper returns one" <$> readClaims plainPorts dir "plans/t.md")
+        before <- pullDiagnostics p
+        -- the cited unit changes on disk, as a checkout or a formatter would
+        liftIO (TIO.writeFile (dir </> table) (T.replace "return 1" "return 2" tableText))
+        sendNotification SMethod_WorkspaceDidChangeWatchedFiles (DidChangeWatchedFilesParams [FileEvent (filePathToUri (dir </> table)) FileChangeType_Changed])
+        after <- pullDiagnostics p
+        let codesOf ds = [d ^. L.code | d <- ds, d ^. L.source == Just "olifant-plan"]
+        pure (codesOf before, codesOf after)
+      codes `shouldBe` ([Just (InR "claim-right")], [Just (InR "claim-right-stale"), Just (InR "plan-unchecked")])
+  it "a plan edit reads no cited file" $
+    withPass right $ \ports dir _ cfg -> do
+      reads <- newIORef (0 :: Int)
+      let disk = pFiles ports
+          counting = disk {readText = \path -> when (table `isSuffixOf` path) (atomicModifyIORef' reads (\n -> (n + 1, ()))) >> readText disk path}
+      (n, _) <- inProcessWithConfig cfg ports {pFiles = counting} dir $ do
+        p <- openWritten dir
+        sendNotification SMethod_TextDocumentDidSave (DidSaveTextDocumentParams p Nothing)
+        _ <- waitFor (maybe False (isJust . seCheck) . M.lookup "the helper returns one" <$> readClaims plainPorts dir "plans/t.md")
+        _ <- pullDiagnostics p
+        first <- liftIO (readIORef reads)
+        liftIO (writeIORef reads 0)
+        changeDoc p [TextDocumentContentChangeEvent (InR (TextDocumentContentChangeWholeDocument "- the helper returns one\n\nMore words here.\n"))]
+        _ <- pullDiagnostics p
+        (first,) <$> liftIO (readIORef reads)
+      -- the cited file was read (the check, the first pull), then not again
+      (fst n > 0, snd n) `shouldBe` (True, 0)
   it "(g) olifant.checkSentence checks one sentence while the caps would forbid a pass" $
     withPassOn claims right $ \ports dir _ cfg -> do
       TIO.appendFile (dir </> ".olifant/config.toml") "pass_cost = 0\n"
@@ -4300,6 +4386,73 @@ claimPassSpec = describe "plans claim pass" $ do
       titles' `shouldSatisfy` elem "Show why"
       stored <- readClaims plainPorts dir "plans/t.md"
       (cfJudgement . cjConfirmed <$> (M.lookup "the helper returns one" stored >>= seCheck)) `shouldBe` Just JRight
+  it "Check this on steps ticked or not and on an aside sentence; Check the plan names what it would check" $
+    withPython [("plans/t.md", "- [ ] make it\n- [x] made it\nThe helper returns one.\n"), (table, tableText)] $ \ports dir -> do
+      (ts, _) <- inProcessWithConfig [] ports dir $ do
+        p <- openDoc "plans/t.md" "markdown"
+        refreshed
+        forM [0, 1, 2] $ \r -> titles <$> getCodeActions p (Range (Position r 4) (Position r 4))
+      map (filter (\t -> "Check" `T.isPrefixOf` t)) ts
+        `shouldBe` replicate 2 ["Check this (sonnet, ~$0.10)", "Check the plan (1 unchecked, ~$0.10)"] ++ [["Check this (sonnet, ~$0.10)", "Check the plan (1 unchecked, ~$0.10)"]]
+  it "two unchecked and one stale: Re-check on the stale one, Check the plan and the summary count both" $
+    withPythonPlan "- the helper returns one\n- a second claim holds\n- a third claim holds\n" claims checks3 $ \ports dir _ cfg -> do
+      ((acts, summary), _) <- inProcessWithConfig cfg ports dir $ do
+        p <- openDoc "plans/t.md" "markdown"
+        refreshed
+        _ <- request SMethod_WorkspaceExecuteCommand (ExecuteCommandParams Nothing "olifant.checkSentence" (Just [toJSON (getUri (p ^. L.uri)), String "the helper returns one"]))
+        liftIO (TIO.writeFile (dir </> table) (T.replace "return 1" "return 2" tableText))
+        sendNotification SMethod_WorkspaceDidChangeWatchedFiles (DidChangeWatchedFilesParams [FileEvent (filePathToUri (dir </> table)) FileChangeType_Changed])
+        ds <- pullDiagnostics p
+        as <- titles <$> getCodeActions p (Range (Position 0 4) (Position 0 4))
+        pure (as, [(d ^. L.code, d ^. L.severity, d ^. L.message, d ^. L.range . L.start . L.line) | d <- ds, d ^. L.code == Just (InR "plan-unchecked")])
+      filter (\t -> any (`T.isPrefixOf` t) ["Re-check", "Check"]) acts `shouldBe` ["Re-check (sonnet, ~$0.10)", "Check the plan (2 unchecked, 1 stale, ~$0.30)"]
+      summary `shouldBe` [(Just (InR "plan-unchecked"), Just DiagnosticSeverity_Information, "2 unchecked, 1 stale · Check the plan", 0)]
+  it "a second sweep on the same plan is refused" $
+    withPythonPlan "- the helper returns one\n- a second claim holds\n- a third claim holds\n" claims slow3 $ \ports dir _ cfg -> do
+      ((secondFirst, n), _) <- inProcessWithConfig cfg ports dir $ do
+        p <- openDoc "plans/t.md" "markdown"
+        refreshed
+        let go = ExecuteCommandParams Nothing "olifant.checkPlan" (Just [toJSON (getUri (p ^. L.uri))])
+        one <- sendRequest SMethod_WorkspaceExecuteCommand go
+        two <- sendRequest SMethod_WorkspaceExecuteCommand go
+        -- the second answers at once (a message says why), the first after its checks
+        let answered i = (() <$ responseForId SMethod_WorkspaceExecuteCommand i) <|> (anyMessage >> answered i)
+            firstAnswered = (False <$ responseForId SMethod_WorkspaceExecuteCommand one) <|> (True <$ responseForId SMethod_WorkspaceExecuteCommand two) <|> (anyMessage >> firstAnswered)
+        secondFirst <- firstAnswered
+        when secondFirst (answered one)
+        (secondFirst,) <$> askedIn (dir </> "checks.json")
+      (secondFirst, n) `shouldBe` (True, 3)
+  it "cancelling Check the plan's progress lets the checks in flight land" $
+    withPythonPlan "- the helper returns one\n- a second claim holds\n- a third claim holds\n" claims slow3 $ \ports dir _ cfg -> do
+      _ <- inProcessWithConfig cfg ports dir $ do
+        p <- openDoc "plans/t.md" "markdown"
+        refreshed
+        one <- sendRequest SMethod_WorkspaceExecuteCommand (ExecuteCommandParams Nothing "olifant.checkPlan" (Just [toJSON (getUri (p ^. L.uri))]))
+        let created :: FromServerMessage -> Maybe ProgressToken
+            created = \case
+              FromServerMess SMethod_WindowWorkDoneProgressCreate req -> Just (req ^. L.params . L.token)
+              _ -> Nothing
+            awaitCreate = satisfyMaybe created <|> (anyMessage >> awaitCreate)
+        token <- awaitCreate
+        -- the three checks in flight (each takes 2 s)
+        _ <- waitFor ((>= 3) . length <$> recordedAsked (dir </> "checks.json"))
+        sendNotification SMethod_WindowWorkDoneProgressCancel (WorkDoneProgressCancelParams token)
+        let answered = (() <$ responseForId SMethod_WorkspaceExecuteCommand one) <|> (anyMessage >> answered)
+        answered
+      stored <- readClaims plainPorts dir "plans/t.md"
+      length [() | e <- M.elems stored, isJust (seCheck e)] `shouldBe` 3
+  it "estimates are read from errands.jsonl once" $
+    withPass right $ \ports dir _ cfg -> do
+      reads <- newIORef (0 :: Int)
+      let disk = pFiles ports
+          counting = disk {readText = \path -> when ("errands.jsonl" `isSuffixOf` path) (atomicModifyIORef' reads (\n -> (n + 1, ()))) >> readText disk path}
+      (n, _) <- inProcessWithConfig cfg ports {pFiles = counting} dir $ do
+        p <- openDoc "plans/t.md" "markdown"
+        refreshed
+        liftIO (writeIORef reads 0)
+        forM_ [1 :: Int, 2, 3] $ \_ -> getCodeActions p (Range (Position 0 4) (Position 0 4))
+        liftIO (readIORef reads)
+      n `shouldBe` 1
   it "(h) with no Jev, a paragraph is aside and still offers Check this" $
     withPython [("plans/t.md", "The helper returns one.\n"), (table, tableText)] $ \ports dir -> do
       (ts, _) <- inProcessWithConfig [] ports dir $ do

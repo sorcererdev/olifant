@@ -123,7 +123,16 @@ spec = describe "catalog" $ do
             _ -> expectationFailure ("expected ConfigInvalid naming " <> T.unpack word)
       bad "[plans]\npass_cost = -1\n" "pass_cost"
       bad "[plans]\ncheck_timeout = 0\n" "check_timeout"
-      bad "[plans]\ncheck_cost = 1\n" "check_cost"
+      bad "[plans]\ncheck_cost = -1\n" "check_cost"
+    it "reads check_cost: 5.00 when absent" $ do
+      withCatalog [("/proj/.olifant/config.toml", "")] $ \_ cat -> pcCheckCost (catalogPlans cat) `shouldBe` 5.00
+      withCatalog [("/proj/.olifant/config.toml", "[plans]\ncheck_cost = 0.25\n")] $ \_ cat -> pcCheckCost (catalogPlans cat) `shouldBe` 0.25
+    it "reads recheck: asked by default, or save; anything else names the key" $ do
+      withCatalog [("/proj/.olifant/config.toml", "[plans]\nrecheck = \"save\"\n")] $ \_ cat -> pcRecheck (catalogPlans cat) `shouldBe` RecheckSave
+      withCatalog [("/proj/.olifant/config.toml", "")] $ \_ cat -> pcRecheck (catalogPlans cat) `shouldBe` RecheckAsked
+      openWith [("/proj/.olifant/config.toml", "[plans]\nrecheck = \"later\"\n")] >>= \case
+        Left (ConfigInvalid _ e) -> e `shouldSatisfy` T.isInfixOf "recheck"
+        _ -> expectationFailure "expected ConfigInvalid naming recheck"
     it "a ladder name with no backend is a config error, as [model] ladder's" $ do
       r <- openWith [("/proj/.olifant/config.toml", "[plans]\nladder = [\"gpt\"]\n")]
       case r of
