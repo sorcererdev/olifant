@@ -2284,6 +2284,9 @@ plansLoopSpec = describe "plans, stage 2" $ do
       withEditedPlan (T.unlines [stepLine "[ ]"]) "" $ \ports dir -> do
         ((on, off), _) <- inProcessWith ports dir $ do
           p <- openDoc "plans/t.md" "markdown"
+          -- the open's pass has triaged the step (else the hover off the anchor has nothing yet)
+          let refreshed = (() <$ message SMethod_WorkspaceDiagnosticRefresh) <|> (anyMessage >> refreshed)
+          refreshed
           (,) <$> getHover p (Position 0 12) <*> getHover p (Position 0 2)
         case on of
           Just h | InL (MarkupContent _ text) <- h ^. L.contents ->
