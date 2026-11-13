@@ -63,7 +63,7 @@ import Olifant.Workspace (Workspace (listFiles, listFilesSkipping, readText), di
 import System.Environment (lookupEnv, setEnv, unsetEnv)
 import System.Directory (findExecutable, canonicalizePath, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getTemporaryDirectory, listDirectory, removeDirectory, removeFile, renameFile)
 import Olifant.Server.Claims (CheckRecord (..), SentenceEntry (..), claimsPath, readClaims)
-import Olifant.Server.Checker (Confirmed (..), Judgement (..))
+import Olifant.Server.Checker (Confirmed (..), Judgement (..), recordedAsked)
 import System.FilePath (makeRelative, normalise, takeDirectory, (</>), splitDirectories)
 import Olifant.Language.AstGrep (astGrepSyntax)
 import System.IO.Temp (withSystemTempDirectory)
@@ -4263,7 +4263,8 @@ claimPassSpec = describe "plans claim pass" $ do
       slow3 = "{\"replies\": {" <> T.intercalate ", " (map (replyFor "2") threeKeys) <> "}}"
       titles as = [a ^. L.title | InR a <- as]
       refreshed = (() <$ message SMethod_WorkspaceDiagnosticRefresh) <|> (anyMessage >> refreshed)
-      askedIn f = liftIO (doesFileExist (f <> ".asked") >>= \case True -> length . T.lines <$> TIO.readFile (f <> ".asked"); False -> pure 0)
+      -- read under the recorded checker's lock: a sweep may be appending
+      askedIn f = liftIO (length <$> recordedAsked f)
       waitFor cond = liftIO (let go n = cond >>= \ok -> if ok || n <= (0 :: Int) then pure ok else threadDelay 50000 >> go (n - 1) in go 200)
       -- the sentence written in the editor after the open: owed its automatic check
       openWritten dir = do
@@ -4413,10 +4414,10 @@ claimPassSpec = describe "plans claim pass" $ do
         two <- sendRequest SMethod_WorkspaceExecuteCommand go
         -- the second answers at once (a message says why), the first after its checks
         let answered i = (() <$ responseForId SMethod_WorkspaceExecuteCommand i) <|> (anyMessage >> answered i)
-        answered two
-        firstDone <- liftIO (doesFileExist (dir </> "checks.json.asked") >>= \case True -> length . T.lines <$> TIO.readFile (dir </> "checks.json.asked"); False -> pure 0)
-        answered one
-        (firstDone < 6,) <$> askedIn (dir </> "checks.json")
+            firstAnswered = (False <$ responseForId SMethod_WorkspaceExecuteCommand one) <|> (True <$ responseForId SMethod_WorkspaceExecuteCommand two) <|> (anyMessage >> firstAnswered)
+        secondFirst <- firstAnswered
+        when secondFirst (answered one)
+        (secondFirst,) <$> askedIn (dir </> "checks.json")
       (secondFirst, n) `shouldBe` (True, 3)
   it "estimates are read from errands.jsonl once" $
     withPass right $ \ports dir _ cfg -> do

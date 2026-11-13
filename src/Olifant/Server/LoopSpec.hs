@@ -20,7 +20,7 @@ import Olifant.Server.State (ServerConfig (..), ServerState (..), filesChanged)
 import Olifant.Server.Telemetry (ErrandRecord (..), OutcomeRecord (..), PassRecord (..), ReconcileRecord (..), Record (..), appendRecord, readRecords, recordsPath)
 import Olifant.Server.Claims (CheckRecord (..), SentenceEntry (..), readClaims, readJoins, storeClaims)
 import Olifant.Server.Claims qualified as C
-import Olifant.Server.Checker (CheckMode (..), Citation (..), Confirmed (..), Judgement (..), Print (..), UnitRef (..))
+import Olifant.Server.Checker (CheckMode (..), Citation (..), Confirmed (..), Judgement (..), Print (..), UnitRef (..), recordedAsked)
 import Olifant.Server.Triage (Route (..), Triage (..))
 import Control.Concurrent (threadDelay)
 import Data.Maybe (isJust)
@@ -1001,10 +1001,8 @@ claimPassSpec = describe "Olifant.Server.Loop (claimPass)" $ describe "claimPass
         claimPass neverCancel mode (dir </> "plans/t.md") s >>= \case
           (s', Right a) -> pure (s', a)
           (_, Left e) -> fail (T.unpack e)
-      checksAsked dir = do
-        let f = checksFile dir <> ".asked"
-        there <- doesFileExist f
-        if there then T.lines <$> TIO.readFile f else pure []
+      -- read under the recorded checker's lock: a sweep may be appending
+      checksAsked dir = recordedAsked (checksFile dir)
       entry a k = M.lookup k (paStore a)
       verdictOf a k = cfJudgement . cjConfirmed <$> (entry a k >>= seCheck)
       passes dir = do

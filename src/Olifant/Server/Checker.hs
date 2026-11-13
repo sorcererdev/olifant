@@ -27,6 +27,7 @@ module Olifant.Server.Checker
   , confirm
   , liveChecker
   , recordedChecker
+  , recordedAsked
   , replayChecker
   , checkerUnder
   ) where
@@ -62,7 +63,7 @@ import Olifant.Server.State (ServerConfig (..), ServerState (..))
 import Olifant.Server.Triage (Triage (..))
 import Olifant.Server.Unit (Named (..), fingerprint, unitLookupIn, unitsWithKinds)
 import Olifant.Workspace (Workspace (..), normalisePath)
-import System.Directory (canonicalizePath)
+import System.Directory (canonicalizePath, doesFileExist)
 import System.FilePath (isAbsolute, makeRelative, (</>))
 
 -- | A unit by its path and (qualified) name.
@@ -350,6 +351,15 @@ replayChecker file live mode s = do
           let entry = object (["text" .= rrText r, "seconds" .= rrSeconds r, "models" .= map fst (rrModels r)] ++ ["cost" .= c | Just c <- [rrCost r]])
           BL.writeFile file (encode (object ["replies" .= Object (KM.insert (Key.fromText key) entry replies')]) <> "\n")
           pure (Right r)
+
+-- | The keys 'recordedChecker' was asked, in order (tests), read under its
+-- writers' lock: in one process GHC refuses to open a file for reading while
+-- it is open for appending ("resource busy"), so a test that reads FILE.asked
+-- while checks run side by side must read it here.
+recordedAsked :: FilePath -> IO [Text]
+recordedAsked file = withMVar recordLock $ \() -> do
+  there <- doesFileExist (file <> ".asked")
+  if there then T.lines . TE.decodeUtf8 <$> BS.readFile (file <> ".asked") else pure []
 
 {-# NOINLINE recordLock #-}
 recordLock :: MVar ()
