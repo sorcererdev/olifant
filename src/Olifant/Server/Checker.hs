@@ -64,7 +64,7 @@ import Olifant.Server.Triage (Triage (..))
 import Olifant.Server.Unit (Named (..), fingerprint, unitLookupIn, unitsWithKinds)
 import Olifant.Workspace (Workspace (..), normalisePath)
 import System.Directory (canonicalizePath, doesFileExist)
-import System.FilePath (isAbsolute, makeRelative, (</>))
+import System.FilePath (isAbsolute, makeRelative, takeFileName, (</>))
 
 -- | A unit by its path and (qualified) name.
 data UnitRef = UnitRef {urPath :: FilePath, urName :: Text}
@@ -256,6 +256,7 @@ parseCheckReply mode reply = do
 -- enclosing unit, if any), else no unit or line at all (the whole file).
 -- Any citation that fails makes the verdict cannot_tell, "cited code not
 -- found"; except for open, which rests on no code: the citation is dropped.
+-- A `.env*` file is never found (a secret is never evidence).
 -- Each citation found has its 'Print': the unit's fingerprint (named, or
 -- enclosing the line), else the whole file's 'fileHash'.
 confirm :: ServerState -> Project -> [FilePath] -> CheckReply -> IO Confirmed
@@ -274,6 +275,8 @@ confirm s p fs r = do
     relOf path
       | isAbsolute path = if (root <> "/") `isPrefixOf` path then confined (makeRelative root path) else Nothing
       | otherwise = confined path
+    -- a `.env*` file is never evidence: a secret, whatever the mode or web
+    secret rel = ".env" `isPrefixOf` takeFileName rel
     fencedOff rel = any (\f -> let f' = normalisePath f in rel == f' || (f' <> "/") `isPrefixOf` rel) fs
     -- the path as the disk resolves it (symlinks followed): under the root
     -- and outside the fences, else not found
@@ -282,13 +285,13 @@ confirm s p fs r = do
       canon <- canonicalizePath (root </> rel)
       let inside = (canonRoot <> "/") `isPrefixOf` canon
           canonFenced = any (\f -> let f' = normalisePath f in (canonRoot </> f') == canon || ((canonRoot </> f') <> "/") `isPrefixOf` canon) fs
-      pure (inside && not canonFenced)
+      pure (inside && not canonFenced && not (secret canon))
     cite c = case relOf (ciPath c) of
       Nothing -> pure Nothing
       Just rel0 -> do
         let rel = normalisePath rel0
         ok <- safely False (resolvedOk rel)
-        if fencedOff rel || not ok
+        if fencedOff rel || secret rel || not ok
           then pure Nothing
           else safely Nothing (readText (prWorkspace p) rel) >>= \case
             Nothing -> pure Nothing

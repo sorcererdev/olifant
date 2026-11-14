@@ -131,6 +131,14 @@ spec = describe "Olifant.Server.Checker" $ do
     file <- confirm s proj fs (reply [Citation "notes.txt" Nothing Nothing])
     (cfJudgement file, cfUnit file) `shouldBe` (JRight, Nothing)
 
+  it ".env files are fenced with web on" $ do
+    -- a secret is never evidence, in any mode, with or without web
+    (s, proj) <- checkerServer
+    forM_ [JRight, JWrong, JDone, JMisfit] $ \j ->
+      forM_ [Citation ".env" Nothing Nothing, Citation "sub/.env.local" Nothing (Just 1), Citation "/r1/.env" Nothing Nothing] $ \c -> do
+        r <- confirm s proj (fences defaultPlans) (CheckReply j "it does" [c])
+        (cfJudgement r, cfWhy r) `shouldBe` (JCannotTell, "cited code not found")
+
   it "a citation through a symlink into a fence or out of the root cannot tell" $
     withSystemTempDirectory "olifant-checker" $ \tmp0 -> do
       tmp <- canonicalizePath tmp0
@@ -183,6 +191,8 @@ checkerServer = do
         ++ [ ("/r1/.olifant/config.toml", "[packs]\npython-htmx = { path = \"/pack\" }\n")
            , ("/r1/src/a.py", "class Foo:\n    def bar(self):\n        return 1\n")
            , ("/r1/notes.txt", "x\n")
+           , ("/r1/.env", "SECRET=x\n")
+           , ("/r1/sub/.env.local", "LOCAL_SECRET=y\n")
            , ("/r1/docs/table.txt", "t\n")
            , ("/a.py", "class Foo:\n    def bar(self):\n        return 1\n")
            , ("/r1/plans/t.md", "# T\n") ]

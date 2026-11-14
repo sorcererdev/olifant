@@ -127,6 +127,21 @@ spec = describe "catalog" $ do
     it "reads check_cost: 5.00 when absent" $ do
       withCatalog [("/proj/.olifant/config.toml", "")] $ \_ cat -> pcCheckCost (catalogPlans cat) `shouldBe` 5.00
       withCatalog [("/proj/.olifant/config.toml", "[plans]\ncheck_cost = 0.25\n")] $ \_ cat -> pcCheckCost (catalogPlans cat) `shouldBe` 0.25
+    it "reads web and web_fetch: off and none when absent; bad values name the key (2b)" $ do
+      withCatalog [("/proj/.olifant/config.toml", "[plans]\nweb = true\nweb_fetch = [\"docs.djangoproject.com\"]\n")] $ \_ cat ->
+        let c = catalogPlans cat in (pcWeb c, pcWebFetch c) `shouldBe` (True, ["docs.djangoproject.com"])
+      withCatalog [("/proj/.olifant/config.toml", "")] $ \_ cat ->
+        let c = catalogPlans cat in (pcWeb c, pcWebFetch c) `shouldBe` (False, [])
+      let bad toml word = openWith [("/proj/.olifant/config.toml", toml)] >>= \case
+            Left (ConfigInvalid _ e) -> e `shouldSatisfy` T.isInfixOf word
+            _ -> expectationFailure ("expected ConfigInvalid naming " <> T.unpack word <> " for " <> T.unpack toml)
+      bad "[plans]\nweb_fetch = [\"*\"]\n" "web_fetch"
+      bad "[plans]\nweb_fetch = [\"https://x.org\"]\n" "web_fetch"
+      bad "[plans]\nweb_fetch = [\"x.org/path\"]\n" "web_fetch"
+      bad "[plans]\nweb_fetch = [\"x.org:8080\"]\n" "web_fetch"
+      bad "[plans]\nweb_fetch = [\"Docs.Example.org\"]\n" "web_fetch"
+      bad "[plans]\nweb_fetch = [\"localhost\"]\n" "web_fetch"
+      bad "[plans]\nweb = \"yes\"\n" "web"
     it "reads recheck: asked by default, or save; anything else names the key" $ do
       withCatalog [("/proj/.olifant/config.toml", "[plans]\nrecheck = \"save\"\n")] $ \_ cat -> pcRecheck (catalogPlans cat) `shouldBe` RecheckSave
       withCatalog [("/proj/.olifant/config.toml", "")] $ \_ cat -> pcRecheck (catalogPlans cat) `shouldBe` RecheckAsked
