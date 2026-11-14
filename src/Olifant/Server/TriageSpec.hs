@@ -50,6 +50,16 @@ spec = describe "Olifant.Server.Triage" $ do
     route True ((t "step" 0.9 0.3) {trAboutPublic = Just 0.9}) `shouldBe` Aside
     routeName Answer `shouldBe` "answer"
 
+  it "a question needs less about-code than a claim or a step (user ruling 2026-11-14)" $ do
+    questionAboutThreshold `shouldBe` 0.50
+    -- R1 ("Do we have raw vote totals from previous years stored?"), about-code 0.62
+    route False (q 0.9 0.62 0) `shouldBe` Answer
+    route False (q 0.9 0.5 0) `shouldBe` Answer
+    route False (q 0.9 0.49 0) `shouldBe` Asked
+    -- claims and steps keep 0.70
+    route False (t "claim" 0.9 0.62) `shouldBe` Aside
+    route False (t "step" 0.9 0.62) `shouldBe` Aside
+
   it "settleable and useWeb: the code, or web with about-public" $ do
     let public = (t "claim" 0.9 0.3) {trAboutPublic = Just 0.9}
     (settleable False public, settleable True public, useWeb False public, useWeb True public) `shouldBe` (False, True, False, True)

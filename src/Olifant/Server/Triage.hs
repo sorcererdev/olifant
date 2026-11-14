@@ -15,6 +15,8 @@ module Olifant.Server.Triage
   , Triage (..)
   , kindThreshold
   , aboutThreshold
+  , questionAboutThreshold
+  , codeSettles
   , byGrammar
   , triageQuestions
   , gradeQuestions
@@ -58,6 +60,13 @@ kindThreshold, aboutThreshold :: Double
 kindThreshold = 0.80
 aboutThreshold = 0.70
 
+-- | About-code a question needs to be answered from the code (claims and
+-- steps keep 'aboutThreshold'): a question that wants an answer is settled
+-- more readily than Jev says ("Do we have raw vote totals stored?" at 0.62).
+-- User ruling 2026-11-14, on the question corpus.
+questionAboutThreshold :: Double
+questionAboutThreshold = 0.50
+
 routeName :: Route -> Text
 routeName = \case
   Verify -> "verify"
@@ -81,7 +90,12 @@ noJev s = case snKind s of
 
 -- | Something can settle it: the code, or (with web) public sources.
 settleable :: Bool -> Triage -> Bool
-settleable web t = trAboutCode t >= aboutThreshold || useWeb web t
+settleable web t = codeSettles t || useWeb web t
+
+-- | The code settles it: about-code at the kind's threshold (a question's is
+-- 'questionAboutThreshold', the rest 'aboutThreshold').
+codeSettles :: Triage -> Bool
+codeSettles t = trAboutCode t >= (if trKind t == "question" then questionAboutThreshold else aboutThreshold)
 
 -- | A check of this sentence gets the web tools: web is on and public sources settle it.
 useWeb :: Bool -> Triage -> Bool
