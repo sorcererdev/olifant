@@ -70,8 +70,9 @@ import System.IO.Unsafe (unsafePerformIO)
 -- | One check as stored: the confirmed verdict, the model that made it, its
 -- cost (when the runner said), its seconds, when, and its mode (absent in
 -- JSON: a claim).
--- | 'cjWeb': the check had the web tools.
-data CheckRecord = CheckRecord {cjConfirmed :: Confirmed, cjModel :: Text, cjCost :: Maybe Double, cjSeconds :: Double, cjAt :: UTCTime, cjMode :: CheckMode, cjWeb :: Bool}
+-- | 'cjWeb': the check had the web tools. 'cjEscalated': a cascade check
+-- (`check_model = "cascade"`) whose verdict is the strong model's.
+data CheckRecord = CheckRecord {cjConfirmed :: Confirmed, cjModel :: Text, cjCost :: Maybe Double, cjSeconds :: Double, cjAt :: UTCTime, cjMode :: CheckMode, cjWeb :: Bool, cjEscalated :: Bool}
   deriving stock (Eq, Show)
 
 -- | A check that failed (the runner, or a reply with no verdict), and when.
@@ -201,6 +202,7 @@ entryJson e =
               ++ ["answer" .= a | Just a <- [cfAnswer cf]] ++ ["detail" .= d | Just d <- [cfDetail cf]]
               ++ ["sources" .= [object ["url" .= soUrl x, "title" .= soTitle x] | x <- cfSources cf] | not (null (cfSources cf))]
               ++ ["web" .= True | cjWeb c]
+              ++ ["escalated" .= True | cjEscalated c]
 
 entry :: Value -> Parser SentenceEntry
 entry = withObject "entry" $ \o ->
@@ -235,7 +237,7 @@ entry = withObject "entry" $ \o ->
         Just "progress" -> pure CheckProgress
         Just "answer" -> pure CheckAnswer
         Just _ -> fail "a check mode"
-      CheckRecord cf <$> c .: "model" <*> c .:? "cost" <*> c .: "seconds" <*> c .: "at" <*> pure mode <*> (fromMaybe False <$> c .:? "web")
+      CheckRecord cf <$> c .: "model" <*> c .:? "cost" <*> c .: "seconds" <*> c .: "at" <*> pure mode <*> (fromMaybe False <$> c .:? "web") <*> (fromMaybe False <$> c .:? "escalated")
     sourceOf = withObject "source" $ \x -> Source <$> x .: "url" <*> x .: "title"
     printOf = withObject "print" $ \x -> Print <$> x .: "path" <*> x .:? "unit" <*> x .: "hash"
 

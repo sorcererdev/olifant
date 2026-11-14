@@ -175,7 +175,7 @@ In `.olifant/config.toml`, all optional:
 | `pass_cost` | `0.50` | dollars an automatic claim pass may spend on checks: before each check it adds the mean cost of this pass's checks so far that cost something (a run that never started costs nothing and is left out; else $0.10) and stops if that would pass the cap; `0` checks nothing. A check whose cost the runner did not report counts as $0.10 |
 | `check_cost` | `5.00` | dollars one *Check the plan* may spend: before each check it adds the estimates of the checks in flight and the next one, and stops when that would pass the cap; at least 0 |
 | `recheck` | `"asked"` | who re-checks a stale verdict: `"asked"`, only *Re-check* and *Check the plan*; `"save"`, each save too, after the owed sentences and under the same caps. Anything else is a configuration error |
-| `check_model` | `"sonnet"` | the model a check runs on (`--model`) |
+| `check_model` | `"sonnet"` | the model a check runs on (`--model`); `"cascade"` checks with haiku first and with sonnet only when Jev doubts haiku's verdict ([The cascade](#the-cascade)) |
 | `check_timeout` | `120` | seconds before a check is killed (at least 1) |
 | `not_evidence` | `["docs"]` | folders a check may not read, besides `dir` and `.olifant/` (add `"book"` when a project's book repeats its plans) |
 | `web` | `true` | a claim or question that public sources settle (Jev's about-public ≥ 0.70) and the code does not is checked with web search instead of the code ([Web research](#web-research)); `false` asks Jev nothing about it and buys no such check |
@@ -610,6 +610,40 @@ on its own (it was written before), it waits as backlog for *Check this* or *Che
 | re-triage of an older store | about $0.0001–0.0002 a stored sentence, once (a 60-sentence plan: about a cent) | the first pass that sees it |
 | an answer from code | about $0.12 (measured mean $0.117, sonnet) | automatically only for a question written since the last save, under `pass_cost`; else on request, the estimate in the title |
 | a web check | $0.01 a search plus the pages' tokens (measured mean $0.047) | with `web = true` (the default), about-public ≥ 0.70 and the code not settling it; automatically only for a sentence written since the last save, under `pass_cost` |
+
+### The cascade
+
+`check_model = "cascade"` is an option, not the default. Each check runs on haiku first; its
+citations are confirmed as always; then one Jev request asks three yes-or-no questions about
+haiku's verdict:
+
+- **why-fits**: does the reason speak to what the sentence says (not a neighbouring thing)?
+- **evidence-fits**: is the cited code what the sentence is about? For a web check, which cites
+  pages and no code: are the pages the named library's own documentation, release notes or
+  migration guide for the version the sentence names?
+- **verdict-follows**: does the verdict follow from the reason?
+
+The check goes on to sonnet when a citation fails, haiku cannot tell, its run fails, or any
+answer is under 0.60. Sonnet's verdict is then the one shown; the stored check and its errand
+line say `"escalated": true`, and the cost and seconds are both runs'. Without Jev (no `[decide]
+model`) nothing can guard haiku, so the cascade checks with sonnet alone. A web check stays a web
+check on either model, and a code check a code check.
+
+What you see is the same margin and hover; only the price and the wait move. Measured on the
+corpus's 29 recorded checks (claims, steps, answers and web, 2026-11-14):
+
+| | sonnet | cascade (0.60) |
+|---|---|---|
+| agrees with the labels | 25 of 27 | 26 of 27: the same 25, and R3 (sonnet could not tell; haiku's done, which the guards kept, is the label) |
+| wrong and sure | 0 | 0 (haiku alone was wrong-sure once, on W1; the guards sent it on) |
+| mean cost a check | $0.082 | $0.038 (haiku about $0.010; 8 of 29 went on to sonnet) |
+| median seconds | 10.3 | 14.6 (haiku takes more turns than sonnet; Jev adds about 0.3 s) |
+
+At 0.70 it missed the half-the-cost bar by $0.0004 a check, at 0.80 the cost and time bars. The
+threshold was tuned on the same 29 checks that score it, so this says "worth a trial", not
+"better": a check on a project of yours may escalate more often. The Jev request is unpriced in
+`plans cost` (about 3,200 input tokens, since it carries the cited code). *Check this* and *Check
+the plan* estimate a cascade check with no history at $0.04.
 
 ## Reviews and the journal
 

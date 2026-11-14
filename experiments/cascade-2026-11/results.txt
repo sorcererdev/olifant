@@ -33,14 +33,14 @@ sonnet: agrees 25/27 labelled, wrong-sure [], mean $0.0816, median 10.3s over 29
 haiku alone: agrees 25/27, wrong-sure ["W1"], mean $0.0101 (no Jev), median 14.3s (with the guard request)
 bars: agree wherever sonnet did (25), no new wrong-sure, mean <= $0.0408, median <= 15.5s
 
-threshold 0.6: escalated 8/29; lost where sonnet agreed []; new wrong-sure []; mean $0.0377 (46% of sonnet); median 14.6s (1.42x sonnet) -> PASS
+threshold 0.6: escalated 8/29; agrees 26/27; lost where sonnet agreed []; new wrong-sure []; mean $0.0377 (46% of sonnet); median 14.6s (1.42x sonnet) -> PASS
   escalated though haiku agreed: S3/S3s (evidence-fits)
   escalated though haiku agreed: R1/R1s (verdict-follows)
   escalated though haiku agreed: R2/Q2 (evidence-fits)
   escalated though haiku agreed: R7 (evidence-fits)
   escalated though haiku agreed: X1 (why-fits+evidence-fits+verdict-follows)
 
-threshold 0.7: escalated 9/29; lost where sonnet agreed []; new wrong-sure []; mean $0.0412 (50% of sonnet); median 15.1s (1.46x sonnet) -> fail
+threshold 0.7: escalated 9/29; agrees 26/27; lost where sonnet agreed []; new wrong-sure []; mean $0.0412 (50% of sonnet); median 15.1s (1.46x sonnet) -> fail
   escalated though haiku agreed: H3 (why-fits)
   escalated though haiku agreed: S3/S3s (evidence-fits)
   escalated though haiku agreed: R1/R1s (verdict-follows)
@@ -48,7 +48,7 @@ threshold 0.7: escalated 9/29; lost where sonnet agreed []; new wrong-sure []; m
   escalated though haiku agreed: R7 (evidence-fits)
   escalated though haiku agreed: X1 (why-fits+evidence-fits+verdict-follows)
 
-threshold 0.8: escalated 12/29; lost where sonnet agreed []; new wrong-sure []; mean $0.0521 (64% of sonnet); median 18.0s (1.75x sonnet) -> fail
+threshold 0.8: escalated 12/29; agrees 26/27; lost where sonnet agreed []; new wrong-sure []; mean $0.0521 (64% of sonnet); median 18.0s (1.75x sonnet) -> fail
   escalated though haiku agreed: H2 (verdict-follows)
   escalated though haiku agreed: H3 (why-fits)
   escalated though haiku agreed: S3/S3s (evidence-fits+verdict-follows)

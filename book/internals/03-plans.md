@@ -46,7 +46,8 @@ a new-step ghost worded from the unit's header.
 | `Server/Excerpt.hs` | code excerpts kept under a step, and the hover over an anchor |
 | `Plans/Sentences.hs` | the **sentences** of a plan, pure: `sentencesWith :: (Int -> Bool) -> [Line] -> [Sentence]` (row and column range, the line's `Kind`, the text with markers stripped, heading, lead, anchor), where the predicate says which rows continue on the next (a row that does not ends its sentence at the line break); `sentences` joins none, `sentencesJoined` joins by a store's answers; `joinCandidates` (the rows that end without `. ? ! :`, with their and the next row's text), `pairKey`, and `sentenceKey`, a sentence's words without anchor or verdict; a span with no letter or digit (an empty `- `, `-  .`) gives no sentence, so nothing downstream sees it |
 | `Server/Triage.hs` | **triage**: `byGrammar` (steps, questions), `triageQuestions web` (Jev's `sentence-kind` choice with no unsure, its `about-code` Noul, the `wants-answer` Noul, and with web the `about-public` Noul, one state), `gradeQuestions` (a `- ? ` line: `about-code`, and `about-public` with web), `fromAnswers` (by question kind), `noJev`, `needsRetriage` and `retriage` (only the missing Nouls), `settleable`, `codeSettles` (about-code at `aboutThreshold`, a question's at `questionAboutThreshold`, 0.50), `useWeb` (web on, about-public at the threshold, and not `codeSettles`: the code check wins), and `route web` with the thresholds `kindThreshold`, `aboutThreshold` and `questionAboutThreshold`; `kindOptions` (exported, its claim text covering what a named library, framework or service does); the join question `joinQuestion` (a `line-continues` Noul, no unsure), `joinThreshold` (0.70), `joinsAnswer`, and `decideJoins` (one `weighAll` per candidate while the pass allows; unsure answers dropped; no Jev, none) |
-| `Server/Checker.hs` | the **checker**: `Judgement` (right, wrong, cannot tell; done, open, misfit; answered), `CheckMode` (`CheckClaim`, JSON `verify`; `CheckProgress`, `progress`; `CheckAnswer`, `answer`) and `checkModeOf` (a triage of kind `step` is checked for progress, `question` answered), `CheckAsk` (mode, web, beliefs), `Source` and `sourceDomain`, `checkPrompt`/`checkPromptWith` and `parseCheckReply` in any mode, `confirm` (every citation checked against the tree and the catalog; a `Print` per citation found, `fileHash` for a whole file), `liveChecker` (the `Check` verb of `runClaude`), `recordedChecker`, `replayChecker`, `checkerUnder`; `UnitRef` |
+| `Server/Checker.hs` | the **checker**: `Judgement` (right, wrong, cannot tell; done, open, misfit; answered), `CheckMode` (`CheckClaim`, JSON `verify`; `CheckProgress`, `progress`; `CheckAnswer`, `answer`) and `checkModeOf` (a triage of kind `step` is checked for progress, `question` answered), `CheckAsk` (mode, web, beliefs), `Source` and `sourceDomain`, `checkPrompt`/`checkPromptWith` and `parseCheckReply` in any mode, `confirm` (every citation checked against the tree and the catalog; a `Print` per citation found, `fileHash` for a whole file), `liveChecker` (the `Check` verb of `runClaude`), `recordedChecker` and `recordedCheckerAs` (a reply under `MODEL: KEY` is that model's), `replayChecker`, `checkerUnder` (the recorded checker for the config's `check_model`); `UnitRef` |
+| `Server/Cascade.hs` | **the cascade** (`check_model = "cascade"`, 2c): `cascadeFirst` (haiku), `cascadeStrong` (sonnet), `cascadeThreshold` (0.60), `isCascade`; `guardQuestions` (three Nouls, one state: `why-fits`, `evidence-fits`, `verdict-follows` over the sentence, the kind of check, the verdict and what it means, the reason and answer, the evidence; a web check's `evidence-fits` asks whether the pages are the named library's own documentation for the version named), `guardEvidence` (a web check's pages; a code check's citations, up to three, each with its unit's first 12 lines read from the workspace), `guardScores` (each guard's yes; unsure is 0) and `escalation` (pure: a failed citation, cannot_tell or a guard under the threshold names why; else Nothing) |
 | `Server/Claims.hs` | the **claim store**, version 2 (`SentenceEntry`: triage, route, `CheckRecord` or `Failure`, `seGone`; `ClaimStore` keyed by `sentenceKey`; `readClaims`/`writeClaims` under `.olifant/state/claims/`; `claimsOf`/`updateClaims` through `ssClaims`: every write is a function of the store as held now, under one lock), `checkable` (routed verify, progress or answer), `modeFor` (the mode asked, else the stored check's, else the triage's), `openSentences` (the sentences less the questions answered in the file), `queued` (owed), `unchecked` (owed or not), `stepUnit` and `stepCitations` (a step's working unit from its check), `pruneClaims`, `checkedKeys`, `lineKey`; the **joins** beside the entries (`Joins`, by `pairKey`, the file's optional `"joins"` field, still version 2; `readJoins`, `writeClaimsWith`, `joinsOf`/`updateJoins` held in `ssClaims` under `<plan>#joins`, same lock and file) and `sentencesOf`, the plan's sentences with its joins, which everything reading sentences calls |
 | `Server/Stale.hs` | **stale verdicts**: `printsNow` (the cited files as they are now, read through the server's cache `ssCitePrints`), `isStale`, `staleKeys`, `staleIn`, `citedPrints`; `CitedFile` lives in `Server/State` (State is below Checker) |
 | `Server/Confine.hs` | `confined` and `safely`, which `Server/Plans` re-exports (here so `LoopQuestions` and `Checker` need not import `Server/Plans`) |
@@ -368,9 +369,15 @@ the whole of it:
    `pass_cost`. `checkSentence` takes a `CheckAsk` (`Plans.askFor cfg store lines (modeFor Nothing entry)`:
    the mode, `ckWeb` when web is on, the mode is not progress and the entry's triage `useWeb`,
    and for an answer to a `- ? ` line its `beliefsOf`), runs
-   `checkerUnder` (the recorded checker when `scCheckAnswers` is set, else `liveChecker`),
-   reads the reply with `parseCheckReply` and confirms it with `confirm`; it appends a `check`
-   errand record (`erAuto`, `erMode`, `erVerdict`, `erWeb`) and puts a priced check's cost into the
+   the checker its caller gives for a config (`\c -> checkerUnder s token c root`: the recorded checker when `scCheckAnswers` is set, else `liveChecker`),
+   reads the reply with `parseCheckReply` and confirms it with `confirm`. With `check_model =
+   "cascade"` it runs that on `cascadeFirst`; unless the run was cancelled, `escalation` over
+   `guardScores` of one `askAll` of `guardQuestions` (Jev from `rungsFor`; not asked for a
+   cannot_tell or a failed run) decides whether to run it again on `cascadeStrong`, whose verdict
+   is stored with `cjEscalated` and both runs' cost, seconds and models; with no Jev the cascade
+   runs `cascadeStrong` alone. It appends one `check`
+   errand record (`erAuto`, `erMode`, `erVerdict`, `erWeb`, `erEscalated`; `erModel` is the
+   config's `check_model`, so `"cascade"`) and puts a priced check's cost into the
    held estimates (`ssEstimates`) under `estimateKey mode web` (`verify`, `answer+web`, …). The key is let go (`releaseKey`, in a `finally`) only after
    the result is stored, so no other check takes it in between. The checker runs under the state's `ssCancel`, not the pass's
    token: a tripped token stops the pass before the next check, and the check in flight
@@ -416,7 +423,8 @@ token, waits for the sweep, and refreshes the diagnostics. `Sweep` is checks mad
 `estimatesOf` reads `errands.jsonl` once per project root into `ssEstimates` (the last 20 priced
 `check` records per `estimateKey`: the mode, `+web` for a web check; no `mode` is `verify`), and
 `checkSentence` prepends each priced check after that; `estimateFor model es mode web` is the
-mean, else `unpricedWebCheck` ($0.30) for a web check, else `unpricedCheck` ($0.01 for haiku).
+mean, else `unpricedWebCheck` ($0.30) for a web check, else `unpricedCheck` ($0.01 for haiku,
+$0.04 for the cascade: its mean on the corpus).
 
 **Stale.** `confirm` keeps a `Print` for every citation found (`cfPrints`): the unit's
 `fingerprint` when a unit was named or encloses the cited line, else `fileHash` of the whole text
@@ -630,9 +638,16 @@ temp folder, scripts the model answers with a recorded decider (`scDecideAnswers
 `scChatAnswers` (initializationOptions `chat_answers`) the same way, through
 `Rungs.rgChatDecider`. The claim pass's checks answer from `scCheckAnswers` (initializationOptions
 `check_answers`): `recordedChecker` reads `{"replies": {KEY: TEXT or {text, cost, seconds,
-delay}}}` by `sentenceKey`, and notes each key asked in `FILE.asked` and each prompt in
+delay}}}` by `sentenceKey` (for a cascade, `haiku: KEY` and `sonnet: KEY` are each model's reply,
+`recordedCheckerAs`), and notes each key asked in `FILE.asked` and each prompt in
 `FILE.prompts`. Its Jev triage answers from `scDecideAnswers` by question kind
-(`sentence-kind`, `about-code`, `wants-answer`, `about-public`; a kind not in the file is unsure).
+(`sentence-kind`, `about-code`, `wants-answer`, `about-public`, and the cascade's guards
+`why-fits`, `evidence-fits`, `verdict-follows`; a kind not in the file is unsure).
+
+**The cascade experiment.** `experiments/cascade-2026-11/Cascade.hs` (not product code, built
+against the in-place library, its README says how) re-did the 29 checks the corpus gates recorded
+for sonnet with haiku, guarded each, and replayed the escalation at 0.6, 0.7 and 0.8; its
+recordings replay for free. It is where `cascadeThreshold` and the guard texts come from.
 
 **The corpus spec.** `ProseCorpusSpec` measures milestone 1 and the step gate of 2a on `testdata/prose-corpus.json`: the
 user's own plan sentences (corpus 2, 27 lines, and two from corpus 3), each labelled with its kind

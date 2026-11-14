@@ -31,7 +31,7 @@ Recordings: `haiku-checks.json` (haiku replies, `replayChecker` format), `guard-
 answers by question key), `guard-times.json` (seconds of each guard request). `results.txt` is
 the run's output; a replay reproduces it exactly.
 
-Result: threshold 0.6 meets every bar (25/25 where sonnet agreed, no new wrong-sure, mean $0.0377
+Result: threshold 0.6 meets every bar (25/25 where sonnet agreed, 26/27 in all, no new wrong-sure, mean $0.0377
 = 46% of sonnet's $0.0816, median 14.6 s = 1.42x sonnet's 10.3 s). 0.7 misses the cost bar by
 a hair ($0.0412 against $0.0408), 0.8 misses cost and time. Live spend $0.294 (haiku) plus 36
 Jev requests. Report: notes/durandal/plan-prose-2c-report.md.

@@ -34,7 +34,7 @@ claim = SentenceEntry (Triage "claim" 0.9 0.9 "jev" Nothing Nothing) Verify Noth
 aside = SentenceEntry (Triage "prose" 0.9 0.1 "jev" Nothing Nothing) Aside Nothing Nothing at0 Nothing False
 
 checked :: Judgement -> SentenceEntry
-checked j = claim {seCheck = Just (CheckRecord (Confirmed j "it drops D" [Citation "app/x.py" (Just "f") (Just 2)] (Just (UnitRef "app/x.py" "f")) (Just "abc1234") [] Nothing Nothing []) "claude-sonnet-5-5" (Just 0.1) 17.5 at0 CheckClaim False)}
+checked j = claim {seCheck = Just (CheckRecord (Confirmed j "it drops D" [Citation "app/x.py" (Just "f") (Just 2)] (Just (UnitRef "app/x.py" "f")) (Just "abc1234") [] Nothing Nothing []) "claude-sonnet-5-5" (Just 0.1) 17.5 at0 CheckClaim False False)}
 
 texts :: [Sentence] -> [Text]
 texts = map snText
@@ -58,7 +58,7 @@ spec = describe "Olifant.Server.Claims" $ do
   it "(a2) an owed entry and a progress check with prints round-trip" $ do
     (s, _) <- claimsServer
     let prints = [Print "app/x.py" (Just "f") "abc1234", Print "app/y.py" Nothing "0f0f0f0"]
-        misfit = CheckRecord (Confirmed JMisfit "is_staff misses the Staff role" [Citation "app/x.py" (Just "f") Nothing, Citation "app/y.py" Nothing Nothing] (Just (UnitRef "app/x.py" "f")) (Just "abc1234") prints Nothing Nothing []) "sonnet" (Just 0.1) 12 at0 CheckProgress False
+        misfit = CheckRecord (Confirmed JMisfit "is_staff misses the Staff role" [Citation "app/x.py" (Just "f") Nothing, Citation "app/y.py" Nothing Nothing] (Just (UnitRef "app/x.py" "f")) (Just "abc1234") prints Nothing Nothing []) "sonnet" (Just 0.1) 12 at0 CheckProgress False False
         store = M.fromList
           [ ("Owed one.", claim {seOwed = True})
           , ("A step", (SentenceEntry (Triage "step" 1 1 "grammar" Nothing Nothing) Progress Nothing Nothing at0 Nothing False) {seCheck = Just misfit}) ]
@@ -97,7 +97,7 @@ spec = describe "Olifant.Server.Claims" $ do
   it "(a6) an answer check with its answer, detail, two sources and web round-trips (2b)" $ do
     (s, _) <- claimsServer
     let srcs = [Source "https://docs.djangoproject.com/a" "QuerySet API", Source "https://htmx.org/b" "hx-on"]
-        answered = CheckRecord (Confirmed JAnswered "the docs say so" [Citation "app/x.py" (Just "f") Nothing] (Just (UnitRef "app/x.py" "f")) (Just "abc1234") [Print "app/x.py" (Just "f") "abc1234"] (Just "Yes, on Postgres.") (Just "Longer.") srcs) "sonnet" (Just 0.2) 30 at0 CheckAnswer True
+        answered = CheckRecord (Confirmed JAnswered "the docs say so" [Citation "app/x.py" (Just "f") Nothing] (Just (UnitRef "app/x.py" "f")) (Just "abc1234") [Print "app/x.py" (Just "f") "abc1234"] (Just "Yes, on Postgres.") (Just "Longer.") srcs) "sonnet" (Just 0.2) 30 at0 CheckAnswer True False
         q = SentenceEntry (Triage "question" 0.95 0.9 "jev" (Just 0.9) (Just 0.9)) Answer (Just answered) Nothing at0 Nothing False
         store = M.fromList [("Does bulk_create return keys?", q)]
     writeClaims (ssPorts s) "/r1" "plans/t.md" store
@@ -107,7 +107,7 @@ spec = describe "Olifant.Server.Claims" $ do
     -- a check with none of them writes none of the keys
     writeClaims (ssPorts s) "/r1" "plans/u.md" (M.fromList [("x", checked JRight)])
     Just plain <- readText (pFiles (ssPorts s)) (claimsPath "/r1" "plans/u.md")
-    mapM_ (\w -> plain `shouldSatisfy` (not . T.isInfixOf w)) ["\"web\"", "\"answer\"", "\"detail\"", "\"sources\""]
+    mapM_ (\w -> plain `shouldSatisfy` (not . T.isInfixOf w)) ["\"web\"", "\"answer\"", "\"detail\"", "\"sources\"", "\"escalated\""]
   it "(a7) a 2a check loads with no web, no answer and no sources" $ do
     (s, _) <- claimsServer
     writeText (pFiles (ssPorts s)) (claimsPath "/r1" "plans/t.md") "{\"version\": 2, \"claims\": {\"x\": {\"triage\": {\"kind\": \"claim\", \"p\": 0.9, \"about\": 0.9, \"by\": \"jev\"}, \"route\": \"verify\", \"check\": {\"verdict\": \"right\", \"why\": \"w\", \"evidence\": [], \"unit\": null, \"fingerprint\": null, \"prints\": [], \"mode\": \"verify\", \"model\": \"sonnet\", \"cost\": 0.1, \"seconds\": 3, \"at\": \"2026-11-07T00:00:00Z\"}, \"failure\": null, \"at\": \"2026-11-07T00:00:00Z\", \"gone\": null}}}"

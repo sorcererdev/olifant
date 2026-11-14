@@ -406,6 +406,7 @@ report rows = do
         lost = [labelId c | (c, _, _, _, _, final, _, _) <- per, labelId c `elem` sonnetAgrees, fmap fst (scored c final) /= Just True]
         newWS = [labelId c | (c, _, _, _, _, final, _, _) <- per, Just (_, True) <- [scored c final], labelId c `notElem` sonnetWrongSure]
         escN = length [() | (_, _, _, _, Just _, _, _, _) <- per]
+        agreeN = length [() | (c, _, _, _, _, final, _, _) <- per, Just (True, _) <- [scored c final]]
         mc = mean [x | (_, _, _, _, _, _, x, _) <- per]
         md = median [x | (_, _, _, _, _, _, _, x) <- per]
         pass = null lost && null newWS && mc <= sCost / 2 && md <= sMed * 1.5
@@ -413,8 +414,8 @@ report rows = do
         missed = [ (labelId c, g) | (c, _, hd, g, Nothing, _, _, _) <- per, Just (False, _) <- [scored c (dnConfirmed hd)]]
         -- escalated though haiku agreed with the label: spend the guards caused
         needless = [ (labelId c, e) | (c, _, hd, _, Just e, _, _, _) <- per, Just (True, False) <- [scored c (dnConfirmed hd)]]
-    printf "\nthreshold %.1f: escalated %d/%d; lost where sonnet agreed %s; new wrong-sure %s; mean $%.4f (%.0f%% of sonnet); median %.1fs (%.2fx sonnet) -> %s\n"
-      t escN (length per) (show lost) (show newWS) mc (100 * mc / sCost) md (md / sMed) (if pass then "PASS" else "fail" :: String)
+    printf "\nthreshold %.1f: escalated %d/%d; agrees %d/%d; lost where sonnet agreed %s; new wrong-sure %s; mean $%.4f (%.0f%% of sonnet); median %.1fs (%.2fx sonnet) -> %s\n"
+      t escN (length per) agreeN labelled (show lost) (show newWS) mc (100 * mc / sCost) md (md / sMed) (if pass then "PASS" else "fail" :: String)
     forM_ missed $ \(i, g) -> printf "  kept but off the label: %s guards %s\n" (T.unpack i) (maybe "-" showGuards g)
     forM_ needless $ \(i, e) -> printf "  escalated though haiku agreed: %s (%s)\n" (T.unpack i) (T.unpack e)
   printf "\nper check:\n"
