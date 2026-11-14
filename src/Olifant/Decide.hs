@@ -27,9 +27,12 @@ module Olifant.Decide
   , recordedDecider
   , questionKey
   , replayDecider
+  , recordMissing
   ) where
 
 import Control.Concurrent (threadDelay)
+import Control.Concurrent.MVar (MVar, newMVar, withMVar)
+import System.IO.Unsafe (unsafePerformIO)
 import Control.Exception (SomeException, try)
 import Data.Bits (xor)
 import Data.Word (Word64)
@@ -368,6 +371,31 @@ replayDecider file live = weighed $ \q -> do
     probabilities = \case
       Object a | Just (Object ps) <- KM.lookup "probabilities" a -> byWeight [(Key.toText k, toRealFloat n) | (k, Number n) <- KM.toList ps]
       _ -> []
+
+-- | 'replayDecider' that asks only what the recording lacks: a recorded key
+-- is replayed; a missing one is asked of LIVE (one question at a time) and
+-- written, under a lock, the file's other keys kept. An unsure live answer
+-- (a failed call) is not written, so it is asked again next time; a miss
+-- is noted in FILE.missed as replaying notes it. To ask a question again,
+-- delete its key.
+recordMissing :: FilePath -> Decider IO -> Decider IO
+recordMissing file live = weighed $ \q -> do
+  let key = questionKey q
+  recorded <- withMVar recordingLock (\() -> readRecording file)
+  case KM.lookup (Key.fromText key) recorded of
+    Just _ -> weigh (replayDecider file Nothing) q
+    Nothing -> do
+      (a, ps) <- weigh live q
+      case a of
+        Unsure -> appendFile (file <> ".missed") (T.unpack key <> "\n")
+        _ -> withMVar recordingLock $ \() -> do
+          now <- readRecording file
+          BL.writeFile file (encode (object ["answers" .= Object (KM.insert (Key.fromText key) (answerValue a ps) now)]) <> "\n")
+      pure (a, ps)
+
+{-# NOINLINE recordingLock #-}
+recordingLock :: MVar ()
+recordingLock = unsafePerformIO (newMVar ())
 
 -- | A recording's answers; a missing or unreadable file has none.
 readRecording :: FilePath -> IO (KM.KeyMap Value)
