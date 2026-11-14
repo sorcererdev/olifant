@@ -366,14 +366,14 @@ spec = describe "Olifant.Server.Plans (anchors in the server)" $ do
           store = M.fromList [("right one", e JRight), ("wrong one", e JWrong), ("open one", queuedEntry)]
           mods = [(ptRow t, ptMods t) | t <- planTokensWith store M.empty (parsePlan "- right one\n- wrong one\n- open one\n- other\n"), ptType t == "planClaim"]
       mods `shouldBe` [(0, ["checked"]), (1, ["wrong"]), (2, []), (3, [])]
-  describe "beliefsUnder" $
-    it "an ask's beliefs are its question's bare claims, once one of them has a verdict" $ do
+  describe "beliefsOf" $
+    it "a question's beliefs are its bare claims, each with its check or not checked" $ do
       let ls = parsePlan "- ? how\n  - it reads D\n  - grounded @src/a.py:Foo ✓ 0123456\n  - it is fast\n- other\n"
           q = ls !! 0
           checked = M.fromList [("it reads D", verdictEntry JWrong "it drops D")]
-      beliefsUnder checked ls q `shouldBe` [Belief "it reads D" (BelievedWrong "it drops D" "src/a.py:Foo"), Belief "it is fast" NotChecked]
-      beliefsUnder M.empty ls q `shouldBe` []
-      beliefsUnder checked ls (ls !! 4) `shouldBe` []
+      beliefsOf checked ls q `shouldBe` [Belief "it reads D" (BelievedWrong "it drops D" "src/a.py:Foo"), Belief "it is fast" NotChecked]
+      beliefsOf M.empty ls q `shouldBe` [Belief "it reads D" NotChecked, Belief "it is fast" NotChecked]
+      beliefsOf checked ls (ls !! 4) `shouldBe` []
   describe "askFor (2b)" $ do
     let ls = parsePlan "## H\n- ? how\n  - it reads D\n  - grounded @src/a.py:Foo ✓ 0123456\n  - it is fast\nDoes it keep D? The loader keeps D.\n- [ ] add D\n"
         sx = sentences ls

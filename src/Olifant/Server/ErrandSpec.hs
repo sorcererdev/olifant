@@ -120,11 +120,6 @@ spec = describe "Olifant.Server.Errand (the claude -p runner)" $ do
   it "status names" $
     map statusName [Ok, Empty, Error, Timeout, Cancelled] `shouldBe` ["ok", "empty", "error", "timeout", "cancelled"]
   describe "prompts and answers" $ do
-    it "ask keeps anchored claims and one conclusion, drops prose" $ do
-      let (bs, dropped) = parseAnswer Ask ls q "Sure.\n- the table has no day @src/a.py:Table\n- closure is absent @src/b.py:Repo\n- so a model is needed\n- ? what about x\n"
-      map ghText (concatMap blLines bs) `shouldBe` ["  - the table has no day   @src/a.py:Table", "  - closure is absent   @src/b.py:Repo", "  - so a model is needed"]
-      dropped `shouldBe` 2
-      map blAfterRow bs `shouldBe` [1]
     it "validate places blocks after the matching line, else at the section's end" $ do
       let (bs, _) = parseAnswer Validate ls heading "AFTER: - a claim @src/a.py:Foo\n  - ✓ holds @src/a.py:Foo\nAFTER: nowhere\n- ? why\n"
       map blAfterRow bs `shouldBe` [2, 4]
@@ -152,12 +147,12 @@ spec = describe "Olifant.Server.Errand (the claude -p runner)" $ do
       (map ghText (concatMap blLines bs), dropped) `shouldBe` (["- [ ] the step   @src/c.py:Baz"], 0)
       (doAnswered "DONE @", doAnswered "DONE @:Foo", doAnswered "DONE the css") `shouldBe` (False, False, False)
     it "never fails on odd input" $ do
-      parseAnswer Ask ls q "" `shouldBe` ([], 0)
+      -- the old ask retired: a `- ?` target answers nothing
+      parseAnswer Validate ls q "" `shouldBe` ([], 0)
+      parseAnswer Validate ls q "- a @x.py:A\n" `shouldBe` ([], 0)
       fst (parseAnswer Validate ls heading "AFTER:") `shouldBe` []
       snd (parseAnswer Validate ls heading "AFTER:") `shouldBe` 1
       parseAnswer Do ls step "DONE\r\nDONE nothing\r\n" `shouldBe` ([], 2)
-      length (fst (parseAnswer Ask ls q "- a @x.py:A\r\n")) `shouldBe` 1
-      parseAnswer Ask ls heading "- a @x.py:A" `shouldBe` ([], 0)
     it "the anchor rule takes the project's languages' unit words" $ do
       py <- shippedLanguage "python" []
       hs <- shippedLanguage "haskell" []
@@ -167,17 +162,11 @@ spec = describe "Olifant.Server.Errand (the claude -p runner)" $ do
       projectUnitWords [hs] `shouldSatisfy` T.isInfixOf "a name bound in its where (function.name)"
       projectUnitWords [py, rs] `shouldBe` defaultUnitWords
       projectUnitWords [] `shouldBe` defaultUnitWords
-      errandPrompt Ask (projectUnitWords [hs]) Nothing plan ls q [] `shouldSatisfy` T.isInfixOf "a name bound in its where"
-    it "an ask carries the author's checked beliefs under its question; none, the prompt as before" $ do
-      let beliefs = [Belief "it reads D" (BelievedRight "src/a.py:Foo"), Belief "it keeps R" (BelievedWrong "it drops R" "src/a.py:Foo"), Belief "it is fast" NotChecked]
-          with = errandPromptWith beliefs Ask pyWords Nothing plan ls q []
-      with `shouldSatisfy` T.isInfixOf (T.intercalate "\n" ["THE AUTHOR'S BELIEFS, ALREADY CHECKED:", "- it reads D — right, about src/a.py:Foo", "- it keeps R — wrong (it drops R), about src/a.py:Foo", "- it is fast — not checked", "Answer what these miss; do not repeat what they say."])
-      errandPromptWith [] Ask pyWords Nothing plan ls q [] `shouldBe` errandPrompt Ask pyWords Nothing plan ls q []
-      errandPrompt Ask pyWords Nothing plan ls q [] `shouldSatisfy` (not . T.isInfixOf "BELIEFS")
+      errandPrompt Do (projectUnitWords [hs]) Nothing plan ls step [] `shouldSatisfy` T.isInfixOf "a name bound in its where"
     it "the prompt carries the plan, the units and the marker" $ do
-      let p = errandPrompt Ask pyWords Nothing plan ls q [Grounded (Anchor "src/a.py" "Foo" 0 0) "class Foo:" "class Foo:\n    pass"]
+      let p = errandPrompt Validate pyWords Nothing plan ls (ls !! 2) [Grounded (Anchor "src/a.py" "Foo" 0 0) "class Foo:" "class Foo:\n    pass"]
       p `shouldSatisfy` T.isInfixOf "<doc>\n"
-      p `shouldSatisfy` T.isInfixOf "QUESTION: where does the day page decide"
+      p `shouldSatisfy` T.isInfixOf "CLAIM: - a claim @src/a.py:Foo"
       p `shouldSatisfy` T.isInfixOf "@src/a.py:Foo\nclass Foo:"
       p `shouldSatisfy` T.isInfixOf "relative to the project root"
     it "validate and do prompts carry the section, step and its test" $ do

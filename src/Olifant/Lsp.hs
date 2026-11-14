@@ -2012,7 +2012,7 @@ errandRequest env verb title req params respond = case documentPath params of
   _ -> invalid
   where
     invalid = respond (Left (TResponseError (InR ErrorCodes_InvalidParams) ("olifant/plans/" <> name <> " needs a textDocument and a line") Nothing))
-    name = case verb of Ask -> "ask"; Validate -> "validate"; Do -> "do"
+    name = case verb of Validate -> "validate"; Do -> "do"; Check -> "check"
     failed why = respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
     run job path line reopen = do
       lspEnv <- getLspEnv

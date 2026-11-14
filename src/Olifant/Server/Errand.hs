@@ -6,7 +6,7 @@ module Olifant.Server.Errand
   , Denial (..), denialsIn
   , statusName, runnerArgs, runClaude, checkFences, webTools, webPrompt
   , Grounded (..), Ghost (..), Block (..)
-  , errandPrompt, errandPromptWith, Belief (..), BeliefCheck (..), anchorRule, projectUnitWords, defaultUnitWords, doTestCommand, doTestTools, testWords, parseAnswer, doAnswered, groundingLimit, cutBody
+  , errandPrompt, Belief (..), BeliefCheck (..), anchorRule, projectUnitWords, defaultUnitWords, doTestCommand, doTestTools, testWords, parseAnswer, doAnswered, groundingLimit, cutBody
   ) where
 
 import Data.Aeson (Value (..), decodeStrict)
@@ -32,7 +32,7 @@ import System.FilePath (dropTrailingPathSeparator)
 
 -- | 'Check': the plan checker, read-only and fenced off the plans,
 -- `.olifant/` and `[plans] not_evidence`.
-data Verb = Ask | Validate | Do | Check deriving (Eq, Show)
+data Verb = Validate | Do | Check deriving (Eq, Show)
 
 -- | Token counts; @tkCacheWrite@ is the runner's @cache_creation_input_tokens@.
 data Tokens = Tokens {tkInput, tkOutput, tkCacheWrite, tkCacheRead :: Int}
@@ -246,25 +246,20 @@ withoutExcerpts t = T.intercalate "\n" [l | (i, l) <- zip [0 ..] (T.splitOn "\n"
   where
     rows = excerptRows (parsePlan t)
 
--- | The prompt for VERB on TARGET; @unitWords@ say what a unit is
--- ('projectUnitWords'); @testCmd@ is the project's test command for a 'Do'
--- ('doTestCommand').
-errandPrompt :: Verb -> Text -> Maybe Text -> Text -> [Line] -> Line -> [Grounded] -> Text
-errandPrompt = errandPromptWith []
-
 -- | A belief the author wrote under a question (its words), and what its
--- check found: right or wrong (why) about a unit (`path:Unit`), or nothing yet.
+-- check found: right or wrong (why) about a unit (`path:Unit`), or nothing
+-- yet. The answer check's prompt gives them ('Olifant.Server.Checker').
 data Belief = Belief Text BeliefCheck
   deriving stock (Eq, Show)
 
 data BeliefCheck = BelievedRight Text | BelievedWrong Text Text | NotChecked
   deriving stock (Eq, Show)
 
--- | 'errandPrompt', an ask's question followed by the author's beliefs
--- under it and their checks, so the answer adds what they miss (none: as
--- 'errandPrompt').
-errandPromptWith :: [Belief] -> Verb -> Text -> Maybe Text -> Text -> [Line] -> Line -> [Grounded] -> Text
-errandPromptWith beliefs verb unitWords testCmd plan ls target grounded =
+-- | The prompt for VERB on TARGET; @unitWords@ say what a unit is
+-- ('projectUnitWords'); @testCmd@ is the project's test command for a 'Do'
+-- ('doTestCommand').
+errandPrompt :: Verb -> Text -> Maybe Text -> Text -> [Line] -> Line -> [Grounded] -> Text
+errandPrompt verb unitWords testCmd plan ls target grounded =
   T.intercalate "\n" $
     ["<doc>", withoutExcerpts plan, "</doc>", ""]
       ++ ["<units>"] ++ concatMap unit grounded ++ ["</units>", ""]
@@ -286,22 +281,8 @@ errandPromptWith beliefs verb unitWords testCmd plan ls target grounded =
         T.intercalate "\n" $
           ["Do this STEP of the plan above in this repository.", "", "STEP: " <> T.strip (T.drop 5 body)]
             ++ [lnText c | c <- childrenOf ls (lnRow target), lnRow c `notElem` excerptRows ls]
-      (Ask, _) -> "Answer the question below about this repository; read the code you need.\n\nQUESTION: " <> T.strip (T.drop 1 (T.dropWhile (/= '?') body)) <> believed
-    believed
-      | null beliefs = ""
-      | otherwise = T.intercalate "\n" (["", "", "THE AUTHOR'S BELIEFS, ALREADY CHECKED:"] ++ map belief beliefs ++ ["Answer what these miss; do not repeat what they say."])
-    belief (Belief b c) = "- " <> b <> " — " <> case c of
-      BelievedRight u -> "right, about " <> u
-      BelievedWrong why u -> "wrong (" <> why <> "), about " <> u
-      NotChecked -> "not checked"
+      _ -> ""
     contract = T.intercalate "\n" $ case verb of
-      Ask ->
-        [ "Answer with 1 to 5 claim lines, each exactly:"
-        , "  - <a claim, one short sentence> @<path>:<Unit>"
-        , "using the anchor of the code that supports the claim; a claim may omit the anchor only if no code supports it."
-        , "Then optionally one last line, exactly:"
-        , "  - <the conclusion, one short sentence>"
-        , anchorRule unitWords, noProse ]
       Validate ->
         [ "Output one or more blocks. A block is one line"
         , "AFTER: <a line of that section, copied verbatim>"
@@ -331,7 +312,6 @@ errandPromptWith beliefs verb unitWords testCmd plan ls target grounded =
 -- | Blocks and the count of dropped (out-of-grammar) lines. Total: never fails.
 parseAnswer :: Verb -> [Line] -> Line -> Text -> ([Block], Int)
 parseAnswer verb ls target out = case (verb, lnKind target) of
-  (Ask, Question) -> parseAsk target rows
   (Validate, Heading _) -> parseValidate ls target rows
   (Validate, Claim) -> parseValidate ls target rows
   (Do, Step _) -> parseDo ls target rows
@@ -357,20 +337,6 @@ ghostOf t = Ghost t (anchorIn t)
 
 pad :: Int -> Text -> Text
 pad n = (T.replicate n " " <>)
-
-parseAsk :: Line -> [Text] -> ([Block], Int)
-parseAsk target rows = (blocks, dropped)
-  where
-    ind = lnIndent target + 2
-    (kept, dropped, _, _) = foldl step ([], 0 :: Int, 0 :: Int, 0 :: Int) rows
-    step (k, d, nA, nC) l = case itemText l of
-      Just t | not ("?" `T.isPrefixOf` t), not ("[" `T.isPrefixOf` t) ->
-        case tailAnchor t of
-          Just (pre, a) | nA < 5 -> (k ++ [ghostOf (pad ind ("- " <> pre <> "   " <> anchorText a))], d, nA + 1, nC)
-          Nothing | not (T.isInfixOf "@" t), nC < 1 -> (k ++ [Ghost (pad ind ("- " <> t)) Nothing], d, nA, nC + 1)
-          _ -> (k, d + 1, nA, nC)
-      _ -> (k, d + 1, nA, nC)
-    blocks = [Block (lnRow target) Nothing kept | not (null kept)]
 
 itemText :: Text -> Maybe Text
 itemText l = T.strip <$> (T.stripPrefix "- " l `orElse` T.stripPrefix "* " l)

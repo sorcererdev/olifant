@@ -32,7 +32,6 @@ module Olifant.Server.Plans
   , planFiles
   , ErrandAnswer (..)
   , runErrand
-  , beliefsUnder
   , beliefsOf
   , askFor
   , Reopen (..)
@@ -56,7 +55,7 @@ import Data.Text.Encoding qualified as TE
 import Olifant.Language.Adapter (Language (..), Probe (..), TestDef (..), chooseTestCommand)
 import Olifant.Plans (Kind (..), childrenOf, testState)
 import Olifant.Process (Cancel, runBytes)
-import Olifant.Server.Errand (Belief (..), BeliefCheck (..), Block (..), Ghost (..), Grounded (..), RunFailure (..), RunResult (..), Status (..), Verb (..), cutBody, doAnswered, doTestCommand, doTestTools, errandPromptWith, projectUnitWords, groundingLimit, parseAnswer, runClaude, statusName)
+import Olifant.Server.Errand (Belief (..), BeliefCheck (..), Block (..), Ghost (..), Grounded (..), RunFailure (..), RunResult (..), Status (..), Verb (..), cutBody, doAnswered, doTestCommand, doTestTools, errandPrompt, projectUnitWords, groundingLimit, parseAnswer, runClaude, statusName)
 import Olifant.Server.LoopTypes (Fact (..))
 import Data.Time (UTCTime, getCurrentTimeZone)
 import Olifant.Server.Journal (DoEnd (..), doEvent)
@@ -639,7 +638,7 @@ data ErrandAnswer = ErrandAnswer
   }
   deriving stock (Eq, Show)
 
--- | Ask, validate or do one line of a plan (its path, its 0-based row): the
+-- | Validate or do one line of a plan (its path, its 0-based row): the
 -- line grounded in the units its section points at, the runner run from the
 -- project's root, its answer read into ghost blocks and logged. Left is one
 -- sentence: the line does not fit the verb, the runner failed, or it
@@ -651,15 +650,6 @@ data ErrandAnswer = ErrandAnswer
 -- in a git repository takes the tree's reference first; one that answered,
 -- or changed the tree however it ended, leaves a review (its id to
 -- REVIEWED, and in the answer).
--- | The author's beliefs under a question (its bare claims), each with
--- what its check found; none unless at least one has a verdict.
-beliefsUnder :: ClaimStore -> [Line] -> Line -> [Belief]
-beliefsUnder store ls q
-  | any (\(Belief _ c) -> c /= NotChecked) beliefs = beliefs
-  | otherwise = []
-  where
-    beliefs = beliefsOf store ls q
-
 -- | Every bare belief (a claim with no anchor) directly under a `- ? `
 -- line, with its check: right or wrong about a unit, else not checked.
 beliefsOf :: ClaimStore -> [Line] -> Line -> [Belief]
@@ -716,9 +706,7 @@ runErrand after reviewed reopen token verb path row s0 =
           tests <- projectTests (workspaceProbe (pFiles (ssPorts s)) (prRoot p)) p
           let tools = if verb == Do then testTools p tests else []
               asked = maybe "" (\ro -> "Further change asked: " <> roAsk ro <> "\n\n") reopen
-          store <- claimsOf s root path
-          let beliefs = if verb == Ask then beliefsUnder store ls target else []
-              prompt = asked <> errandPromptWith beliefs verb (projectUnitWords (catalogLanguages (prCatalog p))) (if verb == Do then listToMaybe' (mapMaybe doTestCommand tests) else Nothing) text ls target grounded
+          let prompt = asked <> errandPrompt verb (projectUnitWords (catalogLanguages (prCatalog p))) (if verb == Do then listToMaybe' (mapMaybe doTestCommand tests) else Nothing) text ls target grounded
               rel = makeRelative root (normalisePath path)
           branch <- currentBranch root
           now <- pNow (ssPorts s)
@@ -828,11 +816,11 @@ runErrand after reviewed reopen token verb path row s0 =
                 pure (Right (ErrandAnswer rid (zip blocks fps) dropped unresolved (rrSeconds rr) (rrCost rr) changed facts rv))
         _ -> pure (Left (verbName <> " needs a " <> kindName <> " line"))
     fits = case verb of
-      Ask -> (== Question)
+      Check -> const False
       Validate -> \case Claim -> True; Heading _ -> True; _ -> False
       Do -> \case Step _ -> True; TestChild -> True; _ -> False
-    verbName = case verb of Ask -> "ask"; Validate -> "validate"; Do -> "do"
-    kindName = case verb of Ask -> "question"; Validate -> "claim or heading"; Do -> "step or test"
+    verbName = case verb of Validate -> "validate"; Do -> "do"; Check -> "check"
+    kindName = case verb of Validate -> "claim or heading"; Do -> "step or test"; Check -> "sentence"
     -- a resolved unit's lines, for the prompt
     grounding a r = case (rsUnit r, rsText r) of
       (Just n, Just t) ->
