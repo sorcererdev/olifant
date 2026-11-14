@@ -382,8 +382,8 @@ spec = describe "Olifant.Server.Plans (anchors in the server)" $ do
         store = M.fromList
           [ ("it reads D", verdictEntry JRight "it reads D")
           , ("how", queuedEntry {seTriage = q {trAboutPublic = Just 0.2}, seRoute = Answer})
-          , ("Does it keep D?", queuedEntry {seTriage = q, seRoute = Answer})
-          , ("The loader keeps D.", queuedEntry {seTriage = (seTriage queuedEntry) {trAboutPublic = Just 0.9}})
+          , ("Does it keep D?", queuedEntry {seTriage = q {trAboutCode = 0.3}, seRoute = Answer})
+          , ("The loader keeps D.", queuedEntry {seTriage = (seTriage queuedEntry) {trAboutCode = 0.3, trAboutPublic = Just 0.9}})
           , ("add D", queuedEntry {seTriage = Triage "step" 0.9 0.9 "jev" (Just 0) (Just 0.9), seRoute = Progress}) ]
         web = defaultPlans {pcWeb = True}
     it "a `- ? ` line's answer gets every bare belief under it, checked or not; a paragraph question none" $ do
@@ -391,10 +391,12 @@ spec = describe "Olifant.Server.Plans (anchors in the server)" $ do
       ckBeliefs (askFor defaultPlans M.empty ls CheckAnswer (at "how")) `shouldBe` [Belief "it reads D" NotChecked, Belief "it is fast" NotChecked]
       ckBeliefs (askFor defaultPlans store ls CheckAnswer (at "Does it keep D?")) `shouldBe` []
       ckBeliefs (askFor defaultPlans store ls CheckClaim (at "how")) `shouldBe` []
-    it "web only with [plans] web and about-public >= 0.70, never for a step" $ do
+    it "web only with [plans] web and about-public >= 0.70, when the code does not settle it; never for a step" $ do
       map (\t -> ckWeb (askFor web store ls (if t == "add D" then CheckProgress else if t == "The loader keeps D." then CheckClaim else CheckAnswer) (at t))) ["how", "Does it keep D?", "The loader keeps D.", "add D"]
         `shouldBe` [False, True, True, False]
       ckWeb (askFor defaultPlans store ls CheckAnswer (at "Does it keep D?")) `shouldBe` False
+      -- the code and public sources both settle it: the code check (user ruling 2026-11-14)
+      ckWeb (askFor web (M.insert "Does it keep D?" queuedEntry {seTriage = q, seRoute = Answer} store) ls CheckAnswer (at "Does it keep D?")) `shouldBe` False
       ckMode (askFor web store ls CheckAnswer (at "how")) `shouldBe` CheckAnswer
   describe "planFolds" $ do
     let folds = planFolds S.empty . parsePlan . T.unlines

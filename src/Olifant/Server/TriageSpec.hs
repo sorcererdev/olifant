@@ -66,6 +66,15 @@ spec = describe "Olifant.Server.Triage" $ do
     (settleable False (t "claim" 0.9 0.9), useWeb True (t "claim" 0.9 0.9)) `shouldBe` (True, False)
     useWeb True (t "claim" 0.9 0.9) {trAboutPublic = Nothing} `shouldBe` False
 
+  it "a sentence the code and public sources both settle takes the code check (user ruling 2026-11-14)" $ do
+    let both = (t "claim" 0.9 0.9) {trAboutPublic = Just 0.9}
+    useWeb True both `shouldBe` False
+    route True both `shouldBe` Verify
+    useWeb True ((t "claim" 0.9 0.6) {trAboutPublic = Just 0.9}) `shouldBe` True
+    -- a question is the code's at its own threshold
+    useWeb True (q 0.9 0.55 0.9) `shouldBe` False
+    useWeb True (q 0.9 0.45 0.9) `shouldBe` True
+
   it "knows steps and questions by their grammar" $ do
     byGrammar (one "- [ ] Add a field") `shouldBe` Just (Triage "step" 1 1 "grammar" Nothing Nothing)
     byGrammar (one "- ? Why is it slow?") `shouldBe` Just (Triage "question" 1 1 "grammar" (Just 1) Nothing)

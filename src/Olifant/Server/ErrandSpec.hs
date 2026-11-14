@@ -22,6 +22,9 @@ spec = describe "Olifant.Server.Errand (the claude -p runner)" $ do
       q = ls !! 1
       heading = ls !! 0
       step = ls !! 3
+      after flag as = case dropWhile (/= flag) as of
+        _ : v : _ -> Just v
+        _ -> Nothing
       shimCfg = do
         d <- getCurrentDirectory
         pure cfg {pcRunner = d </> "src/Olifant/Server/testdata/claude-shim.sh"}
@@ -32,22 +35,33 @@ spec = describe "Olifant.Server.Errand (the claude -p runner)" $ do
   it "builds a fenced read-only check" $ do
     let c = cfg {pcCheckModel = "haiku", pcNotEvidence = ["docs"]}
         args = runnerArgs c Check [] Nothing
-    take 9 args `shouldBe` ["-p", "--output-format", "json", "--model", "haiku", "--permission-prompts", "none", "--allowedTools", "Read,Grep,Glob"]
-    (args !! 9, args !! 10) `shouldBe` ("--settings", "{\"permissions\":{\"deny\":[\"Read(./plans/**)\",\"Read(./.olifant/**)\",\"Read(./docs/**)\"]}}")
-    args !! 11 `shouldBe` "--append-system-prompt"
-    args !! 12 `shouldSatisfy` (\p -> all (`T.isInfixOf` T.pack p) ["current directory", "plans/", ".olifant/", "docs/"])
-    length args `shouldBe` 13
-  it "a check with web tools allows them, fences .env files and says a page is data (2b)" $ do
+    take 7 args `shouldBe` ["-p", "--output-format", "json", "--model", "haiku", "--permission-prompts", "none"]
+    after "--tools" args `shouldBe` Just "Read,Grep,Glob"
+    after "--allowedTools" args `shouldBe` Just "Read,Grep,Glob"
+    after "--settings" args `shouldBe` Just "{\"permissions\":{\"deny\":[\"Read(./plans/**)\",\"Read(./.olifant/**)\",\"Read(./docs/**)\",\"WebSearch\",\"WebFetch\"]}}"
+    after "--append-system-prompt" args `shouldSatisfy` maybe False (\p -> all (`T.isInfixOf` T.pack p) ["current directory", "plans/", ".olifant/", "docs/"])
+    "--strict-mcp-config" `elem` args `shouldBe` True
+  it "a web check has the web tools and no file tools; a code check the file tools and no web (user ruling 2026-11-14)" $ do
     let c = cfg {pcWebFetch = ["docs.djangoproject.com"]}
-        args = runnerArgs c Check (webTools c) Nothing
-    take 9 args `shouldBe` ["-p", "--output-format", "json", "--model", "sonnet", "--permission-prompts", "none", "--allowedTools", "Read,Grep,Glob,WebSearch,WebFetch(domain:docs.djangoproject.com)"]
-    (args !! 9, args !! 10) `shouldBe` ("--settings", "{\"permissions\":{\"deny\":[\"Read(./plans/**)\",\"Read(./.olifant/**)\",\"Read(./docs/**)\",\"Read(./.env*)\",\"Read(./**/.env*)\"]}}")
-    args !! 11 `shouldBe` "--append-system-prompt"
-    args !! 12 `shouldSatisfy` (\p -> T.isInfixOf webPrompt (T.pack p) && T.isInfixOf "plans/" (T.pack p))
-    length args `shouldBe` 13
-    -- with no web tools, the check is today's exactly
-    runnerArgs c Check [] Nothing `shouldBe` runnerArgs cfg Check [] Nothing
-    all (\a -> not (T.isInfixOf ".env" (T.pack a)) && not (T.isInfixOf webPrompt (T.pack a))) (runnerArgs c Check [] Nothing) `shouldBe` True
+        web = runnerArgs c Check (webTools c) Nothing
+        code = runnerArgs c Check [] Nothing
+        tools as = maybe [] (T.splitOn "," . T.pack) (after "--tools" as) ++ maybe [] (T.splitOn "," . T.pack) (after "--allowedTools" as)
+        denied as = maybe [] (\j -> [t | t <- ["Read", "Grep", "Glob", "Edit", "Write", "Bash", "NotebookEdit", "WebSearch", "WebFetch"], ("\"" <> t <> "\"") `T.isInfixOf` T.pack j]) (after "--settings" as)
+        fileTools = ["Read", "Grep", "Glob", "Edit", "Write", "Bash", "NotebookEdit"]
+        isWeb t = "WebSearch" `T.isPrefixOf` t || "WebFetch" `T.isPrefixOf` t
+    -- the web check: only search and the listed hosts' fetch are there; every file tool is denied
+    after "--tools" web `shouldBe` Just "WebSearch,WebFetch"
+    after "--allowedTools" web `shouldBe` Just "WebSearch,WebFetch(domain:docs.djangoproject.com)"
+    filter (not . isWeb) (tools web) `shouldBe` []
+    denied web `shouldBe` fileTools
+    after "--append-system-prompt" web `shouldSatisfy` maybe False (\p -> T.isInfixOf webPrompt (T.pack p) && not (T.isInfixOf "plans/" (T.pack p)))
+    "--strict-mcp-config" `elem` web `shouldBe` True
+    -- with no fetch hosts, search alone
+    after "--tools" (runnerArgs cfg Check (webTools cfg) Nothing) `shouldBe` Just "WebSearch"
+    -- the code check: file tools only, web denied
+    filter isWeb (tools code) `shouldBe` []
+    denied code `shouldBe` ["WebSearch", "WebFetch"]
+    all (\a -> not (T.isInfixOf webPrompt (T.pack a))) code `shouldBe` True
   it "web tools never include an open WebFetch" $ do
     webTools defaultPlans `shouldBe` ["WebSearch"]
     let ts = webTools defaultPlans {pcWebFetch = ["docs.djangoproject.com", "htmx.org"]}

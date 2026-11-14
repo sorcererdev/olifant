@@ -97,9 +97,11 @@ settleable web t = codeSettles t || useWeb web t
 codeSettles :: Triage -> Bool
 codeSettles t = trAboutCode t >= (if trKind t == "question" then questionAboutThreshold else aboutThreshold)
 
--- | A check of this sentence gets the web tools: web is on and public sources settle it.
+-- | A check of this sentence is a web check (web tools, no file tools): web
+-- is on, public sources settle it and the code does not. A sentence both
+-- settle takes the code check (user ruling 2026-11-14).
 useWeb :: Bool -> Triage -> Bool
-useWeb web t = web && maybe False (>= aboutThreshold) (trAboutPublic t)
+useWeb web t = web && not (codeSettles t) && maybe False (>= aboutThreshold) (trAboutPublic t)
 
 -- | The route, with @web@ on or off: never a check that can only end "could not tell".
 route :: Bool -> Triage -> Route

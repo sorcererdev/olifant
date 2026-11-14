@@ -2,6 +2,7 @@
 module Olifant.Server.CheckerSpec (spec, checkerServer) where
 
 import Control.Monad (forM, forM_)
+import Data.List (isPrefixOf)
 import Data.Map.Strict qualified as M
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -22,7 +23,7 @@ import Olifant.Server.Checker
 import Olifant.Server.Errand (Belief (..), BeliefCheck (..), RunResult (..))
 import Olifant.Server.Triage (Triage (..))
 import Olifant.Workspace (diskWorkspace, memoryWorkspace)
-import System.Directory (canonicalizePath, createDirectoryIfMissing, createDirectoryLink, doesDirectoryExist, getCurrentDirectory, listDirectory)
+import System.Directory (canonicalizePath, createDirectoryIfMissing, createDirectoryLink, doesDirectoryExist, getCurrentDirectory, getPermissions, listDirectory, setOwnerExecutable, setPermissions)
 import System.FilePath (makeRelative, takeDirectory, (</>))
 import System.IO.Temp (withSystemTempDirectory)
 import Test.Hspec
@@ -80,6 +81,19 @@ spec = describe "Olifant.Server.Checker" $ do
     w `shouldSatisfy` T.isInfixOf "\"sources\""
     checkPrompt (CheckAsk CheckAnswer True []) s `shouldSatisfy` (not . T.isInfixOf "WebFetch")
 
+  it "a web check's prompt holds the sentence and its heading, and nothing of the repository (user ruling 2026-11-14)" $ do
+    let s = one (T.unlines ["## Stack", "Lead line about the app.", "- Django 5.1 added the querystring tag. @src/a.py:Foo"])
+        q = one (T.unlines ["## Stack", "- ? Does Django 5.2 support composite primary keys?"])
+        bel = [Belief "We use a surrogate key." (BelievedRight "src/a.py:Foo")]
+    forM_ [checkPrompt (CheckAsk CheckClaim True []) s, checkPrompt (CheckAsk CheckAnswer True bel) q] $ \w -> do
+      w `shouldSatisfy` T.isInfixOf "Section: Stack"
+      w `shouldSatisfy` T.isInfixOf "WebSearch"
+      w `shouldSatisfy` T.isInfixOf "\"sources\""
+      forM_ ["repository", "current directory", "Read, Grep", "\"evidence\"", "Lead", "src/a.py", "surrogate", "BELIEFS"] $ \x ->
+        w `shouldSatisfy` (not . T.isInfixOf x)
+    checkPrompt (CheckAsk CheckClaim True []) s `shouldSatisfy` T.isInfixOf "Sentence: Django 5.1 added the querystring tag."
+    checkPrompt (CheckAsk CheckAnswer True bel) q `shouldSatisfy` T.isInfixOf "Question: Does Django 5.2 support composite primary keys?"
+
   it "the claim and progress prompts are 2a's byte for byte without web, and name the web with it" $ do
     let c = one "- The collector retries."
         old = T.unlines
@@ -121,7 +135,11 @@ spec = describe "Olifant.Server.Checker" $ do
     -- a claim resting only on a page, with web
     fmap crJudgement (parseCheckReply (CheckAsk CheckClaim True []) (ans "right" "" "" page)) `shouldBe` Right JRight
     parseCheckReply (CheckAsk CheckClaim False []) (ans "right" "" "" page) `shouldSatisfy` either (const True) (const False)
-    fmap crAnswer (parseCheckReply (CheckAsk CheckClaim True []) (ans "right" "x" cite "")) `shouldBe` Right Nothing
+    fmap crAnswer (parseCheckReply (CheckAsk CheckClaim True []) (ans "right" "x" cite page)) `shouldBe` Right Nothing
+    -- a web check rests on pages only: its code citations are dropped, and none is no source
+    fmap crEvidence (parseCheckReply (CheckAsk CheckClaim True []) (ans "right" "" cite page)) `shouldBe` Right []
+    parseCheckReply (CheckAsk CheckClaim True []) (ans "right" "" cite "") `shouldBe` Left "a verdict with no source"
+    parseCheckReply answerWeb (ans "answered" "Yes." cite "") `shouldBe` Left "a verdict with no source"
 
   it "a source that is not an http(s) address is dropped" $ do
     let srcs = T.intercalate ", " ["{\"url\": \"" <> u <> "\", \"title\": \"t\"}" | u <- ["javascript:alert(1)", "file:///etc/passwd", "src/a.py", "https://", "http://ok.example.org/a"]]
@@ -256,6 +274,35 @@ spec = describe "Olifant.Server.Checker" $ do
     let cfg = defaultPlans {pcRunner = d </> "src/Olifant/Server/testdata/claude-shim.sh"}
     r <- liveChecker neverCancel cfg "/tmp" (CheckAsk CheckClaim False []) (one "- SHIM:CHECK the collector retries")
     fmap rrText r `shouldBe` Right "{\"verdict\": \"right\", \"why\": \"shim\", \"evidence\": [{\"path\": \"src/a.py\", \"unit\": \"Foo\"}]}"
+
+  it "runs a web check outside the repository, with no file tools (user ruling 2026-11-14)" $
+    withSystemTempDirectory "olifant-webcheck" $ \dir -> do
+      let runner = dir </> "runner.sh"
+          root = dir </> "repo"
+      createDirectoryIfMissing True root
+      writeFile runner $ unlines
+        [ "#!/bin/sh"
+        , "cat > /dev/null"
+        , "pwd -P > " <> show (dir </> "pwd")
+        , "printf '%s\\n' \"$@\" > " <> show (dir </> "args")
+        , "echo '{\"result\":\"ok\",\"session_id\":\"s\"}'" ]
+      p <- getPermissions runner
+      setPermissions runner (setOwnerExecutable True p)
+      let cfg = defaultPlans {pcRunner = runner}
+          ran = do
+            cwd <- filter (/= '\n') <$> readFile (dir </> "pwd")
+            as <- lines <$> readFile (dir </> "args")
+            pure (cwd, as)
+      rootP <- canonicalizePath root
+      _ <- liveChecker neverCancel cfg root (CheckAsk CheckClaim True []) (one "- Django 5.1 added the querystring tag.")
+      (cwd, webArgs) <- ran
+      cwd `shouldNotBe` rootP
+      (rootP `isPrefixOf` cwd) `shouldBe` False
+      filter (`elem` ["Read", "Grep", "Glob"]) (concatMap (map T.unpack . T.splitOn "," . T.pack) webArgs) `shouldBe` []
+      _ <- liveChecker neverCancel cfg root (CheckAsk CheckClaim False []) (one "- The collector retries.")
+      (cwd', codeArgs) <- ran
+      cwd' `shouldBe` rootP
+      filter (\a -> "WebSearch" `isPrefixOf` a || "WebFetch" `isPrefixOf` a) (concatMap (map T.unpack . T.splitOn "," . T.pack) codeArgs) `shouldBe` []
 
   it "replays recorded replies by sentence key; a missing key is a failure" $
     withSystemTempDirectory "olifant-checker" $ \dir -> do

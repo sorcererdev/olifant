@@ -69,6 +69,7 @@ import Olifant.Server.Unit (Named (..), fingerprint, unitLookupIn, unitsWithKind
 import Olifant.Workspace (Workspace (..), normalisePath)
 import System.Directory (canonicalizePath, doesFileExist)
 import System.FilePath (isAbsolute, makeRelative, takeFileName, (</>))
+import System.IO.Temp (withSystemTempDirectory)
 
 -- | A unit by its path and (qualified) name.
 data UnitRef = UnitRef {urPath :: FilePath, urName :: Text}
@@ -195,8 +196,41 @@ checkPrompt = checkPromptWith []
 checkPromptWith :: [Text] -> CheckAsk -> Sentence -> Text
 checkPromptWith hosts ask s = case ckMode ask of
   CheckProgress -> progressPrompt s
-  CheckClaim -> claimPrompt hosts (ckWeb ask) s
-  CheckAnswer -> answerPrompt hosts ask s
+  CheckClaim | ckWeb ask -> webCheckPrompt hosts CheckClaim s
+  CheckAnswer | ckWeb ask -> webCheckPrompt hosts CheckAnswer s
+  CheckClaim -> claimPrompt s
+  CheckAnswer -> answerPrompt ask s
+
+-- | A web check's prompt: the sentence and its section heading, and nothing
+-- of the repository (no lead, hint, beliefs or code); it rests on pages alone
+-- (user ruling 2026-11-14).
+webCheckPrompt :: [Text] -> CheckMode -> Sentence -> Text
+webCheckPrompt hosts mode s =
+  T.unlines $
+    [ case mode of
+        CheckAnswer -> "Answer one question from a software plan, from public technical sources."
+        _ -> "Check one sentence of a software plan against public technical sources."
+    , ""
+    , "Section: " <> (if T.null (snHeading s) then "(none)" else snHeading s)
+    , (if mode == CheckAnswer then "Question: " else "Sentence: ") <> snText s
+    , ""
+    , "Search the web (WebSearch) for what public sources settle: a library's or framework's documentation and release notes, a standard, a public API's reference"
+        <> (if null hosts then "" else "; and read pages on " <> T.intercalate ", " hosts <> " (WebFetch)")
+        <> ". You cannot see the project's code."
+    , if mode == CheckAnswer
+        then "Rule: answer from public sources as they stand for the version the question names."
+        else "Rule: judge whether what the sentence says is true, for the version it names; if it also wishes or asks for something, ignore that part."
+    , "If no public source settles it (it is about this project's own code, people, opinions, plans or private documents), the verdict is cannot_tell."
+    , ""
+    , "Answer with one fenced ```json block holding one object, after any notes:"
+    , "```json"
+    , case mode of
+        CheckAnswer -> "{\"verdict\": \"answered | cannot_tell\", \"answer\": \"<the answer, at most three sentences, written to be read in a hover>\", \"detail\": \"<optional: more, for a reader who wants all of it; or null>\", \"why\": \"<one sentence: what the answer rests on>\"" <> sourcesShape <> "}"
+        _ -> "{\"verdict\": \"right | wrong | cannot_tell\", \"why\": \"<one sentence>\"" <> sourcesShape <> "}"
+    , "```"
+    , if mode == CheckAnswer
+        then "For answered, give at least one source: the page the answer rests on."
+        else "For right or wrong, give at least one source: the page the verdict rests on." ]
 
 progressPrompt :: Sentence -> Text
 progressPrompt s =
@@ -225,8 +259,8 @@ progressPrompt s =
          , "```"
          , "For done or misfit, give at least one evidence entry: the code the verdict rests on."
          , "In evidence, \"unit\" is the exact name of one function, class or method as the file defines it (Class.method for a method), or null. For anything else (a template, a heading, part of a function, several names) give null and the line. A unit the file does not define voids the verdict." ]
-claimPrompt :: [Text] -> Bool -> Sentence -> Text
-claimPrompt hosts web s =
+claimPrompt :: Sentence -> Text
+claimPrompt s =
   T.unlines $
     [ "Check one sentence of a software plan against this repository (the current directory)."
     , ""
@@ -239,17 +273,17 @@ claimPrompt hosts web s =
          , "Behaviour can live in any layer: server code, templates, and front-end scripts and styles. Before you conclude that something does not exist, search for it across the whole repository."
          , "Rule: judge what the sentence says is true of the code now; if it also wishes or asks for something, ignore that part."
          ]
-      ++ (if web then webLines hosts ++ [neitherLine] else ["If the code cannot settle it (it is about people, documents or outside services), the verdict is cannot_tell."])
+      ++ ["If the code cannot settle it (it is about people, documents or outside services), the verdict is cannot_tell."]
       ++ [ ""
          , "Answer with one fenced ```json block holding one object, after any notes:"
          , "```json"
-         , "{\"verdict\": \"right | wrong | cannot_tell\", \"why\": \"<one sentence>\", \"evidence\": [" <> evidenceShape <> "]" <> sourcesShape web <> "}"
+         , "{\"verdict\": \"right | wrong | cannot_tell\", \"why\": \"<one sentence>\", \"evidence\": [" <> evidenceShape <> "]}"
          , "```"
-         , if web then "For right or wrong, give at least one evidence entry or one source: what the verdict rests on." else "For right or wrong, give at least one evidence entry: the code the verdict rests on."
+         , "For right or wrong, give at least one evidence entry: the code the verdict rests on."
          , "In evidence, \"unit\" is the exact name of one function, class or method as the file defines it (Class.method for a method), or null. For anything else (a template, a heading, part of a function, several names) give null and the line. A unit the file does not define voids the verdict." ]
 
-answerPrompt :: [Text] -> CheckAsk -> Sentence -> Text
-answerPrompt hosts ask s =
+answerPrompt :: CheckAsk -> Sentence -> Text
+answerPrompt ask s =
   T.unlines $
     [ "Answer one question from a software plan, from this repository (the current directory)."
     , ""
@@ -263,17 +297,14 @@ answerPrompt hosts ask s =
          , "Behaviour can live in any layer: server code, templates, and front-end scripts and styles. Before you conclude that something does not exist, search for it across the whole repository."
          , "Rule: answer from the code as it is now. If the question points back at something (\"it\", \"these\") that the section and lead do not name, take the most likely thing in the code the section is about."
          ]
-      ++ (if web then webLines hosts else [])
       ++ [ "If neither the code nor a public source settles it (it is about people, opinions, plans or private documents), the verdict is cannot_tell."
          , ""
          , "Answer with one fenced ```json block holding one object, after any notes:"
          , "```json"
-         , "{\"verdict\": \"answered | cannot_tell\", \"answer\": \"<the answer, at most three sentences, written to be read in a hover>\", \"detail\": \"<optional: more, for a reader who wants all of it; or null>\", \"why\": \"<one sentence: what the answer rests on>\", \"evidence\": [" <> evidenceShape <> "]" <> sourcesShape web <> "}"
+         , "{\"verdict\": \"answered | cannot_tell\", \"answer\": \"<the answer, at most three sentences, written to be read in a hover>\", \"detail\": \"<optional: more, for a reader who wants all of it; or null>\", \"why\": \"<one sentence: what the answer rests on>\", \"evidence\": [" <> evidenceShape <> "]}"
          , "```"
-         , if web then "For answered, give at least one evidence entry or one source: what the answer rests on." else "For answered, give at least one evidence entry: the code the answer rests on."
+         , "For answered, give at least one evidence entry: the code the answer rests on."
          , "In evidence, \"unit\" is the exact name of one function, class or method as the file defines it (Class.method for a method), or null. For anything else (a template, a heading, part of a function, several names) give null and the line. A unit the file does not define voids the verdict." ]
-  where
-    web = ckWeb ask
 
 -- | A belief as the answer prompt gives it: its words, and its check.
 beliefLine :: Belief -> Text
@@ -282,27 +313,18 @@ beliefLine (Belief b c) = "- " <> b <> " — " <> case c of
   BelievedWrong why u -> "wrong (" <> why <> "), about " <> u
   NotChecked -> "not checked"
 
--- | The paragraph a web check adds: search, fetch only for the listed hosts, sources.
-webLines :: [Text] -> [Text]
-webLines hosts =
-  [ "You may also search the web (WebSearch) for what public sources settle: a library's documentation, a standard, a public API"
-      <> (if null hosts then "" else "; and read pages on " <> T.intercalate ", " hosts <> " (WebFetch)")
-      <> ". Give each page you rest on in sources." ]
-
-neitherLine :: Text
-neitherLine = "If neither the code nor a public source settles it (it is about people, opinions, plans or private documents), the verdict is cannot_tell."
-
 evidenceShape :: Text
 evidenceShape = "{\"path\": \"<path relative to the current directory>\", \"unit\": \"<function or class name, or null>\", \"line\": <line number, or null>}"
 
-sourcesShape :: Bool -> Text
-sourcesShape web = if web then ", \"sources\": [{\"url\": \"<the page's address>\", \"title\": \"<the page's title>\"}]" else ""
+sourcesShape :: Text
+sourcesShape = ", \"sources\": [{\"url\": \"<the page's address>\", \"title\": \"<the page's title>\"}]"
 
 -- | The last ```json block, else the first `{` from which the rest of the
 -- reply decodes as an object. A verdict of another mode is refused, and
 -- so is right, wrong, done, misfit or answered with neither evidence nor a
 -- kept source, and answered with no answer. Sources are kept only for a web
--- check ('ckWeb'): an http(s) address with a host, at most five.
+-- check ('ckWeb'): an http(s) address with a host, at most five; a web check
+-- rests on sources alone (its citations are dropped; none is no source).
 parseCheckReply :: CheckAsk -> Text -> Either Text CheckReply
 parseCheckReply ask reply = do
   v <- maybe (Left "no JSON object in the reply") Right (maybe bare Just fenced)
@@ -330,8 +352,10 @@ parseCheckReply ask reply = do
         Just (Array xs) -> take 5 [x | Object e <- foldr (:) [] xs, Just x <- [source e]]
         _ -> []
   if j == JAnswered && isNothing answer then Left "an answer with no text"
+  else if ckWeb ask && j `elem` [JRight, JWrong, JAnswered] && null sources then Left "a verdict with no source"
   else if j `elem` [JRight, JWrong, JDone, JMisfit, JAnswered] && null evidence && null sources then Left "a verdict with no evidence"
-  else Right (CheckReply j why evidence answer (if j == JAnswered then text "detail" else Nothing) sources)
+  -- a web check rests on pages alone: it saw no code, so it cites none
+  else Right (CheckReply j why (if ckWeb ask then [] else evidence) answer (if j == JAnswered then text "detail" else Nothing) sources)
   where
     wordsOf = \case
       CheckClaim -> [JRight, JWrong, JCannotTell]
@@ -436,10 +460,14 @@ confirm s p fs r = do
                 _ -> Nothing
 
 -- | One live check: the runner under `check_timeout`, the prompt on stdin, cwd the root.
--- A web check ('ckWeb') gets the web tools ('webTools').
+-- A web check ('ckWeb') gets the web tools ('webTools') and runs outside the repository.
 liveChecker :: Cancel -> PlansConfig -> FilePath -> Checker
-liveChecker token cfg root ask s =
-  runClaude token cfg {pcTimeout = pcCheckTimeout cfg} Check (if ckWeb ask then webTools cfg else []) Nothing root (checkPromptWith (pcWebFetch cfg) ask s)
+liveChecker token cfg root ask s
+  -- a web check runs in an empty directory: no repository file, CLAUDE.md or settings reaches it
+  | ckWeb ask = withSystemTempDirectory "olifant-web-check" $ \dir -> run (webTools cfg) dir
+  | otherwise = run [] root
+  where
+    run tools cwd = runClaude token cfg {pcTimeout = pcCheckTimeout cfg} Check tools Nothing cwd (checkPromptWith (pcWebFetch cfg) ask s)
 
 -- | Recorded replies (tests): `{"replies": {KEY: TEXT or {"text", "cost", "seconds"}}}`
 -- by 'sentenceKey' (an object may add "delay", seconds; "gate", a path the reply
