@@ -86,14 +86,14 @@ import Olifant.Server.Excerpt (Excerpt (..), excerptFacts, excerptsOf, unitExcer
 import Olifant.Server.LoopQuestions
 import Olifant.Server.LoopTests
 import Olifant.Server.LoopTypes
-import Olifant.Server.Plans (Resolved (..), confined, currentBranch, gitOut, gitText, resolveAnchor, safely)
+import Olifant.Server.Plans (Resolved (..), askFor, confined, currentBranch, gitOut, gitText, resolveAnchor, safely)
 import Olifant.Server.State (ServerState (..), appendStepLine, projectFor)
 import Olifant.Server.Telemetry (Decision (..), ErrandRecord (..), OutcomeRecord (..), PassRecord (..), ReconcileRecord (..), Record (..), appendRecord, errandId, readRecords, recordsPath)
-import Olifant.Server.Claims (CheckRecord (..), ClaimStore, Failure (..), SentenceEntry (..), claimsOf, claimsPath, joinsOf, pruneClaims, pruneOrphanClaims, queued, sentencesOf, unchecked, updateClaims, updateJoins)
+import Olifant.Server.Claims (CheckRecord (..), ClaimStore, Failure (..), SentenceEntry (..), claimsOf, claimsPath, joinsOf, modeFor, pruneClaims, pruneOrphanClaims, queued, sentencesOf, unchecked, updateClaims, updateJoins)
 import Control.Concurrent.Async qualified as Async
 import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, readMVar)
 import Olifant.Plans.Sentences (Sentence (..), joinCandidates, pairKey, sentenceKey, sentencesJoined)
-import Olifant.Server.Checker (CheckMode (..), Checker, Confirmed (..), Judgement (..), checkModeName, checkModeOf, judgementName, checkPrompt, checkerUnder, confirm, fences, parseCheckReply)
+import Olifant.Server.Checker (CheckAsk (..), CheckMode (..), Checker, Confirmed (..), Judgement (..), checkModeName, checkModeOf, judgementName, checkPrompt, checkerUnder, confirm, fences, parseCheckReply)
 import Olifant.Server.Errand (RunFailure (..), RunResult (..), Status (..))
 import Olifant.Server.Triage (Route (..), Triage (..), decideJoins, needsRetriage, retriage, route, routeName, triage)
 import Olifant.Server.Unit (Named (..), fingerprint, unitsOf)
@@ -738,8 +738,9 @@ claimPass token mode path s0 = do
                                     | otherwise = not (null (queued now [x] cur))
                               if not ready then pure Nothing else do
                                 modifyIORef' tried (S.insert (key x))
-                                mode' <- maybe CheckClaim (checkModeOf . seTriage) . M.lookup (key x) <$> claimsOf s root path
-                                result <- checkSentence s p cfg checker True now rel mode' x
+                                cur' <- claimsOf s root path
+                                let ask = askFor cfg cur' ls (maybe CheckClaim (modeFor Nothing) (M.lookup (key x) cur')) x
+                                result <- checkSentence s p cfg checker True now rel ask x
                                 -- the check in flight finished (a cancel stops the pass
                                 -- before the next one, it does not kill this one): kept
                                 -- while its sentence is in the plan, paid for either way
@@ -808,14 +809,15 @@ checkOne token path wanted s0 =
           unless (M.member wanted store0) $ do
             tr <- triage (pcWeb cfg) (rgJev (rungsFor s {ssCancel = token} p False)) x
             void (updateClaims s root path (M.insertWith (\_ old -> old) wanted (SentenceEntry tr (route (pcWeb cfg) tr) Nothing Nothing now Nothing False)))
-          mode <- maybe CheckClaim (checkModeOf . seTriage) . M.lookup wanted <$> claimsOf s root path
+          cur <- claimsOf s root path
+          let ask = askFor cfg cur (parsePlan text) (maybe CheckClaim (modeFor Nothing) (M.lookup wanted cur)) x
           -- taken atomically (a key a pass or a sweep is checking now is
           -- refused: its check lands), and landed before it is let go
           got <- holdKey s held wanted
           r <-
             if not got then pure (Left "this sentence is being checked now") else
               (do
-                (result, _) <- checkSentence s p cfg (checkerUnder s token cfg root) False now rel mode x
+                (result, _) <- checkSentence s p cfg (checkerUnder s token cfg root) False now rel ask x
                 cancelled token >>= \case
                   True -> pure (Left "cancelled")
                   False -> do
@@ -866,9 +868,10 @@ tallied t0 (r, cost) = case r of
 -- pass asked, not the user): the stored check or the failure, and what it
 -- cost against the pass's cap (a run with no reported cost, 'unpricedCheck';
 -- a run that never answered, nothing).
-checkSentence :: ServerState -> Project -> PlansConfig -> Checker -> Bool -> UTCTime -> FilePath -> CheckMode -> Sentence -> IO (Either Failure CheckRecord, Double)
-checkSentence s p cfg checker auto now plan mode x = do
-  r <- checker mode x
+checkSentence :: ServerState -> Project -> PlansConfig -> Checker -> Bool -> UTCTime -> FilePath -> CheckAsk -> Sentence -> IO (Either Failure CheckRecord, Double)
+checkSentence s p cfg checker auto now plan ask x = do
+  let mode = ckMode ask
+  r <- checker ask x
   let root = prRoot p
       record status why verdict mrr =
         appendRecord (ssPorts s) root . AnErrand $
@@ -876,9 +879,9 @@ checkSentence s p cfg checker auto now plan mode x = do
             { erId = errandId now "check" plan (snRow x) (mrr >>= rrSession), erAt = now, erVerb = "check", erPlan = plan, erRow = snRow x
             , erSection = snHeading x, erBranch = Nothing, erModel = pcCheckModel cfg, erStatus = status, erWhy = why
             , erSession = mrr >>= rrSession, erSeconds = rrSeconds <$> mrr, erTurns = mrr >>= rrTurns, erTokens = mrr >>= rrTokens
-            , erCost = mrr >>= rrCost, erModels = maybe [] rrModels mrr, erPromptChars = T.length (checkPrompt mode x), erGrounded = 0
+            , erCost = mrr >>= rrCost, erModels = maybe [] rrModels mrr, erPromptChars = T.length (checkPrompt ask x), erGrounded = 0
             , erBlocks = 0, erLines = 0, erDropped = 0, erUnresolved = 0, erChanged = 0, erDenials = maybe 0 rrDenials mrr
-            , erParent = Nothing, erAuto = auto, erMode = Just (checkModeName mode), erVerdict = verdict }
+            , erParent = Nothing, erAuto = auto, erMode = Just (checkModeName mode), erVerdict = verdict, erWeb = ckWeb ask }
   case r of
     Left f -> do
       record (rfStatus f) (Just (rfWhy f)) Nothing Nothing
@@ -889,7 +892,7 @@ checkSentence s p cfg checker auto now plan mode x = do
       -- a priced check moves its mode's estimate (when the estimates were read)
       forM_ (rrCost rr) $ \c ->
         atomicModifyIORef' (ssEstimates s) (\m -> (M.adjust (M.insertWith (\new old -> take 20 (new ++ old)) (checkModeName mode) [c]) (prRoot p) m, ()))
-      case parseCheckReply mode (rrText rr) of
+      case parseCheckReply ask (rrText rr) of
         Left why -> do
           record Empty (Just why) Nothing (Just rr)
           pure (Left (Failure why now), cost)
@@ -897,7 +900,7 @@ checkSentence s p cfg checker auto now plan mode x = do
           c <- confirm s p (fences cfg) reply
           record Ok Nothing (Just (judgementName (cfJudgement c))) (Just rr)
           let model = maybe (pcCheckModel cfg) fst (listToMaybe (rrModels rr))
-          pure (Right (CheckRecord c model (rrCost rr) (rrSeconds rr) now mode), cost)
+          pure (Right (CheckRecord c model (rrCost rr) (rrSeconds rr) now mode (ckWeb ask)), cost)
 
 -- | How many checks *Check the plan* runs at once.
 sweepWidth :: Int
@@ -1012,7 +1015,8 @@ checkPlan token progress path s0 =
                         -- a check that throws (an IO error writing its record, say) is a
                         -- failed check, its estimate counted as spent: the other workers'
                         -- checks go on and land. A cancel (async) still ends the sweep
-                        (result, c) <- trySync (checkSentence s p cfg checker False now rel mode x) <&> \case
+                        cur <- claimsOf s root path
+                        (result, c) <- trySync (checkSentence s p cfg checker False now rel (askFor cfg cur (parsePlan text) mode x) x) <&> \case
                           Right rc -> rc
                           Left e -> (Left (Failure ("the check failed: " <> T.pack (displayException e)) now), est)
                         killed <- cancelled (ssCancel s)

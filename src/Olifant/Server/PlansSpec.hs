@@ -21,10 +21,11 @@ import Olifant.Process (gitStateStamp)
 import Olifant.Server (ServerState, newServerState, projectFor)
 import Olifant.Server.Plans
 import Olifant.Server.Claims (CheckRecord (..), Failure (..), SentenceEntry (..))
-import Olifant.Plans.Sentences (sentences, sentencesWith)
+import Olifant.Plans.Sentences (Sentence (..), sentences, sentencesWith)
+import Olifant.Catalog (PlansConfig (..), defaultPlans)
 import Olifant.Server.Triage (Route (..), Triage (..))
 import Olifant.Server.Errand (Belief (..), BeliefCheck (..))
-import Olifant.Server.Checker (CheckMode (..), Citation (..), Confirmed (..), Judgement (..), UnitRef (..))
+import Olifant.Server.Checker (CheckAsk (..), CheckMode (..), Citation (..), Confirmed (..), Judgement (..), UnitRef (..))
 import Olifant.Server.Unit (Named (..))
 import Olifant.Workspace (memoryWorkspace)
 import System.Directory (canonicalizePath, doesDirectoryExist, listDirectory)
@@ -260,7 +261,7 @@ spec = describe "Olifant.Server.Plans (anchors in the server)" $ do
     let checkOf e = case seCheck e of
           Just c -> c
           Nothing -> error "no check"
-        two = queuedEntry {seCheck = Just (CheckRecord (Confirmed JWrong "it drops D" [Citation "app/x.py" (Just "f") (Just 2), Citation "app/y.py" (Just "g") Nothing] (Just (UnitRef "app/x.py" "f")) Nothing []) "m" Nothing 1 at0 CheckClaim)}
+        two = queuedEntry {seCheck = Just (CheckRecord (Confirmed JWrong "it drops D" [Citation "app/x.py" (Just "f") (Just 2), Citation "app/y.py" (Just "g") Nothing] (Just (UnitRef "app/x.py" "f")) Nothing [] Nothing Nothing []) "m" Nothing 1 at0 CheckClaim False)}
         insertOf (TextEdit r t) = ((r ^. L.start . L.line, r ^. L.start . L.character), (r ^. L.end . L.line, r ^. L.end . L.character), t)
         one_ ls = case sentences ls of
           x : _ -> x
@@ -312,6 +313,28 @@ spec = describe "Olifant.Server.Plans (anchors in the server)" $ do
       beliefsUnder checked ls q `shouldBe` [Belief "it reads D" (BelievedWrong "it drops D" "src/a.py:Foo"), Belief "it is fast" NotChecked]
       beliefsUnder M.empty ls q `shouldBe` []
       beliefsUnder checked ls (ls !! 4) `shouldBe` []
+  describe "askFor (2b)" $ do
+    let ls = parsePlan "## H\n- ? how\n  - it reads D\n  - grounded @src/a.py:Foo ✓ 0123456\n  - it is fast\nDoes it keep D? The loader keeps D.\n- [ ] add D\n"
+        sx = sentences ls
+        at t = head [x | x <- sx, snText x == t]
+        q = Triage "question" 0.9 0.9 "jev" (Just 0.9) (Just 0.9)
+        store = M.fromList
+          [ ("it reads D", verdictEntry JRight "it reads D")
+          , ("how", queuedEntry {seTriage = q {trAboutPublic = Just 0.2}, seRoute = Answer})
+          , ("Does it keep D?", queuedEntry {seTriage = q, seRoute = Answer})
+          , ("The loader keeps D.", queuedEntry {seTriage = (seTriage queuedEntry) {trAboutPublic = Just 0.9}})
+          , ("add D", queuedEntry {seTriage = Triage "step" 0.9 0.9 "jev" (Just 0) (Just 0.9), seRoute = Progress}) ]
+        web = defaultPlans {pcWeb = True}
+    it "a `- ? ` line's answer gets every bare belief under it, checked or not; a paragraph question none" $ do
+      ckBeliefs (askFor defaultPlans store ls CheckAnswer (at "how")) `shouldBe` [Belief "it reads D" (BelievedRight "src/a.py:Foo"), Belief "it is fast" NotChecked]
+      ckBeliefs (askFor defaultPlans M.empty ls CheckAnswer (at "how")) `shouldBe` [Belief "it reads D" NotChecked, Belief "it is fast" NotChecked]
+      ckBeliefs (askFor defaultPlans store ls CheckAnswer (at "Does it keep D?")) `shouldBe` []
+      ckBeliefs (askFor defaultPlans store ls CheckClaim (at "how")) `shouldBe` []
+    it "web only with [plans] web and about-public >= 0.70, never for a step" $ do
+      map (\t -> ckWeb (askFor web store ls (if t == "add D" then CheckProgress else if t == "The loader keeps D." then CheckClaim else CheckAnswer) (at t))) ["how", "Does it keep D?", "The loader keeps D.", "add D"]
+        `shouldBe` [False, True, True, False]
+      ckWeb (askFor defaultPlans store ls CheckAnswer (at "Does it keep D?")) `shouldBe` False
+      ckMode (askFor web store ls CheckAnswer (at "how")) `shouldBe` CheckAnswer
   describe "planFolds" $ do
     let folds = planFolds S.empty . parsePlan . T.unlines
     it "a ticked step with children folds to its last descendant" $
@@ -341,7 +364,7 @@ queuedEntry = SentenceEntry (Triage "claim" 0.9 0.9 "jev" Nothing Nothing) Verif
 
 -- | A verify sentence checked J, with WHY, citing src/a.py:Foo.
 verdictEntry :: Judgement -> Text -> SentenceEntry
-verdictEntry j why = queuedEntry {seCheck = Just (CheckRecord (Confirmed j why [Citation "src/a.py" (Just "Foo") Nothing] (Just (UnitRef "src/a.py" "Foo")) (Just "abc1234") []) "claude-sonnet-5-5" (Just 0.1) 12 at0 CheckClaim)}
+verdictEntry j why = queuedEntry {seCheck = Just (CheckRecord (Confirmed j why [Citation "src/a.py" (Just "Foo") Nothing] (Just (UnitRef "src/a.py" "Foo")) (Just "abc1234") [] Nothing Nothing []) "claude-sonnet-5-5" (Just 0.1) 12 at0 CheckClaim False)}
 
 -- | /r1 with the python pack, `src/a.py` (class Foo with def bar) and a
 -- plan; a syntax whose units are Foo (lines 0-2) and Foo.bar (1-2).

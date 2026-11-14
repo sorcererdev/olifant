@@ -26,8 +26,8 @@ foo = "class Foo:\n    def bar(self):\n        return 1\n"
 
 checkOf :: ServerState -> Project -> Judgement -> [Citation] -> IO CheckRecord
 checkOf s proj j cs = do
-  c <- confirm s proj (fences defaultPlans) (CheckReply j "w" cs)
-  pure (CheckRecord c "sonnet" Nothing 1 at0 CheckClaim)
+  c <- confirm s proj (fences defaultPlans) (CheckReply j "w" cs Nothing Nothing [])
+  pure (CheckRecord c "sonnet" Nothing 1 at0 CheckClaim False)
 
 -- | The file rewritten on disk, as a watched-file change reports it.
 rewrite :: ServerState -> FilePath -> Text -> IO ServerState

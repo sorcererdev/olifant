@@ -19,7 +19,7 @@ import Olifant.Process (gitStateStamp, neverCancel)
 import Olifant.Server (ServerState, newServerState, projectFor)
 import Olifant.Server.State (ServerState (..))
 import Olifant.Server.Checker
-import Olifant.Server.Errand (RunResult (..))
+import Olifant.Server.Errand (Belief (..), BeliefCheck (..), RunResult (..))
 import Olifant.Server.Triage (Triage (..))
 import Olifant.Workspace (diskWorkspace, memoryWorkspace)
 import System.Directory (canonicalizePath, createDirectoryIfMissing, createDirectoryLink, doesDirectoryExist, getCurrentDirectory, listDirectory)
@@ -34,23 +34,24 @@ one t = case reverse (sentences (parsePlan t)) of
 
 spec :: Spec
 spec = describe "Olifant.Server.Checker" $ do
-  it "a step is checked for progress, anything else as a claim" $ do
+  it "a step is checked for progress, a question answered, anything else as a claim" $ do
     checkModeOf (Triage "step" 0.9 0.9 "jev" Nothing Nothing) `shouldBe` CheckProgress
     checkModeOf (Triage "claim" 0.9 0.9 "jev" Nothing Nothing) `shouldBe` CheckClaim
-    map checkModeName [CheckClaim, CheckProgress] `shouldBe` ["verify", "progress"]
+    checkModeOf (Triage "question" 0.9 0.9 "jev" (Just 0.9) Nothing) `shouldBe` CheckAnswer
+    map checkModeName [CheckClaim, CheckProgress, CheckAnswer] `shouldBe` ["verify", "progress", "answer"]
   it "fileHash is stable and changes with one character" $ do
     fileHash "a\nb\n" `shouldBe` fileHash "a\nb\n"
     T.length (fileHash "a\nb\n") `shouldBe` 7
     fileHash "a\nb\n" `shouldNotBe` fileHash "a\nc\n"
   it "every verdict has a JSON word that reads back" $
-    map (judgementNamed . judgementName) [JRight, JWrong, JCannotTell, JDone, JOpen, JMisfit]
-      `shouldBe` map Just [JRight, JWrong, JCannotTell, JDone, JOpen, JMisfit]
+    map (judgementNamed . judgementName) [JRight, JWrong, JCannotTell, JDone, JOpen, JMisfit, JAnswered]
+      `shouldBe` map Just [JRight, JWrong, JCannotTell, JDone, JOpen, JMisfit, JAnswered]
   it "fences the plans dir, .olifant and not_evidence" $
     fences defaultPlans {pcDir = "plans", pcNotEvidence = ["docs", "book"]} `shouldBe` ["plans", ".olifant", "docs", "book"]
 
   it "asks about the sentence in its context, judged as it stands now" $ do
     let s = one (T.unlines ["## Retries", "- ? Do we retry?", "  - The collector retries three times."])
-        p = checkPrompt CheckClaim s
+        p = checkPrompt (CheckAsk CheckClaim False []) s
     p `shouldSatisfy` T.isInfixOf "Retries"
     p `shouldSatisfy` T.isInfixOf "Do we retry?"
     p `shouldSatisfy` T.isInfixOf "The collector retries three times."
@@ -58,43 +59,128 @@ spec = describe "Olifant.Server.Checker" $ do
     p `shouldSatisfy` T.isInfixOf "```json"
     p `shouldSatisfy` T.isInfixOf "right | wrong | cannot_tell"
     p `shouldSatisfy` (not . T.isInfixOf "the writer pointed at")
-    checkPrompt CheckClaim (one "- slugify lowercases @src/slug.py:slugify") `shouldSatisfy` T.isInfixOf "the writer pointed at `src/slug.py:slugify`"
+    checkPrompt (CheckAsk CheckClaim False []) (one "- slugify lowercases @src/slug.py:slugify") `shouldSatisfy` T.isInfixOf "the writer pointed at `src/slug.py:slugify`"
+
+  it "asks for an answer: the question, the beliefs under it, three sentences (2b)" $ do
+    let s = one (T.unlines ["## Retries", "- ? Do we retry?"])
+        p = checkPrompt (CheckAsk CheckAnswer False [Belief "it is kept" NotChecked, Belief "it retries" (BelievedRight "src/a.py:Foo")]) s
+    p `shouldSatisfy` T.isInfixOf "Question: Do we retry?"
+    p `shouldSatisfy` T.isInfixOf "answered | cannot_tell"
+    p `shouldSatisfy` T.isInfixOf "three sentences"
+    p `shouldSatisfy` T.isInfixOf "THE WRITER'S BELIEFS UNDER IT:"
+    p `shouldSatisfy` T.isInfixOf "it is kept — not checked"
+    p `shouldSatisfy` T.isInfixOf "it retries — right, about src/a.py:Foo"
+    p `shouldSatisfy` T.isInfixOf "If neither the code nor a public source settles it"
+    p `shouldSatisfy` (not . T.isInfixOf "WebSearch")
+    p `shouldSatisfy` (not . T.isInfixOf "\"sources\"")
+    checkPrompt (CheckAsk CheckAnswer False []) s `shouldSatisfy` (not . T.isInfixOf "BELIEFS")
+    let w = checkPromptWith ["docs.djangoproject.com"] (CheckAsk CheckAnswer True []) s
+    w `shouldSatisfy` T.isInfixOf "WebSearch"
+    w `shouldSatisfy` T.isInfixOf "read pages on docs.djangoproject.com (WebFetch)"
+    w `shouldSatisfy` T.isInfixOf "\"sources\""
+    checkPrompt (CheckAsk CheckAnswer True []) s `shouldSatisfy` (not . T.isInfixOf "WebFetch")
+
+  it "the claim and progress prompts are 2a's byte for byte without web, and name the web with it" $ do
+    let c = one "- The collector retries."
+        old = T.unlines
+          [ "Check one sentence of a software plan against this repository (the current directory)."
+          , ""
+          , "Section: (none)"
+          , "Sentence: The collector retries."
+          , ""
+          , "Use Read, Grep and Glob to find the code the sentence is about, and read it."
+          , "Behaviour can live in any layer: server code, templates, and front-end scripts and styles. Before you conclude that something does not exist, search for it across the whole repository."
+          , "Rule: judge what the sentence says is true of the code now; if it also wishes or asks for something, ignore that part."
+          , "If the code cannot settle it (it is about people, documents or outside services), the verdict is cannot_tell."
+          , ""
+          , "Answer with one fenced ```json block holding one object, after any notes:"
+          , "```json"
+          , "{\"verdict\": \"right | wrong | cannot_tell\", \"why\": \"<one sentence>\", \"evidence\": [{\"path\": \"<path relative to the current directory>\", \"unit\": \"<function or class name, or null>\", \"line\": <line number, or null>}]}"
+          , "```"
+          , "For right or wrong, give at least one evidence entry: the code the verdict rests on."
+          , "In evidence, \"unit\" is the exact name of one function, class or method as the file defines it (Class.method for a method), or null. For anything else (a template, a heading, part of a function, several names) give null and the line. A unit the file does not define voids the verdict." ]
+    checkPrompt (CheckAsk CheckClaim False []) c `shouldBe` old
+    let w = checkPrompt (CheckAsk CheckClaim True []) c
+    w `shouldSatisfy` T.isInfixOf "WebSearch"
+    w `shouldSatisfy` T.isInfixOf "\"sources\""
+    let st = one "- [ ] move the hint"
+    checkPrompt (CheckAsk CheckProgress True []) st `shouldBe` checkPrompt (CheckAsk CheckProgress False []) st
+
+  it "reads an answer: answered needs text and evidence or (with web) a source; only http(s) sources" $ do
+    let ans v a ev src = "```json\n{\"verdict\": \"" <> v <> "\", \"answer\": \"" <> a <> "\", \"detail\": \"more\", \"why\": \"w\", \"evidence\": [" <> ev <> "], \"sources\": [" <> src <> "]}\n```"
+        cite = "{\"path\": \"src/a.py\", \"unit\": \"Foo\"}"
+        page = "{\"url\": \"https://docs.djangoproject.com/en/5.2/ref/\", \"title\": \"QuerySet API\"}"
+        answer = CheckAsk CheckAnswer False []
+        answerWeb = CheckAsk CheckAnswer True []
+    fmap (\r -> (crJudgement r, crAnswer r, crDetail r)) (parseCheckReply answer (ans "answered" "Yes, three times." cite "")) `shouldBe` Right (JAnswered, Just "Yes, three times.", Just "more")
+    parseCheckReply answer (ans "answered" " " cite "") `shouldBe` Left "an answer with no text"
+    fmap crSources (parseCheckReply answerWeb (ans "answered" "Yes." "" page)) `shouldBe` Right [Source "https://docs.djangoproject.com/en/5.2/ref/" "QuerySet API"]
+    parseCheckReply answer (ans "answered" "Yes." "" page) `shouldBe` Left "a verdict with no evidence"
+    parseCheckReply answer (ans "right" "Yes." cite "") `shouldSatisfy` either (const True) (const False)
+    fmap crJudgement (parseCheckReply answer (ans "cannot_tell" "" "" "")) `shouldBe` Right JCannotTell
+    -- a claim resting only on a page, with web
+    fmap crJudgement (parseCheckReply (CheckAsk CheckClaim True []) (ans "right" "" "" page)) `shouldBe` Right JRight
+    parseCheckReply (CheckAsk CheckClaim False []) (ans "right" "" "" page) `shouldSatisfy` either (const True) (const False)
+    fmap crAnswer (parseCheckReply (CheckAsk CheckClaim True []) (ans "right" "x" cite "")) `shouldBe` Right Nothing
+
+  it "a source that is not an http(s) address is dropped" $ do
+    let srcs = T.intercalate ", " ["{\"url\": \"" <> u <> "\", \"title\": \"t\"}" | u <- ["javascript:alert(1)", "file:///etc/passwd", "src/a.py", "https://", "http://ok.example.org/a"]]
+        reply = "{\"verdict\": \"answered\", \"answer\": \"a\", \"why\": \"w\", \"evidence\": [], \"sources\": [" <> srcs <> "]}"
+    fmap (map soUrl . crSources) (parseCheckReply (CheckAsk CheckAnswer True []) reply) `shouldBe` Right ["http://ok.example.org/a"]
+    let many = T.intercalate ", " ["{\"url\": \"https://x.org/" <> T.pack (show n) <> "\", \"title\": \"t\"}" | n <- [1 .. 7 :: Int]]
+    fmap (length . crSources) (parseCheckReply (CheckAsk CheckAnswer True []) ("{\"verdict\": \"answered\", \"answer\": \"a\", \"why\": \"w\", \"evidence\": [], \"sources\": [" <> many <> "]}")) `shouldBe` Right 5
+
+  it "sourceDomain is the host without www." $ do
+    sourceDomain "https://www.djangoproject.com/x" `shouldBe` "djangoproject.com"
+    sourceDomain "https://docs.djangoproject.com:443/en/?q=1" `shouldBe` "docs.djangoproject.com"
+    sourceDomain "http://HTMX.org" `shouldBe` "htmx.org"
+
+  it "confirms an answer: a missing citation makes it cannot_tell with no answer; a source alone passes through" $ do
+    (s, proj) <- checkerServer
+    let fs = fences defaultPlans
+        src = [Source "https://htmx.org/x" "hx-on"]
+    missing <- confirm s proj fs (CheckReply JAnswered "w" [Citation "src/nope.py" (Just "Foo") Nothing] (Just "yes") (Just "d") src)
+    (cfJudgement missing, cfWhy missing, cfAnswer missing, cfSources missing) `shouldBe` (JCannotTell, "cited code not found", Nothing, [])
+    onlySource <- confirm s proj fs (CheckReply JAnswered "w" [] (Just "yes") Nothing src)
+    (cfJudgement onlySource, cfAnswer onlySource, cfSources onlySource, cfPrints onlySource) `shouldBe` (JAnswered, Just "yes", src, [])
+    both <- confirm s proj fs (CheckReply JAnswered "w" [Citation "src/a.py" (Just "Foo") Nothing] (Just "yes") (Just "d") src)
+    (cfJudgement both, cfAnswer both, cfDetail both, cfSources both, length (cfPrints both)) `shouldBe` (JAnswered, Just "yes", Just "d", src, 1)
 
   it "asks about a step's progress: the whole step, whether it is ticked, four words" $ do
     let s = one (T.unlines ["## Hints", "Hints move the text.", "- [ ] move the hint @src/a.py:Foo", "  so it does not shift"])
-        p = checkPrompt CheckProgress s
+        p = checkPrompt (CheckAsk CheckProgress False []) s
     p `shouldSatisfy` T.isInfixOf "Hints"
     p `shouldSatisfy` T.isInfixOf "Hints move the text."
     p `shouldSatisfy` T.isInfixOf "move the hint so it does not shift"
     p `shouldSatisfy` T.isInfixOf "The step is not ticked"
     p `shouldSatisfy` T.isInfixOf "the writer pointed at"
     p `shouldSatisfy` T.isInfixOf "done | open | misfit | cannot_tell"
-    checkPrompt CheckProgress (one "- [x] move the hint") `shouldSatisfy` T.isInfixOf "The writer ticked this step"
+    checkPrompt (CheckAsk CheckProgress False []) (one "- [x] move the hint") `shouldSatisfy` T.isInfixOf "The writer ticked this step"
 
   it "reads a progress reply: done and misfit need evidence, open does not, claim words are refused" $ do
     let reply v ev = "{\"verdict\": \"" <> v <> "\", \"why\": \"w\", \"evidence\": [" <> ev <> "]}"
         cite = "{\"path\": \"src/a.py\", \"unit\": \"Foo\"}"
-    parseCheckReply CheckProgress (reply "done" "") `shouldBe` Left "a verdict with no evidence"
-    parseCheckReply CheckProgress (reply "misfit" "") `shouldBe` Left "a verdict with no evidence"
-    fmap crJudgement (parseCheckReply CheckProgress (reply "open" "")) `shouldBe` Right JOpen
-    fmap crJudgement (parseCheckReply CheckProgress (reply "done" cite)) `shouldBe` Right JDone
-    parseCheckReply CheckProgress (reply "right" cite) `shouldSatisfy` either (const True) (const False)
-    parseCheckReply CheckClaim (reply "done" cite) `shouldSatisfy` either (const True) (const False)
-    fmap crJudgement (parseCheckReply CheckProgress (reply "cannot_tell" "")) `shouldBe` Right JCannotTell
-    fmap crJudgement (parseCheckReply CheckClaim (reply "cannot_tell" "")) `shouldBe` Right JCannotTell
+    parseCheckReply (CheckAsk CheckProgress False []) (reply "done" "") `shouldBe` Left "a verdict with no evidence"
+    parseCheckReply (CheckAsk CheckProgress False []) (reply "misfit" "") `shouldBe` Left "a verdict with no evidence"
+    fmap crJudgement (parseCheckReply (CheckAsk CheckProgress False []) (reply "open" "")) `shouldBe` Right JOpen
+    fmap crJudgement (parseCheckReply (CheckAsk CheckProgress False []) (reply "done" cite)) `shouldBe` Right JDone
+    parseCheckReply (CheckAsk CheckProgress False []) (reply "right" cite) `shouldSatisfy` either (const True) (const False)
+    parseCheckReply (CheckAsk CheckClaim False []) (reply "done" cite) `shouldSatisfy` either (const True) (const False)
+    fmap crJudgement (parseCheckReply (CheckAsk CheckProgress False []) (reply "cannot_tell" "")) `shouldBe` Right JCannotTell
+    fmap crJudgement (parseCheckReply (CheckAsk CheckClaim False []) (reply "cannot_tell" "")) `shouldBe` Right JCannotTell
 
   it "confirms a progress verdict: done on missing code cannot tell, open drops it; a print per citation" $ do
     (s, proj) <- checkerServer
     let fs = fences defaultPlans
-    doneMissing <- confirm s proj fs (CheckReply JDone "it does" [Citation "src/nope.py" (Just "Foo") Nothing])
+    doneMissing <- confirm s proj fs (CheckReply JDone "it does" [Citation "src/nope.py" (Just "Foo") Nothing] Nothing Nothing [])
     (cfJudgement doneMissing, cfWhy doneMissing) `shouldBe` (JCannotTell, "cited code not found")
-    doneFenced <- confirm s proj fs (CheckReply JDone "it does" [Citation "plans/t.md" Nothing Nothing])
+    doneFenced <- confirm s proj fs (CheckReply JDone "it does" [Citation "plans/t.md" Nothing Nothing] Nothing Nothing [])
     cfJudgement doneFenced `shouldBe` JCannotTell
-    open <- confirm s proj fs (CheckReply JOpen "not yet" [Citation "src/nope.py" Nothing Nothing, Citation "src/a.py" (Just "Foo") Nothing])
+    open <- confirm s proj fs (CheckReply JOpen "not yet" [Citation "src/nope.py" Nothing Nothing, Citation "src/a.py" (Just "Foo") Nothing] Nothing Nothing [])
     cfJudgement open `shouldBe` JOpen
     cfEvidence open `shouldBe` [Citation "src/a.py" (Just "Foo") Nothing]
     map ptPath (cfPrints open) `shouldBe` ["src/a.py"]
-    c <- confirm s proj fs (CheckReply JDone "it does" [Citation "src/a.py" (Just "Foo") Nothing, Citation "src/a.py" Nothing (Just 3), Citation "notes.txt" Nothing Nothing, Citation "notes.txt" Nothing (Just 1)])
+    c <- confirm s proj fs (CheckReply JDone "it does" [Citation "src/a.py" (Just "Foo") Nothing, Citation "src/a.py" Nothing (Just 3), Citation "notes.txt" Nothing Nothing, Citation "notes.txt" Nothing (Just 1)] Nothing Nothing [])
     cfJudgement c `shouldBe` JDone
     cfUnit c `shouldBe` Just (UnitRef "src/a.py" "Foo")
     map (\x -> (ptPath x, ptUnit x)) (cfPrints c) `shouldBe` [("src/a.py", Just "Foo"), ("src/a.py", Just "Foo.bar"), ("notes.txt", Nothing), ("notes.txt", Nothing)]
@@ -103,17 +189,17 @@ spec = describe "Olifant.Server.Checker" $ do
 
   it "reads the last json block, or a bare trailing object" $ do
     let reply v = "{\"verdict\": \"" <> v <> "\", \"why\": \"w\", \"evidence\": [{\"path\": \"src/a.py\", \"unit\": \"Foo\", \"line\": 2}]}"
-    fmap crJudgement (parseCheckReply CheckClaim ("First\n```json\n" <> reply "right" <> "\n```\nthen\n```json\n" <> reply "wrong" <> "\n```\n")) `shouldBe` Right JWrong
-    fmap crJudgement (parseCheckReply CheckClaim ("I looked.\n" <> reply "cannot_tell")) `shouldBe` Right JCannotTell
-    fmap crEvidence (parseCheckReply CheckClaim (reply "right")) `shouldBe` Right [Citation "src/a.py" (Just "Foo") (Just 2)]
-    parseCheckReply CheckClaim "It is right, I think." `shouldSatisfy` either (const True) (const False)
-    parseCheckReply CheckClaim "{\"verdict\": \"right\", \"why\": \"w\", \"evidence\": []}" `shouldSatisfy` either (const True) (const False)
-    fmap crEvidence (parseCheckReply CheckClaim "{\"verdict\": \"wrong\", \"why\": \"w\", \"evidence\": [{\"path\": \"src/a.py:3\"}]}") `shouldBe` Right [Citation "src/a.py" Nothing (Just 3)]
+    fmap crJudgement (parseCheckReply (CheckAsk CheckClaim False []) ("First\n```json\n" <> reply "right" <> "\n```\nthen\n```json\n" <> reply "wrong" <> "\n```\n")) `shouldBe` Right JWrong
+    fmap crJudgement (parseCheckReply (CheckAsk CheckClaim False []) ("I looked.\n" <> reply "cannot_tell")) `shouldBe` Right JCannotTell
+    fmap crEvidence (parseCheckReply (CheckAsk CheckClaim False []) (reply "right")) `shouldBe` Right [Citation "src/a.py" (Just "Foo") (Just 2)]
+    parseCheckReply (CheckAsk CheckClaim False []) "It is right, I think." `shouldSatisfy` either (const True) (const False)
+    parseCheckReply (CheckAsk CheckClaim False []) "{\"verdict\": \"right\", \"why\": \"w\", \"evidence\": []}" `shouldSatisfy` either (const True) (const False)
+    fmap crEvidence (parseCheckReply (CheckAsk CheckClaim False []) "{\"verdict\": \"wrong\", \"why\": \"w\", \"evidence\": [{\"path\": \"src/a.py:3\"}]}") `shouldBe` Right [Citation "src/a.py" Nothing (Just 3)]
 
   it "fenced or missing citations cannot tell" $ do
     (s, proj) <- checkerServer
     let fs = fences defaultPlans
-        reply cs = CheckReply JRight "it does" cs
+        reply cs = CheckReply JRight "it does" cs Nothing Nothing []
         notFound c = do
           r <- confirm s proj fs (reply [c])
           (cfJudgement r, cfWhy r) `shouldBe` (JCannotTell, "cited code not found")
@@ -136,7 +222,7 @@ spec = describe "Olifant.Server.Checker" $ do
     (s, proj) <- checkerServer
     forM_ [JRight, JWrong, JDone, JMisfit] $ \j ->
       forM_ [Citation ".env" Nothing Nothing, Citation "sub/.env.local" Nothing (Just 1), Citation "/r1/.env" Nothing Nothing] $ \c -> do
-        r <- confirm s proj (fences defaultPlans) (CheckReply j "it does" [c])
+        r <- confirm s proj (fences defaultPlans) (CheckReply j "it does" [c] Nothing Nothing [])
         (cfJudgement r, cfWhy r) `shouldBe` (JCannotTell, "cited code not found")
 
   it "a citation through a symlink into a fence or out of the root cannot tell" $
@@ -158,7 +244,7 @@ spec = describe "Olifant.Server.Checker" $ do
       proj <- projectFor (root </> "plans/t.md") s1 >>= \case
         (_, Just (_, p)) -> pure p
         _ -> fail "no project"
-      let reply cs = CheckReply JRight "it does" cs
+      let reply cs = CheckReply JRight "it does" cs Nothing Nothing []
       forM_ [Citation "notes/a.py" (Just "Foo") Nothing, Citation "out/a.py" (Just "Foo") Nothing, Citation (root </> "out/a.py") Nothing (Just 1)] $ \c -> do
         r <- confirm s1 proj (fences defaultPlans) (reply [c])
         (cfJudgement r, cfWhy r) `shouldBe` (JCannotTell, "cited code not found")
@@ -168,16 +254,16 @@ spec = describe "Olifant.Server.Checker" $ do
   it "runs the checker through the runner" $ do
     d <- getCurrentDirectory
     let cfg = defaultPlans {pcRunner = d </> "src/Olifant/Server/testdata/claude-shim.sh"}
-    r <- liveChecker neverCancel cfg "/tmp" CheckClaim (one "- SHIM:CHECK the collector retries")
+    r <- liveChecker neverCancel cfg "/tmp" (CheckAsk CheckClaim False []) (one "- SHIM:CHECK the collector retries")
     fmap rrText r `shouldBe` Right "{\"verdict\": \"right\", \"why\": \"shim\", \"evidence\": [{\"path\": \"src/a.py\", \"unit\": \"Foo\"}]}"
 
   it "replays recorded replies by sentence key; a missing key is a failure" $
     withSystemTempDirectory "olifant-checker" $ \dir -> do
       let file = dir </> "checks.json"
       writeFile file "{\"replies\": {\"The collector retries.\": {\"text\": \"x\", \"cost\": 0.1}}}"
-      r <- recordedChecker file CheckClaim (one "- The collector retries.")
+      r <- recordedChecker file (CheckAsk CheckClaim False []) (one "- The collector retries.")
       (fmap rrText r, fmap rrCost r) `shouldBe` (Right "x", Right (Just 0.1))
-      m <- recordedChecker file CheckClaim (one "- Something else.")
+      m <- recordedChecker file (CheckAsk CheckClaim False []) (one "- Something else.")
       either (const True) (const False) m `shouldBe` True
 
 -- | /r1 with the python pack, `src/a.py` (class Foo with def bar), a plan,

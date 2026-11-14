@@ -878,7 +878,7 @@ stepTestsSpec = describe "Olifant.Server.Loop (a step's tests)" $ do
   it "(c2) stepStub on a checked step with no anchor stubs its cited unit; a typed anchor still wins" $
     withLoop plan [] $ \s _ dir -> do
       fp <- fpNow dir s "Table.label"
-      let check unit = CheckRecord (Confirmed JDone "it does" [Citation table (Just unit) Nothing] (Just (UnitRef table unit)) (Just fp) [Print table (Just unit) fp]) "sonnet" (Just 0.1) 1 (UTCTime (fromGregorian 2026 11 7) 0) CheckProgress
+      let check unit = CheckRecord (Confirmed JDone "it does" [Citation table (Just unit) Nothing] (Just (UnitRef table unit)) (Just fp) [Print table (Just unit) fp] Nothing Nothing []) "sonnet" (Just 0.1) 1 (UTCTime (fromGregorian 2026 11 7) 0) CheckProgress False
           entry unit = SentenceEntry (Triage "step" 1 1 "grammar" Nothing Nothing) Progress (Just (check unit)) Nothing (UTCTime (fromGregorian 2026 11 7) 0) Nothing False
       storeClaims s dir (planPath dir) (M.fromList [("no anchor here", entry "Table.label"), ("the table is wrong", entry "Table.label")])
       (_, r) <- stepStub (planPath dir) 8 s

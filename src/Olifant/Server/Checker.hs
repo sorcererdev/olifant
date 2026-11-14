@@ -15,6 +15,9 @@ module Olifant.Server.Checker
   , Print (..)
   , fileHash
   , Citation (..)
+  , Source (..)
+  , sourceDomain
+  , CheckAsk (..)
   , CheckReply (..)
   , Confirmed (..)
   , UnitRef (..)
@@ -23,6 +26,7 @@ module Olifant.Server.Checker
   , Checker
   , fences
   , checkPrompt
+  , checkPromptWith
   , parseCheckReply
   , confirm
   , liveChecker
@@ -44,7 +48,7 @@ import Data.ByteString.Lazy qualified as BL
 import Data.Bits (xor)
 import Data.Char (isDigit, toLower)
 import Data.List (isPrefixOf, sortOn)
-import Data.Maybe (isNothing, listToMaybe)
+import Data.Maybe (fromMaybe, isNothing, listToMaybe)
 import Data.Scientific (toRealFloat)
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -58,7 +62,7 @@ import Olifant.Plans (Kind (Step), anchorText)
 import Olifant.Plans.Sentences (Sentence (..), sentenceKey)
 import Olifant.Process (Cancel)
 import Olifant.Server.Confine (confined, safely)
-import Olifant.Server.Errand (RunFailure (..), RunResult (..), Status (..), Verb (Check), checkFences, runClaude)
+import Olifant.Server.Errand (Belief (..), BeliefCheck (..), RunFailure (..), RunResult (..), Status (..), Verb (Check), checkFences, runClaude, webTools)
 import Olifant.Server.State (ServerConfig (..), ServerState (..))
 import Olifant.Server.Triage (Triage (..))
 import Olifant.Server.Unit (Named (..), fingerprint, unitLookupIn, unitsWithKinds)
@@ -75,8 +79,8 @@ refText :: UnitRef -> Text
 refText r = T.pack (urPath r) <> ":" <> urName r
 
 -- | A verdict: right, wrong (a claim), done, open, misfit (a step's
--- progress), or cannot tell (either).
-data Judgement = JRight | JWrong | JCannotTell | JDone | JOpen | JMisfit
+-- progress), answered (a question), or cannot tell (any).
+data Judgement = JRight | JWrong | JCannotTell | JDone | JOpen | JMisfit | JAnswered
   deriving (Eq, Show)
 
 judgementName :: Judgement -> Text
@@ -87,24 +91,31 @@ judgementName = \case
   JDone -> "done"
   JOpen -> "open"
   JMisfit -> "misfit"
+  JAnswered -> "answered"
 
 -- | A verdict by its JSON word.
 judgementNamed :: Text -> Maybe Judgement
-judgementNamed t = lookup t [(judgementName j, j) | j <- [JRight, JWrong, JCannotTell, JDone, JOpen, JMisfit]]
+judgementNamed t = lookup t [(judgementName j, j) | j <- [JRight, JWrong, JCannotTell, JDone, JOpen, JMisfit, JAnswered]]
 
 -- | What a check asks: whether a claim is so ('CheckClaim', JSON "verify"),
--- or how far the code has got with a step ('CheckProgress', "progress").
-data CheckMode = CheckClaim | CheckProgress
+-- how far the code has got with a step ('CheckProgress', "progress"), or
+-- the answer to a question ('CheckAnswer', "answer").
+data CheckMode = CheckClaim | CheckProgress | CheckAnswer
   deriving (Eq, Ord, Show)
 
 checkModeName :: CheckMode -> Text
 checkModeName = \case
   CheckClaim -> "verify"
   CheckProgress -> "progress"
+  CheckAnswer -> "answer"
 
--- | The mode a sentence is checked in: a step's progress, else a claim.
+-- | The mode a sentence is checked in: a step's progress, a question's
+-- answer, else a claim.
 checkModeOf :: Triage -> CheckMode
-checkModeOf t = if trKind t == "step" then CheckProgress else CheckClaim
+checkModeOf t = case trKind t of
+  "step" -> CheckProgress
+  "question" -> CheckAnswer
+  _ -> CheckClaim
 
 -- | One confirmed citation's print: the unit's 'fingerprint' when it named
 -- or fell inside one, else the whole file's 'fileHash' (unit Nothing).
@@ -123,19 +134,44 @@ fileHash t = T.pack (take 7 (pad (showHex (BS.foldl' step 14695981039346656037 (
 data Citation = Citation {ciPath :: FilePath, ciUnit :: Maybe Text, ciLine :: Maybe Int}
   deriving (Eq, Show)
 
-data CheckReply = CheckReply {crJudgement :: Judgement, crWhy :: Text, crEvidence :: [Citation]}
+-- | A web page a verdict or answer rests on: the model's word and a link
+-- (shown, never opened or confirmed by olifant).
+data Source = Source {soUrl :: Text, soTitle :: Text}
+  deriving (Eq, Show)
+
+-- | A source's host, without a leading "www." (what the margin names).
+sourceDomain :: Text -> Text
+sourceDomain u = fromMaybe host (T.stripPrefix "www." host)
+  where
+    rest = snd (T.breakOnEnd "://" u)
+    authority = T.takeWhile (`notElem` ("/?#" :: String)) rest
+    host = T.toLower (T.takeWhile (/= ':') (snd (T.breakOnEnd "@" authority)))
+
+-- | A check's reply: the verdict, why, the code cited; for an answer, the
+-- answer (at most three sentences) and its optional detail; with web, the
+-- pages it rests on.
+data CheckReply = CheckReply
+  { crJudgement :: Judgement, crWhy :: Text, crEvidence :: [Citation]
+  , crAnswer :: Maybe Text, crDetail :: Maybe Text, crSources :: [Source] }
   deriving (Eq, Show)
 
 -- | A reply after its citations were checked: the first cited unit found,
 -- with its fingerprint, is the sentence's evidence unit; every citation
 -- found has its print ('Print'), so a later change to any of them shows.
+-- The answer, its detail and the sources pass through as given.
 data Confirmed = Confirmed
   { cfJudgement :: Judgement, cfWhy :: Text, cfEvidence :: [Citation]
-  , cfUnit :: Maybe UnitRef, cfFingerprint :: Maybe Text, cfPrints :: [Print] }
+  , cfUnit :: Maybe UnitRef, cfFingerprint :: Maybe Text, cfPrints :: [Print]
+  , cfAnswer :: Maybe Text, cfDetail :: Maybe Text, cfSources :: [Source] }
   deriving (Eq, Show)
 
--- | One check of a sentence in a mode.
-type Checker = CheckMode -> Sentence -> IO (Either RunFailure RunResult)
+-- | What one check is asked: its mode, whether it may use the web, and
+-- (an answer under a `- ? ` line) the writer's beliefs under the question.
+data CheckAsk = CheckAsk {ckMode :: CheckMode, ckWeb :: Bool, ckBeliefs :: [Belief]}
+  deriving (Eq, Show)
+
+-- | One check of a sentence.
+type Checker = CheckAsk -> Sentence -> IO (Either RunFailure RunResult)
 
 -- | Where a confirmed verdict rests, in words: its unit as `path:Unit`, else
 -- the first citation's path (and line), else "".
@@ -148,10 +184,22 @@ evidenceText c = case (cfUnit c, cfEvidence c) of
 fences :: PlansConfig -> [FilePath]
 fences = checkFences
 
--- | The prompt: a claim judged as the code stands now ('CheckClaim'), or a
--- step's progress, done, open or misfit ('CheckProgress').
-checkPrompt :: CheckMode -> Sentence -> Text
-checkPrompt CheckProgress s =
+-- | The prompt: a claim judged as the code stands now ('CheckClaim'), a
+-- step's progress, done, open or misfit ('CheckProgress'), or a question
+-- answered ('CheckAnswer'). With 'ckWeb' (never for progress), a claim or
+-- answer may rest on public web pages, given in sources.
+checkPrompt :: CheckAsk -> Sentence -> Text
+checkPrompt = checkPromptWith []
+
+-- | 'checkPrompt' naming the hosts the check may fetch from (`[plans] web_fetch`).
+checkPromptWith :: [Text] -> CheckAsk -> Sentence -> Text
+checkPromptWith hosts ask s = case ckMode ask of
+  CheckProgress -> progressPrompt s
+  CheckClaim -> claimPrompt hosts (ckWeb ask) s
+  CheckAnswer -> answerPrompt hosts ask s
+
+progressPrompt :: Sentence -> Text
+progressPrompt s =
   T.unlines $
     [ "Check how far this repository (the current directory) has got with one step of a software plan."
     , ""
@@ -177,7 +225,8 @@ checkPrompt CheckProgress s =
          , "```"
          , "For done or misfit, give at least one evidence entry: the code the verdict rests on."
          , "In evidence, \"unit\" is the exact name of one function, class or method as the file defines it (Class.method for a method), or null. For anything else (a template, a heading, part of a function, several names) give null and the line. A unit the file does not define voids the verdict." ]
-checkPrompt CheckClaim s =
+claimPrompt :: [Text] -> Bool -> Sentence -> Text
+claimPrompt hosts web s =
   T.unlines $
     [ "Check one sentence of a software plan against this repository (the current directory)."
     , ""
@@ -189,20 +238,73 @@ checkPrompt CheckClaim s =
          , "Use Read, Grep and Glob to find the code the sentence is about, and read it."
          , "Behaviour can live in any layer: server code, templates, and front-end scripts and styles. Before you conclude that something does not exist, search for it across the whole repository."
          , "Rule: judge what the sentence says is true of the code now; if it also wishes or asks for something, ignore that part."
-         , "If the code cannot settle it (it is about people, documents or outside services), the verdict is cannot_tell."
+         ]
+      ++ (if web then webLines hosts ++ [neitherLine] else ["If the code cannot settle it (it is about people, documents or outside services), the verdict is cannot_tell."])
+      ++ [ ""
+         , "Answer with one fenced ```json block holding one object, after any notes:"
+         , "```json"
+         , "{\"verdict\": \"right | wrong | cannot_tell\", \"why\": \"<one sentence>\", \"evidence\": [" <> evidenceShape <> "]" <> sourcesShape web <> "}"
+         , "```"
+         , if web then "For right or wrong, give at least one evidence entry or one source: what the verdict rests on." else "For right or wrong, give at least one evidence entry: the code the verdict rests on."
+         , "In evidence, \"unit\" is the exact name of one function, class or method as the file defines it (Class.method for a method), or null. For anything else (a template, a heading, part of a function, several names) give null and the line. A unit the file does not define voids the verdict." ]
+
+answerPrompt :: [Text] -> CheckAsk -> Sentence -> Text
+answerPrompt hosts ask s =
+  T.unlines $
+    [ "Answer one question from a software plan, from this repository (the current directory)."
+    , ""
+    , "Section: " <> (if T.null (snHeading s) then "(none)" else snHeading s) ]
+      ++ ["Lead (the sentence or question above it): " <> l | Just l <- [snLead s]]
+      ++ ["Question: " <> snText s]
+      ++ ["Hint: the writer pointed at `" <> T.drop 1 (anchorText a) <> "`: a place to start, not the answer." | Just a <- [snAnchor s]]
+      ++ (if null (ckBeliefs ask) then [] else ["", "THE WRITER'S BELIEFS UNDER IT:"] ++ map beliefLine (ckBeliefs ask) ++ ["Each belief gets its own check; answer the question, and say so where the code shows a belief is wrong."])
+      ++ [ ""
+         , "Use Read, Grep and Glob to find the code the question is about, and read it."
+         , "Behaviour can live in any layer: server code, templates, and front-end scripts and styles. Before you conclude that something does not exist, search for it across the whole repository."
+         , "Rule: answer from the code as it is now. If the question points back at something (\"it\", \"these\") that the section and lead do not name, take the most likely thing in the code the section is about."
+         ]
+      ++ (if web then webLines hosts else [])
+      ++ [ "If neither the code nor a public source settles it (it is about people, opinions, plans or private documents), the verdict is cannot_tell."
          , ""
          , "Answer with one fenced ```json block holding one object, after any notes:"
          , "```json"
-         , "{\"verdict\": \"right | wrong | cannot_tell\", \"why\": \"<one sentence>\", \"evidence\": [{\"path\": \"<path relative to the current directory>\", \"unit\": \"<function or class name, or null>\", \"line\": <line number, or null>}]}"
+         , "{\"verdict\": \"answered | cannot_tell\", \"answer\": \"<the answer, at most three sentences, written to be read in a hover>\", \"detail\": \"<optional: more, for a reader who wants all of it; or null>\", \"why\": \"<one sentence: what the answer rests on>\", \"evidence\": [" <> evidenceShape <> "]" <> sourcesShape web <> "}"
          , "```"
-         , "For right or wrong, give at least one evidence entry: the code the verdict rests on."
+         , if web then "For answered, give at least one evidence entry or one source: what the answer rests on." else "For answered, give at least one evidence entry: the code the answer rests on."
          , "In evidence, \"unit\" is the exact name of one function, class or method as the file defines it (Class.method for a method), or null. For anything else (a template, a heading, part of a function, several names) give null and the line. A unit the file does not define voids the verdict." ]
+  where
+    web = ckWeb ask
+
+-- | A belief as the answer prompt gives it: its words, and its check.
+beliefLine :: Belief -> Text
+beliefLine (Belief b c) = "- " <> b <> " — " <> case c of
+  BelievedRight u -> "right, about " <> u
+  BelievedWrong why u -> "wrong (" <> why <> "), about " <> u
+  NotChecked -> "not checked"
+
+-- | The paragraph a web check adds: search, fetch only for the listed hosts, sources.
+webLines :: [Text] -> [Text]
+webLines hosts =
+  [ "You may also search the web (WebSearch) for what public sources settle: a library's documentation, a standard, a public API"
+      <> (if null hosts then "" else "; and read pages on " <> T.intercalate ", " hosts <> " (WebFetch)")
+      <> ". Give each page you rest on in sources." ]
+
+neitherLine :: Text
+neitherLine = "If neither the code nor a public source settles it (it is about people, opinions, plans or private documents), the verdict is cannot_tell."
+
+evidenceShape :: Text
+evidenceShape = "{\"path\": \"<path relative to the current directory>\", \"unit\": \"<function or class name, or null>\", \"line\": <line number, or null>}"
+
+sourcesShape :: Bool -> Text
+sourcesShape web = if web then ", \"sources\": [{\"url\": \"<the page's address>\", \"title\": \"<the page's title>\"}]" else ""
 
 -- | The last ```json block, else the first `{` from which the rest of the
--- reply decodes as an object. A verdict of the other mode is refused, and
--- so is right, wrong, done or misfit with no evidence.
-parseCheckReply :: CheckMode -> Text -> Either Text CheckReply
-parseCheckReply mode reply = do
+-- reply decodes as an object. A verdict of another mode is refused, and
+-- so is right, wrong, done, misfit or answered with neither evidence nor a
+-- kept source, and answered with no answer. Sources are kept only for a web
+-- check ('ckWeb'): an http(s) address with a host, at most five.
+parseCheckReply :: CheckAsk -> Text -> Either Text CheckReply
+parseCheckReply ask reply = do
   v <- maybe (Left "no JSON object in the reply") Right (maybe bare Just fenced)
   o <- case v of
     Object o -> Right o
@@ -211,7 +313,7 @@ parseCheckReply mode reply = do
     Just (String t) ->
       let w = T.map toLower (T.replace " " "_" (T.strip t))
        in case judgementNamed w of
-            Just j | j `elem` wordsOf mode -> Right j
+            Just j | j `elem` wordsOf (ckMode ask) -> Right j
             _ -> Left ("unknown verdict `" <> w <> "`")
     _ -> Left "no verdict"
   let why = case KM.lookup "why" o of
@@ -220,11 +322,32 @@ parseCheckReply mode reply = do
       evidence = case KM.lookup "evidence" o of
         Just (Array xs) -> [c | Object e <- foldr (:) [] xs, Just c <- [citation e]]
         _ -> []
-  if j `elem` [JRight, JWrong, JDone, JMisfit] && null evidence then Left "a verdict with no evidence" else Right (CheckReply j why evidence)
+      text k = case KM.lookup k o of
+        Just (String t) | not (T.null (T.strip t)) -> Just (T.strip t)
+        _ -> Nothing
+      answer = if j == JAnswered then text "answer" else Nothing
+      sources = if not (ckWeb ask) then [] else case KM.lookup "sources" o of
+        Just (Array xs) -> take 5 [x | Object e <- foldr (:) [] xs, Just x <- [source e]]
+        _ -> []
+  if j == JAnswered && isNothing answer then Left "an answer with no text"
+  else if j `elem` [JRight, JWrong, JDone, JMisfit, JAnswered] && null evidence && null sources then Left "a verdict with no evidence"
+  else Right (CheckReply j why evidence answer (if j == JAnswered then text "detail" else Nothing) sources)
   where
     wordsOf = \case
       CheckClaim -> [JRight, JWrong, JCannotTell]
       CheckProgress -> [JDone, JOpen, JMisfit, JCannotTell]
+      CheckAnswer -> [JAnswered, JCannotTell]
+    -- an http(s) address with a host: never javascript:, file: or a repository path
+    source e = case KM.lookup "url" e of
+      Just (String u0)
+        | let u = T.strip u0
+        , any (`T.isPrefixOf` T.toLower u) ["http://", "https://"]
+        , not (T.null (sourceDomain u))
+        , T.all (\c -> c > ' ') u ->
+            Just (Source u (case KM.lookup "title" e of
+              Just (String t) | not (T.null (T.strip t)) -> T.strip t
+              _ -> sourceDomain u))
+      _ -> Nothing
     decode t = either (const Nothing) Just (eitherDecodeStrict (TE.encodeUtf8 t)) :: Maybe Value
     fenced = case drop 1 (T.splitOn "```json" reply) of
       [] -> Nothing
@@ -268,8 +391,8 @@ confirm s p fs r = do
       prints = [pr | (_, Just (_, pr)) <- checked]
   pure $
     if any (isNothing . snd) checked
-      then Confirmed JCannotTell (if crJudgement r == JCannotTell then crWhy r else "cited code not found") (crEvidence r) Nothing Nothing []
-      else Confirmed (crJudgement r) (crWhy r) (map fst checked) (fst <$> unit) (snd <$> unit) prints
+      then Confirmed JCannotTell (if crJudgement r == JCannotTell then crWhy r else "cited code not found") (crEvidence r) Nothing Nothing [] Nothing Nothing []
+      else Confirmed (crJudgement r) (crWhy r) (map fst checked) (fst <$> unit) (snd <$> unit) prints (crAnswer r) (crDetail r) (crSources r)
   where
     root = prRoot p
     relOf path
@@ -313,8 +436,10 @@ confirm s p fs r = do
                 _ -> Nothing
 
 -- | One live check: the runner under `check_timeout`, the prompt on stdin, cwd the root.
+-- A web check ('ckWeb') gets the web tools ('webTools').
 liveChecker :: Cancel -> PlansConfig -> FilePath -> Checker
-liveChecker token cfg root mode s = runClaude token cfg {pcTimeout = pcCheckTimeout cfg} Check [] Nothing root (checkPrompt mode s)
+liveChecker token cfg root ask s =
+  runClaude token cfg {pcTimeout = pcCheckTimeout cfg} Check (if ckWeb ask then webTools cfg else []) Nothing root (checkPromptWith (pcWebFetch cfg) ask s)
 
 -- | Recorded replies (tests): `{"replies": {KEY: TEXT or {"text", "cost", "seconds"}}}`
 -- by 'sentenceKey' (an object may add "delay", seconds; "gate", a path the reply
@@ -322,12 +447,12 @@ liveChecker token cfg root mode s = runClaude token cfg {pcTimeout = pcCheckTime
 -- Each key asked is appended to FILE.asked and each prompt to
 -- FILE.prompts; a key not in the file is a failure.
 recordedChecker :: FilePath -> Checker
-recordedChecker file mode s = do
+recordedChecker file ask s = do
   let key = sentenceKey (snText s)
   -- checks run side by side (Check the plan): one writer at a time
   withMVar recordLock $ \() -> do
     appendFile (file <> ".asked") (T.unpack key <> "\n")
-    BS.appendFile (file <> ".prompts") (TE.encodeUtf8 (checkPrompt mode s <> "\n"))
+    BS.appendFile (file <> ".prompts") (TE.encodeUtf8 (checkPrompt ask s <> "\n"))
   replies <- readReplies file
   case KM.lookup (Key.fromText key) replies of
     Just (Object o) | Just (String why) <- KM.lookup "throw" o -> ioError (userError (T.unpack why))
@@ -347,7 +472,7 @@ recordedChecker file mode s = do
 -- | As 'replayDecider': with no live checker, replay (a key not in the file
 -- is a failure, noted in FILE.missed); with one, run it and record its reply.
 replayChecker :: FilePath -> Maybe Checker -> Checker
-replayChecker file live mode s = do
+replayChecker file live ask s = do
   let key = sentenceKey (snText s)
   replies <- readReplies file
   case live of
@@ -355,7 +480,7 @@ replayChecker file live mode s = do
       Just r -> pure (Right r)
       Nothing -> Left (RunFailure Empty "no recorded reply" Nothing) <$ appendFile (file <> ".missed") (T.unpack key <> "\n")
     Just run ->
-      run mode s >>= \case
+      run ask s >>= \case
         Left f -> pure (Left f)
         Right r -> withMVar recordLock $ \() -> do
           replies' <- readReplies file

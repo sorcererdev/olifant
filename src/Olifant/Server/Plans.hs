@@ -32,6 +32,8 @@ module Olifant.Server.Plans
   , ErrandAnswer (..)
   , runErrand
   , beliefsUnder
+  , beliefsOf
+  , askFor
   , Reopen (..)
   , currentBranch
   , gitOut
@@ -74,8 +76,8 @@ import Olifant.Server.State (ServerConfig (..), ServerState (..))
 import System.Directory (doesFileExist, findExecutable)
 import Olifant.Server.Confine (confined, safely)
 import Olifant.Server.Claims (CheckRecord (..), ClaimStore, SentenceEntry (..), checkable, lineKey, claimsOf, sentencesOf, stepCitations, unchecked)
-import Olifant.Server.Triage (Route (..))
-import Olifant.Server.Checker (CheckMode (..), Citation (..), Confirmed (..), Judgement (..), Print (..), evidenceText, judgementName)
+import Olifant.Server.Triage (Route (..), useWeb)
+import Olifant.Server.Checker (CheckAsk (..), CheckMode (..), Citation (..), Confirmed (..), Judgement (..), Print (..), evidenceText, judgementName)
 import Olifant.Server.Stale (CitedFile (..), citedPrints, printsNow, staleKeys)
 import Data.Time.Format (defaultTimeLocale, formatTime)
 import Numeric (showFFloat)
@@ -622,16 +624,34 @@ data ErrandAnswer = ErrandAnswer
 -- what its check found; none unless at least one has a verdict.
 beliefsUnder :: ClaimStore -> [Line] -> Line -> [Belief]
 beliefsUnder store ls q
-  | lnKind q /= Question = []
   | any (\(Belief _ c) -> c /= NotChecked) beliefs = beliefs
   | otherwise = []
   where
+    beliefs = beliefsOf store ls q
+
+-- | Every bare belief (a claim with no anchor) directly under a `- ? `
+-- line, with its check: right or wrong about a unit, else not checked.
+beliefsOf :: ClaimStore -> [Line] -> Line -> [Belief]
+beliefsOf store ls q
+  | lnKind q /= Question = []
+  | otherwise = [Belief (lineKey c) (checkOf (M.lookup (lineKey c) store >>= seCheck)) | c <- bare]
+  where
     bare = [c | c <- childrenOf ls (lnRow q), lnIndent c == lnIndent q + 2, lnKind c == Claim, lnAnchor c == Nothing]
-    beliefs = [Belief (lineKey c) (checkOf (M.lookup (lineKey c) store >>= seCheck)) | c <- bare]
     checkOf = \case
       Just c | JRight <- cfJudgement (cjConfirmed c) -> BelievedRight (evidenceText (cjConfirmed c))
       Just c | JWrong <- cfJudgement (cjConfirmed c) -> BelievedWrong (cfWhy (cjConfirmed c)) (evidenceText (cjConfirmed c))
       _ -> NotChecked
+
+-- | What one check of X is asked: MODE; the web tools when web is on, the
+-- mode is not progress and its entry's triage says public sources settle
+-- it ('useWeb'); for an answer to a `- ? ` line, the beliefs under it.
+askFor :: PlansConfig -> ClaimStore -> [Line] -> CheckMode -> Sentence -> CheckAsk
+askFor cfg store ls mode x = CheckAsk mode web beliefs
+  where
+    web = mode /= CheckProgress && maybe False (useWeb (pcWeb cfg) . seTriage) (M.lookup (sentenceKey (snText x)) store)
+    beliefs
+      | mode == CheckAnswer, l : _ <- [l | l <- ls, lnRow l == snRow x] = beliefsOf store ls l
+      | otherwise = []
 
 -- | A do that continues an earlier one's thread: its id, its session, and
 -- what the user asked for.
@@ -683,7 +703,7 @@ runErrand after reviewed reopen token verb path row s0 =
                     , erTokens = mrr >>= rrTokens, erCost = mrr >>= rrCost, erModels = maybe [] rrModels mrr
                     , erPromptChars = T.length prompt, erGrounded = length grounded
                     , erBlocks = blocks, erLines = ghosts, erDropped = dropped, erUnresolved = unresolved
-                    , erChanged = changed, erDenials = maybe 0 rrDenials mrr, erParent = roParent <$> reopen, erAuto = False, erMode = Nothing, erVerdict = Nothing }
+                    , erChanged = changed, erDenials = maybe 0 rrDenials mrr, erParent = roParent <$> reopen, erAuto = False, erMode = Nothing, erVerdict = Nothing, erWeb = False }
                 appendStepLine (ssPorts s) root
                   [ "plan-" <> verbName
                   , T.pack rel <> ":" <> tshow row

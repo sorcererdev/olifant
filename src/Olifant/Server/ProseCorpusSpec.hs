@@ -143,11 +143,11 @@ measure checkout = do
     if r `notElem` [Verify, Progress]
       then pure (Row e t r Nothing Nothing)
       else
-        checker mode x >>= \case
+        checker (CheckAsk mode False []) x >>= \case
           Left f -> do
             hPutStrLn stderr ("check failed: " <> T.unpack (enId e) <> ": " <> show f)
             pure (Row e t r Nothing Nothing)
-          Right rr -> case parseCheckReply mode (rrText rr) of
+          Right rr -> case parseCheckReply (CheckAsk mode False []) (rrText rr) of
             Left why -> do
               hPutStrLn stderr ("no verdict: " <> T.unpack (enId e) <> ": " <> T.unpack why)
               pure (Row e t r Nothing (rrCost rr))

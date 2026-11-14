@@ -25,6 +25,7 @@ module Olifant.Server.Claims
   , queued
   , unchecked
   , checkable
+  , modeFor
   , stepUnit
   , stepCitations
   , retryAfter
@@ -57,7 +58,7 @@ import Data.Set (Set)
 import Data.Set qualified as S
 import Olifant.Plans (Anchor (..), Kind (Step), Line (..))
 import Olifant.Plans.Sentences (Sentence (..), sentenceKey, sentences, sentencesJoined)
-import Olifant.Server.Checker (CheckMode (..), Citation (..), Confirmed (..), Judgement (..), Print (..), UnitRef (..), checkModeName, judgementName, judgementNamed)
+import Olifant.Server.Checker (CheckMode (..), Citation (..), Confirmed (..), Judgement (..), Print (..), Source (..), UnitRef (..), checkModeName, checkModeOf, judgementName, judgementNamed)
 import Data.List (nub)
 import Olifant.Server.Triage (Route (..), Triage (..), routeName)
 import Olifant.Workspace (Workspace (..), normalisePath)
@@ -67,7 +68,8 @@ import System.IO.Unsafe (unsafePerformIO)
 -- | One check as stored: the confirmed verdict, the model that made it, its
 -- cost (when the runner said), its seconds, when, and its mode (absent in
 -- JSON: a claim).
-data CheckRecord = CheckRecord {cjConfirmed :: Confirmed, cjModel :: Text, cjCost :: Maybe Double, cjSeconds :: Double, cjAt :: UTCTime, cjMode :: CheckMode}
+-- | 'cjWeb': the check had the web tools.
+data CheckRecord = CheckRecord {cjConfirmed :: Confirmed, cjModel :: Text, cjCost :: Maybe Double, cjSeconds :: Double, cjAt :: UTCTime, cjMode :: CheckMode, cjWeb :: Bool}
   deriving stock (Eq, Show)
 
 -- | A check that failed (the runner, or a reply with no verdict), and when.
@@ -181,7 +183,7 @@ entryJson e =
     refJson r = object ["path" .= urPath r, "name" .= urName r]
     checkJson c =
       let cf = cjConfirmed c
-       in object
+       in object $
             [ "verdict" .= judgementName (cfJudgement cf)
             , "why" .= cfWhy cf
             , "evidence" .= [object ["path" .= ciPath x, "unit" .= ciUnit x, "line" .= ciLine x] | x <- cfEvidence cf]
@@ -194,6 +196,9 @@ entryJson e =
             , "seconds" .= cjSeconds c
             , "at" .= cjAt c
             ]
+              ++ ["answer" .= a | Just a <- [cfAnswer cf]] ++ ["detail" .= d | Just d <- [cfDetail cf]]
+              ++ ["sources" .= [object ["url" .= soUrl x, "title" .= soTitle x] | x <- cfSources cf] | not (null (cfSources cf))]
+              ++ ["web" .= True | cjWeb c]
 
 entry :: Value -> Parser SentenceEntry
 entry = withObject "entry" $ \o ->
@@ -220,12 +225,16 @@ entry = withObject "entry" $ \o ->
       j <- (c .: "verdict" :: Parser Text) >>= maybe (fail "a verdict") pure . judgementNamed
       cf <- Confirmed j <$> c .: "why" <*> (c .: "evidence" >>= mapM citation) <*> (c .:? "unit" >>= traverse ref) <*> c .:? "fingerprint"
         <*> (maybe (pure []) (mapM printOf) =<< c .:? "prints")
+        <*> c .:? "answer" <*> c .:? "detail"
+        <*> (maybe (pure []) (mapM sourceOf) =<< c .:? "sources")
       mode <- (c .:? "mode" :: Parser (Maybe Text)) >>= \case
         Nothing -> pure CheckClaim
         Just "verify" -> pure CheckClaim
         Just "progress" -> pure CheckProgress
+        Just "answer" -> pure CheckAnswer
         Just _ -> fail "a check mode"
-      CheckRecord cf <$> c .: "model" <*> c .:? "cost" <*> c .: "seconds" <*> c .: "at" <*> pure mode
+      CheckRecord cf <$> c .: "model" <*> c .:? "cost" <*> c .: "seconds" <*> c .: "at" <*> pure mode <*> (fromMaybe False <$> c .:? "web")
+    sourceOf = withObject "source" $ \x -> Source <$> x .: "url" <*> x .: "title"
     printOf = withObject "print" $ \x -> Print <$> x .: "path" <*> x .:? "unit" <*> x .: "hash"
 
 -- | How long the entry of a sentence no longer in the plan is kept: an
@@ -251,6 +260,11 @@ pruneClaims now ss = M.mapMaybeWithKey keep
 -- progress or answer, not a ticked step (you said it is done), and not checked.
 checkable :: Sentence -> SentenceEntry -> Bool
 checkable x e = seRoute e `elem` [Verify, Progress, Answer] && snKind x /= Step True && seCheck e == Nothing
+
+-- | The mode a sentence's check is made in: the one asked for (*Answer
+-- this*), else its stored check's (a re-check asks the same), else its triage's.
+modeFor :: Maybe CheckMode -> SentenceEntry -> CheckMode
+modeFor forced e = fromMaybe (maybe (checkModeOf (seTriage e)) cjMode (seCheck e)) forced
 
 -- | The sentences the save pass checks, in plan order, one per key:
 -- 'checkable', owed their automatic check ('seOwed'), and not failed in the
