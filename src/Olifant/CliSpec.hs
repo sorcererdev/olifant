@@ -1607,7 +1607,7 @@ plansCostSpec = describe "plans cost" $ do
             , erBranch = branch, erModel = "sonnet", erStatus = status, erWhy = Nothing
             , erSession = session, erSeconds = Just 10, erTurns = Just 2, erTokens = Nothing
             , erCost = cost, erModels = [], erPromptChars = 100, erGrounded = 0
-            , erBlocks = blocks, erLines = 4, erDropped = 0, erUnresolved = 0, erChanged = 0, erDenials = 0, erParent = Nothing, erAuto = False, erMode = Nothing, erVerdict = Nothing }
+            , erBlocks = blocks, erLines = 4, erDropped = 0, erUnresolved = 0, erChanged = 0, erDenials = 0, erParent = Nothing, erAuto = False, erMode = Nothing, erVerdict = Nothing, erWeb = False }
       outcome i b o = AnOutcome (OutcomeRecord i b (at 25 12) o)
       line r = TL.toStrict (TLE.decodeUtf8 (encode (recordJson r)))
       records rs extra = ("/proj/.olifant/state/errands.jsonl", T.unlines (map line rs ++ extra))
@@ -1675,7 +1675,7 @@ plansCostSpec = describe "plans cost" $ do
               , erSession = Nothing, erSeconds = Just 10, erTurns = Nothing, erTokens = Nothing
               , erCost = cost, erModels = [], erPromptChars = 100, erGrounded = 0
               , erBlocks = 0, erLines = 0, erDropped = 0, erUnresolved = 0, erChanged = 0, erDenials = 0, erParent = Nothing
-              , erAuto = auto, erMode = mode, erVerdict = verdict }
+              , erAuto = auto, erMode = mode, erVerdict = verdict, erWeb = False }
         passOf plan triaged = APass (PassRecord ("pass-" <> T.pack plan) (at 25 8) plan "save" 9 triaged [] 0 0 0 0 0 0 1 1 0)
         checksRecords =
           [ passOf "plans/p.md" 5, passOf "plans/q.md" 2
@@ -1690,9 +1690,9 @@ plansCostSpec = describe "plans cost" $ do
     it "one row per plan: triage, claims, steps, automatic and asked, failed, total" $ do
       (code, out, _, _) <- runC []
       code `shouldBe` ExitSuccess
-      T.words (T.lines out !! 0) `shouldBe` ["plan", "sentences", "triage", "$", "claims", "right/wrong/?", "claims", "$", "steps", "done/open/misfit", "steps", "$", "automatic", "$", "asked", "$", "failed", "total", "$"]
-      T.words (T.lines out !! 1) `shouldBe` ["plans/p.md", "5", "0.00", "2", "1/1/0", "0.30", "3", "1/1/1", "0.30", "0.30", "0.30", "1", "0.60"]
-      T.words (T.lines out !! 2) `shouldBe` ["plans/q.md", "2", "0.00", "1", "0/0/1", "0.05", "-", "-", "-", "0.00", "0.05", "0", "0.05"]
+      T.words (T.lines out !! 0) `shouldBe` ["plan", "sentences", "triage", "$", "claims", "right/wrong/?", "claims", "$", "steps", "done/open/misfit", "steps", "$", "answers", "answered/?", "answers", "$", "by", "web", "web", "$", "automatic", "$", "asked", "$", "failed", "total", "$"]
+      T.words (T.lines out !! 1) `shouldBe` ["plans/p.md", "5", "0.00", "2", "1/1/0", "0.30", "3", "1/1/1", "0.30", "-", "-", "-", "-", "-", "0.30", "0.30", "1", "0.60"]
+      T.words (T.lines out !! 2) `shouldBe` ["plans/q.md", "2", "0.00", "1", "0/0/1", "0.05", "-", "-", "-", "-", "-", "-", "-", "-", "0.00", "0.05", "0", "0.05"]
     it "--plan narrows it to one plan" $ do
       (_, out, _, _) <- runC ["--plan", "plans/q.md"]
       map (head . T.words) (drop 1 (T.lines out)) `shouldBe` ["plans/q.md"]
@@ -1708,6 +1708,42 @@ plansCostSpec = describe "plans cost" $ do
             lookupKey "failed" p `shouldBe` Just (Number 1)
             fmap (\case Number n -> abs (realToFrac n - 0.6 :: Double) < 1e-9; _ -> False) (lookupKey "total" p) `shouldBe` Just True
             map (\k -> isJust (lookupKey k p)) ["triage_cost", "automatic", "asked"] `shouldBe` [True, True, True]
+          other -> expectationFailure ("two rows, got " <> show (length other))
+        _ -> expectationFailure "no checks rows"
+  describe "--checks with answers and web checks (2b)" $ do
+    let check i plan mode verdict web cost =
+          AnErrand
+            ErrandRecord
+              { erId = i, erAt = at 25 9, erVerb = "check", erPlan = plan, erRow = 1, erSection = "S"
+              , erBranch = Nothing, erModel = "sonnet", erStatus = Ok, erWhy = Nothing
+              , erSession = Nothing, erSeconds = Just 10, erTurns = Nothing, erTokens = Nothing
+              , erCost = Just cost, erModels = [], erPromptChars = 100, erGrounded = 0
+              , erBlocks = 0, erLines = 0, erDropped = 0, erUnresolved = 0, erChanged = 0, erDenials = 0, erParent = Nothing
+              , erAuto = False, erMode = mode, erVerdict = verdict, erWeb = web }
+        recs =
+          [ check "A1" "plans/a.md" (Just "answer") (Just "answered") False 0.1
+          , check "A2" "plans/a.md" (Just "answer") (Just "cannot_tell") False 0.05
+          , check "A3" "plans/a.md" (Just "answer") (Just "answered") True 0.3
+          , check "W1" "plans/a.md" (Just "verify") (Just "right") True 0.2
+          , check "B1" "plans/b.md" (Just "verify") (Just "right") False 0.1 ]
+        runC args = runWith "" (project ++ [records recs []]) False (["plans", "cost", "--checks"] ++ args)
+    it "counts answers in their columns and web checks in their mode's and in by web" $ do
+      (code, out, _, _) <- runC []
+      code `shouldBe` ExitSuccess
+      T.words (T.lines out !! 1) `shouldBe` ["plans/a.md", "0", "0.00", "1", "1/0/0", "0.20", "-", "-", "-", "3", "2/1", "0.45", "2", "0.50", "0.00", "0.65", "0", "0.65"]
+      T.words (T.lines out !! 2) `shouldBe` ["plans/b.md", "0", "0.00", "1", "1/0/0", "0.10", "-", "-", "-", "-", "-", "-", "-", "-", "0.00", "0.10", "0", "0.10"]
+    it "--plan narrows it to one plan" $ do
+      (_, out, _, _) <- runC ["--plan", "plans/a.md"]
+      map (head . T.words) (drop 1 (T.lines out)) `shouldBe` ["plans/a.md"]
+    it "--json gives answers and web" $ do
+      (_, out, _, _) <- runC ["--json"]
+      case decodeStrict (TE.encodeUtf8 out) >>= lookupKey "checks" of
+        Just (Array rs) -> case toList rs of
+          [a, _] -> do
+            fmap (\k -> lookupKey "answers" a >>= lookupKey k) ["n", "answered", "cannot_tell"] `shouldBe` [Just (Number 3), Just (Number 2), Just (Number 1)]
+            (lookupKey "web" a >>= lookupKey "n") `shouldBe` Just (Number 2)
+            fmap (\case Number n -> abs (realToFrac n - 0.5 :: Double) < 1e-9; _ -> False) (lookupKey "web" a >>= lookupKey "cost") `shouldBe` Just True
+            fmap (\case Number n -> abs (realToFrac n - 0.45 :: Double) < 1e-9; _ -> False) (lookupKey "answers" a >>= lookupKey "cost") `shouldBe` Just True
           other -> expectationFailure ("two rows, got " <> show (length other))
         _ -> expectationFailure "no checks rows"
   it "a resolve record leaves plans cost as it was, by branch and by plan" $ do

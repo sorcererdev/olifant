@@ -22,59 +22,88 @@ spec = describe "Olifant.Server.Errand (the claude -p runner)" $ do
       q = ls !! 1
       heading = ls !! 0
       step = ls !! 3
+      after flag as = case dropWhile (/= flag) as of
+        _ : v : _ -> Just v
+        _ -> Nothing
       shimCfg = do
         d <- getCurrentDirectory
         pure cfg {pcRunner = d </> "src/Olifant/Server/testdata/claude-shim.sh"}
-  it "builds read-only args for ask and validate, edit args for do" $ do
-    runnerArgs cfg Ask [] Nothing `shouldBe` ["-p", "--output-format", "json", "--model", "sonnet", "--permission-prompts", "none", "--allowedTools", "Read,Grep,Glob"]
-    runnerArgs cfg Validate [] Nothing `shouldBe` runnerArgs cfg Ask [] Nothing
+  it "builds read-only args for validate, edit args for do" $ do
+    runnerArgs cfg Validate [] Nothing `shouldBe` ["-p", "--output-format", "json", "--model", "sonnet", "--permission-prompts", "none", "--allowedTools", "Read,Grep,Glob"]
     runnerArgs cfg {pcDoTools = ["Bash(cabal test*)"]} Do ["Bash(uv run pytest*)"] Nothing
       `shouldBe` ["-p", "--output-format", "json", "--model", "sonnet", "--permission-prompts", "none", "--permission-mode", "acceptEdits", "--allowedTools", "Read,Grep,Glob,Edit,Write,Bash(uv run pytest*),Bash(cabal test*)"]
   it "builds a fenced read-only check" $ do
     let c = cfg {pcCheckModel = "haiku", pcNotEvidence = ["docs"]}
         args = runnerArgs c Check [] Nothing
-    take 9 args `shouldBe` ["-p", "--output-format", "json", "--model", "haiku", "--permission-prompts", "none", "--allowedTools", "Read,Grep,Glob"]
-    (args !! 9, args !! 10) `shouldBe` ("--settings", "{\"permissions\":{\"deny\":[\"Read(./plans/**)\",\"Read(./.olifant/**)\",\"Read(./docs/**)\"]}}")
-    args !! 11 `shouldBe` "--append-system-prompt"
-    args !! 12 `shouldSatisfy` (\p -> all (`T.isInfixOf` T.pack p) ["current directory", "plans/", ".olifant/", "docs/"])
-    length args `shouldBe` 13
+    take 7 args `shouldBe` ["-p", "--output-format", "json", "--model", "haiku", "--permission-prompts", "none"]
+    after "--tools" args `shouldBe` Just "Read,Grep,Glob"
+    after "--allowedTools" args `shouldBe` Just "Read,Grep,Glob"
+    after "--settings" args `shouldBe` Just "{\"permissions\":{\"deny\":[\"Read(./plans/**)\",\"Read(./.olifant/**)\",\"Read(./docs/**)\",\"WebSearch\",\"WebFetch\"]}}"
+    after "--append-system-prompt" args `shouldSatisfy` maybe False (\p -> all (`T.isInfixOf` T.pack p) ["current directory", "plans/", ".olifant/", "docs/"])
+    "--strict-mcp-config" `elem` args `shouldBe` True
+  it "a web check has the web tools and no file tools; a code check the file tools and no web (user ruling 2026-11-14)" $ do
+    let c = cfg {pcWebFetch = ["docs.djangoproject.com"]}
+        web = runnerArgs c Check (webTools c) Nothing
+        code = runnerArgs c Check [] Nothing
+        tools as = maybe [] (T.splitOn "," . T.pack) (after "--tools" as) ++ maybe [] (T.splitOn "," . T.pack) (after "--allowedTools" as)
+        denied as = maybe [] (\j -> [t | t <- ["Read", "Grep", "Glob", "Edit", "Write", "Bash", "NotebookEdit", "WebSearch", "WebFetch"], ("\"" <> t <> "\"") `T.isInfixOf` T.pack j]) (after "--settings" as)
+        fileTools = ["Read", "Grep", "Glob", "Edit", "Write", "Bash", "NotebookEdit"]
+        isWeb t = "WebSearch" `T.isPrefixOf` t || "WebFetch" `T.isPrefixOf` t
+    -- the web check: only search and the listed hosts' fetch are there; every file tool is denied
+    after "--tools" web `shouldBe` Just "WebSearch,WebFetch"
+    after "--allowedTools" web `shouldBe` Just "WebSearch,WebFetch(domain:docs.djangoproject.com)"
+    filter (not . isWeb) (tools web) `shouldBe` []
+    denied web `shouldBe` fileTools
+    after "--append-system-prompt" web `shouldSatisfy` maybe False (\p -> T.isInfixOf webPrompt (T.pack p) && not (T.isInfixOf "plans/" (T.pack p)))
+    "--strict-mcp-config" `elem` web `shouldBe` True
+    -- with no fetch hosts, search alone
+    after "--tools" (runnerArgs cfg Check (webTools cfg) Nothing) `shouldBe` Just "WebSearch"
+    -- the code check: file tools only, web denied
+    filter isWeb (tools code) `shouldBe` []
+    denied code `shouldBe` ["WebSearch", "WebFetch"]
+    all (\a -> not (T.isInfixOf webPrompt (T.pack a))) code `shouldBe` True
+  it "web tools never include an open WebFetch" $ do
+    webTools defaultPlans `shouldBe` ["WebSearch"]
+    let ts = webTools defaultPlans {pcWebFetch = ["docs.djangoproject.com", "htmx.org"]}
+    ts `shouldBe` ["WebSearch", "WebFetch(domain:docs.djangoproject.com)", "WebFetch(domain:htmx.org)"]
+    all (\t -> not ("WebFetch" `T.isPrefixOf` t) || "WebFetch(domain:" `T.isPrefixOf` t) ts `shouldBe` True
   it "resumes a do's thread in a fork of its session" $
     drop 4 (runnerArgs cfg Do [] (Just "s1")) `shouldBe` ["sonnet", "--permission-prompts", "none", "--resume", "s1", "--fork-session", "--permission-mode", "acceptEdits", "--allowedTools", "Read,Grep,Glob,Edit,Write"]
   it "runs the shim, parses result, seconds and cost, and unsets CLAUDECODE" $ do
     c <- shimCfg
     old <- lookupEnv "CLAUDECODE"
     let restore = maybe (unsetEnv "CLAUDECODE") (setEnv "CLAUDECODE") old
-    (setEnv "CLAUDECODE" "1" >> runClaude neverCancel c Ask [] Nothing "/tmp" "QUESTION: where\n") `finally` restore >>= \r -> do
+    (setEnv "CLAUDECODE" "1" >> runClaude neverCancel c Validate [] Nothing "/tmp" "QUESTION: where\n") `finally` restore >>= \r -> do
       fmap rrCost r `shouldBe` Right (Just 0.0123)
       fmap rrSeconds r `shouldBe` Right 1.2
       fmap (T.isInfixOf "@" . rrText) r `shouldBe` Right True
   it "reports a failing runner with its first line" $ do
     c <- shimCfg
-    r <- runClaude neverCancel c Ask [] Nothing "/tmp" "SHIM:FAIL"
+    r <- runClaude neverCancel c Validate [] Nothing "/tmp" "SHIM:FAIL"
     either (T.isInfixOf "no credentials" . rfWhy) (const False) r `shouldBe` True
     either (T.isInfixOf "exited 2" . rfWhy) (const False) r `shouldBe` True
   it "reports printed non-JSON (a login prompt) as Left with the text" $ do
     c <- shimCfg
-    r <- runClaude neverCancel c Ask [] Nothing "/tmp" "SHIM:LOGIN"
+    r <- runClaude neverCancel c Validate [] Nothing "/tmp" "SHIM:LOGIN"
     either (T.isInfixOf "Please run /login" . rfWhy) (const False) r `shouldBe` True
     either (Just . rfStatus) (const Nothing) r `shouldBe` Just Error
   it "a JSON reply without cost or duration is zero seconds and no cost" $ do
     c <- shimCfg
-    r <- runClaude neverCancel c Ask [] Nothing "/tmp" "SHIM:PROSE"
+    r <- runClaude neverCancel c Validate [] Nothing "/tmp" "SHIM:PROSE"
     r `shouldBe` Right (RunResult "Sure! Here is what I found." 0 Nothing (Just "shim-prose") Nothing Nothing [] 0 [])
   it "times out" $ do
     c <- shimCfg
-    r <- runClaude neverCancel c {pcTimeout = 1} Ask [] Nothing "/tmp" "SHIM:SLEEP"
+    r <- runClaude neverCancel c {pcTimeout = 1} Validate [] Nothing "/tmp" "SHIM:SLEEP"
     r `shouldBe` Left (RunFailure Timeout "timed out after 1 s" Nothing)
   it "cancels" $ do
     c <- shimCfg
     (tok, trip) <- newCancel
     _ <- forkIO (threadDelay 200000 >> trip)
-    r <- runClaude tok c Ask [] Nothing "/tmp" "SHIM:SLEEP"
+    r <- runClaude tok c Validate [] Nothing "/tmp" "SHIM:SLEEP"
     r `shouldBe` Left (RunFailure Cancelled "cancelled" Nothing)
   it "keeps session, turns, tokens, models and denials from the runner's JSON" $ do
     c <- shimCfg
-    Right rr <- runClaude neverCancel c Ask [] Nothing "/tmp" "QUESTION: anything"
+    Right rr <- runClaude neverCancel c Validate [] Nothing "/tmp" "QUESTION: anything"
     rrTurns rr `shouldBe` Just 1
     rrTokens rr `shouldBe` Just (Tokens 2 40 1000 5000)
     fmap muCost (lookup "claude-sonnet-5-5" (rrModels rr)) `shouldBe` Just (Just 0.0123)
@@ -83,33 +112,28 @@ spec = describe "Olifant.Server.Errand (the claude -p runner)" $ do
     rrDenied rr `shouldBe` []
   it "keeps each denial's tool and command" $ do
     c <- shimCfg
-    Right rr <- runClaude neverCancel c Ask [] Nothing "/tmp" "QUESTION: anything SHIM:DENY"
+    Right rr <- runClaude neverCancel c Validate [] Nothing "/tmp" "QUESTION: anything SHIM:DENY"
     (rrDenials rr, rrDenied rr) `shouldBe` (2, replicate 2 (Denial "Bash" "python -m pytest t.py"))
     fmap (T.isPrefixOf "shim-") (rrSession rr) `shouldBe` Just True
   it "an is_error result is an Error failure with the runner's sentence" $ do
     c <- shimCfg
-    r <- runClaude neverCancel c Ask [] Nothing "/tmp" "SHIM:ERRORJSON"
+    r <- runClaude neverCancel c Validate [] Nothing "/tmp" "SHIM:ERRORJSON"
     either (\f -> (rfStatus f, rfWhy f)) (const (Ok, "")) r `shouldBe` (Error, "the runner reported an error")
   it "an is_error result keeps the runner's session; a failed exit has none" $ do
     c <- shimCfg
-    answered <- runClaude neverCancel c Ask [] Nothing "/tmp" "SHIM:ERRORJSON"
+    answered <- runClaude neverCancel c Validate [] Nothing "/tmp" "SHIM:ERRORJSON"
     either (fmap (T.isPrefixOf "shim-") . rfSession) (const Nothing) answered `shouldBe` Just True
-    exited <- runClaude neverCancel c Ask [] Nothing "/tmp" "SHIM:FAIL"
+    exited <- runClaude neverCancel c Validate [] Nothing "/tmp" "SHIM:FAIL"
     either rfSession (const (Just "answered")) exited `shouldBe` Nothing
   it "a non-zero exit is an Error failure" $ do
     c <- shimCfg
-    either (Just . rfStatus) (const Nothing) <$> runClaude neverCancel c Ask [] Nothing "/tmp" "SHIM:FAIL" >>= (`shouldBe` Just Error)
+    either (Just . rfStatus) (const Nothing) <$> runClaude neverCancel c Validate [] Nothing "/tmp" "SHIM:FAIL" >>= (`shouldBe` Just Error)
   it "a timeout is a Timeout failure" $ do
     c <- shimCfg
-    either (Just . rfStatus) (const Nothing) <$> runClaude neverCancel c {pcTimeout = 1} Ask [] Nothing "/tmp" "SHIM:SLEEP" >>= (`shouldBe` Just Timeout)
+    either (Just . rfStatus) (const Nothing) <$> runClaude neverCancel c {pcTimeout = 1} Validate [] Nothing "/tmp" "SHIM:SLEEP" >>= (`shouldBe` Just Timeout)
   it "status names" $
     map statusName [Ok, Empty, Error, Timeout, Cancelled] `shouldBe` ["ok", "empty", "error", "timeout", "cancelled"]
   describe "prompts and answers" $ do
-    it "ask keeps anchored claims and one conclusion, drops prose" $ do
-      let (bs, dropped) = parseAnswer Ask ls q "Sure.\n- the table has no day @src/a.py:Table\n- closure is absent @src/b.py:Repo\n- so a model is needed\n- ? what about x\n"
-      map ghText (concatMap blLines bs) `shouldBe` ["  - the table has no day   @src/a.py:Table", "  - closure is absent   @src/b.py:Repo", "  - so a model is needed"]
-      dropped `shouldBe` 2
-      map blAfterRow bs `shouldBe` [1]
     it "validate places blocks after the matching line, else at the section's end" $ do
       let (bs, _) = parseAnswer Validate ls heading "AFTER: - a claim @src/a.py:Foo\n  - ✓ holds @src/a.py:Foo\nAFTER: nowhere\n- ? why\n"
       map blAfterRow bs `shouldBe` [2, 4]
@@ -137,12 +161,12 @@ spec = describe "Olifant.Server.Errand (the claude -p runner)" $ do
       (map ghText (concatMap blLines bs), dropped) `shouldBe` (["- [ ] the step   @src/c.py:Baz"], 0)
       (doAnswered "DONE @", doAnswered "DONE @:Foo", doAnswered "DONE the css") `shouldBe` (False, False, False)
     it "never fails on odd input" $ do
-      parseAnswer Ask ls q "" `shouldBe` ([], 0)
+      -- the old ask retired: a `- ?` target answers nothing
+      parseAnswer Validate ls q "" `shouldBe` ([], 0)
+      parseAnswer Validate ls q "- a @x.py:A\n" `shouldBe` ([], 0)
       fst (parseAnswer Validate ls heading "AFTER:") `shouldBe` []
       snd (parseAnswer Validate ls heading "AFTER:") `shouldBe` 1
       parseAnswer Do ls step "DONE\r\nDONE nothing\r\n" `shouldBe` ([], 2)
-      length (fst (parseAnswer Ask ls q "- a @x.py:A\r\n")) `shouldBe` 1
-      parseAnswer Ask ls heading "- a @x.py:A" `shouldBe` ([], 0)
     it "the anchor rule takes the project's languages' unit words" $ do
       py <- shippedLanguage "python" []
       hs <- shippedLanguage "haskell" []
@@ -152,17 +176,11 @@ spec = describe "Olifant.Server.Errand (the claude -p runner)" $ do
       projectUnitWords [hs] `shouldSatisfy` T.isInfixOf "a name bound in its where (function.name)"
       projectUnitWords [py, rs] `shouldBe` defaultUnitWords
       projectUnitWords [] `shouldBe` defaultUnitWords
-      errandPrompt Ask (projectUnitWords [hs]) Nothing plan ls q [] `shouldSatisfy` T.isInfixOf "a name bound in its where"
-    it "an ask carries the author's checked beliefs under its question; none, the prompt as before" $ do
-      let beliefs = [Belief "it reads D" (BelievedRight "src/a.py:Foo"), Belief "it keeps R" (BelievedWrong "it drops R" "src/a.py:Foo"), Belief "it is fast" NotChecked]
-          with = errandPromptWith beliefs Ask pyWords Nothing plan ls q []
-      with `shouldSatisfy` T.isInfixOf (T.intercalate "\n" ["THE AUTHOR'S BELIEFS, ALREADY CHECKED:", "- it reads D — right, about src/a.py:Foo", "- it keeps R — wrong (it drops R), about src/a.py:Foo", "- it is fast — not checked", "Answer what these miss; do not repeat what they say."])
-      errandPromptWith [] Ask pyWords Nothing plan ls q [] `shouldBe` errandPrompt Ask pyWords Nothing plan ls q []
-      errandPrompt Ask pyWords Nothing plan ls q [] `shouldSatisfy` (not . T.isInfixOf "BELIEFS")
+      errandPrompt Do (projectUnitWords [hs]) Nothing plan ls step [] `shouldSatisfy` T.isInfixOf "a name bound in its where"
     it "the prompt carries the plan, the units and the marker" $ do
-      let p = errandPrompt Ask pyWords Nothing plan ls q [Grounded (Anchor "src/a.py" "Foo" 0 0) "class Foo:" "class Foo:\n    pass"]
+      let p = errandPrompt Validate pyWords Nothing plan ls (ls !! 2) [Grounded (Anchor "src/a.py" "Foo" 0 0) "class Foo:" "class Foo:\n    pass"]
       p `shouldSatisfy` T.isInfixOf "<doc>\n"
-      p `shouldSatisfy` T.isInfixOf "QUESTION: where does the day page decide"
+      p `shouldSatisfy` T.isInfixOf "CLAIM: - a claim @src/a.py:Foo"
       p `shouldSatisfy` T.isInfixOf "@src/a.py:Foo\nclass Foo:"
       p `shouldSatisfy` T.isInfixOf "relative to the project root"
     it "validate and do prompts carry the section, step and its test" $ do

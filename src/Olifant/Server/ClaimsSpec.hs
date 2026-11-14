@@ -17,7 +17,7 @@ import Olifant.Plans (parsePlan)
 import Olifant.Plans.Sentences (Sentence (..), sentences)
 import Olifant.Process (gitStateStamp)
 import Olifant.Server (ServerState, newServerState, projectFor)
-import Olifant.Server.Checker (CheckMode (..), Citation (..), Confirmed (..), Judgement (..), Print (..), UnitRef (..))
+import Olifant.Server.Checker (CheckMode (..), Citation (..), Confirmed (..), Judgement (..), Print (..), Source (..), UnitRef (..))
 import Olifant.Server.Claims
 import Olifant.Server.State (ServerState (..))
 import Olifant.Server.Triage (Route (..), Triage (..))
@@ -30,11 +30,11 @@ at0 :: UTCTime
 at0 = UTCTime (fromGregorian 2026 11 7) 0
 
 claim, aside :: SentenceEntry
-claim = SentenceEntry (Triage "claim" 0.9 0.9 "jev") Verify Nothing Nothing at0 Nothing False
-aside = SentenceEntry (Triage "prose" 0.9 0.1 "jev") Aside Nothing Nothing at0 Nothing False
+claim = SentenceEntry (Triage "claim" 0.9 0.9 "jev" Nothing Nothing) Verify Nothing Nothing at0 Nothing False
+aside = SentenceEntry (Triage "prose" 0.9 0.1 "jev" Nothing Nothing) Aside Nothing Nothing at0 Nothing False
 
 checked :: Judgement -> SentenceEntry
-checked j = claim {seCheck = Just (CheckRecord (Confirmed j "it drops D" [Citation "app/x.py" (Just "f") (Just 2)] (Just (UnitRef "app/x.py" "f")) (Just "abc1234") []) "claude-sonnet-5-5" (Just 0.1) 17.5 at0 CheckClaim)}
+checked j = claim {seCheck = Just (CheckRecord (Confirmed j "it drops D" [Citation "app/x.py" (Just "f") (Just 2)] (Just (UnitRef "app/x.py" "f")) (Just "abc1234") [] Nothing Nothing []) "claude-sonnet-5-5" (Just 0.1) 17.5 at0 CheckClaim False)}
 
 texts :: [Sentence] -> [Text]
 texts = map snText
@@ -46,7 +46,7 @@ spec = describe "Olifant.Server.Claims" $ do
     let store =
           M.fromList
             [ ("The loader keeps D.", checked JWrong)
-            , ("A step", SentenceEntry (Triage "step" 1 1 "grammar") Progress Nothing Nothing at0 Nothing False)
+            , ("A step", SentenceEntry (Triage "step" 1 1 "grammar" Nothing Nothing) Progress Nothing Nothing at0 Nothing False)
             , ("Failed one.", claim {seFailure = Just (Failure "timed out after 120 s" at0)})
             , ("Prose here.", aside)
             , ("Edited away.", claim {seGone = Just at0}) ]
@@ -58,10 +58,10 @@ spec = describe "Olifant.Server.Claims" $ do
   it "(a2) an owed entry and a progress check with prints round-trip" $ do
     (s, _) <- claimsServer
     let prints = [Print "app/x.py" (Just "f") "abc1234", Print "app/y.py" Nothing "0f0f0f0"]
-        misfit = CheckRecord (Confirmed JMisfit "is_staff misses the Staff role" [Citation "app/x.py" (Just "f") Nothing, Citation "app/y.py" Nothing Nothing] (Just (UnitRef "app/x.py" "f")) (Just "abc1234") prints) "sonnet" (Just 0.1) 12 at0 CheckProgress
+        misfit = CheckRecord (Confirmed JMisfit "is_staff misses the Staff role" [Citation "app/x.py" (Just "f") Nothing, Citation "app/y.py" Nothing Nothing] (Just (UnitRef "app/x.py" "f")) (Just "abc1234") prints Nothing Nothing []) "sonnet" (Just 0.1) 12 at0 CheckProgress False
         store = M.fromList
           [ ("Owed one.", claim {seOwed = True})
-          , ("A step", (SentenceEntry (Triage "step" 1 1 "grammar") Progress Nothing Nothing at0 Nothing False) {seCheck = Just misfit}) ]
+          , ("A step", (SentenceEntry (Triage "step" 1 1 "grammar" Nothing Nothing) Progress Nothing Nothing at0 Nothing False) {seCheck = Just misfit}) ]
     writeClaims (ssPorts s) "/r1" "plans/t.md" store
     readClaims (ssPorts s) "/r1" "plans/t.md" `shouldReturn` store
     Just body <- readText (pFiles (ssPorts s)) (claimsPath "/r1" "plans/t.md")
@@ -78,6 +78,50 @@ spec = describe "Olifant.Server.Claims" $ do
     cjMode c `shouldBe` CheckClaim
     cfPrints (cjConfirmed c) `shouldBe` []
     cfJudgement (cjConfirmed c) `shouldBe` JRight
+  it "(a4) an entry with wants, public and route answer round-trips (2b)" $ do
+    (s, _) <- claimsServer
+    let q = SentenceEntry (Triage "question" 0.95 0.3 "jev" (Just 0.9) (Just 0.85)) Answer Nothing Nothing at0 Nothing True
+        store = M.fromList [("Does bulk_create return keys?", q), ("Prose here.", aside)]
+    writeClaims (ssPorts s) "/r1" "plans/t.md" store
+    readClaims (ssPorts s) "/r1" "plans/t.md" `shouldReturn` store
+    Just body <- readText (pFiles (ssPorts s)) (claimsPath "/r1" "plans/t.md")
+    body `shouldSatisfy` T.isInfixOf "\"route\":\"answer\""
+    body `shouldSatisfy` T.isInfixOf "\"wants\":0.9"
+    body `shouldSatisfy` T.isInfixOf "\"public\":0.85"
+  it "(a5) a 2a entry (no wants, no public, a `- ? ` line asked) loads with both absent" $ do
+    (s, _) <- claimsServer
+    writeText (pFiles (ssPorts s)) (claimsPath "/r1" "plans/t.md") "{\"version\": 2, \"claims\": {\"Is it kept?\": {\"triage\": {\"kind\": \"question\", \"p\": 1, \"about\": 0, \"by\": \"grammar\"}, \"route\": \"asked\", \"check\": null, \"failure\": null, \"at\": \"2026-11-07T00:00:00Z\", \"gone\": null}}}"
+    store <- readClaims (ssPorts s) "/r1" "plans/t.md"
+    fmap seTriage (M.lookup "Is it kept?" store) `shouldBe` Just (Triage "question" 1 0 "grammar" Nothing Nothing)
+    fmap seRoute (M.lookup "Is it kept?" store) `shouldBe` Just Asked
+  it "(a6) an answer check with its answer, detail, two sources and web round-trips (2b)" $ do
+    (s, _) <- claimsServer
+    let srcs = [Source "https://docs.djangoproject.com/a" "QuerySet API", Source "https://htmx.org/b" "hx-on"]
+        answered = CheckRecord (Confirmed JAnswered "the docs say so" [Citation "app/x.py" (Just "f") Nothing] (Just (UnitRef "app/x.py" "f")) (Just "abc1234") [Print "app/x.py" (Just "f") "abc1234"] (Just "Yes, on Postgres.") (Just "Longer.") srcs) "sonnet" (Just 0.2) 30 at0 CheckAnswer True
+        q = SentenceEntry (Triage "question" 0.95 0.9 "jev" (Just 0.9) (Just 0.9)) Answer (Just answered) Nothing at0 Nothing False
+        store = M.fromList [("Does bulk_create return keys?", q)]
+    writeClaims (ssPorts s) "/r1" "plans/t.md" store
+    readClaims (ssPorts s) "/r1" "plans/t.md" `shouldReturn` store
+    Just body <- readText (pFiles (ssPorts s)) (claimsPath "/r1" "plans/t.md")
+    mapM_ (\w -> body `shouldSatisfy` T.isInfixOf w) ["\"mode\":\"answer\"", "\"verdict\":\"answered\"", "\"web\":true", "\"answer\":\"Yes, on Postgres.\"", "\"sources\":["]
+    -- a check with none of them writes none of the keys
+    writeClaims (ssPorts s) "/r1" "plans/u.md" (M.fromList [("x", checked JRight)])
+    Just plain <- readText (pFiles (ssPorts s)) (claimsPath "/r1" "plans/u.md")
+    mapM_ (\w -> plain `shouldSatisfy` (not . T.isInfixOf w)) ["\"web\"", "\"answer\"", "\"detail\"", "\"sources\""]
+  it "(a7) a 2a check loads with no web, no answer and no sources" $ do
+    (s, _) <- claimsServer
+    writeText (pFiles (ssPorts s)) (claimsPath "/r1" "plans/t.md") "{\"version\": 2, \"claims\": {\"x\": {\"triage\": {\"kind\": \"claim\", \"p\": 0.9, \"about\": 0.9, \"by\": \"jev\"}, \"route\": \"verify\", \"check\": {\"verdict\": \"right\", \"why\": \"w\", \"evidence\": [], \"unit\": null, \"fingerprint\": null, \"prints\": [], \"mode\": \"verify\", \"model\": \"sonnet\", \"cost\": 0.1, \"seconds\": 3, \"at\": \"2026-11-07T00:00:00Z\"}, \"failure\": null, \"at\": \"2026-11-07T00:00:00Z\", \"gone\": null}}}"
+    store <- readClaims (ssPorts s) "/r1" "plans/t.md"
+    let Just c = M.lookup "x" store >>= seCheck
+    (cjWeb c, cfAnswer (cjConfirmed c), cfDetail (cjConfirmed c), cfSources (cjConfirmed c)) `shouldBe` (False, Nothing, Nothing, [])
+  it "(a8) modeFor: the one asked for, else the stored check's, else the triage's" $ do
+    let q = SentenceEntry (Triage "question" 0.9 0.9 "jev" (Just 0.9) Nothing) Answer Nothing Nothing at0 Nothing False
+    modeFor Nothing q `shouldBe` CheckAnswer
+    modeFor Nothing claim `shouldBe` CheckClaim
+    modeFor (Just CheckAnswer) claim `shouldBe` CheckAnswer
+    -- a claim answered on request keeps its answer mode on a re-check
+    let answeredClaim = claim {seCheck = fmap (\c -> c {cjMode = CheckAnswer}) (seCheck (checked JRight))}
+    modeFor Nothing answeredClaim `shouldBe` CheckAnswer
   it "(b) a corrupt, missing or version-1 file reads as empty" $ do
     (s, _) <- claimsServer
     readClaims (ssPorts s) "/r1" "plans/none.md" `shouldReturn` M.empty

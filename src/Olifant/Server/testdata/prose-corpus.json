@@ -139,7 +139,23 @@
   "kind": "question",
   "corpus": 2,
   "contested": false,
-  "labelledBy": "spike"
+  "labelledBy": "spike",
+  "expect": "Yes: low confidence is a hard-coded rating per collector; priority.confidence returns 0 when the county's active source is in LEAST_CONFIDENT or uses the browser fetcher (2 for MOST_CONFIDENT, else 1).",
+  "mustSay": [
+   [
+    "LEAST_CONFIDENT",
+    "confidence"
+   ]
+  ],
+  "mustNotSay": [
+   "no way to know",
+   "not stored anywhere"
+  ],
+  "code": [
+   "nightvote/apps/entry/priority.py"
+  ],
+  "answerEvidence": "nightvote/apps/entry/priority.py:confidence (179-184), LEAST_CONFIDENT (41-51)",
+  "answerBy": "builder"
  },
  {
   "id": "H2",
@@ -235,7 +251,25 @@
   "kind": "question",
   "corpus": 2,
   "contested": false,
-  "labelledBy": "spike"
+  "labelledBy": "spike",
+  "expect": "At this commit an active admin or staff login is offered: board.volunteers lists active logins that hold desk counties, are superusers, or whose role has Hand entry ticked in Role access (Admin and Staff by default); one still missing is inactive or has a role with hand entry unticked.",
+  "mustSay": [
+   [
+    "hand_entry",
+    "hand entry",
+    "role access"
+   ]
+  ],
+  "mustNotSay": [
+   "leaves out staff",
+   "excludes staff"
+  ],
+  "code": [
+   "nightvote/apps/entry/board.py",
+   "nightvote/apps/accounts/roles.py"
+  ],
+  "answerEvidence": "nightvote/apps/entry/board.py:volunteers (136-140)",
+  "answerBy": "builder"
  },
  {
   "id": "S3",
@@ -247,7 +281,31 @@
   "kind": "question",
   "corpus": 2,
   "contested": false,
-  "labelledBy": "spike"
+  "labelledBy": "spike",
+  "expect": "No: a login has one role (a single role field); is_staff follows from it (Superuser and Admin only), and saving a staff login with Desk promotes it to Admin.",
+  "mustSay": [
+   [
+    "one role",
+    "single role",
+    "only one",
+    "a single",
+    "one `role`"
+   ],
+   [
+    "desk"
+   ]
+  ],
+  "mustNotSay": [
+   "many roles at once",
+   "several roles at once",
+   "multiple roles at once"
+  ],
+  "code": [
+   "nightvote/apps/accounts/models.py",
+   "nightvote/apps/accounts/roles.py"
+  ],
+  "answerEvidence": "nightvote/apps/accounts/models.py:User.save (78-84), role field (49)",
+  "answerBy": "builder"
  },
  {
   "id": "S4",
@@ -275,7 +333,26 @@
   "kind": "question",
   "corpus": 2,
   "contested": false,
-  "labelledBy": "spike"
+  "labelledBy": "spike",
+  "expect": "Yes: past contests are stored as Contests with per-candidate VoteCount rows linked by ContestBaseline, and 2018 is in Comparison2018 (votes_2018, votes_d_2018, votes_r_2018).",
+  "mustSay": [
+   [
+    "Comparison2018",
+    "VoteCount",
+    "votes_2018",
+    "Comparison 2018"
+   ]
+  ],
+  "mustNotSay": [
+   "no raw vote totals",
+   "are not stored anywhere",
+   "we do not store"
+  ],
+  "code": [
+   "nightvote/apps/elections/models.py"
+  ],
+  "answerEvidence": "nightvote/apps/elections/models.py:Comparison2018 (246-253)",
+  "answerBy": "builder"
  },
  {
   "id": "R2",
@@ -378,7 +455,27 @@
   "kind": "question",
   "corpus": 2,
   "contested": false,
-  "labelledBy": "spike"
+  "labelledBy": "spike",
+  "expect": "It is in the admin: Comparison2018 is registered with @admin.register as Comparison2018Admin.",
+  "mustSay": [
+   [
+    "Comparison2018Admin",
+    "admin.register",
+    "registered",
+    "is in the admin",
+    "in the Django admin"
+   ]
+  ],
+  "mustNotSay": [
+   "is not in the admin",
+   "isn't in the admin",
+   "not registered"
+  ],
+  "code": [
+   "nightvote/apps/elections/admin.py"
+  ],
+  "answerEvidence": "nightvote/apps/elections/admin.py:Comparison2018Admin (169-182)",
+  "answerBy": "builder"
  },
  {
   "id": "X1",
@@ -441,5 +538,252 @@
   "idea": true,
   "progressBy": "builder",
   "progressEvidence": "an idea for future work, like A1 and A2; no AI exists at 8488bb80 to diagnose collector targets"
+ },
+ {
+  "id": "Q1",
+  "plan": "plans/hand-entry-fixes.md",
+  "line": "Can we put hand entry and low confidence counties be at the top?",
+  "heading": "Can we put hand entry and low confidence counties be at the top? since they’re the ones the volunteers will definitely or most likely work or we'll need to assign.",
+  "lead": null,
+  "kind": "question",
+  "corpus": 5,
+  "contested": false,
+  "wantsAnswer": false,
+  "invented": false,
+  "labelledBy": "builder",
+  "note": "the plan's heading (line 0), its question as a paragraph: a request"
+ },
+ {
+  "id": "Q2",
+  "plan": "plans/raw-votes.md",
+  "line": "Add D and R fields (and total?) to Comparison 2018, keep them in the loader",
+  "heading": "Broad strokes of the solution",
+  "lead": null,
+  "kind": "question",
+  "corpus": 5,
+  "contested": false,
+  "wantsAnswer": false,
+  "invented": false,
+  "labelledBy": "builder",
+  "note": "line 62: a question inside a step"
+ },
+ {
+  "id": "Q3",
+  "plan": "plans/raw-votes.md",
+  "line": "- \"yeah can we collapse the 18-24 demo columns by default?\"",
+  "heading": "View",
+  "lead": null,
+  "kind": "question",
+  "corpus": 5,
+  "contested": false,
+  "wantsAnswer": false,
+  "invented": false,
+  "labelledBy": "builder",
+  "note": "line 85: quoted feedback, a request"
+ },
+ {
+  "id": "Q4",
+  "plan": "plans/raw-votes.md",
+  "line": "Should we split this into PRs?",
+  "heading": "Plan",
+  "lead": null,
+  "kind": "question",
+  "corpus": 5,
+  "contested": false,
+  "wantsAnswer": false,
+  "invented": true,
+  "labelledBy": "builder",
+  "note": "a question to the team"
+ },
+ {
+  "id": "Q5",
+  "plan": "plans/raw-votes.md",
+  "line": "Who doesn't love a crowded table?",
+  "heading": "View",
+  "lead": null,
+  "kind": "question",
+  "corpus": 5,
+  "contested": false,
+  "wantsAnswer": false,
+  "invented": true,
+  "labelledBy": "builder",
+  "note": "rhetorical"
+ },
+ {
+  "id": "W1",
+  "plan": "(builder)",
+  "line": "In Django 5.1, bulk_create sets the primary key on each new object when the database is PostgreSQL.",
+  "heading": "Nightvote's stack: Django 5.1 and htmx 4",
+  "lead": null,
+  "kind": "claim",
+  "corpus": 4,
+  "contested": false,
+  "invented": true,
+  "labelledBy": "builder",
+  "source": "https://docs.djangoproject.com/en/5.1/ref/models/querysets/#bulk-create",
+  "verdict": "right"
+ },
+ {
+  "id": "W2",
+  "plan": "(builder)",
+  "line": "Django 5.1 added the {% querystring %} template tag.",
+  "heading": "Nightvote's stack: Django 5.1 and htmx 4",
+  "lead": null,
+  "kind": "claim",
+  "corpus": 4,
+  "contested": false,
+  "invented": true,
+  "labelledBy": "builder",
+  "source": "https://docs.djangoproject.com/en/5.1/releases/5.1/",
+  "verdict": "right"
+ },
+ {
+  "id": "W3",
+  "plan": "(builder)",
+  "line": "Since Django 5.0, the USE_TZ setting defaults to True.",
+  "heading": "Nightvote's stack: Django 5.1 and htmx 4",
+  "lead": null,
+  "kind": "claim",
+  "corpus": 4,
+  "contested": false,
+  "invented": true,
+  "labelledBy": "builder",
+  "source": "https://docs.djangoproject.com/en/5.0/releases/5.0/",
+  "verdict": "right"
+ },
+ {
+  "id": "W4",
+  "plan": "(builder)",
+  "line": "Django 5.1 requires PostgreSQL 14 or later.",
+  "heading": "Nightvote's stack: Django 5.1 and htmx 4",
+  "lead": null,
+  "kind": "claim",
+  "corpus": 4,
+  "contested": false,
+  "invented": true,
+  "labelledBy": "builder",
+  "source": "https://docs.djangoproject.com/en/5.1/releases/5.1/",
+  "verdict": "wrong"
+ },
+ {
+  "id": "W5",
+  "plan": "(builder)",
+  "line": "htmx 4 drops the hx-on attribute.",
+  "heading": "Nightvote's stack: Django 5.1 and htmx 4",
+  "lead": null,
+  "kind": "claim",
+  "corpus": 4,
+  "contested": false,
+  "invented": true,
+  "labelledBy": "builder",
+  "source": "https://four.htmx.org/migration-guide-htmx-4/",
+  "verdict": "wrong"
+ },
+ {
+  "id": "W6",
+  "plan": "(builder)",
+  "line": "htmx 4 swaps 4xx and 5xx responses into the target by default.",
+  "heading": "Nightvote's stack: Django 5.1 and htmx 4",
+  "lead": null,
+  "kind": "claim",
+  "corpus": 4,
+  "contested": false,
+  "invented": true,
+  "labelledBy": "builder",
+  "source": "https://four.htmx.org/migration-guide-htmx-4/",
+  "verdict": "right"
+ },
+ {
+  "id": "W7",
+  "plan": "(builder)",
+  "line": "Does Django 5.2 support composite primary keys?",
+  "heading": "Nightvote's stack: Django 5.1 and htmx 4",
+  "lead": null,
+  "kind": "question",
+  "corpus": 4,
+  "contested": false,
+  "invented": true,
+  "labelledBy": "builder",
+  "source": "https://docs.djangoproject.com/en/5.2/releases/5.2/",
+  "expect": "Yes: Django 5.2 adds django.db.models.CompositePrimaryKey.",
+  "mustSay": [
+   [
+    "CompositePrimaryKey",
+    "composite primary key"
+   ]
+  ],
+  "mustNotSay": [
+   "does not support composite",
+   "no support for composite"
+  ]
+ },
+ {
+  "id": "W8",
+  "plan": "(builder)",
+  "line": "What does htmx 4 use to send requests instead of XMLHttpRequest?",
+  "heading": "Nightvote's stack: Django 5.1 and htmx 4",
+  "lead": null,
+  "kind": "question",
+  "corpus": 4,
+  "contested": false,
+  "invented": true,
+  "labelledBy": "builder",
+  "source": "https://four.htmx.org/migration-guide-htmx-4/",
+  "expect": "The native fetch() API; this cannot be reverted.",
+  "mustSay": [
+   [
+    "fetch"
+   ]
+  ],
+  "mustNotSay": [
+   "still uses XMLHttpRequest"
+  ]
+ },
+ {
+  "id": "W9",
+  "plan": "(builder)",
+  "line": "Is attribute inheritance on by default in htmx 4?",
+  "heading": "Nightvote's stack: Django 5.1 and htmx 4",
+  "lead": null,
+  "kind": "question",
+  "corpus": 4,
+  "contested": false,
+  "invented": true,
+  "labelledBy": "builder",
+  "source": "https://four.htmx.org/migration-guide-htmx-4/",
+  "expect": "No: inheritance is explicit; add :inherited to an attribute (htmx.config.implicitInheritance = true restores the old way).",
+  "mustSay": [
+   [
+    ":inherited",
+    "explicit",
+    "inherited modifier"
+   ]
+  ],
+  "mustNotSay": [
+   "is on by default",
+   "still implicit by default"
+  ]
+ },
+ {
+  "id": "W10",
+  "plan": "(builder)",
+  "line": "Which htmx 4 attribute replaces hx-vars?",
+  "heading": "Nightvote's stack: Django 5.1 and htmx 4",
+  "lead": null,
+  "kind": "question",
+  "corpus": 4,
+  "contested": false,
+  "invented": true,
+  "labelledBy": "builder",
+  "source": "https://four.htmx.org/migration-guide-htmx-4/",
+  "expect": "hx-vals, with the js: prefix for computed values.",
+  "mustSay": [
+   [
+    "hx-vals"
+   ]
+  ],
+  "mustNotSay": [
+   "hx-vars is still"
+  ]
  }
 ]

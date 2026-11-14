@@ -21,6 +21,7 @@ module Olifant.Server.Plans
   , planCounts
   , countsText
   , keepFooter
+  , keepAnswerFooter
   , citationLocations
   , keepEdit
   , planFolds
@@ -31,7 +32,8 @@ module Olifant.Server.Plans
   , planFiles
   , ErrandAnswer (..)
   , runErrand
-  , beliefsUnder
+  , beliefsOf
+  , askFor
   , Reopen (..)
   , currentBranch
   , gitOut
@@ -53,7 +55,7 @@ import Data.Text.Encoding qualified as TE
 import Olifant.Language.Adapter (Language (..), Probe (..), TestDef (..), chooseTestCommand)
 import Olifant.Plans (Kind (..), childrenOf, testState)
 import Olifant.Process (Cancel, runBytes)
-import Olifant.Server.Errand (Belief (..), BeliefCheck (..), Block (..), Ghost (..), Grounded (..), RunFailure (..), RunResult (..), Status (..), Verb (..), cutBody, doAnswered, doTestCommand, doTestTools, errandPromptWith, projectUnitWords, groundingLimit, parseAnswer, runClaude, statusName)
+import Olifant.Server.Errand (Belief (..), BeliefCheck (..), Block (..), Ghost (..), Grounded (..), RunFailure (..), RunResult (..), Status (..), Verb (..), cutBody, doAnswered, doTestCommand, doTestTools, errandPrompt, projectUnitWords, groundingLimit, parseAnswer, runClaude, statusName)
 import Olifant.Server.LoopTypes (Fact (..))
 import Data.Time (UTCTime, getCurrentTimeZone)
 import Olifant.Server.Journal (DoEnd (..), doEvent)
@@ -73,9 +75,9 @@ import Olifant.Plans (Anchor (..), Line (..), Section (..), Verdict (..), parseP
 import Olifant.Server.State (ServerConfig (..), ServerState (..))
 import System.Directory (doesFileExist, findExecutable)
 import Olifant.Server.Confine (confined, safely)
-import Olifant.Server.Claims (CheckRecord (..), ClaimStore, SentenceEntry (..), checkable, lineKey, claimsOf, sentencesOf, stepCitations, unchecked)
-import Olifant.Server.Triage (Route (..))
-import Olifant.Server.Checker (CheckMode (..), Citation (..), Confirmed (..), Judgement (..), Print (..), evidenceText, judgementName)
+import Olifant.Server.Claims (CheckRecord (..), ClaimStore, SentenceEntry (..), checkable, lineKey, claimsOf, openSentences, sentencesOf, stepCitations, unchecked)
+import Olifant.Server.Triage (Route (..), useWeb)
+import Olifant.Server.Checker (CheckAsk (..), CheckMode (..), Citation (..), Confirmed (..), Judgement (..), Print (..), Source (..), evidenceText, judgementName, sourceDomain)
 import Olifant.Server.Stale (CitedFile (..), citedPrints, printsNow, staleKeys)
 import Data.Time.Format (defaultTimeLocale, formatTime)
 import Numeric (showFFloat)
@@ -148,6 +150,8 @@ planDiagnostics s p path text = do
   now <- printsNow s p (map ptPath prints)
   clock <- pNow (ssPorts s)
   let stale = staleKeys now store
+      -- questions answered in the file show nothing and are never queued
+      open = openSentences ls ss
       citedNow = M.fromList [((path, fromMaybe "" (ptUnit pr)), maybe (cdHash f) (\u -> M.lookup u (cdUnits f)) (ptUnit pr)) | pr <- prints, let path = normalisePath (ptPath pr), Just f <- [M.lookup path now]]
   let rows = T.splitOn "\n" text
       utf16At r c = fromIntegral (utf16Length (T.take c (if r < length rows then rows !! r else "")))
@@ -155,8 +159,8 @@ planDiagnostics s p path text = do
         let Range (Position r0 c0) (Position r1 c1) = d ^. L.range
          in d & L.range .~ Range (Position r0 (utf16At (fromIntegral r0) (fromIntegral c0))) (Position r1 (utf16At (fromIntegral r1) (fromIntegral c1)))
   pure
-    ( mapMaybe (\(l, a) -> diagnose ls l a =<< M.lookup (key a) resolved) anchored ++ map inUtf16 (claimHints can store checking stale ss)
-        ++ [summary | can, Just summary <- [planSummary ls (planCounts clock ss store stale)]]
+    ( mapMaybe (\(l, a) -> diagnose ls l a =<< M.lookup (key a) resolved) anchored ++ map inUtf16 (claimHints can store checking stale open)
+        ++ [summary | can, Just summary <- [planSummary ls (planCounts clock open store stale)]]
     , M.union (M.map (\r -> rsFingerprint r <* rsUnit r) resolved) citedNow )
   where
     diagnose ls l a r = case (rsUnit r, lnVerdict l, rsFingerprint r) of
@@ -214,7 +218,7 @@ hoverOnly = ["step-open", "step-unsure", "step-ticked-done"]
 -- sentence when checks can run (CAN), saying whether a save checks it.
 claimLine :: Bool -> ClaimStore -> S.Set Text -> S.Set Text -> Sentence -> Maybe (Text, DiagnosticSeverity, Text)
 claimLine can store checking stale x
-  | key `S.member` checking = Just ("claim-checking", DiagnosticSeverity_Hint, "… Checking")
+  | key `S.member` checking = Just ("claim-checking", DiagnosticSeverity_Hint, if answering then "… Answering" else "… Checking")
   | otherwise = do
       e <- M.lookup key store
       case seCheck e of
@@ -227,16 +231,28 @@ claimLine can store checking stale x
               warn co t = Just (co, DiagnosticSeverity_Warning, t)
               ticked = snKind x == Step True
               changed = "the code changed since"
+              answer = [a | Just a <- [cfAnswer cf]]
+              firstSource = take 1 (cfSources cf)
+              sourceText = [soTitle so <> " (" <> sourceDomain (soUrl so) <> ")" | so <- firstSource]
+              -- a verdict resting only on web pages names the first one's site
+              perSource = null (cfEvidence cf) && not (null firstSource)
+              per = T.concat [", per " <> sourceDomain (soUrl so) | so <- firstSource]
            in if key `S.member` stale && cfJudgement cf /= JCannotTell
                 then case cfJudgement cf of
+                  JAnswered -> hint "question-answered-stale" (line (["» Answered when checked", changed] ++ answer ++ code'))
                   JRight -> hint "claim-right-stale" (line (["✓ Right when checked", changed] ++ why ++ code'))
                   JWrong -> hint "claim-wrong-stale" (line (["✗ Wrong when checked", changed] ++ why ++ code'))
                   JDone -> hint "step-done-stale" (line (["✓ Done when checked", changed] ++ why ++ code'))
                   JMisfit -> hint "step-misfit-stale" (line (["! Would not work when checked", changed] ++ why ++ code'))
                   _ -> hint "step-stale" "○ The code this step would change has changed · Check this"
                 else case cfJudgement cf of
-                  JRight -> hint "claim-right" (line (["✓ Right"] ++ why ++ code'))
-                  JWrong -> warn "claim-wrong" (line (["✗ Wrong"] ++ why ++ code'))
+                  JAnswered -> hint "question-answered" (line (["» Answer"] ++ answer ++ code' ++ sourceText))
+                  JRight
+                    | perSource -> hint "claim-right" (line (["✓ Right" <> per] ++ why ++ map soTitle firstSource))
+                    | otherwise -> hint "claim-right" (line (["✓ Right"] ++ why ++ code'))
+                  JWrong
+                    | perSource -> warn "claim-wrong" (line (["✗ Wrong" <> per] ++ why ++ map soTitle firstSource))
+                    | otherwise -> warn "claim-wrong" (line (["✗ Wrong"] ++ why ++ code'))
                   JDone
                     | ticked -> hint "step-ticked-done" (line (["Done in the code"] ++ why ++ code'))
                     | otherwise -> hint "step-done" (line (["✓ Done in the code"] ++ why ++ code' ++ ["Mark done?" | snKind x == Step False]))
@@ -245,6 +261,7 @@ claimLine can store checking stale x
                   JOpen -> hint "step-open" (line (["Still open"] ++ why))
                   JCannotTell
                     | cjMode c == CheckProgress -> hint "step-unsure" (line (["Could not tell"] ++ why))
+                    | cjMode c == CheckAnswer -> hint "question-unsure" (line (["? Could not answer"] ++ why))
                     | otherwise -> hint "claim-unsure" (line (["? Could not tell"] ++ why))
         Nothing
           | checkable x e && can ->
@@ -252,35 +269,47 @@ claimLine can store checking stale x
           | otherwise -> Nothing
   where
     key = sentenceKey (snText x)
+    entry = M.lookup key store
+    answering = maybe False (\e -> seRoute e == Answer || fmap cjMode (seCheck e) == Just CheckAnswer) entry
 
 -- | The hover of the sentences on a row: one line each, without its glyph;
 -- none when no sentence there has a line.
 claimHover :: ClaimStore -> S.Set Text -> [Sentence] -> Maybe Text
 claimHover store stale ss = case [if code `elem` hoverOnly then msg else T.drop 2 msg | x <- ss, Just (code, _, msg) <- [claimLine True store S.empty stale x]] of
   [] -> Nothing
-  ls -> Just (T.intercalate "\n\n" (ls ++ [keepFooter | any checked ss]))
+  ls -> Just (T.intercalate "\n\n" (ls ++ [footer | not (null checks)]))
   where
-    checked x = isJust (M.lookup (sentenceKey (snText x)) store >>= seCheck)
+    checks = [c | x <- ss, Just c <- [M.lookup (sentenceKey (snText x)) store >>= seCheck]]
+    footer = if all ((== JAnswered) . cfJudgement . cjConfirmed) checks then keepAnswerFooter else keepFooter
 
 -- | *Show why*'s page for the sentence KEY and its check: the verdict and
--- why, every citation, and who checked it, when, at what cost.
+-- why (an answer: the answer and its detail), every citation, every web
+-- source (shown, not opened), and who checked it, when, at what cost.
 whyBody :: Text -> CheckRecord -> Text
 whyBody key ch =
   T.unlines $
-    ["# " <> key, "", word <> (if T.null (cfWhy cf) then "" else " · " <> cfWhy cf), "", "## The code it rests on", ""]
+    ["# " <> key, ""]
+      ++ (case (cfJudgement cf, cfAnswer cf) of
+            (JAnswered, Just a) -> ["Answer · " <> a, ""] ++ concat [[d, ""] | Just d <- [cfDetail cf]] ++ ["Why · " <> cfWhy cf | not (T.null (cfWhy cf))] ++ ["" | not (T.null (cfWhy cf))]
+            _ -> [word <> (if T.null (cfWhy cf) then "" else " · " <> cfWhy cf), ""])
+      ++ ["## The code it rests on", ""]
       ++ ["- " <> T.pack (ciPath x) <> maybe "" (":" <>) (ciUnit x) <> maybe "" (\n -> " (line " <> T.pack (show n) <> ")") (ciLine x) | x <- cfEvidence cf]
       ++ ["- (none cited)" | null (cfEvidence cf)]
+      ++ (if null (cfSources cf) then [] else ["", "## Sources", ""] ++ ["- " <> soTitle so <> " — " <> soUrl so | so <- cfSources cf] ++ ["", "A source is the model's word and a link: olifant did not open it."])
       ++ [ ""
-         , "Checked " <> T.pack (formatTime defaultTimeLocale "%Y-%m-%d %H:%M" (cjAt ch)) <> " by " <> cjModel ch <> maybe "" (\c -> ", $" <> T.pack (showFFloat (Just 3) c "")) (cjCost ch) <> ", " <> T.pack (show (round (cjSeconds ch) :: Int)) <> " s; the verdict's unit: " <> (let t = evidenceText cf in if T.null t then "none" else t) <> " (" <> judgementName (cfJudgement cf) <> ")." ]
+         , "Checked " <> T.pack (formatTime defaultTimeLocale "%Y-%m-%d %H:%M" (cjAt ch)) <> " by " <> cjModel ch <> maybe "" (\c -> ", $" <> T.pack (showFFloat (Just 3) c "")) (cjCost ch) <> ", " <> T.pack (show (round (cjSeconds ch) :: Int)) <> " s" <> (if cjWeb ch then " · with web search" else "") <> "; the verdict's unit: " <> (let t = evidenceText cf in if T.null t then "none" else t) <> " (" <> judgementName (cfJudgement cf) <> ")." ]
   where
     cf = cjConfirmed ch
     word = case cfJudgement cf of
       JRight -> "Right"
       JWrong -> "Wrong"
-      JCannotTell -> "Could not tell"
+      JCannotTell
+        | cjMode ch == CheckAnswer -> "Could not answer"
+        | otherwise -> "Could not tell"
       JDone -> "Done in the code"
       JOpen -> "Still open"
       JMisfit -> "As written this would not work"
+      JAnswered -> "Answer"
 
 -- | What *Check the plan* would check: (unchecked, stale) sentences, one
 -- per key; ticked steps are in neither.
@@ -307,8 +336,9 @@ planSummary ls counts@(n, m)
 
 -- | The last line of a checked sentence's hover. The server does not know
 -- the client's key for *Keep this verdict*; durandal.nvim's default is named.
-keepFooter :: Text
+keepFooter, keepAnswerFooter :: Text
 keepFooter = "gd: the code · Keep this verdict: <leader>mpk"
+keepAnswerFooter = "gd: the code · Keep this answer: <leader>mpk"
 
 -- | Where a checked sentence's citations are, in the checker's order (ROOT
 -- the project root; STARTS the 1-based first line of each cited unit that
@@ -323,7 +353,7 @@ citationLocations root starts e =
   where
     a <|> b = maybe b Just a
 
--- | *Keep this verdict*: the check as one evidence line after the
+-- | *Keep this verdict* (and *Keep this answer*: `- ✓ <answer> · <path>:<unit> · <url>`): the check as one evidence line after the
 -- sentence's last row (`- ✓ why (path:Unit)` or `- ✗ …`), one level under a
 -- bullet or step, at the sentence's indent under prose. Nothing for a check
 -- that could not tell, or when the same line is already in the run of
@@ -331,14 +361,15 @@ citationLocations root starts e =
 -- kept verdicts read oldest first.
 keepEdit :: [Line] -> Sentence -> CheckRecord -> Maybe TextEdit
 keepEdit ls x ch = do
-  glyph <- case cfJudgement cf of
-    JRight -> Just "✓"
-    JWrong -> Just "✗"
+  body <- case cfJudgement cf of
+    JRight -> Just (verdict "✓")
+    JWrong -> Just (verdict "✗")
+    -- *Keep this answer*: `- ✓ <answer> · <path>:<unit> · <url>`
+    JAnswered | Just a <- cfAnswer cf -> Just ("✓ " <> T.intercalate " · " ([oneLine a] ++ [w | let w = evidenceText cf, not (T.null w)] ++ [soUrl so | so <- take 1 (cfSources cf)]))
     _ -> Nothing
   first <- find ((== snRow x) . lnRow) ls
   lastRow <- find ((== snEndRow x) . lnRow) ls
   let indent = lnIndent first + (if isBullet first then 2 else 0)
-      body = glyph <> " " <> T.intercalate " " ([cfWhy cf | not (T.null (cfWhy cf))] ++ ["(" <> w <> ")" | let w = evidenceText cf, not (T.null w)])
       line = T.replicate indent " " <> "- " <> body
       isEvidence l = lnIndent l == indent && any (`T.isPrefixOf` T.drop indent (lnText l)) ["- ✓ ", "- ✗ "]
       run = takeWhile isEvidence (dropWhile ((<= snEndRow x) . lnRow) ls)
@@ -348,7 +379,10 @@ keepEdit ls x ch = do
     Just (TextEdit (Range end end) ("\n" <> line))
   where
     cf = cjConfirmed ch
+    verdict glyph = glyph <> " " <> T.intercalate " " ([oneLine (cfWhy cf) | not (T.null (cfWhy cf))] ++ ["(" <> w <> ")" | let w = evidenceText cf, not (T.null w)])
     isBullet l = "- " `T.isPrefixOf` T.drop (lnIndent l) (lnText l)
+    -- the model's text on one row: a newline in it would write more lines (a heading, a step) into the plan
+    oneLine = T.unwords . T.words
 
 -- | (path, unit) -> the unit's fingerprint now; Nothing = not found. A key
 -- that is absent has not been read yet. Beside the anchors', the prints of
@@ -606,7 +640,7 @@ data ErrandAnswer = ErrandAnswer
   }
   deriving stock (Eq, Show)
 
--- | Ask, validate or do one line of a plan (its path, its 0-based row): the
+-- | Validate or do one line of a plan (its path, its 0-based row): the
 -- line grounded in the units its section points at, the runner run from the
 -- project's root, its answer read into ghost blocks and logged. Left is one
 -- sentence: the line does not fit the verb, the runner failed, or it
@@ -618,20 +652,29 @@ data ErrandAnswer = ErrandAnswer
 -- in a git repository takes the tree's reference first; one that answered,
 -- or changed the tree however it ended, leaves a review (its id to
 -- REVIEWED, and in the answer).
--- | The author's beliefs under a question (its bare claims), each with
--- what its check found; none unless at least one has a verdict.
-beliefsUnder :: ClaimStore -> [Line] -> Line -> [Belief]
-beliefsUnder store ls q
+-- | Every bare belief (a claim with no anchor) directly under a `- ? `
+-- line, with its check: right or wrong about a unit, else not checked.
+beliefsOf :: ClaimStore -> [Line] -> Line -> [Belief]
+beliefsOf store ls q
   | lnKind q /= Question = []
-  | any (\(Belief _ c) -> c /= NotChecked) beliefs = beliefs
-  | otherwise = []
+  | otherwise = [Belief (lineKey c) (checkOf (M.lookup (lineKey c) store >>= seCheck)) | c <- bare]
   where
     bare = [c | c <- childrenOf ls (lnRow q), lnIndent c == lnIndent q + 2, lnKind c == Claim, lnAnchor c == Nothing]
-    beliefs = [Belief (lineKey c) (checkOf (M.lookup (lineKey c) store >>= seCheck)) | c <- bare]
     checkOf = \case
       Just c | JRight <- cfJudgement (cjConfirmed c) -> BelievedRight (evidenceText (cjConfirmed c))
       Just c | JWrong <- cfJudgement (cjConfirmed c) -> BelievedWrong (cfWhy (cjConfirmed c)) (evidenceText (cjConfirmed c))
       _ -> NotChecked
+
+-- | What one check of X is asked: MODE; the web tools when web is on, the
+-- mode is not progress and its entry's triage says public sources settle
+-- it ('useWeb'); for an answer to a `- ? ` line, the beliefs under it.
+askFor :: PlansConfig -> ClaimStore -> [Line] -> CheckMode -> Sentence -> CheckAsk
+askFor cfg store ls mode x = CheckAsk mode web beliefs
+  where
+    web = mode /= CheckProgress && maybe False (useWeb (pcWeb cfg) . seTriage) (M.lookup (sentenceKey (snText x)) store)
+    beliefs
+      | mode == CheckAnswer, l : _ <- [l | l <- ls, lnRow l == snRow x] = beliefsOf store ls l
+      | otherwise = []
 
 -- | A do that continues an earlier one's thread: its id, its session, and
 -- what the user asked for.
@@ -665,9 +708,7 @@ runErrand after reviewed reopen token verb path row s0 =
           tests <- projectTests (workspaceProbe (pFiles (ssPorts s)) (prRoot p)) p
           let tools = if verb == Do then testTools p tests else []
               asked = maybe "" (\ro -> "Further change asked: " <> roAsk ro <> "\n\n") reopen
-          store <- claimsOf s root path
-          let beliefs = if verb == Ask then beliefsUnder store ls target else []
-              prompt = asked <> errandPromptWith beliefs verb (projectUnitWords (catalogLanguages (prCatalog p))) (if verb == Do then listToMaybe' (mapMaybe doTestCommand tests) else Nothing) text ls target grounded
+          let prompt = asked <> errandPrompt verb (projectUnitWords (catalogLanguages (prCatalog p))) (if verb == Do then listToMaybe' (mapMaybe doTestCommand tests) else Nothing) text ls target grounded
               rel = makeRelative root (normalisePath path)
           branch <- currentBranch root
           now <- pNow (ssPorts s)
@@ -683,7 +724,7 @@ runErrand after reviewed reopen token verb path row s0 =
                     , erTokens = mrr >>= rrTokens, erCost = mrr >>= rrCost, erModels = maybe [] rrModels mrr
                     , erPromptChars = T.length prompt, erGrounded = length grounded
                     , erBlocks = blocks, erLines = ghosts, erDropped = dropped, erUnresolved = unresolved
-                    , erChanged = changed, erDenials = maybe 0 rrDenials mrr, erParent = roParent <$> reopen, erAuto = False, erMode = Nothing, erVerdict = Nothing }
+                    , erChanged = changed, erDenials = maybe 0 rrDenials mrr, erParent = roParent <$> reopen, erAuto = False, erMode = Nothing, erVerdict = Nothing, erWeb = False }
                 appendStepLine (ssPorts s) root
                   [ "plan-" <> verbName
                   , T.pack rel <> ":" <> tshow row
@@ -777,11 +818,11 @@ runErrand after reviewed reopen token verb path row s0 =
                 pure (Right (ErrandAnswer rid (zip blocks fps) dropped unresolved (rrSeconds rr) (rrCost rr) changed facts rv))
         _ -> pure (Left (verbName <> " needs a " <> kindName <> " line"))
     fits = case verb of
-      Ask -> (== Question)
+      Check -> const False
       Validate -> \case Claim -> True; Heading _ -> True; _ -> False
       Do -> \case Step _ -> True; TestChild -> True; _ -> False
-    verbName = case verb of Ask -> "ask"; Validate -> "validate"; Do -> "do"
-    kindName = case verb of Ask -> "question"; Validate -> "claim or heading"; Do -> "step or test"
+    verbName = case verb of Validate -> "validate"; Do -> "do"; Check -> "check"
+    kindName = case verb of Validate -> "claim or heading"; Do -> "step or test"; Check -> "sentence"
     -- a resolved unit's lines, for the prompt
     grounding a r = case (rsUnit r, rsText r) of
       (Just n, Just t) ->

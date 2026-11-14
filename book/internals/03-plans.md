@@ -18,7 +18,7 @@ EOF
 git add -A && git commit -qm plan
 olifant gen python-htmx/command --set app=bistro --set service=booking --set command=close_table
 nvim plans/close-table.md          # durandal.nvim: <leader>mpc forces a reconcile
-tail -f .olifant/state/steps.log   # plan-reconcile, plan-ask, plan-do lines as they happen
+tail -f .olifant/state/steps.log   # plan-reconcile, plan-validate, plan-do lines as they happen
 ```
 
 The generator changes `close_table.py` after the plan was committed, so the reconcile has a
@@ -33,7 +33,7 @@ a new-step ghost worded from the unit's header.
 | module | what it holds |
 |---|---|
 | `src/Olifant/Plans.hs` | the **pure parser**: `parsePlan :: Text -> [Line]` (`Plans.hs`), `Kind`, `Anchor`, `Verdict`, sections, test marks, excerpt fences |
-| `Server/Plans.hs` | the plan as the server sees it: `resolveAnchor`, `planDiagnostics`, `anchorItems` (completion after `@`), `planFiles`, and `runErrand`, the ask/validate/do runner; also the small git helpers the loop shares (`currentBranch`, `gitOut`, `gitText`) |
+| `Server/Plans.hs` | the plan as the server sees it: `resolveAnchor`, `planDiagnostics`, `anchorItems` (completion after `@`), `planFiles`, and `runErrand`, the validate/do runner; `askFor` and `beliefsOf` (what one check is asked); the margin (`claimHints`, `claimLine`, `claimHover`, `whyBody`, `keepEdit`); also the small git helpers the loop shares (`currentBranch`, `gitOut`, `gitText`) |
 | `Server/Errand.hs` | the **runner**: one `claude -p` call (`runClaude`), its JSON read into `RunResult`; the prompts (`errandPrompt`) and the answer reader (`parseAnswer`) |
 | `Server/Loop.hs` | the **reconcile** (`reconcile`), the work set (`workSet`; `baseline`; `changedUnits`; `accounted`) and the facts that need no model |
 | `Server/LoopTypes.hs` | the loop's data: `ChangedUnit`, `Fact`, `ReadingKind`, `ReconcileBlock`, `ReconcileAnswer` |
@@ -45,9 +45,9 @@ a new-step ghost worded from the unit's header.
 | `Server/Telemetry.hs` | `.olifant/state/errands.jsonl`: errand, outcome, reconcile and claim-pass (`PassRecord`, kind `pass`) records (`appendRecord`); the retired resolver's `resolve` lines still parse |
 | `Server/Excerpt.hs` | code excerpts kept under a step, and the hover over an anchor |
 | `Plans/Sentences.hs` | the **sentences** of a plan, pure: `sentencesWith :: (Int -> Bool) -> [Line] -> [Sentence]` (row and column range, the line's `Kind`, the text with markers stripped, heading, lead, anchor), where the predicate says which rows continue on the next (a row that does not ends its sentence at the line break); `sentences` joins none, `sentencesJoined` joins by a store's answers; `joinCandidates` (the rows that end without `. ? ! :`, with their and the next row's text), `pairKey`, and `sentenceKey`, a sentence's words without anchor or verdict; a span with no letter or digit (an empty `- `, `-  .`) gives no sentence, so nothing downstream sees it |
-| `Server/Triage.hs` | **triage**: `byGrammar` (steps, questions), `triageQuestions` (Jev's `sentence-kind` choice with no unsure and its `about-code` Noul, one state), `fromAnswers`, `noJev`, and `route` with the two thresholds `kindThreshold` and `aboutThreshold`; the join question `joinQuestion` (a `line-continues` Noul, no unsure), `joinThreshold` (0.70), `joinsAnswer`, and `decideJoins` (one `weighAll` per candidate while the pass allows; unsure answers dropped; no Jev, none) |
-| `Server/Checker.hs` | the **checker**: `Judgement` (right, wrong, cannot tell; done, open, misfit), `CheckMode` (`CheckClaim`, JSON `verify`; `CheckProgress`, `progress`) and `checkModeOf` (a triage of kind `step` is checked for progress), `checkPrompt` and `parseCheckReply` in either mode, `confirm` (every citation checked against the tree and the catalog; a `Print` per citation found, `fileHash` for a whole file), `liveChecker` (the `Check` verb of `runClaude`), `recordedChecker`, `replayChecker`, `checkerUnder`; `UnitRef` |
-| `Server/Claims.hs` | the **claim store**, version 2 (`SentenceEntry`: triage, route, `CheckRecord` or `Failure`, `seGone`; `ClaimStore` keyed by `sentenceKey`; `readClaims`/`writeClaims` under `.olifant/state/claims/`; `claimsOf`/`updateClaims` through `ssClaims`: every write is a function of the store as held now, under one lock), `checkable`, `queued` (owed), `unchecked` (owed or not), `stepUnit` and `stepCitations` (a step's working unit from its check), `pruneClaims`, `checkedKeys`, `lineKey`; the **joins** beside the entries (`Joins`, by `pairKey`, the file's optional `"joins"` field, still version 2; `readJoins`, `writeClaimsWith`, `joinsOf`/`updateJoins` held in `ssClaims` under `<plan>#joins`, same lock and file) and `sentencesOf`, the plan's sentences with its joins, which everything reading sentences calls |
+| `Server/Triage.hs` | **triage**: `byGrammar` (steps, questions), `triageQuestions web` (Jev's `sentence-kind` choice with no unsure, its `about-code` Noul, the `wants-answer` Noul, and with web the `about-public` Noul, one state), `gradeQuestions` (a `- ? ` line: `about-code`, and `about-public` with web), `fromAnswers` (by question kind), `noJev`, `needsRetriage` and `retriage` (only the missing Nouls), `settleable`, `codeSettles` (about-code at `aboutThreshold`, a question's at `questionAboutThreshold`, 0.50), `useWeb` (web on, about-public at the threshold, and not `codeSettles`: the code check wins), and `route web` with the thresholds `kindThreshold`, `aboutThreshold` and `questionAboutThreshold`; `kindOptions` (exported, its claim text covering what a named library, framework or service does); the join question `joinQuestion` (a `line-continues` Noul, no unsure), `joinThreshold` (0.70), `joinsAnswer`, and `decideJoins` (one `weighAll` per candidate while the pass allows; unsure answers dropped; no Jev, none) |
+| `Server/Checker.hs` | the **checker**: `Judgement` (right, wrong, cannot tell; done, open, misfit; answered), `CheckMode` (`CheckClaim`, JSON `verify`; `CheckProgress`, `progress`; `CheckAnswer`, `answer`) and `checkModeOf` (a triage of kind `step` is checked for progress, `question` answered), `CheckAsk` (mode, web, beliefs), `Source` and `sourceDomain`, `checkPrompt`/`checkPromptWith` and `parseCheckReply` in any mode, `confirm` (every citation checked against the tree and the catalog; a `Print` per citation found, `fileHash` for a whole file), `liveChecker` (the `Check` verb of `runClaude`), `recordedChecker`, `replayChecker`, `checkerUnder`; `UnitRef` |
+| `Server/Claims.hs` | the **claim store**, version 2 (`SentenceEntry`: triage, route, `CheckRecord` or `Failure`, `seGone`; `ClaimStore` keyed by `sentenceKey`; `readClaims`/`writeClaims` under `.olifant/state/claims/`; `claimsOf`/`updateClaims` through `ssClaims`: every write is a function of the store as held now, under one lock), `checkable` (routed verify, progress or answer), `modeFor` (the mode asked, else the stored check's, else the triage's), `openSentences` (the sentences less the questions answered in the file), `queued` (owed), `unchecked` (owed or not), `stepUnit` and `stepCitations` (a step's working unit from its check), `pruneClaims`, `checkedKeys`, `lineKey`; the **joins** beside the entries (`Joins`, by `pairKey`, the file's optional `"joins"` field, still version 2; `readJoins`, `writeClaimsWith`, `joinsOf`/`updateJoins` held in `ssClaims` under `<plan>#joins`, same lock and file) and `sentencesOf`, the plan's sentences with its joins, which everything reading sentences calls |
 | `Server/Stale.hs` | **stale verdicts**: `printsNow` (the cited files as they are now, read through the server's cache `ssCitePrints`), `isStale`, `staleKeys`, `staleIn`, `citedPrints`; `CitedFile` lives in `Server/State` (State is below Checker) |
 | `Server/Confine.hs` | `confined` and `safely`, which `Server/Plans` re-exports (here so `LoopQuestions` and `Checker` need not import `Server/Plans`) |
 | `Transcripts.hs`, `Cli.hs` `runPlansCost`, `runChecksCost` | `olifant plans cost`: the records beside Claude Code's own transcripts; `--checks`, the checker's cost and verdicts per plan |
@@ -108,18 +108,20 @@ fingerprint now, `Nothing` when not found): `diagnosticsOf` stores them per plan
 language-file question ([chapter 5](05-languages.md)): the `[unit]` table of the file's
 language.
 
-## An errand: ask, validate, do
+## An errand: validate, do
 
 An errand is one line of a plan sent to a model that can read (and, for `do`, edit) the
-repository. `Lsp.errandRequest` (`Lsp.hs`) handles the three `olifant/plans/ask`,
-`validate` and `do` requests; it runs `runErrand` (`Server/Plans.hs`) in the background,
+repository. `Lsp.errandRequest` (`Lsp.hs`) handles the `olifant/plans/validate` and `do`
+requests (`olifant/plans/ask` is *Answer this* now: `Lsp.askRequest`, [the claim
+pass](#the-claim-pass-end-to-end); the old `ask`, which wrote anchored claims into the plan, and
+its `Ask` verb are gone); it runs `runErrand` (`Server/Plans.hs`) in the background,
 and for `do` takes a lock first (`envDoing`: a second `do` while one runs is refused without
 starting).
 
 `runErrand` does, in order:
 
-1. **Check the line fits the verb** (`fits`): `ask` wants a `- ?` question, `validate` a claim
-   or a heading, `do` a step or a test child.
+1. **Check the line fits the verb** (`fits`): `validate` wants a claim or a heading, `do` a step
+   or a test child.
 2. **Ground it.** The anchors on the line, its children and its section are resolved
    (`take groundingLimit`), and each found unit's body is cut (`cutBody`) into a `Grounded`.
 3. **Build the prompt** (`errandPrompt`): the plan, the target line, the grounded units, the
@@ -150,9 +152,8 @@ starting).
    `errands.jsonl` and a `plan-<verb>` line to the step log. The id (`errandId`,
    `Telemetry.hs`) is the runner's session id when it answered, so the editor's later
    `olifant/plans/outcome` notification (accepted or rejected, by block index) can name it.
-   durandal.nvim sends `accepted` for each block of an `ask` as soon as it lands, since it writes
-   the answer straight in (`plans.lua` `M.write_answer`, through `ghosts.lua` `M.accept_id`);
-   `plans.review_answers = true` brings back the ghost and the user's choice.
+   durandal.nvim sends it when the user accepts or rejects a validate's (or a no-git do's)
+   ghost block.
 
 Nothing is written to the plan. A `do` is different only in what surrounds it, below.
 
@@ -336,17 +337,27 @@ the whole of it:
 2. **Triage.** `pruneClaims` marks a key no sentence has as gone (`seGone`, written as
    `"gone"`), drops it once gone for `keepGone` (a day) and clears the mark on a key that is back,
    so an undo finds its check; it runs in every mode, an idle's too; each sentence whose `sentenceKey` is not
-   stored (one per key) goes through `Triage.triage`: `byGrammar` for steps and questions, else
-   one `weighAll` request to Jev (`rgJev` of `rungsFor`, i.e. `deciderUnder`) with the two
-   `triageQuestions`, read by `fromAnswers`; with no Jev, `noJev` (a `- ` bullet is a claim).
-   `route` turns the `Triage` into `Verify`, `Progress`, `Asked` or `Aside`. Each is stored as a
+   stored (one per key) goes through `Triage.triage web` (`web` is `[plans] web`): `byGrammar` for
+   steps, a `- ? ` line's `gradeQuestions` (Jev: `about-code`, and `about-public` with web; no Jev:
+   answered from the code), else one `weighAll` request to Jev (`rgJev` of `rungsFor`, i.e.
+   `deciderUnder`) with the three or four `triageQuestions`, read by `fromAnswers` by question
+   kind; with no Jev, `noJev` (a `- ` bullet is a claim). A stored entry of a sentence still in
+   the plan with `needsRetriage` (no `wants`, a 2a store; or web on and no `public`) goes through
+   `retriage` in the same loop, under the same budget and token: only the missing Nouls are
+   asked, its kind, check, failure and owed mark kept; each counts as one Jev call. `route web`
+   turns the `Triage` into `Verify`, `Progress`, `Answer`, `Asked` or `Aside`: never a check that
+   can only end could-not-tell (`settleable`: `codeSettles`, about-code ≥ 0.70 or ≥ 0.50 for a
+   question, or `useWeb`, web and about-public ≥ 0.70 where the code does not settle it; a
+   question also needs wants-answer ≥ 0.70). The merge recomputes every entry's route
+   (`Loop.reroute`, pure: web turned on or off takes effect here), and an entry that becomes one
+   to check only now (re-triaged, or web turned on) is set not owed: it had its chance. Each is stored as a
    `SentenceEntry`, with `seOwed = mode /= OpenPass` (written in the editor: owed one automatic
    check; already in the file when opened: backlog; JSON `"owed": true`, absent reads false, so
    a milestone 1 store is all backlog); the new entries are merged once after triage (`updateClaims`, into the
    store as it is then). The budget and the token are asked
    before each sentence.
-3. **Check.** Only for `SavePass`: `Claims.queued` (`checkable`: routed `Verify` or
-   `Progress`, not a ticked step, no check; owed; no failure in the last `retryAfter`; plan
+3. **Check.** Only for `SavePass`: `Claims.queued` over `openSentences` (`checkable`: routed
+   `Verify`, `Progress` or `Answer`, not a ticked step, no check; owed; no failure in the last `retryAfter`; plan
    order, one per key), then with `[plans] recheck = "save"` the stale sentences
    (`Stale.staleIn`, not ticked steps), one at a time. Each key is taken atomically
    (`holdKey` on `ssChecking`: a key another pass, `checkOne` or a sweep holds is skipped) and
@@ -354,11 +365,13 @@ the whole of it:
    longer the one it was stale for, `sameCheck`: skipped). Before each: stop when
    the token is tripped, when `pass_budget` seconds are spent, or when the
    spend so far plus the estimate (this pass's mean over the runs that cost something, a run that never started costing $0; else `unpricedCheck`) would pass
-   `pass_cost`. `checkSentence` takes the mode (`checkModeOf` of the entry's triage), runs
+   `pass_cost`. `checkSentence` takes a `CheckAsk` (`Plans.askFor cfg store lines (modeFor Nothing entry)`:
+   the mode, `ckWeb` when web is on, the mode is not progress and the entry's triage `useWeb`,
+   and for an answer to a `- ? ` line its `beliefsOf`), runs
    `checkerUnder` (the recorded checker when `scCheckAnswers` is set, else `liveChecker`),
    reads the reply with `parseCheckReply` and confirms it with `confirm`; it appends a `check`
-   errand record (`erAuto`, `erMode`, `erVerdict`) and puts a priced check's cost into the
-   held estimates (`ssEstimates`). The key is let go (`releaseKey`, in a `finally`) only after
+   errand record (`erAuto`, `erMode`, `erVerdict`, `erWeb`) and puts a priced check's cost into the
+   held estimates (`ssEstimates`) under `estimateKey mode web` (`verify`, `answer+web`, …). The key is let go (`releaseKey`, in a `finally`) only after
    the result is stored, so no other check takes it in between. The checker runs under the state's `ssCancel`, not the pass's
    token: a tripped token stops the pass before the next check, and the check in flight
    finishes. After it, the result is stored only when its key is still among the plan's
@@ -372,15 +385,18 @@ the whole of it:
 5. **End.** A `PassRecord` (kind `pass`) is appended when Jev was asked or a check ran. A pass
    stopped by the token answers `Left "cancelled"`.
 
-`checkOne` is *Check this* and *Re-check*: one sentence by key, triaged first when unseen, checked
-whatever its route and the caps (in its triage's mode), recorded as a `check` errand that is not
+`checkOne` (`Cancel -> Maybe CheckMode -> FilePath -> Text -> …`) is *Check this* and *Re-check*
+(`Nothing`: `modeFor`) and *Answer this* (`Just CheckAnswer`): one sentence by key, triaged first
+when unseen, checked whatever its route and the caps, recorded as a `check` errand that is not
 automatic. It takes its key with `holdKey` (held elsewhere: `Left "this sentence is being
-checked now"`, nothing run) and lands the check before `releaseKey`.
+checked now"`, nothing run); *Answer this* on a key whose check is not stale is refused too
+(`Left "this sentence has a check: Show why reads it"`: one check a sentence). It lands the check
+before `releaseKey`.
 
 **Check the plan.** `Loop.checkPlan` (`Cancel -> (Int -> Int -> IO ()) -> FilePath ->
-ServerState -> IO (ServerState, Either Text Sweep)`) takes `sweepTargets`: `unchecked` (owed or
-backlog) then the stale keys (`staleIn`), not ticked steps, plan order, one per key, each with
-its mode. `sweepWidth` (3) workers (`Async.replicateConcurrently_`) share one `IORef` of a
+ServerState -> IO (ServerState, Either Text Sweep)`) takes `sweepTargets cfg lines`: over
+`openSentences`, `unchecked` (owed or backlog) then the stale keys (`staleIn`), not ticked steps,
+plan order, one per key, each with its `CheckAsk` (`askFor`, in `modeFor` its entry). `sweepWidth` (3) workers (`Async.replicateConcurrently_`) share one `IORef` of a
 `Queue`: the targets, the dollars spent and reserved, the checks in flight and done, and an
 `MVar` the next check to land fills (each landing swaps in a fresh one in the same step). A
 worker reserves `estimateFor` the next target's mode and takes it only while spent + reserved +
@@ -398,8 +414,9 @@ flight land (the checker runs under `ssCancel`, the request's cancel, which kill
 cancelling the progress kills the thread `planProgress` runs on, so the handler only trips the
 token, waits for the sweep, and refreshes the diagnostics. `Sweep` is checks made, targets left, spent, and whether the ceiling stopped it.
 `estimatesOf` reads `errands.jsonl` once per project root into `ssEstimates` (the last 20 priced
-`check` records per mode, newest first; no `mode` is `verify`), and `checkSentence` prepends
-each priced check after that; `estimateFor` is the mean, else `unpricedCheck` ($0.01 for haiku).
+`check` records per `estimateKey`: the mode, `+web` for a web check; no `mode` is `verify`), and
+`checkSentence` prepends each priced check after that; `estimateFor model es mode web` is the
+mean, else `unpricedWebCheck` ($0.30) for a web check, else `unpricedCheck` ($0.01 for haiku).
 
 **Stale.** `confirm` keeps a `Print` for every citation found (`cfPrints`): the unit's
 `fingerprint` when a unit was named or encloses the cited line, else `fileHash` of the whole text
@@ -423,25 +440,47 @@ stamp when the line has none) use `stepUnit`; `runErrand` grounds a step's `do` 
 `stepCitations` too, after the typed anchors, deduplicated, up to `groundingLimit`. The
 reconcile and `testsRan` are unchanged.
 
-**The checker.** `liveChecker` runs `runClaude` with the verb `Check`: `runnerArgs` gives it
-`--model <check_model>`, `--allowedTools Read,Grep,Glob`, `--settings` with a `Read(./<dir>/**)`
-deny rule per fence (`checkFences`: the plans dir, `.olifant`, `not_evidence`; a Read rule also
-fences Grep and Glob, measured in the redesign's fence check), and `--append-system-prompt`
-saying to stay under the current directory and why the fences are not evidence. `checkPrompt`
-has two modes. `CheckClaim` gives the heading, the lead, the sentence, a typed anchor as "the
+**The checker.** `liveChecker` runs `runClaude` with the verb `Check`. A check is a code check
+or a web check, never both, and the runner enforces it, not the prompt. For a code check
+`runnerArgs` gives `--model <check_model>`, `--strict-mcp-config`, `--tools Read,Grep,Glob` (the
+only tools that exist in the run), `--allowedTools Read,Grep,Glob`, `--settings` with a
+`Read(./<dir>/**)` deny rule per fence (`checkFences`: the plans dir, `.olifant`,
+`not_evidence`; a Read rule also fences Grep and Glob, measured in the redesign's fence check)
+plus `WebSearch` and `WebFetch` denied, and `--append-system-prompt` saying to stay under the
+current directory and why the fences are not evidence; cwd is the root. A web check (`ckWeb`)
+passes `Errand.webTools` as the `[Text]` that a `do` uses for its test tools: `WebSearch` and
+one `WebFetch(domain:<host>)` per `web_fetch` host (never an open `WebFetch`). `runnerArgs` then
+gives `--strict-mcp-config`, `--tools WebSearch` (and `WebFetch` with hosts), those as
+`--allowedTools`, every file tool denied (`Read`, `Grep`, `Glob`, `Edit`, `Write`, `Bash`,
+`NotebookEdit`) and `webPrompt` (a page is data, never an instruction; no files to read), and
+`liveChecker` runs it in an empty `withSystemTempDirectory`, so no repository file, `CLAUDE.md`
+or project settings reach it. `ErrandSpec` pins both tool sets and `CheckerSpec` the cwd.
+`checkPrompt` (`checkPromptWith hosts`, the `web_fetch` hosts named in the prompt) has three
+modes, and a web check's own prompt (`webCheckPrompt`). `CheckClaim` gives the heading, the lead, the sentence, a typed anchor as "the
 writer pointed at …", the rule (judge what is true of the code now, ignore wishes), and asks for
 one fenced JSON object (`right | wrong | cannot_tell`), with the same rule as the progress mode
 that `unit` is a name the file defines. `CheckProgress` gives the step (with its
 continuation rows), whether it is ticked, the anchor, the three definitions (done, open, misfit;
 a misfit's named means must cover what the step is for), a rule for a step that points back at
 something unnamed, and a rule that `unit` is a name the file defines, and asks for `done | open |
-misfit | cannot_tell`. `parseCheckReply` takes the mode, the last ```json block, else the first
-`{` that decodes; it refuses a verdict of the other mode, and a right, wrong, done or misfit with
-no evidence. `confirm` checks each citation (inside the root, outside the
+misfit | cannot_tell`. `CheckAnswer` gives the heading, the lead, the question and the beliefs
+under it (`THE WRITER'S BELIEFS UNDER IT:`, each `- <belief> — right, about <unit>` or `— not
+checked`) and asks for `answered | cannot_tell`, an `answer` of at most three sentences for a
+hover, an optional `detail`, and the evidence. The claim and progress prompts are 2a's byte for
+byte. With `ckWeb`, a claim or answer gets `webCheckPrompt` instead: the section heading and
+the sentence or question only (no lead, anchor, beliefs or code), search and the fetch hosts,
+"you cannot see the project's code", and a JSON shape with `sources` and no `evidence`.
+`parseCheckReply` takes the `CheckAsk`, the last ```json block, else the first `{` that decodes;
+it refuses a verdict of another mode, `answered` with an empty answer, a web check's right,
+wrong or answered with no kept source ("a verdict with no source"), and a right, wrong, done,
+misfit or answered with neither evidence nor a kept source. A web check's citations are
+dropped. Sources are kept only with `ckWeb`: `http(s)` addresses with a host, at most five
+(a `javascript:`, `file:` or repository path is dropped). `confirm` checks each citation (inside the root, outside the
 fences, lexically and again after `canonicalizePath` of the root and the path, so a symlink into a
 fence or out of the root is refused; the file exists, the unit found by `unitLookupIn`, or with no unit named the line inside the file, a bare path
-allowed); any miss makes the verdict `JCannotTell` "cited code not found", except for an `open`,
-whose missing citations are dropped. The first unit found and its `fingerprint` are the
+allowed; never a `.env*` file); any miss makes the verdict `JCannotTell` "cited code not found"
+with no answer and no sources, except for an `open`, whose missing citations are dropped. The
+answer, its detail and the sources pass through as given: shown, not confirmed. The first unit found and its `fingerprint` are the
 sentence's evidence unit; every citation found has its `Print`.
 
 **In `Lsp`.** `startPass` (an `Env`, a `PassMode`, the plan) runs the pass in the background:
@@ -462,17 +501,22 @@ UTF-16 and passes `checksCanRun`: the runner found or a recording set, neither c
 `(path, unit or "")`, so a code change that moves them sends `semanticTokens/refresh` as an
 anchor's does; and `planSummary`, the `plan-unchecked` line from `planCounts`),
 `planTokensWith` (the `checked` and `wrong` modifiers, by `lineKey`) and `claimHover` (called by
-`Lsp.planHover` with the sentences on the row and the stale keys; a checked one adds
-`keepFooter`). `claimLine` is the one table: a claim's codes, a step's (`step-done`,
+`Lsp.planHover` with the open sentences on the row and the stale keys; a checked one adds
+`keepFooter`, or `keepAnswerFooter` when every check there is an answer). `claimLine` is the one table: a claim's codes, a step's (`step-done`,
 `step-misfit`, `step-ticked`; `step-open`, `step-unsure` and `step-ticked-done` are `hoverOnly`:
 `claimHints` emits no diagnostic for them and the hover shows them without stripping a glyph),
 the stale ones (`claim-right-stale`, `claim-wrong-stale`, `step-done-stale`,
-`step-misfit-stale`, `step-stale`), and `claim-queued` for a `checkable` sentence with no check,
+`step-misfit-stale`, `step-stale`), an answer's (`question-answered`, `question-unsure`,
+`question-answered-stale`; `claim-checking` says `… Answering` for an entry routed `Answer` or
+holding an answer), a verdict resting on pages alone (`✓ Right, per <domain> · …`), and
+`claim-queued` for a `checkable` sentence with no check,
 saying whether a save checks it (`seOwed`). Every one of
 these, and `checkOne` and the pass's live-keys check, builds sentences with `Claims.sentencesOf`,
-so the margin and the engine split a plan the same way. `sentenceActions` offers *Re-check* on a stale verdict and *Check this* on any sentence with no
+so the margin and the engine split a plan the same way; `planDiagnostics` passes them through
+`openSentences` first. `sentenceActions` offers *Re-check* on a stale verdict and *Check this* on any sentence with no
 check but a question (both `olifant.checkSentence`, titled with `estimateFor` of the sentence's
-mode), *Check the plan* on every row while `sweepTargets` is not empty (`olifant.checkPlan`, its
+`askFor`), *Answer this* on any sentence with no check (`olifant.answerSentence`: `checkOne
+(Just CheckAnswer)` under `planProgress "answering"`), *Keep this answer* on an answer, *Check the plan* on every row while `sweepTargets` is not empty (`olifant.checkPlan`, its
 title from `planCounts` and the summed estimates), *Keep this
 verdict* (a `WorkspaceEdit` from `Plans.keepEdit`: one evidence line after the sentence's last
 row and after any `- ✓`/`- ✗` lines already directly below it at the evidence indent, so kept verdicts stack oldest first; `Nothing` when the same line is in that run or the check could not tell), *Show the code here* (`citationPlace`) and *Show why* (`whyFile`, the page from
@@ -486,8 +530,11 @@ an anchor under the cursor answers with its unit as before; else `Lsp.sentenceCi
 sentence under the cursor and, when it has a check, resolves each cited unit with no line
 (`resolveAnchor`) and answers `Plans.citationLocations` (every citation in the checker's order:
 the line cited, else the unit's first line, else 1); else nothing. `planFolds` takes `checkedKeys` of the store, so a
-belief folds its question once it has a verdict. An `ask` carries the checked beliefs under its
-question (`Plans.beliefsUnder` to `Errand.errandPromptWith`).
+belief folds its question once it has a verdict. `keepEdit` writes an answer as `- ✓ <answer> ·
+<path>:<unit> · <url>`, which `openSentences` then reads as the question answered in the file (a
+`- ? ` line with a direct evidence child; a paragraph question that is the last sentence ending
+on its row with an evidence line on the next row at its indent or deeper). `whyBody` prints an
+answer, its detail, the code, `## Sources` and `· with web search`.
 
 ## What is in `Lsp`
 
@@ -497,16 +544,17 @@ The plans requests, all in `Lsp.hs` (the line numbers are the handlers):
 |---|---|
 | `olifant/plans/anchor` | where an anchor on a line points (file, line, unit, fingerprint) |
 | `olifant/plans/files` | a plan's anchored lines by section |
-| `olifant/plans/ask`, `validate`, `do` | the errands, via `errandRequest` |
+| `olifant/plans/ask` | *Answer this* on the sentence at `line` (`character` optional, else the row's first), via `askRequest` and `checkOne (Just CheckAnswer)`: `{key, verdict, answer}` or an error saying why |
+| `olifant/plans/validate`, `do` | the errands, via `errandRequest` |
 | `olifant/plans/errand`, `errands` | one past `do`, or a step's past dos |
 | `olifant/plans/reviews`, `review`, `review/choose` | open reviews: a `do`'s and the reconcile's |
 | `olifant/plans/review/ready` | **notification**: a `do`'s review is saved |
 | `olifant/plans/reconcile` | the reconcile above |
 | `olifant/plans/stub`, `test` | a step's test written / run |
-| `olifant/plans/outcome` | **notification**: a block was accepted or rejected (an `ask`'s at once, unless the editor reviews answers) |
+| `olifant/plans/outcome` | **notification**: a validate's or do's block was accepted or rejected |
 | `olifant/plans/idle` | **notification** from the client: the plan went quiet; starts the claim pass (`startPass`, `IdlePass`: triage only) |
-| `workspace/executeCommand` `olifant.checkSentence`, `olifant.checkPlan`, `olifant.showWhy`, `olifant.showCode` | the claim pass's actions (`sentenceActions` offers them as code actions) |
-| `textDocument/diagnostic` in a plan, source `olifant-plan` | the checker's codes: `claim-queued`, `claim-checking`, `claim-right`, `claim-wrong`, `claim-unsure`, `step-done`, `step-misfit`, `step-ticked`, `claim-right-stale`, `claim-wrong-stale`, `step-done-stale`, `step-misfit-stale`, `step-stale`, and `plan-unchecked` (information, the plan's summary); `step-open`, `step-unsure` and `step-ticked-done` are on hover only |
+| `workspace/executeCommand` `olifant.checkSentence`, `olifant.answerSentence`, `olifant.checkPlan`, `olifant.showWhy`, `olifant.showCode` | the claim pass's actions (`sentenceActions` offers them as code actions) |
+| `textDocument/diagnostic` in a plan, source `olifant-plan` | the checker's codes: `claim-queued`, `claim-checking`, `claim-right`, `claim-wrong`, `claim-unsure`, `step-done`, `step-misfit`, `step-ticked`, `claim-right-stale`, `claim-wrong-stale`, `step-done-stale`, `step-misfit-stale`, `step-stale`, `question-answered`, `question-unsure`, `question-answered-stale`, and `plan-unchecked` (information, the plan's summary); `step-open`, `step-unsure` and `step-ticked-done` are on hover only |
 | `textDocument/definition`, `hover`, `completion`, `codeLens`, `foldingRange`, `semanticTokens/full` | `gd` on an anchor, the unit hover, `@` completion, review and delegation lenses, folds (excerpts from `excerptSpans`, ticked steps and answered questions from `planFolds`, all kind `region`), the plan's tokens (`planTokens`, encoded by `encodePlanTokens`; the legend is `planTokenTypes`/`planTokenModifiers`, advertised by `advertise`; any other file answers `[]`) |
 
 `workspace/semanticTokens/refresh` goes to the client when a pulled diagnostics pass changes a plan's
@@ -522,8 +570,8 @@ with `landingRows` (`Cli.hs`): errands and reconciles by `landingFor` over their
 landings, messages over every plan's. Both views build a line with `rowOf` and print with
 `rowTable`; `landingTable` is the plan, landing and `(not landed)` layout. `--checks` is
 `runChecksCost`: one `ChecksRow` per plan from its `pass` records (sentences triaged) and `check`
-errands (by `erMode`, no mode a claim, verdicts from `erVerdict`, automatic or asked by
-`erAuto`), printed by `checksTable` or as `{"checks": [...]}`. A failing `git log`
+errands (by `erMode`, no mode a claim, `answer` an answer; verdicts from `erVerdict`, automatic
+or asked by `erAuto`; `erWeb` checks also in `crWeb`), printed by `checksTable` or as `{"checks": [...]}`. A failing `git log`
 is a stderr note and no landings, never a failure.
 
 ## The seams
@@ -531,11 +579,13 @@ is a stderr note and no landings, never a failure.
 - **`[plans]`** (`Catalog.hs`, the `PlansConfig` record): `dir`, `runner`, `model`,
   `timeout`, `do_tools`, `ladder`, `budget`, `pass_budget`, `pass_cost`, `check_model`,
   `check_timeout`, `not_evidence`, `recheck` (`Recheck`: `RecheckAsked` or `RecheckSave`),
-  `check_cost` (`pcCheckCost`, 5.00, at least 0), `prices`. An unknown key is a configuration error;
+  `check_cost` (`pcCheckCost`, 5.00, at least 0), `web` (`pcWeb`, true: ruling D), `web_fetch`
+  (`pcWebFetch`, lowercase hosts with a dot, checked in `plansIn`), `prices`. An unknown key is a configuration error;
   a `ladder` name not under `[model.backends]` is one too (`plansLadderIn`).
 - **`[decide] model`** names the backend Jev answers on (a `jev` backend's model defaults to the
   pinned `jev-1.14.0`; `jevDecider` logs the model that answered); `catalogDecideModel` is what
-  `rungsFor` reads. Triage asks it with `weighAll`, one request for a sentence's two questions. `[model] ladder`, `[model.backends.*]` and `escalate` are the model chapter's
+  `rungsFor` reads. Triage asks it with `weighAll`, one request for a sentence's three (four with
+web) questions. `[model] ladder`, `[model.backends.*]` and `escalate` are the model chapter's
   ([user chapter 12](../user/12-holes-and-models.md)).
 - **`[test]` of the language** is what `stepTest` and a `do`'s test command run;
   **`[unit]`** is what an anchor can name.
@@ -543,6 +593,9 @@ is a stderr note and no landings, never a failure.
   in-memory filesystem), `pSyntax` (units), `pTester` (tests), `pNow` (ids and journal times).
   The runner and git are not ports: both are real subprocesses (`runBytes`), which is why the
   plans specs are the ones that touch a real git repository.
+- **The runner's extra tools.** `runClaude`'s `[Text]` argument is a `do`'s test tools and a
+  check's web tools (`webTools`); for `Check`, a non-empty list also turns on the `.env` deny
+  rules and `webPrompt`.
 
 A plan's rendering classes come from the parser, never from an editor re-parsing the text:
 `planTokens` (`Server/Plans.hs`) classifies each span from `parsePlan`'s lines (a line's parent is
@@ -563,8 +616,8 @@ in the main checkout (the git-backed specs refuse worktrees).
 | `Server/ReviewSpec`, `ReviewReadingsSpec` | the tree reference and revert; readings as a review |
 | `Server/JournalSpec`, `TelemetrySpec`, `ExcerptSpec` | the store and its events; records and their readers; fences |
 | `Plans/SentencesSpec` | the splitter: steps whole with their continuation rows (a nested checkbox its own step, a blank row ending it), what gives no sentence, paragraphs across rows, numbered lines, abbreviations, versions, code spans, URLs, keys, leads |
-| `Server/TriageSpec` | the route table, the grammar, no Jev, the shared state and no unsure |
-| `Server/CheckerSpec` | fences, both prompts, both reply readers, `checkModeOf`, `fileHash`, `confirm` (a print per citation; an `open` drops a missing citation) (fenced or missing citations cannot tell, a symlink into a fence or out of the root too), the runner with the shim, recorded replies |
+| `Server/TriageSpec` | the route table with web on and off, the grammar, no Jev, the shared state and no unsure, `fromAnswers` by kind, `needsRetriage` and `retriage` |
+| `Server/CheckerSpec` | fences, the three prompts (2a's byte for byte without web), the reply readers (answers, sources: only `http(s)`), the `.env` fence, `checkModeOf`, `fileHash`, `confirm` (a print per citation; an `open` drops a missing citation) (fenced or missing citations cannot tell, a symlink into a fence or out of the root too), the runner with the shim, recorded replies |
 | `Server/StaleSpec` | a changed unit, a gone unit or file, a whole-file print, no prints, the cache read once until `filesChanged`, a change during a read not cached |
 | `Server/ClaimsSpec` | store v2: round trip (owed, modes, prints; a milestone 1 store read as backlog), a version-1 file read as empty, atomic writes, concurrent `updateClaims`, orphans, `pruneClaims`, `queued` and `unchecked`, `checkedKeys` |
 | `Server/LoopSpec` `claimPassSpec` | the pass: idle triages only, save checks once what was written, an open never checks (an m1 store neither), a step gets a progress check and a ticked one none, what the cost cap leaves is backlog, a failure retried once, `recheck = "save"`, *Check the plan* (three at a time, a check that throws, the ceiling, a worker waiting under it for a landing, ticked steps skipped and stale ones checked, a save during it, a cancel), a failure waits ten minutes, a cancel lets the check in flight land (or drops it when its sentence changed), a key held elsewhere is skipped, Check this during a pass, nothing written to the plan, a typed anchor in the prompt, budget 0, no Jev |
@@ -579,7 +632,7 @@ temp folder, scripts the model answers with a recorded decider (`scDecideAnswers
 `check_answers`): `recordedChecker` reads `{"replies": {KEY: TEXT or {text, cost, seconds,
 delay}}}` by `sentenceKey`, and notes each key asked in `FILE.asked` and each prompt in
 `FILE.prompts`. Its Jev triage answers from `scDecideAnswers` by question kind
-(`sentence-kind`, `about-code`).
+(`sentence-kind`, `about-code`, `wants-answer`, `about-public`; a kind not in the file is unsure).
 
 **The corpus spec.** `ProseCorpusSpec` measures milestone 1 and the step gate of 2a on `testdata/prose-corpus.json`: the
 user's own plan sentences (corpus 2, 27 lines, and two from corpus 3), each labelled with its kind
@@ -591,15 +644,21 @@ routed, and when routed to verify, checked and confirmed against a checkout at t
 `testdata/prose-corpus-checks.json` (`replayChecker`, keyed by `sentenceKey`); with
 `OLIFANT_RECORD_CHECKS=1` it asks the checker live for the sentences the recording has no reply
 for and records them (delete a reply to ask it again; a run cut by the suite's 180 s limit
-resumes), and with `OLIFANT_RECORD_JEV=1` Jev too. It prints a row per
+resumes), and with `OLIFANT_RECORD_JEV=1` Jev too, through `Decide.recordMissing`: only the
+questions the recording lacks are asked and written (under a lock, the other keys kept; an
+unsure answer is not written), so a new Noul never moves recorded triage. The recording holds
+each question alone (`weighed`), so the four-question request production sends is measured
+live by `OLIFANT_JEV_BATCH=1` (Jev only, no checks, about a cent), which prints the kind's
+agreement and asserts 25 of 27. It prints a row per
 entry (`OLIFANT_PROSE_TABLE` also writes the table to a file) and asserts the bars: kind agrees
-on at least 23 of 27, every labelled claim but R6 and H5 sent to a check (H5, a contested checkbox
+on at least 25 of 27, every labelled claim but R6 and H5 sent to a check (H5, a contested checkbox
 line, is a step by the grammar; user ruling), at most one non-claim sent, every
 uncontested claim's verdict equal to its label with a citation at the labelled code, no wrong-sure
 verdict, and a mean cost a check of at most $0.12. Recorded on 2026-11-09 (third recording, after
 two tunings of the triage criteria and one of the check prompt): kind 25/27, no non-claim sent,
 the five checks (A3, A7, A8, H4, S1) right on every uncontested claim with citations at the
-labelled code, no wrong-sure verdict, $0.10 a check; one bar missed, A4 ("We would have to
+labelled code, no wrong-sure verdict, $0.10 a check (re-recorded 2026-11-14 after the claim
+text was widened to a named library's behaviour: kind 26/27, routes and verdicts unchanged); one bar missed, A4 ("We would have to
 diagnose … and redeploy everything …") is a claim at 0.82 but about-code 0.67, so it is not
 checked. By user ruling A4 is a known miss (`knownMisses`): the gate asserts it is routed to
 `Aside`, so a change that fixes or breaks it shows. The resolver's corpus spec and recording
@@ -615,6 +674,32 @@ known, 0 ideas routed, no wrong-sure, but two off (R4 set aside by triage, about
 could not tell, a cited line not in its file) and $0.122 a check; the claim bars also miss H4,
 whose m1 reply cites non-names that `confirm` has refused since 0bf1d39. The gate waits for a
 ruling, so it fails with `OLIFANT_PROSE_CORPUS` set and is pending without it.
+
+**The question gate (2b).** The five `- ? ` questions carry `expect`, `mustSay` (phrase groups,
+each any-of, all needed), `mustNotSay` and `code`; `stripped` makes their twins without the mark
+(corpus 6, the same sentence key, so the same recorded answer); corpus 5 holds five questions
+that should not be answered (`wantsAnswer: false`, two invented). Bars: stripped questions
+routed `Answer` at least 4 of 5; should-not-answer routed `Answer` at most 1; answers that agree
+(answered, every group said, nothing contradicting, a citation under `code`) at least 4 of 5, no
+wrong-sure; an answer at most $0.15 on average. Recorded 2026-11-14: three of five, R1 and R8
+set aside (about-code 0.52 to 0.69, under 0.70); then, with a question's own threshold
+(`questionAboutThreshold`, 0.50, the user's ruling), five of five routed and agreeing, $0.117:
+passes.
+
+**The web gate (2b).** A second example, `meets the web bars` (`webMeasure`), runs with `web =
+true` and `web_fetch = []`: every entry is triaged, only corpus 4 (ten sentences about Django
+5.x and htmx 4, labelled with their source) is checked, with the web tools when `useWeb`.
+Asserted: corpus 4 routed to a check, web or code, at least 8 of 10 (`c4Checked`; it was
+"given web tools" until the user's ruling D, since a sentence the code settles takes the code
+check), corpus 2 and 3 given web tools at most 1 of 29. Reported:
+right with a source, wrong-sure, the mean cost a web check, and whether the bar for `web =
+true` (7 of 10, $0.30) was met. First recorded 2026-11-14: 6 of 10 given web (four claims read
+as prose by the kind), 0 of 29, 3 right with a source, $0.087. Then, with the kind's claim text
+widened to a named library's behaviour (kind agrees 26 of 27, replayed and live) and web and
+code checks kept apart: all ten routed to a check and right, none wrong-sure; 7 of 10 given web
+tools (W1, W8 and W9 take the code check, since the code settles them: the repository vendors
+htmx 4), 0 of 29, 7 right with a source, $0.047 a web check. With the bar counting a check of
+either kind (ruling D) the gate passes, 10 of 10, so `web` ships `true` (`defaultPlans`).
 
 ## Rough spots
 
@@ -647,9 +732,21 @@ ruling, so it fails with `OLIFANT_PROSE_CORPUS` set and is pending without it.
   the root. In the fence check haiku globbed a parent folder once. The deny rules are path
   patterns: a symlink into a fence (`notes -> plans`) can be read by the checker, and is caught
   only when `confirm` canonicalises the cited path.
+- **A web source is unconfirmed.** A source is the model's word and a link: the engine never
+  opens it, and a web check's verdict says it rests on pages. A search query is not fenced, but a
+  web check has seen only the plan sentence and its heading (no file tools, an empty cwd), so
+  that is all a query can carry; before the split the model put repository text into a query
+  when asked to (measured in `experiments/web-check-2026-11`).
+- **The replay gate records Jev one question at a time.** `replayDecider` keys each question
+  alone, so the four-question request is measured only live (`OLIFANT_JEV_BATCH=1`).
+- **A 2b store read by a 2a binary is dropped.** The route word `answer` and the check mode
+  `answer` are new; an older binary fails to read the store and starts it empty.
 - **A known miss.** A4, a claim about what fixing a collector takes, scores about-code 0.67
   against the 0.70 threshold and is set aside; the gate pins that (`knownMisses`) rather than
   moving the threshold.
+- **A question's about-code threshold is tuned on five questions.** `questionAboutThreshold`
+  (0.50) was set so R1 and R8 (0.52 to 0.69) are answered; a sentence just over it that the code
+  cannot settle buys a check that ends could-not-tell.
 - **The triage texts are tuned on 27 lines.** The kind and about-code criteria (`kindOptions`,
   `aboutTrue`, `aboutFalse` in `Triage.hs`) carry examples taken from the very corpus that gates
   them, so the gate flatters them; a second corpus would tell.

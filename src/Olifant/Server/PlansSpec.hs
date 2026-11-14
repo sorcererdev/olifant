@@ -21,10 +21,11 @@ import Olifant.Process (gitStateStamp)
 import Olifant.Server (ServerState, newServerState, projectFor)
 import Olifant.Server.Plans
 import Olifant.Server.Claims (CheckRecord (..), Failure (..), SentenceEntry (..))
-import Olifant.Plans.Sentences (sentences, sentencesWith)
+import Olifant.Plans.Sentences (Sentence (..), sentences, sentencesWith)
+import Olifant.Catalog (PlansConfig (..), defaultPlans)
 import Olifant.Server.Triage (Route (..), Triage (..))
 import Olifant.Server.Errand (Belief (..), BeliefCheck (..))
-import Olifant.Server.Checker (CheckMode (..), Citation (..), Confirmed (..), Judgement (..), UnitRef (..))
+import Olifant.Server.Checker (CheckAsk (..), CheckMode (..), Citation (..), Confirmed (..), Judgement (..), Source (..), UnitRef (..))
 import Olifant.Server.Unit (Named (..))
 import Olifant.Workspace (memoryWorkspace)
 import System.Directory (canonicalizePath, doesDirectoryExist, listDirectory)
@@ -188,7 +189,7 @@ spec = describe "Olifant.Server.Plans (anchors in the server)" $ do
           , (Just (InR "claim-queued"), Just DiagnosticSeverity_Hint, "○ Unchecked · Check this, or Check the plan")
           , (Just (InR "claim-checking"), Just DiagnosticSeverity_Hint, "… Checking") ]
     it "an owed sentence says the next save checks it; an unticked step is unchecked too, a ticked one shows nothing" $ do
-      let stepE = queuedEntry {seTriage = Triage "step" 1 1 "grammar", seRoute = Progress}
+      let stepE = queuedEntry {seTriage = Triage "step" 1 1 "grammar" Nothing Nothing, seRoute = Progress}
           st = M.fromList [("Owed one.", queuedEntry {seOwed = True}), ("a", stepE), ("b", stepE {seOwed = True})]
       map show' (claimHints True st S.empty S.empty (ss ["Owed one.", "- [ ] a", "- [x] b"]))
         `shouldBe`
@@ -209,7 +210,7 @@ spec = describe "Olifant.Server.Plans (anchors in the server)" $ do
   describe "what a step shows, and stale verdicts" $ do
     let ss = sentences . parsePlan . T.unlines
         show' d = (d ^. L.code, d ^. L.severity, d ^. L.message)
-        stepE j why = (verdictEntry j why) {seTriage = Triage "step" 1 1 "grammar", seRoute = Progress, seCheck = fmap (\c -> c {cjMode = CheckProgress}) (seCheck (verdictEntry j why))}
+        stepE j why = (verdictEntry j why) {seTriage = Triage "step" 1 1 "grammar" Nothing Nothing, seRoute = Progress, seCheck = fmap (\c -> c {cjMode = CheckProgress}) (seCheck (verdictEntry j why))}
         line store stale t = [(c, sev, m) | x <- ss [t], Just (c, sev, m) <- [claimLine True store S.empty stale x]]
         hints store stale t = map show' (claimHints True store S.empty stale (ss [t]))
         one k e = M.fromList [(k, e)]
@@ -260,7 +261,7 @@ spec = describe "Olifant.Server.Plans (anchors in the server)" $ do
     let checkOf e = case seCheck e of
           Just c -> c
           Nothing -> error "no check"
-        two = queuedEntry {seCheck = Just (CheckRecord (Confirmed JWrong "it drops D" [Citation "app/x.py" (Just "f") (Just 2), Citation "app/y.py" (Just "g") Nothing] (Just (UnitRef "app/x.py" "f")) Nothing []) "m" Nothing 1 at0 CheckClaim)}
+        two = queuedEntry {seCheck = Just (CheckRecord (Confirmed JWrong "it drops D" [Citation "app/x.py" (Just "f") (Just 2), Citation "app/y.py" (Just "g") Nothing] (Just (UnitRef "app/x.py" "f")) Nothing [] Nothing Nothing []) "m" Nothing 1 at0 CheckClaim False)}
         insertOf (TextEdit r t) = ((r ^. L.start . L.line, r ^. L.start . L.character), (r ^. L.end . L.line, r ^. L.end . L.character), t)
         one_ ls = case sentences ls of
           x : _ -> x
@@ -298,20 +299,113 @@ spec = describe "Olifant.Server.Plans (anchors in the server)" $ do
         `shouldBe` Just "Right · it returns 1 · src/a.py:Foo\n\ngd: the code · Keep this verdict: <leader>mpk"
       claimHover (M.fromList [("Queued one.", queuedEntry)]) S.empty (ss ["Queued one."])
         `shouldBe` Just "Unchecked · Check this, or Check the plan"
+  describe "questions in the margin (2b)" $ do
+    let ss = sentences . parsePlan . T.unlines
+        show' d = (d ^. L.code, d ^. L.severity, d ^. L.message)
+        qTriage = Triage "question" 0.9 0.9 "jev" (Just 0.9) Nothing
+        src = Source "https://docs.djangoproject.com/en/5.2/ref/" "QuerySet API"
+        answerE j why ans evidence sources web =
+          queuedEntry {seTriage = qTriage, seRoute = Answer, seCheck = Just (CheckRecord (Confirmed j why evidence (if null evidence then Nothing else Just (UnitRef "src/a.py" "Foo")) (if null evidence then Nothing else Just "abc1234") [] ans (Just "The longer story.") sources) "sonnet" (Just 0.2) 20 at0 CheckAnswer web)}
+        cite = [Citation "src/a.py" (Just "Foo") Nothing]
+        answered = answerE JAnswered "it returns 1" (Just "Yes, it returns 1.") cite [src] True
+        sourceOnly j = (verdictEntry j "the docs say so") {seCheck = fmap (\c -> c {cjConfirmed = (cjConfirmed c) {cfEvidence = [], cfUnit = Nothing, cfFingerprint = Nothing, cfSources = [Source "https://www.htmx.org/attributes/hx-on/" "hx-on"]}}) (seCheck (verdictEntry j "the docs say so"))}
+        store = M.fromList
+          [ ("Answering one?", queuedEntry {seTriage = qTriage, seRoute = Answer})
+          , ("Answered one?", answered)
+          , ("Unanswered one?", answerE JCannotTell "the code does not say" Nothing [] [] False)
+          , ("Stale one?", answered)
+          , ("Per right.", sourceOnly JRight)
+          , ("Per wrong.", sourceOnly JWrong)
+          , ("Owed one?", queuedEntry {seTriage = qTriage, seRoute = Answer, seOwed = True})
+          , ("Backlog one?", queuedEntry {seTriage = qTriage, seRoute = Answer})
+          , ("Asked one?", queuedEntry {seTriage = qTriage {trWantsAnswer = Just 0.1}, seRoute = Asked})
+          , ("Aside one.", queuedEntry {seRoute = Aside}) ]
+    it "one row of the table each: answering, answered, could not answer, stale, per a source, owed, backlog, asked and aside" $
+      map show' (claimHints True store (S.singleton "Answering one?") (S.singleton "Stale one?") (ss ["Answering one?", "Answered one?", "Unanswered one?", "Stale one?", "Per right.", "Per wrong.", "Owed one?", "Backlog one?", "Asked one?", "Aside one."]))
+        `shouldBe`
+          [ (Just (InR "claim-checking"), Just DiagnosticSeverity_Hint, "… Answering")
+          , (Just (InR "question-answered"), Just DiagnosticSeverity_Hint, "» Answer · Yes, it returns 1. · src/a.py:Foo · QuerySet API (docs.djangoproject.com)")
+          , (Just (InR "question-unsure"), Just DiagnosticSeverity_Hint, "? Could not answer · the code does not say")
+          , (Just (InR "question-answered-stale"), Just DiagnosticSeverity_Hint, "» Answered when checked · the code changed since · Yes, it returns 1. · src/a.py:Foo")
+          , (Just (InR "claim-right"), Just DiagnosticSeverity_Hint, "✓ Right, per htmx.org · the docs say so · hx-on")
+          , (Just (InR "claim-wrong"), Just DiagnosticSeverity_Warning, "✗ Wrong, per htmx.org · the docs say so · hx-on")
+          , (Just (InR "claim-queued"), Just DiagnosticSeverity_Hint, "○ Unchecked · the next save checks it")
+          , (Just (InR "claim-queued"), Just DiagnosticSeverity_Hint, "○ Unchecked · Check this, or Check the plan") ]
+    it "an answer's hover drops the glyph and ends with Keep this answer; a mixed row keeps the verdict footer" $ do
+      claimHover store S.empty (ss ["Answered one?"])
+        `shouldBe` Just "Answer · Yes, it returns 1. · src/a.py:Foo · QuerySet API (docs.djangoproject.com)\n\ngd: the code · Keep this answer: <leader>mpk"
+      claimHover (M.insert "Right one." (verdictEntry JRight "it returns 1") store) S.empty (ss ["Answered one? Right one."])
+        `shouldSatisfy` maybe False ("Keep this verdict: <leader>mpk" `T.isSuffixOf`)
+    it "Show why prints the answer, its detail, the code, the sources and the web" $ do
+      let Just c = seCheck answered
+          body = whyBody "Answered one?" c
+      mapM_ (\w -> body `shouldSatisfy` T.isInfixOf w)
+        [ "Answer · Yes, it returns 1.", "The longer story.", "- src/a.py:Foo", "## Sources", "- QuerySet API — https://docs.djangoproject.com/en/5.2/ref/"
+        , "A source is the model's word and a link: olifant did not open it.", " · with web search", "(answered)" ]
+      let Just r = seCheck (sourceOnly JRight)
+      whyBody "Per right." r `shouldSatisfy` T.isInfixOf "## Sources"
+      whyBody "Per right." r `shouldSatisfy` (not . T.isInfixOf "with web search")
+      let Just n = seCheck (verdictEntry JRight "x")
+      whyBody "Right one." n `shouldSatisfy` (not . T.isInfixOf "## Sources")
+    it "Keep this answer writes one evidence line: the answer, the code, the first source" $ do
+      let insertOf (TextEdit r t) = ((r ^. L.start . L.line, r ^. L.start . L.character), t)
+          Just c = seCheck answered
+          ls = parsePlan "- ? Does the helper return one?\n- next\n"
+          [x] = take 1 (sentences ls)
+      fmap insertOf (keepEdit ls x c) `shouldBe` Just ((0, 31), "\n  - ✓ Yes, it returns 1. · src/a.py:Foo · https://docs.djangoproject.com/en/5.2/ref/")
+      let Just c2 = seCheck (answerE JAnswered "the docs" (Just "Yes.") [] [src] True)
+          ls2 = parsePlan "Does bulk_create return keys?\n"
+          [y] = sentences ls2
+      fmap insertOf (keepEdit ls2 y c2) `shouldBe` Just ((0, 29), "\n- ✓ Yes. · https://docs.djangoproject.com/en/5.2/ref/")
+      -- already kept: not offered again
+      let ls3 = parsePlan "Does bulk_create return keys?\n- ✓ Yes. · https://docs.djangoproject.com/en/5.2/ref/\n"
+      fmap insertOf (keepEdit ls3 (head (sentences ls3)) c2) `shouldBe` Nothing
+    it "Keep this answer (or verdict) writes one line whatever newlines the reply held" $ do
+      let insertOf (TextEdit _ t) = t
+          ls = parsePlan "Does bulk_create return keys?\n"
+          [y] = sentences ls
+          Just c = seCheck (answerE JAnswered "the docs" (Just "Yes.\n\n# It sets pk\n- on PostgreSQL") [] [src] True)
+          Just v = seCheck (answerE JRight "it does\n## so" Nothing cite [] False)
+      fmap insertOf (keepEdit ls y c) `shouldBe` Just "\n- ✓ Yes. # It sets pk - on PostgreSQL · https://docs.djangoproject.com/en/5.2/ref/"
+      fmap insertOf (keepEdit ls y v) `shouldBe` Just "\n- ✓ it does ## so (src/a.py:Foo)"
   describe "planTokensWith (claim modifiers)" $
     it "a bare line's text carries checked or wrong from its check" $ do
       let e j = verdictEntry j "no"
           store = M.fromList [("right one", e JRight), ("wrong one", e JWrong), ("open one", queuedEntry)]
           mods = [(ptRow t, ptMods t) | t <- planTokensWith store M.empty (parsePlan "- right one\n- wrong one\n- open one\n- other\n"), ptType t == "planClaim"]
       mods `shouldBe` [(0, ["checked"]), (1, ["wrong"]), (2, []), (3, [])]
-  describe "beliefsUnder" $
-    it "an ask's beliefs are its question's bare claims, once one of them has a verdict" $ do
+  describe "beliefsOf" $
+    it "a question's beliefs are its bare claims, each with its check or not checked" $ do
       let ls = parsePlan "- ? how\n  - it reads D\n  - grounded @src/a.py:Foo ✓ 0123456\n  - it is fast\n- other\n"
           q = ls !! 0
           checked = M.fromList [("it reads D", verdictEntry JWrong "it drops D")]
-      beliefsUnder checked ls q `shouldBe` [Belief "it reads D" (BelievedWrong "it drops D" "src/a.py:Foo"), Belief "it is fast" NotChecked]
-      beliefsUnder M.empty ls q `shouldBe` []
-      beliefsUnder checked ls (ls !! 4) `shouldBe` []
+      beliefsOf checked ls q `shouldBe` [Belief "it reads D" (BelievedWrong "it drops D" "src/a.py:Foo"), Belief "it is fast" NotChecked]
+      beliefsOf M.empty ls q `shouldBe` [Belief "it reads D" NotChecked, Belief "it is fast" NotChecked]
+      beliefsOf checked ls (ls !! 4) `shouldBe` []
+  describe "askFor (2b)" $ do
+    let ls = parsePlan "## H\n- ? how\n  - it reads D\n  - grounded @src/a.py:Foo ✓ 0123456\n  - it is fast\nDoes it keep D? The loader keeps D.\n- [ ] add D\n"
+        sx = sentences ls
+        at t = head [x | x <- sx, snText x == t]
+        q = Triage "question" 0.9 0.9 "jev" (Just 0.9) (Just 0.9)
+        store = M.fromList
+          [ ("it reads D", verdictEntry JRight "it reads D")
+          , ("how", queuedEntry {seTriage = q {trAboutPublic = Just 0.2}, seRoute = Answer})
+          , ("Does it keep D?", queuedEntry {seTriage = q {trAboutCode = 0.3}, seRoute = Answer})
+          , ("The loader keeps D.", queuedEntry {seTriage = (seTriage queuedEntry) {trAboutCode = 0.3, trAboutPublic = Just 0.9}})
+          , ("add D", queuedEntry {seTriage = Triage "step" 0.9 0.9 "jev" (Just 0) (Just 0.9), seRoute = Progress}) ]
+        web = defaultPlans {pcWeb = True}
+    it "a `- ? ` line's answer gets every bare belief under it, checked or not; a paragraph question none" $ do
+      ckBeliefs (askFor defaultPlans store ls CheckAnswer (at "how")) `shouldBe` [Belief "it reads D" (BelievedRight "src/a.py:Foo"), Belief "it is fast" NotChecked]
+      ckBeliefs (askFor defaultPlans M.empty ls CheckAnswer (at "how")) `shouldBe` [Belief "it reads D" NotChecked, Belief "it is fast" NotChecked]
+      ckBeliefs (askFor defaultPlans store ls CheckAnswer (at "Does it keep D?")) `shouldBe` []
+      ckBeliefs (askFor defaultPlans store ls CheckClaim (at "how")) `shouldBe` []
+    it "web only with [plans] web and about-public >= 0.70, when the code does not settle it; never for a step" $ do
+      map (\t -> ckWeb (askFor web store ls (if t == "add D" then CheckProgress else if t == "The loader keeps D." then CheckClaim else CheckAnswer) (at t))) ["how", "Does it keep D?", "The loader keeps D.", "add D"]
+        `shouldBe` [False, True, True, False]
+      ckWeb (askFor defaultPlans {pcWeb = False} store ls CheckAnswer (at "Does it keep D?")) `shouldBe` False
+      -- the code and public sources both settle it: the code check (user ruling 2026-11-14)
+      ckWeb (askFor web (M.insert "Does it keep D?" queuedEntry {seTriage = q, seRoute = Answer} store) ls CheckAnswer (at "Does it keep D?")) `shouldBe` False
+      ckMode (askFor web store ls CheckAnswer (at "how")) `shouldBe` CheckAnswer
   describe "planFolds" $ do
     let folds = planFolds S.empty . parsePlan . T.unlines
     it "a ticked step with children folds to its last descendant" $
@@ -337,11 +431,11 @@ at0 = UTCTime (fromGregorian 2026 11 7) 0
 
 -- | A verify sentence with no check yet.
 queuedEntry :: SentenceEntry
-queuedEntry = SentenceEntry (Triage "claim" 0.9 0.9 "jev") Verify Nothing Nothing at0 Nothing False
+queuedEntry = SentenceEntry (Triage "claim" 0.9 0.9 "jev" Nothing Nothing) Verify Nothing Nothing at0 Nothing False
 
 -- | A verify sentence checked J, with WHY, citing src/a.py:Foo.
 verdictEntry :: Judgement -> Text -> SentenceEntry
-verdictEntry j why = queuedEntry {seCheck = Just (CheckRecord (Confirmed j why [Citation "src/a.py" (Just "Foo") Nothing] (Just (UnitRef "src/a.py" "Foo")) (Just "abc1234") []) "claude-sonnet-5-5" (Just 0.1) 12 at0 CheckClaim)}
+verdictEntry j why = queuedEntry {seCheck = Just (CheckRecord (Confirmed j why [Citation "src/a.py" (Just "Foo") Nothing] (Just (UnitRef "src/a.py" "Foo")) (Just "abc1234") [] Nothing Nothing []) "claude-sonnet-5-5" (Just 0.1) 12 at0 CheckClaim False)}
 
 -- | /r1 with the python pack, `src/a.py` (class Foo with def bar) and a
 -- plan; a syntax whose units are Foo (lines 0-2) and Foo.bar (1-2).

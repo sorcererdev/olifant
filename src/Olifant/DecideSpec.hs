@@ -5,6 +5,7 @@ import Data.Aeson (Value (..), object, (.=))
 import Data.Aeson.KeyMap qualified as KM
 import Data.Text qualified as T
 import Data.IORef (modifyIORef, newIORef, readIORef)
+import Data.Maybe (fromMaybe)
 import Olifant.Decide
 import Olifant.Model (Backend (..))
 import Olifant.Process (neverCancel)
@@ -73,6 +74,29 @@ spec = describe "Olifant.Decide" $ do
         weigh (replayDecider file Nothing) (unitQ "z") `shouldReturn` (Unsure, [])
         missed <- readFile (file <> ".missed")
         missed `shouldContain` T.unpack (questionKey (unitQ "z"))
+    it "(d) recordMissing replays a recorded key; a missing one is asked once and written, the others kept" $
+      withSystemTempDirectory "olifant-decide" $ \dir -> do
+        let file = dir </> "jev.json"
+        _ <- weigh (replayDecider file (Just stub)) (unitQ "x")
+        calls <- newIORef ([] :: [T.Text])
+        let counted = Decider (fmap fst . go) (traverse (fmap fst . go)) go (traverse go)
+            go q = modifyIORef calls (++ [fromMaybe "" (lookup "line" (qContext q))]) >> pick q
+            d = recordMissing file counted
+        fmap fst (weigh d (unitQ "x")) `shouldReturn` Chosen "u1" [] (Confidence 0.9)
+        readIORef calls `shouldReturn` []
+        fmap fst (weigh d (unitQ "y")) `shouldReturn` Chosen "u2" [] (Confidence 0.7)
+        _ <- weighAll d [unitQ "y", unitQ "x"]
+        readIORef calls `shouldReturn` ["y"]
+        -- both keys are in the file now: replayed with no live decider
+        fmap fst (weigh (replayDecider file Nothing) (unitQ "x")) `shouldReturn` Chosen "u1" [] (Confidence 0.9)
+        fmap fst (weigh (replayDecider file Nothing) (unitQ "y")) `shouldReturn` Chosen "u2" [] (Confidence 0.7)
+    it "(e) recordMissing does not write an unsure live answer: it is asked again next time" $
+      withSystemTempDirectory "olifant-decide" $ \dir -> do
+        let file = dir </> "jev.json"
+            unsure = Decider (\_ -> pure Unsure) (traverse (\_ -> pure Unsure)) (\_ -> pure (Unsure, [])) (traverse (\_ -> pure (Unsure, [])))
+        weigh (recordMissing file unsure) (unitQ "x") `shouldReturn` (Unsure, [])
+        weigh (replayDecider file Nothing) (unitQ "x") `shouldReturn` (Unsure, [])
+        readFile (file <> ".missed") >>= (`shouldContain` T.unpack (questionKey (unitQ "x")))
     it "(c) questionKey changes with the options' descriptions" $
       questionKey (choice "k" "i" [("a", "h1")] []) `shouldNotBe` questionKey (choice "k" "i" [("a", "h2")] [])
   describe "shapes and confidence" $ do
