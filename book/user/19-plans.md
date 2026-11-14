@@ -627,7 +627,10 @@ haiku's verdict:
 - **verdict-follows**: does the verdict follow from the reason?
 
 The check goes on to sonnet when a citation fails, haiku cannot tell, its run fails, or any
-answer is under 0.60. Sonnet's verdict is then the one shown; the stored check and its errand
+answer is under 0.60. One citation failure does not: haiku citing a function in a file olifant
+has no language for (a JavaScript file in a Python project, say), with every other citation
+found. Sonnet could not confirm it either, so haiku's *Could not tell · cited code not found*
+stands, at haiku's price. Sonnet's verdict is then the one shown; the stored check and its errand
 line say `"escalated": true`, and the cost and seconds are both runs'. Without Jev (no `[decide]
 model`) nothing can guard haiku, so the cascade checks with sonnet alone: the titles say
 `sonnet`, the errand line `"model": "sonnet"`, and a check costs what it did before. When Jev is

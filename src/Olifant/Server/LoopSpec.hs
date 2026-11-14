@@ -1107,6 +1107,14 @@ claimPassSpec = describe "Olifant.Server.Loop (claimPass)" $ describe "claimPass
         store `shouldSatisfy` T.isInfixOf "\"escalated\":true"
         records <- TIO.readFile (recordsPath dir)
         records `shouldSatisfy` T.isInfixOf "\"escalated\":true"
+    it "haiku's citation failure on code olifant cannot read stands: sonnet is not asked" $
+      withReconcile plan [("static/app.js", "function f() {\n  return 1;\n}\n")] (jevConfig <> cascadeConfig) (Just (jevWith 0.9)) $ \dir s0 -> do
+        let s = s0 {ssConfig = (ssConfig s0) {scCheckAnswers = Just (checksFile dir)}}
+            js = object ["text" .= ("```json\n{\"verdict\": \"right\", \"why\": \"f returns 1\", \"evidence\": [{\"path\": \"static/app.js\", \"unit\": \"f\"}]}\n```" :: Text), "cost" .= (0.004 :: Double), "seconds" .= (2 :: Double)]
+        TIO.writeFile (checksFile dir) (replies [("haiku: " <> key, js), ("sonnet: " <> key, priced "wrong" 0.1)])
+        c <- checkIt dir s
+        (cfJudgement (cjConfirmed c), cfWhy (cjConfirmed c), cjEscalated c, cjCost c) `shouldBe` (JCannotTell, "cited code not found", False, Just 0.004)
+        checksAsked dir `shouldReturn` ["haiku: " <> key]
     it "with no Jev the cascade checks with sonnet alone" $
       withCascade ("- " <> plan) Nothing twoModels $ \dir s -> do
         c <- checkIt dir s

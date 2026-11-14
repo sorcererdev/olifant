@@ -85,3 +85,17 @@ spec = describe "Olifant.Server.Cascade" $ do
     checkModelIn recorded jev defaultPlans `shouldBe` "cascade"
     checkModelIn recorded jev defaultPlans {pcCheckModel = "haiku"} `shouldBe` "haiku"
     checkModelIn s proj defaultPlans {pcCheckModel = "opus"} `shouldBe` "opus"
+
+  it "keeps haiku's citation failure when the code it cites is in a language olifant cannot read (sonnet would end there too)" $ do
+    (s, proj) <- checkerServer
+    let failed cs = confirmed JCannotTell "cited code not found" cs []
+        js = Citation "static/app.js" (Just "askAboutUnsaved") (Just 1)
+    -- a JavaScript unit (no language), alone or beside a citation that confirms
+    citesOnlyUnreadable s proj defaultPlans (failed [js]) `shouldReturn` True
+    citesOnlyUnreadable s proj defaultPlans (failed [js, Citation "src/a.py" (Just "Foo") Nothing]) `shouldReturn` True
+    -- haiku's own miss: a Python unit that is not there, a file that is not there, beside or alone
+    citesOnlyUnreadable s proj defaultPlans (failed [js, Citation "src/a.py" (Just "Nope") Nothing]) `shouldReturn` False
+    citesOnlyUnreadable s proj defaultPlans (failed [Citation "static/gone.js" (Just "f") Nothing]) `shouldReturn` False
+    citesOnlyUnreadable s proj defaultPlans (failed [Citation "src/a.py" (Just "Nope") Nothing]) `shouldReturn` False
+    -- not a citation failure
+    citesOnlyUnreadable s proj defaultPlans (confirmed JCannotTell "the code does not say" [js] []) `shouldReturn` False

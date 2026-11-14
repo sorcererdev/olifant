@@ -97,7 +97,7 @@ import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, readMVar)
 import Olifant.Plans.Sentences (Sentence (..), joinCandidates, pairKey, sentenceKey, sentencesJoined)
 import Olifant.Server.Checker (CheckAsk (..), CheckMode (..), Checker, Confirmed (..), Judgement (..), checkModeName, checkModeOf, judgementName, checkPrompt, checkerUnder, confirm, fences, parseCheckReply)
 import Olifant.Server.Errand (RunFailure (..), RunResult (..), Status (..))
-import Olifant.Server.Cascade (cascadeFirst, cascadeStrong, cascadeThreshold, checkModelIn, escalation, guardEvidence, guardQuestions, guardScores, isCascade)
+import Olifant.Server.Cascade (cascadeFirst, cascadeStrong, cascadeThreshold, checkModelIn, citesOnlyUnreadable, escalation, guardEvidence, guardQuestions, guardScores, isCascade)
 import Olifant.Server.Triage (Route (..), Triage (..), decideJoins, needsRetriage, retriage, route, routeName, triage)
 import Olifant.Server.Unit (Named (..), fingerprint, unitsOf)
 import Olifant.Workspace (Workspace (..), normalisePath)
@@ -903,7 +903,10 @@ checkSentence s p cfg checkerFor auto now plan ask x
                 ev <- guardEvidence s p ask c
                 as <- askAll jev (guardQuestions ask x c ev)
                 pure (escalation cascadeThreshold c (guardScores as))
-            | otherwise -> pure (escalation cascadeThreshold c [])
+            -- a citation sonnet could not have confirmed either: haiku's cannot_tell stands
+            | otherwise -> citesOnlyUnreadable s p cfg c <&> \case
+                True -> Nothing
+                False -> escalation cascadeThreshold c []
           _ -> pure (Just "failed")
         case why of
           Nothing -> finish [first] False

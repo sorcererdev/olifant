@@ -325,6 +325,7 @@ checkerServer = do
         ++ [ ("/r1/.olifant/config.toml", "[packs]\npython-htmx = { path = \"/pack\" }\n")
            , ("/r1/src/a.py", "class Foo:\n    def bar(self):\n        return 1\n")
            , ("/r1/notes.txt", "x\n")
+           , ("/r1/static/app.js", "function askAboutUnsaved() {\n  return 1;\n}\n")
            , ("/r1/.env", "SECRET=x\n")
            , ("/r1/sub/.env.local", "LOCAL_SECRET=y\n")
            , ("/r1/docs/table.txt", "t\n")

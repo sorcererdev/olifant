@@ -20,9 +20,10 @@ module Olifant.Server.Cascade
   , guardEvidence
   , guardScores
   , escalation
+  , citesOnlyUnreadable
   ) where
 
-import Data.Maybe (catMaybes, isJust)
+import Data.Maybe (catMaybes, isJust, isNothing)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.App (Ports (..), Project (..))
@@ -30,7 +31,7 @@ import Olifant.Catalog (Catalog (..), PlansConfig (..))
 import Olifant.Decide (Answer (..), Confidence (..), Question (..), Shape (..), noul)
 import Olifant.Language.Adapter (languageFor)
 import Olifant.Plans.Sentences (Sentence (..))
-import Olifant.Server.Checker (CheckAsk (..), CheckMode (..), Citation (..), Confirmed (..), Judgement (..), Source (..))
+import Olifant.Server.Checker (CheckAsk (..), CheckMode (..), CheckReply (..), Citation (..), Confirmed (..), Judgement (..), Source (..), confirm, fences)
 import Olifant.Server.Confine (confined, safely)
 import Olifant.Server.State (ServerState (..), deciderUnder)
 import Olifant.Server.Unit (Named (..), unitLookupIn, unitsWithKinds)
@@ -116,11 +117,41 @@ guardScores as = zip ["why-fits", "evidence-fits", "verdict-follows"] (map yes a
 -- citation that failed, a cannot_tell, or a guard under the threshold.
 escalation :: Double -> Confirmed -> [(Text, Double)] -> Maybe Text
 escalation t c scores
-  | cfJudgement c == JCannotTell = Just (if cfWhy c == "cited code not found" then "citation" else "cannot_tell")
+  | cfJudgement c == JCannotTell = Just (if cfWhy c == citationMissed then "citation" else "cannot_tell")
   | null low = Nothing
   | otherwise = Just (T.intercalate "+" low)
   where
     low = [n | (n, v) <- scores, v < t]
+
+-- | A citation failure that sonnet would end in too, so the cascade keeps
+-- haiku's cannot_tell: at least one citation names a unit in a file olifant
+-- has no language for (H4: a JavaScript function; no unit can be found
+-- there, whoever cites it), and every other citation confirms on its own.
+-- A unit or file haiku got wrong is its own miss, and goes on to sonnet.
+citesOnlyUnreadable :: ServerState -> Project -> PlansConfig -> Confirmed -> IO Bool
+citesOnlyUnreadable s p cfg c
+  | cfJudgement c /= JCannotTell || cfWhy c /= citationMissed = pure False
+  | otherwise = do
+      kinds <- mapM kind (cfEvidence c)
+      pure (Unreadable `elem` kinds && all (/= Missed) kinds)
+  where
+    kind ci = do
+      alone <- confirm s p (fences cfg) (CheckReply JRight "" [ci] Nothing Nothing [])
+      if cfJudgement alone /= JCannotTell then pure Confirms else do
+        readable <- case confined (ciPath ci) of
+          Nothing -> pure False
+          Just rel0 -> do
+            let rel = normalisePath rel0
+            there <- safely Nothing (readText (prWorkspace p) rel)
+            pure (isJust there && isJust (ciUnit ci) && isNothing (languageFor (catalogLanguages (prCatalog p)) rel))
+        pure (if readable then Unreadable else Missed)
+
+data CitationKind = Confirms | Unreadable | Missed
+  deriving stock (Eq)
+
+-- | What 'confirm' says when a citation is not found.
+citationMissed :: Text
+citationMissed = "cited code not found"
 
 checkWords :: CheckMode -> Bool -> Text
 checkWords mode web = case (mode, web) of
