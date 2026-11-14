@@ -137,8 +137,8 @@ measure checkout = do
         | otherwise = replayed mode x
   rows <- forM entries $ \e -> do
     let x = sentenceOf e
-    t <- triage (Just decider) x
-    let r = route t
+    t <- triage False (Just decider) x
+    let r = route False t
     let mode = if r == Progress then CheckProgress else CheckClaim
     if r `notElem` [Verify, Progress]
       then pure (Row e t r Nothing Nothing)

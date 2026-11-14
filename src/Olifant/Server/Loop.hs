@@ -95,7 +95,7 @@ import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, readMVar)
 import Olifant.Plans.Sentences (Sentence (..), joinCandidates, pairKey, sentenceKey, sentencesJoined)
 import Olifant.Server.Checker (CheckMode (..), Checker, Confirmed (..), Judgement (..), checkModeName, checkModeOf, judgementName, checkPrompt, checkerUnder, confirm, fences, parseCheckReply)
 import Olifant.Server.Errand (RunFailure (..), RunResult (..), Status (..))
-import Olifant.Server.Triage (Triage (..), decideJoins, route, routeName, triage)
+import Olifant.Server.Triage (Route (..), Triage (..), decideJoins, needsRetriage, retriage, route, routeName, triage)
 import Olifant.Server.Unit (Named (..), fingerprint, unitsOf)
 import Olifant.Workspace (Workspace (..), normalisePath)
 import System.FilePath (makeRelative, takeExtension, (</>))
@@ -664,23 +664,34 @@ claimPass token mode path s0 = do
           let joins1 = M.union (M.fromList answered) (M.restrictKeys joins0 candKeys)
           when (joins1 /= joins0) (void (updateJoins s root path (const joins1)))
           let ss = sentencesJoined joins1 ls
+              web = pcWeb cfg
               fresh = firstPerKey key [x | x <- ss, not (M.member (key x) store0)]
-              -- triage until cancelled or out of time: (store, triaged, Jev calls, stopped)
-              triageAll st n calls [] = pure (st, n, calls, False)
-              triageAll st n calls (x : rest) = do
+              -- stored entries missing a Noul this pass needs (a 2a store, web
+              -- turned on): only the missing ones are asked; the check is kept
+              lacking = firstPerKey key [x | x <- ss, Just e <- [M.lookup (key x) store0], needsRetriage web (seTriage e)]
+              -- triage until cancelled or out of time: (store, re-triaged, triaged, Jev calls, stopped)
+              triageAll st re n calls [] = pure (st, re, n, calls, False)
+              triageAll st re n calls ((x, old) : rest) = do
                 stop <- cancelled token
                 t <- elapsed
                 if stop || t >= budget
-                  then pure (st, n, calls, stop)
-                  else do
-                    tr <- triage jev x
-                    -- written in this editor (idle, save): owed its one automatic check;
-                    -- already in the file when opened: backlog
-                    let e = SentenceEntry tr (route tr) Nothing Nothing now Nothing (mode /= OpenPass)
-                    triageAll (M.insert (key x) e st) (n + 1) (calls + (if trBy tr == "jev" then 1 else 0)) rest
-          (triagedStore, triaged, jevCalls, stoppedEarly) <- triageAll M.empty (0 :: Int) joinCalls fresh
-          -- merged into the store as it is now (Check this may have written meanwhile)
-          let merge cur = M.union (pruneClaims now ss cur) triagedStore
+                  then pure (st, re, n, calls, stop)
+                  else case old of
+                    Nothing -> do
+                      tr <- triage web jev x
+                      -- written in this editor (idle, save): owed its one automatic check;
+                      -- already in the file when opened: backlog
+                      let e = SentenceEntry tr (route web tr) Nothing Nothing now Nothing (mode /= OpenPass)
+                          asks = trBy tr == "jev" || (trKind tr == "question" && isJust jev)
+                      triageAll (M.insert (key x) e st) re (n + 1) (calls + (if asks then 1 else 0)) rest
+                    Just tr0 -> do
+                      tr <- retriage web jev x tr0
+                      triageAll st (M.insert (key x) tr re) (n + 1) (calls + (if isJust jev then 1 else 0)) rest
+          (triagedStore, retriaged, triaged, jevCalls, stoppedEarly) <-
+            triageAll M.empty M.empty (0 :: Int) joinCalls ([(x, Nothing) | x <- fresh] ++ [(x, seTriage <$> M.lookup (key x) store0) | x <- lacking])
+          -- merged into the store as it is now (Check this may have written
+          -- meanwhile); every route recomputed (web may have been turned on or off)
+          let merge cur = M.map (reroute web) (M.union (M.foldrWithKey (\k tr -> M.adjust (\e -> e {seTriage = tr}) k) (pruneClaims now ss cur) retriaged) triagedStore)
           store1 <- if merge store0 /= store0 then updateClaims s root path merge else claimsOf s root path
           tried <- newIORef S.empty
           let checking = mode == SavePass
@@ -795,8 +806,8 @@ checkOne token path wanted s0 =
           now <- pNow (ssPorts s)
           store0 <- claimsOf s root path
           unless (M.member wanted store0) $ do
-            tr <- triage (rgJev (rungsFor s {ssCancel = token} p False)) x
-            void (updateClaims s root path (M.insertWith (\_ old -> old) wanted (SentenceEntry tr (route tr) Nothing Nothing now Nothing False)))
+            tr <- triage (pcWeb cfg) (rgJev (rungsFor s {ssCancel = token} p False)) x
+            void (updateClaims s root path (M.insertWith (\_ old -> old) wanted (SentenceEntry tr (route (pcWeb cfg) tr) Nothing Nothing now Nothing False)))
           mode <- maybe CheckClaim (checkModeOf . seTriage) . M.lookup wanted <$> claimsOf s root path
           -- taken atomically (a key a pass or a sweep is checking now is
           -- refused: its check lands), and landed before it is let go
@@ -812,6 +823,19 @@ checkOne token path wanted s0 =
                     pure (either (Left . fuWhy) (const (Right store2)) result))
                 `finally` releaseKey s held wanted
           pure (s, r)
+
+-- | The entry's route recomputed from its stored triage (routes are pure: web
+-- on or off takes effect on the next pass). An entry that becomes one to
+-- check only now (re-triaged, or web turned on) is not owed: it had its
+-- automatic chance when it was written; it is backlog for *Check the plan*.
+reroute :: Bool -> SentenceEntry -> SentenceEntry
+reroute web e
+  | r == seRoute e = e
+  | toCheck r && not (toCheck (seRoute e)) = e {seRoute = r, seOwed = False}
+  | otherwise = e {seRoute = r}
+  where
+    r = route web (seTriage e)
+    toCheck = (`elem` [Verify, Progress, Answer])
 
 -- | A check's result in its sentence's entry. A first failure keeps the
 -- sentence owed (one retry after 'retryAfter'); a second makes it backlog.

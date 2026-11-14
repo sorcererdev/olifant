@@ -168,7 +168,7 @@ claimsLock = unsafePerformIO (newMVar ())
 entryJson :: SentenceEntry -> Value
 entryJson e =
   object $
-    [ "triage" .= object ["kind" .= trKind t, "p" .= trKindP t, "about" .= trAboutCode t, "by" .= trBy t]
+    [ "triage" .= object (["kind" .= trKind t, "p" .= trKindP t, "about" .= trAboutCode t, "by" .= trBy t] ++ ["wants" .= w | Just w <- [trWantsAnswer t]] ++ ["public" .= x | Just x <- [trAboutPublic t]])
     , "route" .= routeName (seRoute e)
     , "check" .= fmap checkJson (seCheck e)
     , "failure" .= fmap (\f -> object ["why" .= fuWhy f, "at" .= fuAt f]) (seFailure e)
@@ -206,10 +206,11 @@ entry = withObject "entry" $ \o ->
     <*> o .:? "gone"
     <*> (fromMaybe False <$> o .:? "owed")
   where
-    triage = withObject "triage" $ \t -> Triage <$> t .: "kind" <*> t .: "p" <*> t .: "about" <*> t .: "by"
+    triage = withObject "triage" $ \t -> Triage <$> t .: "kind" <*> t .: "p" <*> t .: "about" <*> t .: "by" <*> t .:? "wants" <*> t .:? "public"
     route = \case
       String "verify" -> pure Verify
       String "progress" -> pure Progress
+      String "answer" -> pure Answer
       String "asked" -> pure Asked
       String "aside" -> pure Aside
       _ -> fail "a route"
@@ -246,10 +247,10 @@ pruneClaims now ss = M.mapMaybeWithKey keep
       | Just t <- seGone e = if addUTCTime keepGone t > now then Just e else Nothing
       | otherwise = Just e {seGone = Just now}
 
--- | Whether a sentence is one a check is for and has none: routed to verify
--- or progress, not a ticked step (you said it is done), and not checked.
+-- | Whether a sentence is one a check is for and has none: routed to verify,
+-- progress or answer, not a ticked step (you said it is done), and not checked.
 checkable :: Sentence -> SentenceEntry -> Bool
-checkable x e = seRoute e `elem` [Verify, Progress] && snKind x /= Step True && seCheck e == Nothing
+checkable x e = seRoute e `elem` [Verify, Progress, Answer] && snKind x /= Step True && seCheck e == Nothing
 
 -- | The sentences the save pass checks, in plan order, one per key:
 -- 'checkable', owed their automatic check ('seOwed'), and not failed in the

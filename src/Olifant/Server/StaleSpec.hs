@@ -76,7 +76,7 @@ spec = describe "Olifant.Server.Stale" $ do
   it "staleKeys names the stale entries; a file read once is not read again until it changes" $ do
     (s, proj) <- checkerServer
     c <- checkOf s proj JRight [Citation "src/a.py" (Just "Foo") Nothing]
-    let entry = SentenceEntry (Triage "claim" 0.9 0.9 "jev") Verify (Just c) Nothing at0 Nothing False
+    let entry = SentenceEntry (Triage "claim" 0.9 0.9 "jev" Nothing Nothing) Verify (Just c) Nothing at0 Nothing False
         store = M.fromList [("a", entry), ("b", entry {seCheck = Nothing})]
     now0 <- printsNow s proj ["src/a.py"]
     staleKeys now0 store `shouldBe` S.empty

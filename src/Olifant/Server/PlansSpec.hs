@@ -188,7 +188,7 @@ spec = describe "Olifant.Server.Plans (anchors in the server)" $ do
           , (Just (InR "claim-queued"), Just DiagnosticSeverity_Hint, "○ Unchecked · Check this, or Check the plan")
           , (Just (InR "claim-checking"), Just DiagnosticSeverity_Hint, "… Checking") ]
     it "an owed sentence says the next save checks it; an unticked step is unchecked too, a ticked one shows nothing" $ do
-      let stepE = queuedEntry {seTriage = Triage "step" 1 1 "grammar", seRoute = Progress}
+      let stepE = queuedEntry {seTriage = Triage "step" 1 1 "grammar" Nothing Nothing, seRoute = Progress}
           st = M.fromList [("Owed one.", queuedEntry {seOwed = True}), ("a", stepE), ("b", stepE {seOwed = True})]
       map show' (claimHints True st S.empty S.empty (ss ["Owed one.", "- [ ] a", "- [x] b"]))
         `shouldBe`
@@ -209,7 +209,7 @@ spec = describe "Olifant.Server.Plans (anchors in the server)" $ do
   describe "what a step shows, and stale verdicts" $ do
     let ss = sentences . parsePlan . T.unlines
         show' d = (d ^. L.code, d ^. L.severity, d ^. L.message)
-        stepE j why = (verdictEntry j why) {seTriage = Triage "step" 1 1 "grammar", seRoute = Progress, seCheck = fmap (\c -> c {cjMode = CheckProgress}) (seCheck (verdictEntry j why))}
+        stepE j why = (verdictEntry j why) {seTriage = Triage "step" 1 1 "grammar" Nothing Nothing, seRoute = Progress, seCheck = fmap (\c -> c {cjMode = CheckProgress}) (seCheck (verdictEntry j why))}
         line store stale t = [(c, sev, m) | x <- ss [t], Just (c, sev, m) <- [claimLine True store S.empty stale x]]
         hints store stale t = map show' (claimHints True store S.empty stale (ss [t]))
         one k e = M.fromList [(k, e)]
@@ -337,7 +337,7 @@ at0 = UTCTime (fromGregorian 2026 11 7) 0
 
 -- | A verify sentence with no check yet.
 queuedEntry :: SentenceEntry
-queuedEntry = SentenceEntry (Triage "claim" 0.9 0.9 "jev") Verify Nothing Nothing at0 Nothing False
+queuedEntry = SentenceEntry (Triage "claim" 0.9 0.9 "jev" Nothing Nothing) Verify Nothing Nothing at0 Nothing False
 
 -- | A verify sentence checked J, with WHY, citing src/a.py:Foo.
 verdictEntry :: Judgement -> Text -> SentenceEntry

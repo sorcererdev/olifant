@@ -879,7 +879,7 @@ stepTestsSpec = describe "Olifant.Server.Loop (a step's tests)" $ do
     withLoop plan [] $ \s _ dir -> do
       fp <- fpNow dir s "Table.label"
       let check unit = CheckRecord (Confirmed JDone "it does" [Citation table (Just unit) Nothing] (Just (UnitRef table unit)) (Just fp) [Print table (Just unit) fp]) "sonnet" (Just 0.1) 1 (UTCTime (fromGregorian 2026 11 7) 0) CheckProgress
-          entry unit = SentenceEntry (Triage "step" 1 1 "grammar") Progress (Just (check unit)) Nothing (UTCTime (fromGregorian 2026 11 7) 0) Nothing False
+          entry unit = SentenceEntry (Triage "step" 1 1 "grammar" Nothing Nothing) Progress (Just (check unit)) Nothing (UTCTime (fromGregorian 2026 11 7) 0) Nothing False
       storeClaims s dir (planPath dir) (M.fromList [("no anchor here", entry "Table.label"), ("the table is wrong", entry "Table.label")])
       (_, r) <- stepStub (planPath dir) 8 s
       fmap (saName . stAnswer) r `shouldBe` Right "test_no_anchor_here"
@@ -1049,6 +1049,61 @@ claimPassSpec = describe "Olifant.Server.Loop (claimPass)" $ describe "claimPass
       map (\e -> (erVerb e, erMode e, erVerdict e)) es `shouldBe` [("check", Just "progress", Just "done")]
       prompts <- TIO.readFile (checksFile dir <> ".prompts")
       prompts `shouldSatisfy` T.isInfixOf "done | open | misfit | cannot_tell"
+  describe "questions and web in triage (2b)" $ do
+    let jevSays kvs = TE.decodeUtf8 (BL.toStrict (encode (object ["answers" .= object [K.fromText k .= v | (k, v) <- kvs]])))
+        kindIs k = object ["choice" .= (k :: Text), "confidence" .= (0.9 :: Double), "probabilities" .= object [K.fromText k .= (0.9 :: Double)]]
+        noulIs b = object ["choice" .= (b :: Bool), "confidence" .= (0.9 :: Double)]
+        withJev answers text extra checks act =
+          withReconcile text [] (jevConfig <> extra) (Just (jevSays answers)) $ \dir s -> do
+            TIO.writeFile (checksFile dir) (replies checks)
+            act dir s {ssConfig = (ssConfig s) {scCheckAnswers = Just (checksFile dir)}}
+        -- a fresh server state on the same directory (a config change is read anew)
+        restart s = (\s' -> s' {ssConfig = ssConfig s}) <$> newServerState (ssPorts s)
+    it "a prose question is routed to an answer" $
+      withJev [("sentence-kind", kindIs "question"), ("about-code", noulIs True), ("wants-answer", noulIs True)] "Does the helper return one?\n" "" [] $ \dir s -> do
+        (_, a) <- pass IdlePass dir s
+        fmap seRoute (entry a "Does the helper return one?") `shouldBe` Just Answer
+        fmap (trWantsAnswer . seTriage) (entry a "Does the helper return one?") `shouldBe` Just (Just 0.9)
+        kinds <- asked dir
+        kinds `shouldBe` ["sentence-kind", "about-code", "wants-answer"]
+    it "a 2a store is re-triaged once and checks nothing" $
+      withJev [("sentence-kind", kindIs "claim"), ("about-code", noulIs True), ("wants-answer", noulIs True)] "- ? Does the helper return one?\n" "" [("Does the helper return one?", reply "right")] $ \dir s -> do
+        -- 2a wrote it on a save: owed, asked, with no wants (never checked: not checkable then)
+        createDirectoryIfMissing True (takeDirectory (C.claimsPath dir "plans/t.md"))
+        TIO.writeFile (C.claimsPath dir "plans/t.md") "{\"version\": 2, \"claims\": {\"Does the helper return one?\": {\"triage\": {\"kind\": \"question\", \"p\": 1, \"about\": 0, \"by\": \"grammar\"}, \"route\": \"asked\", \"check\": null, \"failure\": null, \"at\": \"2026-11-07T00:00:00Z\", \"gone\": null, \"owed\": true}}}"
+        (s1, a1) <- pass OpenPass dir s
+        let e1 = entry a1 "Does the helper return one?"
+        fmap (trWantsAnswer . seTriage) e1 `shouldBe` Just (Just 1)
+        fmap (trAboutCode . seTriage) e1 `shouldBe` Just 0.9
+        fmap seRoute e1 `shouldBe` Just Answer
+        fmap seOwed e1 `shouldBe` Just False
+        asked dir `shouldReturn` ["about-code"]
+        (s2, _) <- pass SavePass dir s1
+        checksAsked dir `shouldReturn` []
+        _ <- pass OpenPass dir s2
+        asked dir `shouldReturn` ["about-code"]
+    it "with web off a public-only sentence is not routed to a check" $
+      withJev [("sentence-kind", kindIs "claim"), ("about-code", noulIs False), ("wants-answer", noulIs False), ("about-public", noulIs True)] "htmx 4 drops hx-on.\n" "" [("htmx 4 drops hx-on.", reply "right")] $ \dir s -> do
+        (_, a) <- pass SavePass dir s
+        fmap seRoute (entry a "htmx 4 drops hx-on.") `shouldBe` Just Aside
+        -- about-public is not asked with web off
+        fmap (trAboutPublic . seTriage) (entry a "htmx 4 drops hx-on.") `shouldBe` Just Nothing
+        checksAsked dir `shouldReturn` []
+        asked dir `shouldReturn` ["sentence-kind", "about-code", "wants-answer"]
+    it "turning web on asks about-public once" $
+      withJev [("sentence-kind", kindIs "claim"), ("about-code", noulIs False), ("wants-answer", noulIs False), ("about-public", noulIs True)] "htmx 4 drops hx-on.\n" "" [] $ \dir s -> do
+        _ <- pass SavePass dir s
+        old <- TIO.readFile (dir </> ".olifant/config.toml")
+        TIO.writeFile (dir </> ".olifant/config.toml") (old <> "\n[plans]\nweb = true\n")
+        s1 <- restart s
+        (s2, a) <- pass OpenPass dir s1
+        fmap seRoute (entry a "htmx 4 drops hx-on.") `shouldBe` Just Verify
+        fmap (trAboutPublic . seTriage) (entry a "htmx 4 drops hx-on.") `shouldBe` Just (Just 0.9)
+        -- written before web was on: it had its chance; backlog, not owed
+        fmap seOwed (entry a "htmx 4 drops hx-on.") `shouldBe` Just False
+        _ <- pass OpenPass dir s2
+        asked dir `shouldReturn` ["sentence-kind", "about-code", "wants-answer", "about-public"]
+        checksAsked dir `shouldReturn` []
   it "idle triages and checks nothing" $
     withPass plan "" [("The helper returns one.", reply "right")] $ \dir s -> do
       (_, a) <- pass IdlePass dir s

@@ -35,8 +35,8 @@ one t = case reverse (sentences (parsePlan t)) of
 spec :: Spec
 spec = describe "Olifant.Server.Checker" $ do
   it "a step is checked for progress, anything else as a claim" $ do
-    checkModeOf (Triage "step" 0.9 0.9 "jev") `shouldBe` CheckProgress
-    checkModeOf (Triage "claim" 0.9 0.9 "jev") `shouldBe` CheckClaim
+    checkModeOf (Triage "step" 0.9 0.9 "jev" Nothing Nothing) `shouldBe` CheckProgress
+    checkModeOf (Triage "claim" 0.9 0.9 "jev" Nothing Nothing) `shouldBe` CheckClaim
     map checkModeName [CheckClaim, CheckProgress] `shouldBe` ["verify", "progress"]
   it "fileHash is stable and changes with one character" $ do
     fileHash "a\nb\n" `shouldBe` fileHash "a\nb\n"
