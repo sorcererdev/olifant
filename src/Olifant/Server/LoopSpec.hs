@@ -1065,7 +1065,8 @@ claimPassSpec = describe "Olifant.Server.Loop (claimPass)" $ describe "claimPass
         fmap seRoute (entry a "Does the helper return one?") `shouldBe` Just Answer
         fmap (trWantsAnswer . seTriage) (entry a "Does the helper return one?") `shouldBe` Just (Just 0.9)
         kinds <- asked dir
-        kinds `shouldBe` ["sentence-kind", "about-code", "wants-answer"]
+        -- web is on by default (ruling D): about-public is asked too
+        kinds `shouldBe` ["sentence-kind", "about-code", "wants-answer", "about-public"]
     it "a 2a store is re-triaged once and checks nothing" $
       withJev [("sentence-kind", kindIs "claim"), ("about-code", noulIs True), ("wants-answer", noulIs True)] "- ? Does the helper return one?\n" "" [("Does the helper return one?", reply "right")] $ \dir s -> do
         -- 2a wrote it on a save: owed, asked, with no wants (never checked: not checkable then)
@@ -1077,13 +1078,14 @@ claimPassSpec = describe "Olifant.Server.Loop (claimPass)" $ describe "claimPass
         fmap (trAboutCode . seTriage) e1 `shouldBe` Just 0.9
         fmap seRoute e1 `shouldBe` Just Answer
         fmap seOwed e1 `shouldBe` Just False
-        asked dir `shouldReturn` ["about-code"]
+        -- web is on by default (ruling D): the one re-triage asks about-public too
+        asked dir `shouldReturn` ["about-code", "about-public"]
         (s2, _) <- pass SavePass dir s1
         checksAsked dir `shouldReturn` []
         _ <- pass OpenPass dir s2
-        asked dir `shouldReturn` ["about-code"]
+        asked dir `shouldReturn` ["about-code", "about-public"]
     it "with web off a public-only sentence is not routed to a check" $
-      withJev [("sentence-kind", kindIs "claim"), ("about-code", noulIs False), ("wants-answer", noulIs False), ("about-public", noulIs True)] "htmx 4 drops hx-on.\n" "" [("htmx 4 drops hx-on.", reply "right")] $ \dir s -> do
+      withJev [("sentence-kind", kindIs "claim"), ("about-code", noulIs False), ("wants-answer", noulIs False), ("about-public", noulIs True)] "htmx 4 drops hx-on.\n" "\n[plans]\nweb = false\n" [("htmx 4 drops hx-on.", reply "right")] $ \dir s -> do
         (_, a) <- pass SavePass dir s
         fmap seRoute (entry a "htmx 4 drops hx-on.") `shouldBe` Just Aside
         -- about-public is not asked with web off
@@ -1091,10 +1093,10 @@ claimPassSpec = describe "Olifant.Server.Loop (claimPass)" $ describe "claimPass
         checksAsked dir `shouldReturn` []
         asked dir `shouldReturn` ["sentence-kind", "about-code", "wants-answer"]
     it "turning web on asks about-public once" $
-      withJev [("sentence-kind", kindIs "claim"), ("about-code", noulIs False), ("wants-answer", noulIs False), ("about-public", noulIs True)] "htmx 4 drops hx-on.\n" "" [] $ \dir s -> do
+      withJev [("sentence-kind", kindIs "claim"), ("about-code", noulIs False), ("wants-answer", noulIs False), ("about-public", noulIs True)] "htmx 4 drops hx-on.\n" "\n[plans]\nweb = false\n" [] $ \dir s -> do
         _ <- pass SavePass dir s
         old <- TIO.readFile (dir </> ".olifant/config.toml")
-        TIO.writeFile (dir </> ".olifant/config.toml") (old <> "\n[plans]\nweb = true\n")
+        TIO.writeFile (dir </> ".olifant/config.toml") (T.replace "web = false" "web = true" old)
         s1 <- restart s
         (s2, a) <- pass OpenPass dir s1
         fmap seRoute (entry a "htmx 4 drops hx-on.") `shouldBe` Just Verify

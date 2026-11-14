@@ -127,11 +127,12 @@ spec = describe "catalog" $ do
     it "reads check_cost: 5.00 when absent" $ do
       withCatalog [("/proj/.olifant/config.toml", "")] $ \_ cat -> pcCheckCost (catalogPlans cat) `shouldBe` 5.00
       withCatalog [("/proj/.olifant/config.toml", "[plans]\ncheck_cost = 0.25\n")] $ \_ cat -> pcCheckCost (catalogPlans cat) `shouldBe` 0.25
-    it "reads web and web_fetch: off and none when absent; bad values name the key (2b)" $ do
+    it "reads web and web_fetch: on (ruling D) and none when absent; bad values name the key (2b)" $ do
       withCatalog [("/proj/.olifant/config.toml", "[plans]\nweb = true\nweb_fetch = [\"docs.djangoproject.com\"]\n")] $ \_ cat ->
         let c = catalogPlans cat in (pcWeb c, pcWebFetch c) `shouldBe` (True, ["docs.djangoproject.com"])
       withCatalog [("/proj/.olifant/config.toml", "")] $ \_ cat ->
-        let c = catalogPlans cat in (pcWeb c, pcWebFetch c) `shouldBe` (False, [])
+        let c = catalogPlans cat in (pcWeb c, pcWebFetch c) `shouldBe` (True, [])
+      withCatalog [("/proj/.olifant/config.toml", "[plans]\nweb = false\n")] $ \_ cat -> pcWeb (catalogPlans cat) `shouldBe` False
       let bad toml word = openWith [("/proj/.olifant/config.toml", toml)] >>= \case
             Left (ConfigInvalid _ e) -> e `shouldSatisfy` T.isInfixOf word
             _ -> expectationFailure ("expected ConfigInvalid naming " <> T.unpack word <> " for " <> T.unpack toml)

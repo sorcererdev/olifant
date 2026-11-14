@@ -175,7 +175,7 @@ data PlansConfig = PlansConfig
     pcRecheck :: Recheck
   , -- | dollars one *Check the plan* may spend (`check_cost`, 5.00)
     pcCheckCost :: Double
-  , -- | whether a check may search the web for what public sources settle (`web`, false)
+  , -- | whether a check may search the web for what public sources settle (`web`, true since 2b ruling D)
     pcWeb :: Bool
   , -- | hosts a web check may fetch pages from (`web_fetch`, none): lowercase host names
     pcWebFetch :: [Text]
@@ -187,7 +187,7 @@ data Recheck = RecheckAsked | RecheckSave
   deriving (Eq, Show)
 
 defaultPlans :: PlansConfig
-defaultPlans = PlansConfig "plans" "claude" "sonnet" 300 [] defaultPrices Nothing Nothing Nothing "sonnet" 120 ["docs"] Nothing RecheckAsked 5.00 False []
+defaultPlans = PlansConfig "plans" "claude" "sonnet" 300 [] defaultPrices Nothing Nothing Nothing "sonnet" 120 ["docs"] Nothing RecheckAsked 5.00 True []
 
 -- | One model's list price in USD per million tokens: input, output, cache
 -- read, and cache writes with the 5-minute and 1-hour TTLs.

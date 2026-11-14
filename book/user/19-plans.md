@@ -178,7 +178,7 @@ In `.olifant/config.toml`, all optional:
 | `check_model` | `"sonnet"` | the model a check runs on (`--model`) |
 | `check_timeout` | `120` | seconds before a check is killed (at least 1) |
 | `not_evidence` | `["docs"]` | folders a check may not read, besides `dir` and `.olifant/` (add `"book"` when a project's book repeats its plans) |
-| `web` | `false` | `true`: a claim or question that public sources settle (Jev's about-public ≥ 0.70) and the code does not is checked with web search instead of the code ([Web research](#web-research)); `false` asks Jev nothing about it and buys no such check |
+| `web` | `true` | a claim or question that public sources settle (Jev's about-public ≥ 0.70) and the code does not is checked with web search instead of the code ([Web research](#web-research)); `false` asks Jev nothing about it and buys no such check |
 | `web_fetch` | `[]` | hosts a web check may also open pages on, e.g. `["docs.djangoproject.com"]`: lowercase host names with a dot, no scheme, path, port or `*` (anything else is a configuration error naming `web_fetch`) |
 | `budget` | `[model] budget` (180) | seconds per reconcile, counted from its start and checked before each question; past it, the units not yet asked about are only counted (`more` in the reconcile's answer and its record) and the next reconcile asks again |
 | `prices` | the current models at list price | `[plans.prices."<model id>"]` rows for `plans cost`, below |
@@ -452,8 +452,9 @@ The web gate, on ten sentences about Django 5.x and htmx 4 that public sources s
 are routed to a check and all ten come back right, none wrong-sure. Seven go to a web check,
 each right with a source, at $0.047 a web check; three go to the code check because the code
 settles them (two htmx 4 questions the repository's vendored htmx build answers, and a Django
-claim), and the gate's bar asks for eight of ten given web tools. None of the 29 corpus
-sentences about the code is given web tools. So `web` stays `false` by default for now.
+claim). The gate's bar counts a sentence routed to a check, web or code (eight of ten), since
+a sentence the code settles is meant to take the code check. None of the 29 corpus sentences
+about the code is given web tools. So `web` is `true` by default.
 
 **The margin.** One diagnostic per sentence, over the sentence's range (source `olifant-plan`):
 
@@ -592,17 +593,20 @@ and a step never gets the web. A check is one or the other, never both.
 - **Cost.** A search is $0.01 plus the pages' tokens; a web check with no history is estimated at
   $0.30 in *Check this* and *Check the plan*.
 
-`web` is `false` by default: the gate below did not meet its routing bar for turning it on.
+`web` is `true` by default (the gate below met its bars); set `web = false` to keep every
+check on the code. A project that had plans before 2b sees its stored sentences re-triaged
+once (Jev only, a cent or so a plan); a sentence that web turns checkable then is not checked
+on its own (it was written before), it waits as backlog for *Check this* or *Check the plan*.
 
 ### What 2b costs
 
 | new spend | per user | when |
 |---|---|---|
 | `wants-answer` | about $0.0001 a sentence, in the triage request already made | first triage of each sentence |
-| `about-public` | about $0.0001 a sentence | only with `web = true` |
+| `about-public` | about $0.0001 a sentence | with `web = true` (the default) |
 | re-triage of an older store | about $0.0001–0.0002 a stored sentence, once (a 60-sentence plan: about a cent) | the first pass that sees it |
 | an answer from code | about $0.12 (measured mean $0.117, sonnet) | automatically only for a question written since the last save, under `pass_cost`; else on request, the estimate in the title |
-| a web check | $0.01 a search plus the pages' tokens (measured mean $0.047) | only with `web = true`, about-public ≥ 0.70 and the code not settling it |
+| a web check | $0.01 a search plus the pages' tokens (measured mean $0.047) | with `web = true` (the default), about-public ≥ 0.70 and the code not settling it; automatically only for a sentence written since the last save, under `pass_cost` |
 
 ## Reviews and the journal
 

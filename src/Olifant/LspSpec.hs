@@ -4520,8 +4520,8 @@ claimPassSpec = describe "plans claim pass" $ do
         sendNotification (SMethod_CustomMethod (Proxy :: Proxy "olifant/plans/idle")) (object ["textDocument" .= object ["uri" .= (p ^. L.uri)]])
         refreshed
         (n1,) <$> askedIn f
-      -- one sentence, three questions in its one request (2b: wants-answer)
-      (n1, n2) `shouldBe` (3, 3)
+      -- one sentence, four questions in its one request (2b: wants-answer; about-public, web on by default)
+      (n1, n2) `shouldBe` (4, 4)
   it "(e) an idle with nothing to check shows no progress and writes no store" $
     withPass wrong $ \ports dir f cfg -> do
       let seen = (message SMethod_WindowWorkDoneProgressCreate >> pure True) <|> (refreshed >> pure False) <|> (anyMessage >> seen)

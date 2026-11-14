@@ -394,7 +394,7 @@ spec = describe "Olifant.Server.Plans (anchors in the server)" $ do
     it "web only with [plans] web and about-public >= 0.70, when the code does not settle it; never for a step" $ do
       map (\t -> ckWeb (askFor web store ls (if t == "add D" then CheckProgress else if t == "The loader keeps D." then CheckClaim else CheckAnswer) (at t))) ["how", "Does it keep D?", "The loader keeps D.", "add D"]
         `shouldBe` [False, True, True, False]
-      ckWeb (askFor defaultPlans store ls CheckAnswer (at "Does it keep D?")) `shouldBe` False
+      ckWeb (askFor defaultPlans {pcWeb = False} store ls CheckAnswer (at "Does it keep D?")) `shouldBe` False
       -- the code and public sources both settle it: the code check (user ruling 2026-11-14)
       ckWeb (askFor web (M.insert "Does it keep D?" queuedEntry {seTriage = q, seRoute = Answer} store) ls CheckAnswer (at "Does it keep D?")) `shouldBe` False
       ckMode (askFor web store ls CheckAnswer (at "how")) `shouldBe` CheckAnswer

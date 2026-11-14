@@ -579,7 +579,7 @@ is a stderr note and no landings, never a failure.
 - **`[plans]`** (`Catalog.hs`, the `PlansConfig` record): `dir`, `runner`, `model`,
   `timeout`, `do_tools`, `ladder`, `budget`, `pass_budget`, `pass_cost`, `check_model`,
   `check_timeout`, `not_evidence`, `recheck` (`Recheck`: `RecheckAsked` or `RecheckSave`),
-  `check_cost` (`pcCheckCost`, 5.00, at least 0), `web` (`pcWeb`, false), `web_fetch`
+  `check_cost` (`pcCheckCost`, 5.00, at least 0), `web` (`pcWeb`, true: ruling D), `web_fetch`
   (`pcWebFetch`, lowercase hosts with a dot, checked in `plansIn`), `prices`. An unknown key is a configuration error;
   a `ladder` name not under `[model.backends]` is one too (`plansLadderIn`).
 - **`[decide] model`** names the backend Jev answers on (a `jev` backend's model defaults to the
@@ -689,15 +689,17 @@ passes.
 **The web gate (2b).** A second example, `meets the web bars` (`webMeasure`), runs with `web =
 true` and `web_fetch = []`: every entry is triaged, only corpus 4 (ten sentences about Django
 5.x and htmx 4, labelled with their source) is checked, with the web tools when `useWeb`.
-Asserted: corpus 4 given web tools at least 8 of 10, corpus 2 and 3 at most 1 of 29. Reported:
+Asserted: corpus 4 routed to a check, web or code, at least 8 of 10 (`c4Checked`; it was
+"given web tools" until the user's ruling D, since a sentence the code settles takes the code
+check), corpus 2 and 3 given web tools at most 1 of 29. Reported:
 right with a source, wrong-sure, the mean cost a web check, and whether the bar for `web =
 true` (7 of 10, $0.30) was met. First recorded 2026-11-14: 6 of 10 given web (four claims read
 as prose by the kind), 0 of 29, 3 right with a source, $0.087. Then, with the kind's claim text
 widened to a named library's behaviour (kind agrees 26 of 27, replayed and live) and web and
 code checks kept apart: all ten routed to a check and right, none wrong-sure; 7 of 10 given web
 tools (W1, W8 and W9 take the code check, since the code settles them: the repository vendors
-htmx 4), 0 of 29, 7 right with a source, $0.047 a web check. The routing bar (8 of 10) misses,
-so `web` ships `false` and the gate fails with `OLIFANT_PROSE_CORPUS` set.
+htmx 4), 0 of 29, 7 right with a source, $0.047 a web check. With the bar counting a check of
+either kind (ruling D) the gate passes, 10 of 10, so `web` ships `true` (`defaultPlans`).
 
 ## Rough spots
 

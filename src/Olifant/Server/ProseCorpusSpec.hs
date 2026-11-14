@@ -304,7 +304,8 @@ batchKind live entries = do
 -- | The web gate (2b): `[plans] web = true`, `web_fetch = []` (the default a user turns on).
 -- Every entry is triaged (to count the ones given web tools); only corpus 4 (ten sentences
 -- public sources settle, labelled by the builder with their source) is checked, with the web
--- tools when 'useWeb'. The routing bars are asserted; quality, cost and wrong-sure are
+-- tools when 'useWeb'. The routing bars are asserted (corpus 4 routed to a check, web or code,
+-- per ruling D; corpus 2 and 3 given web tools); quality, cost and wrong-sure are
 -- reported (they set the `web` default, the user's ruling 2026-11-14).
 webMeasure :: FilePath -> IO ()
 webMeasure checkout = do
@@ -353,6 +354,7 @@ webMeasure checkout = do
       c4 = [x | x@(r, _) <- rows, enCorpus (rwEntry r) == 4]
       c23 = [x | x@(r, _) <- rows, enCorpus (rwEntry r) `elem` [2, 3]]
       c4Given = [enId (rwEntry r) | x@(r, _) <- c4, given x]
+      c4Checked = [enId (rwEntry r) | (r, _) <- c4, rwRoute r `elem` [Verify, Answer, Progress]]
       c23Given = [enId (rwEntry r) | x@(r, _) <- c23, given x]
       judged r = judgementName . cfJudgement <$> rwVerdict r
       lower = T.toLower
@@ -380,9 +382,12 @@ webMeasure checkout = do
               (maybe "" (\c -> T.unpack (T.intercalate "," (map (sourceDomain . soUrl) (cfSources c)) <> " | " <> fromMaybe (cfWhy c) (cfAnswer c))) (rwVerdict r))
   mapM_ (hPutStrLn stderr) ("" : "web:" : table)
   maybe (pure ()) (\f -> TIO.appendFile f (T.unlines (map T.pack ("" : "web:" : table)))) =<< lookupEnv "OLIFANT_PROSE_TABLE"
-  hPutStrLn stderr (printf "web: corpus 4 given web tools %d/10 %s; corpus 2 and 3 given web tools %d/%d %s; right with a source %d/10 %s; wrong-sure %s; mean cost a web check $%.3f over %d (default bar: <= $0.30 and >= 7/10: %s)"
-    (length c4Given) (show c4Given) (length c23Given) (length c23) (show c23Given) (length rightN) (show rightN) (show wrongSure) webMean (length webCosts)
+  hPutStrLn stderr (printf "web: corpus 4 routed to a check %d/10 %s; given web tools %d/10 %s; corpus 2 and 3 given web tools %d/%d %s; right with a source %d/10 %s; wrong-sure %s; mean cost a web check $%.3f over %d (default bar: <= $0.30 and >= 7/10: %s)"
+    (length c4Checked) (show c4Checked) (length c4Given) (show c4Given) (length c23Given) (length c23) (show c23Given) (length rightN) (show rightN) (show wrongSure) webMean (length webCosts)
     (if webMean <= 0.30 && length rightN >= 7 then "met" else "missed" :: String))
   when (length c4 /= 10) (expectationFailure "corpus 4 is 10 entries")
-  unless (length c4Given >= 8) (expectationFailure ("corpus 4 given web tools: " <> show c4Given <> ", under 8 of 10"))
+  -- User ruling D (2026-11-14): the bar counts corpus 4 routed to a check, web or code. Ruling C
+  -- sends a sentence the code settles too (W1, W8, W9) to the code check, so "given web tools"
+  -- is reported, not asserted.
+  unless (length c4Checked >= 8) (expectationFailure ("corpus 4 routed to a check: " <> show c4Checked <> ", under 8 of 10"))
   unless (length c23Given <= 1) (expectationFailure ("corpus 2 and 3 given web tools: " <> show c23Given <> ", over 1"))
