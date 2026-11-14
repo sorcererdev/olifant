@@ -675,6 +675,10 @@ runChecksCost rt onlyBranch since asJson onlyPlan = do
 data ChecksRow = ChecksRow
   { crPlan :: FilePath, crSentences :: Int, crTriageCost :: Double
   , crClaims :: (Int, Int, Int, Int, Double), crSteps :: (Int, Int, Int, Int, Double)
+  , -- | answers: n, answered, cannot_tell, $
+    crAnswers :: (Int, Int, Int, Double)
+  , -- | checks made with the web tools (in their mode's columns too): n, $
+    crWeb :: (Int, Double)
   , crAutomatic :: Double, crAsked :: Double, crFailed :: Int }
 
 checksRow :: FilePath -> [Tel.PassRecord] -> [ErrandRecord] -> ChecksRow
@@ -682,12 +686,16 @@ checksRow plan ps es =
   ChecksRow
     { crPlan = plan, crSentences = sum (map Tel.prTriaged ps), crTriageCost = 0
     , crClaims = tally claims ["right", "wrong", "cannot_tell"], crSteps = tally steps ["done", "open", "misfit"]
+    , crAnswers = let ok = [e | e <- answers, erStatus e == Errand.Ok]; n w = length [() | e <- ok, erVerdict e == Just w]
+                   in (length ok, n "answered", n "cannot_tell", sum (map cost answers))
+    , crWeb = (length [() | e <- es, erWeb e], sum [cost e | e <- es, erWeb e])
     , crAutomatic = sum [cost e | e <- es, erAuto e], crAsked = sum [cost e | e <- es, not (erAuto e)]
     , crFailed = length [() | e <- es, erStatus e /= Errand.Ok] }
   where
     cost = fromMaybe 0 . erCost
     claims = [e | e <- es, fromMaybe "verify" (erMode e) == "verify"]
     steps = [e | e <- es, erMode e == Just "progress"]
+    answers = [e | e <- es, erMode e == Just "answer"]
     tally xs [a, b, c] =
       let ok = [e | e <- xs, erStatus e == Errand.Ok]
           n w = length [() | e <- ok, erVerdict e == Just w]
@@ -700,6 +708,8 @@ checksJson r =
     [ "plan" .= crPlan r, "sentences" .= crSentences r, "triage_cost" .= crTriageCost r
     , "claims" .= (let (n, a, b, c, d) = crClaims r in object ["n" .= n, "right" .= a, "wrong" .= b, "cannot_tell" .= c, "cost" .= d])
     , "steps" .= (let (n, a, b, c, d) = crSteps r in object ["n" .= n, "done" .= a, "open" .= b, "misfit" .= c, "cost" .= d])
+    , "answers" .= (let (n, a, b, d) = crAnswers r in object ["n" .= n, "answered" .= a, "cannot_tell" .= b, "cost" .= d])
+    , "web" .= (let (n, d) = crWeb r in object ["n" .= n, "cost" .= d])
     , "automatic" .= crAutomatic r, "asked" .= crAsked r, "failed" .= crFailed r, "total" .= checksTotal r ]
 
 checksTotal :: ChecksRow -> Double
@@ -708,10 +718,17 @@ checksTotal r = crTriageCost r + crAutomatic r + crAsked r
 checksTable :: [ChecksRow] -> Text
 checksTable rows = T.unlines (map line (header : map cells rows))
   where
-    header = ["plan", "sentences", "triage $", "claims", "right/wrong/?", "claims $", "steps", "done/open/misfit", "steps $", "automatic $", "asked $", "failed", "total $"]
+    header = ["plan", "sentences", "triage $", "claims", "right/wrong/?", "claims $", "steps", "done/open/misfit", "steps $", "answers", "answered/?", "answers $", "by web", "web $", "automatic $", "asked $", "failed", "total $"]
     cells r =
       [T.pack (crPlan r), tshow (crSentences r), money (crTriageCost r)] ++ kind (crClaims r) ++ kind (crSteps r)
+        ++ answerCells (crAnswers r) ++ webCells (crWeb r)
         ++ [money (crAutomatic r), money (crAsked r), tshow (crFailed r), money (checksTotal r)]
+    answerCells (n, a, b, d)
+      | n == 0 && d == 0 = ["-", "-", "-"]
+      | otherwise = [tshow n, tshow a <> "/" <> tshow b, money d]
+    webCells (n, d)
+      | n == 0 && d == 0 = ["-", "-"]
+      | otherwise = [tshow n, money d]
     -- a plan with no checks of a kind shows `-`
     kind (n, a, b, c, d)
       | n == 0 && d == 0 = ["-", "-", "-"]

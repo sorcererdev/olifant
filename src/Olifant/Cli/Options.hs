@@ -203,7 +203,7 @@ parseOptions args = case execParserPure defaultPrefs parserInfo args of
                     <*> optional (strOption (long "transcripts" <> metavar "DIR" <> help "Claude Code transcripts (default: ~/.claude/projects/<this project's slug>)"))
                     <*> option (eitherReader byP) (long "by" <> metavar "plan|branch" <> value ByPlan <> showDefaultWith (const "plan") <> help "Group by plan and landing (PR), or by recorded branch")
                     <*> optional (strOption (long "plan" <> metavar "PATH" <> help "Only this plan's errands and reconciles"))
-                    <*> switch (long "checks" <> help "What the plan checker cost and found, per plan: triage, claims, steps, automatic and asked")
+                    <*> switch (long "checks" <> help "What the plan checker cost and found, per plan: triage, claims, steps, answers, web checks, automatic and asked")
                 )
                 (progDesc "What errands cost, against Claude Code sessions, per plan and the PR it landed in, or per branch (list prices)")
             )
