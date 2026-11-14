@@ -509,7 +509,7 @@ code from leaving your machine unless the config says it may.
 
 Neither the ladder nor `escalate` drives a plan's claim pass: it triages with `[decide] model`
 and checks with `[plans] check_model` under its own caps ([chapter 19](19-plans.md#checked-as-you-go)).
-`check_model = "cascade"` is the plan checker's own two-rung ladder: haiku, with Jev guarding its
+`check_model = "cascade"` (the default) is the plan checker's own two-rung ladder: haiku, with Jev guarding its
 verdict, and sonnet only on doubt ([chapter 19](19-plans.md#the-cascade)); it does not use
 `[model] ladder` either.
 

@@ -2,13 +2,15 @@
 module Olifant.Server.CascadeSpec (spec) where
 
 import Data.Text qualified as T
-import Olifant.Catalog (PlansConfig (..), defaultPlans)
+import Olifant.App (Project (..))
+import Olifant.Catalog (Catalog (..), PlansConfig (..), defaultPlans)
 import Olifant.Decide (Answer (..), Confidence (..), Question (..), Shape (..))
 import Olifant.Plans (parsePlan)
 import Olifant.Plans.Sentences (Sentence (..), sentences)
 import Olifant.Server.Cascade
 import Olifant.Server.Checker
 import Olifant.Server.CheckerSpec (checkerServer)
+import Olifant.Server.State (ServerConfig (..), ServerState (..))
 import Test.Hspec
 
 sentence :: Sentence
@@ -21,9 +23,9 @@ confirmed j why ev src = Confirmed j why ev Nothing Nothing [] Nothing Nothing s
 
 spec :: Spec
 spec = describe "Olifant.Server.Cascade" $ do
-  it "is on only for check_model = \"cascade\"; haiku first, sonnet on doubt, at 0.60" $ do
-    isCascade defaultPlans `shouldBe` False
-    isCascade defaultPlans {pcCheckModel = "cascade"} `shouldBe` True
+  it "is the default check_model (sonnet is an option); haiku first, sonnet on doubt, at 0.60" $ do
+    isCascade defaultPlans `shouldBe` True
+    isCascade defaultPlans {pcCheckModel = "sonnet"} `shouldBe` False
     (cascadeFirst, cascadeStrong, cascadeThreshold) `shouldBe` ("haiku", "sonnet", 0.60)
 
   it "escalates a failed citation, a cannot_tell, or any guard under the threshold" $ do
@@ -74,3 +76,12 @@ spec = describe "Olifant.Server.Cascade" $ do
     web `shouldBe` "Release notes <https://docs.example.org/5.1/>"
     code <- guardEvidence s proj (CheckAsk CheckClaim False []) (confirmed JRight "w" [Citation "src/a.py" Nothing (Just 2), Citation "src/nope.py" Nothing Nothing] [])
     code `shouldBe` "src/a.py line 2\n    def bar(self):\n        return 1\n"
+
+  it "runs sonnet alone with no decide model to guard haiku: the model a check runs on and is priced as" $ do
+    (s, proj) <- checkerServer
+    let jev = proj {prCatalog = (prCatalog proj) {catalogDecideModel = Just "jev"}}
+        recorded = s {ssConfig = (ssConfig s) {scDecideAnswers = Just "/r1/answers.json"}}
+    checkModelIn s proj defaultPlans `shouldBe` "sonnet"
+    checkModelIn recorded jev defaultPlans `shouldBe` "cascade"
+    checkModelIn recorded jev defaultPlans {pcCheckModel = "haiku"} `shouldBe` "haiku"
+    checkModelIn s proj defaultPlans {pcCheckModel = "opus"} `shouldBe` "opus"

@@ -15,13 +15,14 @@ module Olifant.Server.Cascade
   , cascadeStrong
   , cascadeThreshold
   , isCascade
+  , checkModelIn
   , guardQuestions
   , guardEvidence
   , guardScores
   , escalation
   ) where
 
-import Data.Maybe (catMaybes)
+import Data.Maybe (catMaybes, isJust)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.App (Ports (..), Project (..))
@@ -31,7 +32,7 @@ import Olifant.Language.Adapter (languageFor)
 import Olifant.Plans.Sentences (Sentence (..))
 import Olifant.Server.Checker (CheckAsk (..), CheckMode (..), Citation (..), Confirmed (..), Judgement (..), Source (..))
 import Olifant.Server.Confine (confined, safely)
-import Olifant.Server.State (ServerState (..))
+import Olifant.Server.State (ServerState (..), deciderUnder)
 import Olifant.Server.Unit (Named (..), unitLookupIn, unitsWithKinds)
 import Olifant.Workspace (Workspace (..), normalisePath)
 
@@ -49,6 +50,15 @@ cascadeThreshold = 0.60
 
 isCascade :: PlansConfig -> Bool
 isCascade cfg = pcCheckModel cfg == cascadeModel
+
+-- | The model a check runs on (and is priced and named as): the config's
+-- `check_model`, except that the cascade with no decide model (`[decide]`,
+-- Jev) has nothing to guard haiku, so it is 'cascadeStrong' alone: a
+-- project without Jev checks and pays as with `check_model = "sonnet"`.
+checkModelIn :: ServerState -> Project -> PlansConfig -> Text
+checkModelIn s p cfg
+  | isCascade cfg && not (isJust (deciderUnder (ssCancel s) s p)) = cascadeStrong
+  | otherwise = pcCheckModel cfg
 
 -- | The three guards, sharing one state (one Jev request).
 guardQuestions :: CheckAsk -> Sentence -> Confirmed -> Text -> [Question]

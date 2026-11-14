@@ -163,7 +163,7 @@ data PlansConfig = PlansConfig
   , pcBudget :: Maybe Int
   , -- | seconds the automatic claim pass may run (`pass_budget`; 30 when absent)
     pcPassBudget :: Maybe Int
-  , -- | the checker's model (`check_model`, "sonnet")
+  , -- | the checker's model (`check_model`, "cascade": haiku guarded by the decide model, sonnet on doubt; any model name runs that model alone)
     pcCheckModel :: Text
   , -- | seconds one check may take (`check_timeout`, 120)
     pcCheckTimeout :: Int
@@ -187,7 +187,7 @@ data Recheck = RecheckAsked | RecheckSave
   deriving (Eq, Show)
 
 defaultPlans :: PlansConfig
-defaultPlans = PlansConfig "plans" "claude" "sonnet" 300 [] defaultPrices Nothing Nothing Nothing "sonnet" 120 ["docs"] Nothing RecheckAsked 5.00 True []
+defaultPlans = PlansConfig "plans" "claude" "sonnet" 300 [] defaultPrices Nothing Nothing Nothing "cascade" 120 ["docs"] Nothing RecheckAsked 5.00 True []
 
 -- | One model's list price in USD per million tokens: input, output, cache
 -- read, and cache writes with the 5-minute and 1-hour TTLs.

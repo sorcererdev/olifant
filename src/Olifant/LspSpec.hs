@@ -4225,7 +4225,7 @@ claimPassSpec :: Spec
 claimPassSpec = describe "plans claim pass" $ do
   let table = "src/bistro/booking/models/table.py"
       tableText = T.unlines ["def helper() -> int:", "    return 1"]
-      config = T.unlines ["", "[decide]", "model = \"jev\"", "[model.backends.jev]", "kind = \"jev\"", "[model.backends.local]", "kind = \"openai-compatible\"", "url = \"http://127.0.0.1:1/v1\"", "model = \"x\"", "escalate = \"auto\"", "[plans]", "ladder = [\"local\"]"]
+      config = T.unlines ["", "[decide]", "model = \"jev\"", "[model.backends.jev]", "kind = \"jev\"", "[model.backends.local]", "kind = \"openai-compatible\"", "url = \"http://127.0.0.1:1/v1\"", "model = \"x\"", "escalate = \"auto\"", "[plans]", "ladder = [\"local\"]", "check_model = \"sonnet\""]
       claims = "{\"answers\": {\"sentence-kind\": {\"choice\": \"claim\", \"confidence\": 0.9, \"probabilities\": {\"claim\": 0.9}}, \"about-code\": {\"choice\": true, \"confidence\": 0.9}}}"
       checkReply verdict = "{\"replies\": {\"the helper returns one\": {\"text\": \"```json\\n{\\\"verdict\\\": \\\"" <> verdict <> "\\\", \\\"why\\\": \\\"it returns two\\\", \\\"evidence\\\": [{\\\"path\\\": \\\"" <> T.pack table <> "\\\", \\\"unit\\\": \\\"helper\\\"}]}\\n```\", \"cost\": 0.1}}}"
       right = checkReply "right"

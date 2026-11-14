@@ -914,6 +914,13 @@ stepTestsSpec = describe "Olifant.Server.Loop (a step's tests)" $ do
 tidyPlan, jevConfig, climbConfig, helperEdited, withSpare :: Text
 tidyPlan = "# T\n\n## Tables\n\nThe tables a bistro seats.\n\n- [ ] count the seats\n- [ ] tidy the helper\n"
 jevConfig = "[decide]\nmodel = \"jev\"\n\n[model.backends.jev]\nkind = \"jev\"\n"
+
+-- | CONFIG with `check_model = "sonnet"` in its `[plans]` (one added when
+-- it has none): a spec about something besides the cascade.
+onSonnet :: Text -> Text
+onSonnet config
+  | "[plans]\n" `T.isInfixOf` config = T.replace "[plans]\n" "[plans]\ncheck_model = \"sonnet\"\n" config
+  | otherwise = config <> "\n[plans]\ncheck_model = \"sonnet\"\n"
 climbConfig =
   T.unlines
     [ "[model.backends.local]", "kind = \"openai-compatible\"", "url = \"http://127.0.0.1:1/v1\"", "model = \"x\"", "escalate = \"auto\""
@@ -993,8 +1000,10 @@ claimPassSpec = describe "Olifant.Server.Loop (claimPass)" $ describe "claimPass
       reply verdict = object ["text" .= ("I read it.\n```json\n{\"verdict\": \"" <> verdict <> "\", \"why\": \"it returns 1\", \"evidence\": [{\"path\": \"" <> T.pack table <> "\", \"unit\": \"helper\"}]}\n```"), "cost" .= (0.1 :: Double)]
       replies :: [(Text, Value)] -> Text
       replies kvs = TE.decodeUtf8 (BL.toStrict (encode (object ["replies" .= object [K.fromText k .= v | (k, v) <- kvs]])))
+      -- these specs are about the pass, not the cascade (the default): one
+      -- sonnet run a check
       withPass text extra checks act =
-        withReconcile text [] (jevConfig <> extra) (Just claims) $ \dir s -> do
+        withReconcile text [] (jevConfig <> onSonnet extra) (Just claims) $ \dir s -> do
           TIO.writeFile (checksFile dir) (replies checks)
           act dir s {ssConfig = (ssConfig s) {scCheckAnswers = Just (checksFile dir)}}
       pass mode dir s =
@@ -1103,12 +1112,15 @@ claimPassSpec = describe "Olifant.Server.Loop (claimPass)" $ describe "claimPass
         c <- checkIt dir s
         (cfJudgement (cjConfirmed c), cjEscalated c) `shouldBe` (JWrong, False)
         checksAsked dir `shouldReturn` ["sonnet: " <> key]
+        -- named and priced as sonnet: a project without Jev pays as before
+        (_, es) <- passes dir
+        map erModel es `shouldBe` ["sonnet"]
   describe "questions and web in triage (2b)" $ do
     let jevSays kvs = TE.decodeUtf8 (BL.toStrict (encode (object ["answers" .= object [K.fromText k .= v | (k, v) <- kvs]])))
         kindIs k = object ["choice" .= (k :: Text), "confidence" .= (0.9 :: Double), "probabilities" .= object [K.fromText k .= (0.9 :: Double)]]
         noulIs b = object ["choice" .= (b :: Bool), "confidence" .= (0.9 :: Double)]
         withJev answers text extra checks act =
-          withReconcile text [] (jevConfig <> extra) (Just (jevSays answers)) $ \dir s -> do
+          withReconcile text [] (jevConfig <> onSonnet extra) (Just (jevSays answers)) $ \dir s -> do
             TIO.writeFile (checksFile dir) (replies checks)
             act dir s {ssConfig = (ssConfig s) {scCheckAnswers = Just (checksFile dir)}}
         -- a fresh server state on the same directory (a config change is read anew)
@@ -1170,7 +1182,7 @@ claimPassSpec = describe "Olifant.Server.Loop (claimPass)" $ describe "claimPass
         slowAnswer = object ["text" .= ("```json\n{\"verdict\": \"right\", \"why\": \"w\", \"evidence\": [{\"path\": \"" <> T.pack table <> "\", \"unit\": \"helper\"}]}\n```" :: Text), "cost" .= (0.1 :: Double), "delay" .= (0.5 :: Double)]
         q = "Does the helper return one?"
         withJev answers text checks act =
-          withReconcile text [] jevConfig (Just (jevSays answers)) $ \dir s -> do
+          withReconcile text [] (onSonnet jevConfig) (Just (jevSays answers)) $ \dir s -> do
             TIO.writeFile (checksFile dir) (replies checks)
             act dir s {ssConfig = (ssConfig s) {scCheckAnswers = Just (checksFile dir)}}
         writtenThenSaved dir s text = do

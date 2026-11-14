@@ -97,7 +97,7 @@ import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, readMVar)
 import Olifant.Plans.Sentences (Sentence (..), joinCandidates, pairKey, sentenceKey, sentencesJoined)
 import Olifant.Server.Checker (CheckAsk (..), CheckMode (..), Checker, Confirmed (..), Judgement (..), checkModeName, checkModeOf, judgementName, checkPrompt, checkerUnder, confirm, fences, parseCheckReply)
 import Olifant.Server.Errand (RunFailure (..), RunResult (..), Status (..))
-import Olifant.Server.Cascade (cascadeFirst, cascadeStrong, cascadeThreshold, escalation, guardEvidence, guardQuestions, guardScores, isCascade)
+import Olifant.Server.Cascade (cascadeFirst, cascadeStrong, cascadeThreshold, checkModelIn, escalation, guardEvidence, guardQuestions, guardScores, isCascade)
 import Olifant.Server.Triage (Route (..), Triage (..), decideJoins, needsRetriage, retriage, route, routeName, triage)
 import Olifant.Server.Unit (Named (..), fingerprint, unitsOf)
 import Olifant.Workspace (Workspace (..), normalisePath)
@@ -935,7 +935,7 @@ checkSentence s p cfg checkerFor auto now plan ask x
             appendRecord (ssPorts s) root . AnErrand $
               ErrandRecord
                 { erId = errandId now "check" plan (snRow x) (whole >>= rrSession), erAt = now, erVerb = "check", erPlan = plan, erRow = snRow x
-                , erSection = snHeading x, erBranch = Nothing, erModel = pcCheckModel cfg, erStatus = status, erWhy = why
+                , erSection = snHeading x, erBranch = Nothing, erModel = checkModelIn s p cfg, erStatus = status, erWhy = why
                 , erSession = whole >>= rrSession, erSeconds = rrSeconds <$> whole, erTurns = whole >>= rrTurns, erTokens = whole >>= rrTokens
                 , erCost = whole >>= rrCost, erModels = maybe [] rrModels whole, erPromptChars = T.length (checkPrompt ask x), erGrounded = 0
                 , erBlocks = 0, erLines = 0, erDropped = 0, erUnresolved = 0, erChanged = 0, erDenials = sum (map rrDenials runs)
@@ -1061,7 +1061,7 @@ checkPlan token progress path s0 =
             if stop then pure Nothing else
               atomicModifyIORef' st (\q -> case quTargets q of
                 (x, ask) : rest
-                  | let est = estimateFor (pcCheckModel cfg) es (ckMode ask) (ckWeb ask)
+                  | let est = estimateFor (checkModelIn s p cfg) es (ckMode ask) (ckWeb ask)
                   , quSpent q + quReserved q + est <= ceiling' + 1e-9 ->
                       (q {quTargets = rest, quReserved = quReserved q + est, quInFlight = quInFlight q + 1, quStopped = False}, Right (Just (x, ask, est)))
                   | quInFlight q > 0 -> (q, Left (quLanded q))
