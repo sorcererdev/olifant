@@ -657,6 +657,11 @@ marks each escalated check). The Jev request is unpriced in `plans cost` (it car
 code). *Check this* and *Check the plan* estimate a cascade check with no history at $0.04,
 above the measured mean, so a sweep's `check_cost` errs on the side of stopping early.
 
+**What leaves your machine.** Each guarded check sends Jev (`api.typesafe.ai`) the sentence, the
+verdict and its reason, and the lines around each cited line: up to three citations, about a dozen
+lines each, so about 36 lines of your code a check. Triage sends Jev the sentence only. If your
+code must not go to Jev, set `check_model = "sonnet"`: Jev then sees sentences, never code.
+
 ## Reviews and the journal
 
 **A `do` is reviewed.** Before a `do` the engine takes a reference to the working tree (`git stash
