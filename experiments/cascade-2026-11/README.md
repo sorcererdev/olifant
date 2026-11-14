@@ -35,3 +35,12 @@ Result: threshold 0.6 meets every bar (25/25 where sonnet agreed, 26/27 in all, 
 = 46% of sonnet's $0.0816, median 14.6 s = 1.42x sonnet's 10.3 s). 0.7 misses the cost bar by
 a hair ($0.0412 against $0.0408), 0.8 misses cost and time. Live spend $0.294 (haiku) plus 36
 Jev requests. Report: notes/durandal/plan-prose-2c-report.md.
+
+**Second run (ruling 2c-2, 2026-11-14).** The script now asks the engine's own guards
+(`Olifant.Server.Cascade.guardQuestions` over `guardEvidence`: 12 lines from 4 before each cited
+line) and keeps a citation failure `citesOnlyUnreadable` keeps (H4, H5: JavaScript units). Haiku's
+replies replayed; 20 new Jev requests (the code checks' evidence changed; the web checks' questions
+did not, so they replay, their times copied from the first run). At 0.6: escalated 2/29 (W1,
+caught; X1, needless), 26/27 agree, none lost, no new wrong-sure, mean $0.0157 (19% of sonnet's),
+median 14.4 s (1.40x). 0.7 and 0.8 pass too. The first run's output is `results-v1.txt`; times of
+the second run are under `"v2: KEY"` in `guard-times.json`.

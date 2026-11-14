@@ -10,6 +10,11 @@
 -- CASCADE_LIVE=1 asks haiku and Jev for what the recordings here lack (haiku-checks.json,
 -- guard-jev.json, guard-times.json); without it everything replays. It stops before a live
 -- haiku check once the recorded haiku spend passes $4.
+--
+-- Since ruling 2c-2 (2026-11-14) the guards are the engine's own ('guardQuestions' over
+-- 'guardEvidence': the lines around each cited line), and a citation failure that
+-- 'citesOnlyUnreadable' keeps does not escalate. The first run's answers stay in
+-- guard-jev.json under their own question keys; the second run's times are under "v2: KEY".
 -- OLIFANT_PROSE_CORPUS names a checkout of electionnighttracker at 8488bb80.
 module Main (main) where
 
@@ -23,16 +28,14 @@ import Data.Maybe (catMaybes, fromMaybe, isJust, listToMaybe, mapMaybe)
 import Data.Scientific (toRealFloat)
 import Data.Text (Text)
 import Data.Text qualified as T
-import Data.Text.IO qualified as TIO
 import Data.Time (UTCTime (..), fromGregorian)
 import GHC.Clock (getMonotonicTime)
 import Olifant.App (Ports (..), Project (..))
 import Olifant.Catalog (Catalog (..), PlansConfig (..))
-import Olifant.Decide (Answer (..), Confidence (..), Decider (..), Question (..), Shape (..), noul, questionKey, replayDecider)
+import Olifant.Decide (Answer (..), Confidence (..), Decider (..), questionKey, replayDecider)
 import Olifant.Decide qualified as D
 import Olifant.Doctor (DoctorPorts (..))
 import Olifant.Language (noChecker, noRunner, noSyntax)
-import Olifant.Language.Adapter (languageFor)
 import Olifant.Language.AstGrep (astGrepSyntax)
 import Olifant.Language.Check (noVerifier)
 import Olifant.Language.Grammar (GrammarFailure (NoSource))
@@ -41,11 +44,11 @@ import Olifant.Plans (Kind (Prose), Line (..), parsePlan)
 import Olifant.Plans.Sentences (Sentence (..), sentenceKey, sentences)
 import Olifant.Process (gitStateStamp, neverCancel)
 import Olifant.Server (newServerState, projectFor)
+import Olifant.Server.Cascade (citesOnlyUnreadable, guardEvidence, guardQuestions)
 import Olifant.Server.Checker
 import Olifant.Server.Errand (RunFailure (..), RunResult (..))
 import Olifant.Server.State (ServerState (..))
 import Olifant.Server.Triage
-import Olifant.Server.Unit (Named (..), unitLookupIn, unitsWithKinds)
 import Olifant.Workspace (diskWorkspace)
 import System.Directory (doesFileExist, getTemporaryDirectory)
 import System.Environment (lookupEnv)
@@ -105,7 +108,8 @@ plainPorts = Ports (diskWorkspace "/") noSyntax (const noChecker) (const noVerif
 data Check = Check {ckKey :: Text, ckSentence :: Sentence, ckAsk :: CheckAsk, ckEntries :: [Entry]}
 
 -- | One model's reply after 'confirm' (Nothing: the run or the parse failed), its cost and seconds.
-data Done = Done {dnConfirmed :: Maybe Confirmed, dnCost :: Double, dnSeconds :: Double, dnNote :: Text}
+-- 'dnKeep': a citation failure the cascade keeps ('citesOnlyUnreadable').
+data Done = Done {dnConfirmed :: Maybe Confirmed, dnCost :: Double, dnSeconds :: Double, dnNote :: Text, dnKeep :: Bool}
 
 data Guards = Guards {gWhy :: Double, gEvidence :: Double, gFollows :: Double, gSeconds :: Double}
 
@@ -167,7 +171,9 @@ main = do
       guardDecider = if live then batchRecorded guardFile liveJev else replayDecider guardFile Nothing
   rows <- forM merged $ \c -> do
     sd <- runOne s p cfg sonnet c
-    hd <- runOne s p cfg haiku c
+    hd0 <- runOne s p cfg haiku c
+    keep <- maybe (pure False) (citesOnlyUnreadable s p cfg) (dnConfirmed hd0)
+    let hd = hd0 {dnKeep = keep}
     g <- case dnConfirmed hd of
       Just conf | cfJudgement conf /= JCannotTell -> Just <$> guards s p live guardDecider c conf
       _ -> pure Nothing
@@ -220,45 +226,33 @@ recordedSpend file = do
 runOne :: ServerState -> Project -> PlansConfig -> Checker -> Check -> IO Done
 runOne s p cfg checker c =
   checker (ckAsk c) (ckSentence c) >>= \case
-    Left f -> pure (Done Nothing 0.10 0 ("run failed: " <> T.pack (show (rfStatus f))))
+    Left f -> pure (Done Nothing 0.10 0 ("run failed: " <> T.pack (show (rfStatus f))) False)
     Right rr -> case parseCheckReply (ckAsk c) (rrText rr) of
-      Left why -> pure (Done Nothing (fromMaybe 0.10 (rrCost rr)) (rrSeconds rr) ("no verdict: " <> why))
+      Left why -> pure (Done Nothing (fromMaybe 0.10 (rrCost rr)) (rrSeconds rr) ("no verdict: " <> why) False)
       Right reply -> do
         conf <- confirm s p (fences cfg) reply
-        pure (Done (Just conf) (fromMaybe 0.10 (rrCost rr)) (rrSeconds rr) "")
+        pure (Done (Just conf) (fromMaybe 0.10 (rrCost rr)) (rrSeconds rr) "" False)
 
--- | The three guard Nouls, one Jev request, over the haiku verdict. The evidence a code check
--- shows Jev is each cited unit's name and first lines; a web check has no code (ruling C), so
--- its evidence is the pages it cites, and evidence-fits asks whether they are the named
--- library's own public documentation for the version named (the builder's call, 2c).
+-- | The engine's three guard Nouls ('guardQuestions'), one Jev request, over the haiku verdict
+-- and the engine's evidence ('guardEvidence').
 guards :: ServerState -> Project -> Bool -> Decider IO -> Check -> Confirmed -> IO Guards
 guards s p live d c conf = do
-  ev <- if ckWeb (ckAsk c) then pure (sourcesText conf) else codeText s p conf
-  let mode = ckMode (ckAsk c)
-      ctx =
-        [ ("sentence", snText (ckSentence c))
-        , ("check", checkWords mode (ckWeb (ckAsk c)))
-        , ("verdict", verdictWords (cfJudgement conf))
-        , ("why", T.unwords (catMaybes [fmap ("Answer: " <>) (cfAnswer conf), fmap ("Detail: " <>) (cfDetail conf), Just ("Reason: " <> cfWhy conf)]))
-        , ("evidence", if T.null ev then "(nothing cited)" else ev) ]
-      qs =
-        [ (noul "why-fits" whyInstructions ctx) {qShape = Noul (Just (whyTrue, whyFalse)), qUnsure = False}
-        , (noul "evidence-fits" (if ckWeb (ckAsk c) then evWebInstructions else evCodeInstructions) ctx)
-            {qShape = Noul (Just (if ckWeb (ckAsk c) then (evWebTrue, evWebFalse) else (evCodeTrue, evCodeFalse))), qUnsure = False}
-        , (noul "verdict-follows" followsInstructions ctx) {qShape = Noul (Just (followsTrue, followsFalse)), qUnsure = False} ]
+  ev <- guardEvidence s p (ckAsk c) conf
+  let qs = guardQuestions (ckAsk c) (ckSentence c) conf ev
   t0 <- getMonotonicTime
   as <- weighAll d qs
   t1 <- getMonotonicTime
   times <- readTimes
-  secs <- case KM.lookup (Key.fromText (ckKey c)) times of
+  secs <- case KM.lookup (Key.fromText timeKey) times of
     Just (Number n) -> pure (toRealFloat n)
     _ -> do
-      when live $ BL.writeFile timesFile (encode (Object (KM.insert (Key.fromText (ckKey c)) (Number (realToFrac (t1 - t0))) times)) <> "\n")
+      when live $ BL.writeFile timesFile (encode (Object (KM.insert (Key.fromText timeKey) (Number (realToFrac (t1 - t0))) times)) <> "\n")
       pure (t1 - t0)
   case map yesP as of
     [w, e, f] -> pure (Guards w e f secs)
     _ -> pure (Guards 0 0 0 secs)
   where
+    timeKey = "v2: " <> ckKey c
     readTimes = doesFileExist timesFile >>= \case
       False -> pure KM.empty
       True -> eitherDecodeFileStrict timesFile >>= \case
@@ -268,70 +262,6 @@ guards s p live d c conf = do
       Yes (Confidence x) -> x
       No (Confidence x) -> 1 - x
       _ -> 0
-
-checkWords :: CheckMode -> Bool -> Text
-checkWords mode web = case (mode, web) of
-  (CheckClaim, False) -> "a statement checked against the project's code"
-  (CheckClaim, True) -> "a statement checked against public web sources (the checker saw no code)"
-  (CheckProgress, _) -> "a step of work checked for how far the project's code has got with it"
-  (CheckAnswer, False) -> "a question answered from the project's code"
-  (CheckAnswer, True) -> "a question answered from public web sources (the checker saw no code)"
-
-verdictWords :: Judgement -> Text
-verdictWords = \case
-  JRight -> "right: what the sentence states is true"
-  JWrong -> "wrong: what the sentence states is false"
-  JDone -> "done: the code already does all of what the step says"
-  JOpen -> "open: the code does not do it yet, and doing it as written would get what the step says"
-  JMisfit -> "misfit: the step rests on something that is not so in the code, or doing it as written would not get what it says"
-  JAnswered -> "answered: the answer below answers the question"
-  JCannotTell -> "cannot_tell"
-
-sourcesText :: Confirmed -> Text
-sourcesText conf = T.intercalate "\n" [soTitle x <> " <" <> soUrl x <> ">" | x <- cfSources conf]
-
--- | Each confirmed citation (up to three): `path:Unit` and the unit's first 12 lines, else the
--- 12 lines from the cited line, else the file's first 12.
-codeText :: ServerState -> Project -> Confirmed -> IO Text
-codeText s p conf = T.intercalate "\n\n" <$> mapM one (take 3 (cfEvidence conf))
-  where
-    root = prRoot p
-    one ci = do
-      let path = ciPath ci
-      there <- doesFileExist (root </> path)
-      if not there then pure (T.pack path <> ": (not read)") else do
-        t <- TIO.readFile (root </> path)
-        units <- case languageFor (catalogLanguages (prCatalog p)) path of
-          Just lang -> either (const []) id <$> unitsWithKinds (pSyntax (ssPorts s)) lang (Just path) t
-          Nothing -> pure []
-        let ls = T.lines t
-            byName = ciUnit ci >>= \u -> either (const Nothing) Just (unitLookupIn u units)
-            start = case (byName, ciLine ci) of
-              (Just n, _) -> fst (namedLines n)
-              (_, Just l) -> l
-              _ -> 1
-            label = T.pack path <> maybe "" (":" <>) (ciUnit ci) <> maybe "" (\l -> " line " <> T.pack (show l)) (ciLine ci)
-        pure (label <> "\n" <> T.unlines (take 12 (drop (start - 1) ls)))
-
-whyInstructions, whyTrue, whyFalse :: Text
-whyInstructions = "A checker read a software project and judged one sentence of the project's plan; `check` says what kind of check it was, `verdict` its verdict, `why` its reason (and answer), `evidence` what it cites. Does the checker's reason speak to what the sentence itself states, asks, or asks to be done?"
-whyTrue = "the reason addresses the very thing the sentence says, asks or asks for: the same thing, behaviour and condition, read the way the writer most likely meant it"
-whyFalse = "the reason addresses something else: another component or behaviour, a reframed or narrower question, or only part of what the sentence says while the verdict covers all of it"
-
-evCodeInstructions, evCodeTrue, evCodeFalse :: Text
-evCodeInstructions = "A checker read a software project and judged one sentence of the project's plan; `evidence` is the code it cites (each unit's name and first lines). Is the cited code what the sentence is about: where what it states would be true or false, what it asks about, or what the step would change or has changed?"
-evCodeTrue = "the cited code is where the behaviour, data or feature the sentence names lives, or plainly shows it (or, for a step not done yet, the code it would change)"
-evCodeFalse = "the cited code is beside the point: another feature, a similarly named thing, a caller or test that does not show what the reason claims; or nothing is cited for a verdict that rests on code"
-
-evWebInstructions, evWebTrue, evWebFalse :: Text
-evWebInstructions = "A checker judged one sentence of a software plan from public web sources (it saw no code); `evidence` is the pages it cites, title and address. Are the cited pages authoritative public sources for what the sentence is about: the named library's, framework's or standard's own documentation, release notes, changelog or migration guide, for the version the sentence names?"
-evWebTrue = "the pages are the named project's own documentation, release notes, changelog, migration guide or reference, for the version named (or one that covers it)"
-evWebFalse = "the pages are about another library or another version, are third-party posts or forums repeating it, or there are none"
-
-followsInstructions, followsTrue, followsFalse :: Text
-followsInstructions = "A checker judged one sentence of a software plan; `verdict` is its verdict, with what the verdict means, and `why` is its reason (and answer). Does the verdict follow from the checker's own reason?"
-followsTrue = "if the reason is true, it establishes this verdict and not another: e.g. a reason showing the statement false with the verdict wrong, a reason showing all of the step in the code with the verdict done, an answer the reason supports"
-followsFalse = "the reason supports another verdict, hedges, or contradicts the verdict: e.g. the reason says the code does part of it but the verdict is done, the reason finds the statement true but the verdict is wrong, or the answer says more than the reason shows"
 
 -- the scoring --------------------------------------------------------------------------------
 
@@ -367,7 +297,7 @@ escalates :: Double -> Done -> Maybe Guards -> Maybe Text
 escalates t hd g = case dnConfirmed hd of
   Nothing -> Just "haiku failed"
   Just x
-    | cfJudgement x == JCannotTell -> Just (if cfWhy x == "cited code not found" then "citation" else "cannot_tell")
+    | cfJudgement x == JCannotTell -> if dnKeep hd then Nothing else Just (if cfWhy x == "cited code not found" then "citation" else "cannot_tell")
     | otherwise -> case g of
         Nothing -> Just "no guards"
         Just gs ->
