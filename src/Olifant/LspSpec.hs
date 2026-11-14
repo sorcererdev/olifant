@@ -63,7 +63,7 @@ import Olifant.Workspace (Workspace (listFiles, listFilesSkipping, readText), di
 import System.Environment (lookupEnv, setEnv, unsetEnv)
 import System.Directory (findExecutable, canonicalizePath, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getTemporaryDirectory, listDirectory, removeDirectory, removeFile, renameFile)
 import Olifant.Server.Claims (CheckRecord (..), SentenceEntry (..), claimsPath, readClaims)
-import Olifant.Server.Checker (Confirmed (..), Judgement (..), recordedAsked)
+import Olifant.Server.Checker (CheckMode (..), Confirmed (..), Judgement (..), recordedAsked)
 import System.FilePath (makeRelative, normalise, takeDirectory, (</>), splitDirectories)
 import Olifant.Language.AstGrep (astGrepSyntax)
 import System.IO.Temp (withSystemTempDirectory)
@@ -2628,7 +2628,6 @@ plansStage1Spec = describe "olifant/plans (stage 1)" $ do
         shim <- canonicalizePath "src/Olifant/Server/testdata/claude-shim.sh"
         TIO.appendFile (dir </> ".olifant/config.toml") ("\n[plans]\nrunner = \"" <> T.pack shim <> "\"\n")
         act ports dir
-      askP = Proxy :: Proxy "olifant/plans/ask"
       validateP = Proxy :: Proxy "olifant/plans/validate"
       doP = Proxy :: Proxy "olifant/plans/do"
       errand method line = do
@@ -2641,24 +2640,10 @@ plansStage1Spec = describe "olifant/plans (stage 1)" $ do
       -- the errand records the repo holds, and the lines that were not one
       records dir = readRecords . fromMaybe "" <$> readText (diskWorkspace dir) (dir </> ".olifant/state/errands.jsonl")
       lastStatus dir = (\l -> last (T.splitOn "\t" (last (T.lines l)))) <$> TIO.readFile (dir </> ".olifant/state/steps.log")
-  it "ask answers ghost blocks with fingerprints for anchors that resolve" $
+  it "validate on a step is refused" $
     withPlan plan $ \ports dir -> do
-      (answer, _) <- inProcessWith ports dir (errand askP 3)
-      v <- either (fail . T.unpack) pure answer
-      lookupKey "verb" v `shouldBe` Just (String "ask")
-      let blocks = arr (lookupKey "blocks" v)
-          fps = map (lookupKey "fp") (concatMap linesOf blocks)
-      map (lookupKey "after") blocks `shouldBe` [Just (Number 3)]
-      map (\case Just (String fp) -> T.length fp; _ -> 0) fps `shouldBe` [7, 7, 0]
-      last fps `shouldBe` Just Aeson.Null
-      lookupKey "unresolved" v `shouldBe` Just (Number 1)
-      lookupKey "cost" v `shouldBe` Just (Number 0.0123)
-      logged <- T.lines <$> TIO.readFile (dir </> ".olifant/state/steps.log")
-      fmap (T.drop 1 . T.dropWhile (/= '\t')) (listToMaybe (reverse logged)) `shouldSatisfy` maybe False ("plan-ask\tplans/t.md:3\t" `T.isPrefixOf`)
-  it "ask on a step is refused" $
-    withPlan plan $ \ports dir -> do
-      (answer, _) <- inProcessWith ports dir (errand askP 7)
-      either (T.isInfixOf "ask needs a question line") (const False) answer `shouldBe` True
+      (answer, _) <- inProcessWith ports dir (errand validateP 7)
+      either (T.isInfixOf "validate needs a claim or heading line") (const False) answer `shouldBe` True
   it "validate on the heading lands after the matching line" $
     withPlan plan $ \ports dir -> do
       (answer, _) <- inProcessWith ports dir (errand validateP 2)
@@ -2745,16 +2730,16 @@ plansStage1Spec = describe "olifant/plans (stage 1)" $ do
       [erGrounded r | AnErrand r <- rs, erVerb r == "do"] `shouldBe` [1]
   it "a runner failure leaves the plan alone and names the reason" $
     withPlan (T.replace "where is the table" "where is the table SHIM:FAIL" plan) $ \ports dir -> do
-      (answer, _) <- inProcessWith ports dir (errand askP 3)
+      (answer, _) <- inProcessWith ports dir (errand validateP 4)
       either (T.isInfixOf "no credentials") (const False) answer `shouldBe` True
       TIO.readFile (dir </> "plans/t.md") >>= (`shouldBe` T.replace "where is the table" "where is the table SHIM:FAIL" plan)
-  it "an answered ask writes an ok record with tokens, session and the answer's id" $
+  it "an answered validate writes an ok record with tokens, session and the answer's id" $
     withPlan plan $ \ports dir -> do
-      (answer, _) <- inProcessWith ports dir (errand askP 3)
+      (answer, _) <- inProcessWith ports dir (errand validateP 4)
       v <- either (fail . T.unpack) pure answer
       ([AnErrand r], 0) <- records dir
-      (erVerb r, erStatus r, erPlan r, erRow r, erLines r, erGrounded r) `shouldBe` ("ask", Ok, "plans/t.md", 3, 3, 1)
-      (erBlocks r, erDropped r, erUnresolved r, erChanged r, erWhy r) `shouldBe` (1, 0, 1, 0, Nothing)
+      (erVerb r, erStatus r, erPlan r, erRow r, erLines r, erGrounded r) `shouldBe` ("validate", Ok, "plans/t.md", 4, 1, 1)
+      (erBlocks r, erDropped r, erUnresolved r, erChanged r, erWhy r) `shouldBe` (1, 0, 0, 0, Nothing)
       erTokens r `shouldBe` Just (Tokens 2 40 1000 5000)
       (erSeconds r, erTurns r, erCost r) `shouldBe` (Just 1.2, Just 1, Just 0.0123)
       erSession r `shouldSatisfy` maybe False ("shim-" `T.isPrefixOf`)
@@ -2766,15 +2751,15 @@ plansStage1Spec = describe "olifant/plans (stage 1)" $ do
       lastStatus dir >>= (`shouldBe` "ok")
   it "a runner failure writes an error record with why and a step log line" $
     withPlan (T.replace "where is the table" "where is the table SHIM:FAIL" plan) $ \ports dir -> do
-      _ <- inProcessWith ports dir (errand askP 3)
+      _ <- inProcessWith ports dir (errand validateP 4)
       ([AnErrand r], 0) <- records dir
       (erStatus r, erCost r, erSession r, erSeconds r, erLines r) `shouldBe` (Error, Nothing, Nothing, Nothing, 0)
       erWhy r `shouldSatisfy` maybe False ("exited 2" `T.isInfixOf`)
-      erId r `shouldSatisfy` ("ask-plans/t.md:3@" `T.isPrefixOf`)
+      erId r `shouldSatisfy` ("validate-plans/t.md:4@" `T.isPrefixOf`)
       lastStatus dir >>= (`shouldBe` "error")
   it "a runner's is_error writes an error record that keeps the session" $
     withPlan (T.replace "where is the table" "where is the table SHIM:ERRORJSON" plan) $ \ports dir -> do
-      (answer, _) <- inProcessWith ports dir (errand askP 3)
+      (answer, _) <- inProcessWith ports dir (errand validateP 4)
       answer `shouldBe` Left "the runner reported an error"
       ([AnErrand r], 0) <- records dir
       (erStatus r, erWhy r) `shouldBe` (Error, Just "the runner reported an error")
@@ -2782,13 +2767,13 @@ plansStage1Spec = describe "olifant/plans (stage 1)" $ do
       erId r `shouldBe` fromMaybe "" (erSession r)
   it "prose outside the grammar writes an empty record that still has the session" $
     withPlan (T.replace "where is the table" "where is the table SHIM:PROSE" plan) $ \ports dir -> do
-      _ <- inProcessWith ports dir (errand askP 3)
+      _ <- inProcessWith ports dir (errand validateP 4)
       ([AnErrand r], 0) <- records dir
-      (erStatus r, erSession r, erWhy r, erBlocks r) `shouldBe` (Empty, Just "shim-prose", Just "ask answered nothing in the grammar", 0)
+      (erStatus r, erSession r, erWhy r, erBlocks r) `shouldBe` (Empty, Just "shim-prose", Just "validate answered nothing in the grammar", 0)
       lastStatus dir >>= (`shouldBe` "empty")
-  it "a refused verb (ask on a step) writes nothing" $
+  it "a refused verb (validate on a step) writes nothing" $
     withPlan plan $ \ports dir -> do
-      _ <- inProcessWith ports dir (errand askP 7)
+      _ <- inProcessWith ports dir (errand validateP 7)
       records dir >>= (`shouldBe` ([], 0))
   it "an errand in a git repository records its branch" $
     withPlan plan $ \ports dir -> do
@@ -2796,19 +2781,19 @@ plansStage1Spec = describe "olifant/plans (stage 1)" $ do
       git ["init", "-q", "-b", "trial"]
       git ["add", "."]
       git ["commit", "-q", "-m", "the fixture"]
-      _ <- inProcessWith ports dir (errand askP 3)
+      _ <- inProcessWith ports dir (errand validateP 4)
       ([AnErrand r], 0) <- records dir
       erBranch r `shouldBe` Just "trial"
   it "prose only is 'answered nothing in the grammar'" $
     withPlan (T.replace "where is the table" "where is the table SHIM:PROSE" plan) $ \ports dir -> do
-      (answer, _) <- inProcessWith ports dir (errand askP 3)
-      answer `shouldBe` Left "ask answered nothing in the grammar"
+      (answer, _) <- inProcessWith ports dir (errand validateP 4)
+      answer `shouldBe` Left "validate answered nothing in the grammar"
   it "cancel stops the runner" $
     withPlan (T.replace "where is the table" "where is the table SHIM:SLEEP" plan) $ \ports dir -> do
       ((code, took), _) <- inProcessWith ports dir $ do
         p <- openDoc "plans/t.md" "markdown"
-        let method = SMethod_CustomMethod askP
-        rid <- sendRequest method (object [docOf p, "line" .= (3 :: Int)])
+        let method = SMethod_CustomMethod validateP
+        rid <- sendRequest method (object [docOf p, "line" .= (4 :: Int)])
         liftIO (threadDelay 300000)
         start <- liftIO getCurrentTime
         sendNotification SMethod_CancelRequest (CancelParams (case rid of IdInt n -> InL n; IdString t -> InR t))
@@ -2825,7 +2810,7 @@ plansStage1Spec = describe "olifant/plans (stage 1)" $ do
       -- an errand asked, then the given outcome notifications; the debugState
       -- round trip after them means the server handled them
       decided outcomes = do
-        v <- errand askP 3 >>= either (fail . T.unpack) pure
+        v <- errand validateP 4 >>= either (fail . T.unpack) pure
         let Just (String eid) = lookupKey "id" v
         uri <- getDocUri "plans/t.md"
         forM_ outcomes $ \fields -> sendNotification (SMethod_CustomMethod outcomeP) (object (("textDocument" .= object ["uri" .= uri]) : fields eid))
@@ -4386,6 +4371,60 @@ claimPassSpec = describe "plans claim pass" $ do
       titles' `shouldSatisfy` elem "Show why"
       stored <- readClaims plainPorts dir "plans/t.md"
       (cfJudgement . cjConfirmed <$> (M.lookup "the helper returns one" stored >>= seCheck)) `shouldBe` Just JRight
+  describe "answers (2b)" $ do
+    let questions = "{\"answers\": {\"sentence-kind\": {\"choice\": \"question\", \"confidence\": 0.9, \"probabilities\": {\"question\": 0.9}}, \"about-code\": {\"choice\": true, \"confidence\": 0.9}, \"wants-answer\": {\"choice\": true, \"confidence\": 0.9}}}"
+        answerFor key = "\"" <> key <> "\": {\"text\": \"```json\\n{\\\"verdict\\\": \\\"answered\\\", \\\"answer\\\": \\\"Yes, it returns 1.\\\", \\\"why\\\": \\\"w\\\", \\\"evidence\\\": [{\\\"path\\\": \\\"" <> T.pack table <> "\\\", \\\"unit\\\": \\\"helper\\\"}]}\\n```\", \"cost\": 0.1}"
+        answers keys = "{\"replies\": {" <> T.intercalate ", " (map answerFor keys) <> "}}"
+        q = "Does the helper return one?"
+        uriOf p = toJSON (getUri (p ^. L.uri))
+        askP = Proxy :: Proxy "olifant/plans/ask"
+    it "the actions: Answer this only on an unchecked question, Check this and Answer this on a claim, Keep this answer on an answer" $ do
+      withPythonPlan (q <> "\n") questions (answers [q]) $ \ports dir _ cfg -> do
+        ((before, after), _) <- inProcessWithConfig cfg ports dir $ do
+          p <- openDoc "plans/t.md" "markdown"
+          refreshed
+          b <- titles <$> getCodeActions p (Range (Position 0 4) (Position 0 4))
+          _ <- request SMethod_WorkspaceExecuteCommand (ExecuteCommandParams Nothing "olifant.answerSentence" (Just [uriOf p, String q]))
+          (b,) . titles <$> getCodeActions p (Range (Position 0 4) (Position 0 4))
+        filter (\t -> any (`T.isPrefixOf` t) ["Check this", "Answer this"]) before `shouldBe` ["Answer this (sonnet, ~$0.10)"]
+        filter (`elem` ["Keep this answer", "Keep this verdict", "Show why"]) after `shouldBe` ["Keep this answer", "Show why"]
+      withPass right $ \ports dir _ cfg -> do
+        (ts, _) <- inProcessWithConfig cfg ports dir $ do
+          p <- openWritten dir
+          titles <$> getCodeActions p (Range (Position 0 4) (Position 0 4))
+        filter (\t -> any (`T.isPrefixOf` t) ["Check this", "Answer this"]) ts `shouldBe` ["Check this (sonnet, ~$0.10)", "Answer this (sonnet, ~$0.10)"]
+    it "olifant.answerSentence stores an answer, beside the plan, and refreshes the margin" $
+      withPythonPlan (q <> "\n") questions (answers [q]) $ \ports dir _ cfg -> do
+        (ds, _) <- inProcessWithConfig cfg ports dir $ do
+          p <- openDoc "plans/t.md" "markdown"
+          refreshed
+          _ <- request SMethod_WorkspaceExecuteCommand (ExecuteCommandParams Nothing "olifant.answerSentence" (Just [uriOf p, String q]))
+          pullDiagnostics p
+        [(d ^. L.code, d ^. L.message) | d <- ds, d ^. L.source == Just "olifant-plan"]
+          `shouldBe` [(Just (InR "question-answered"), "» Answer · Yes, it returns 1. · " <> T.pack table <> ":helper")]
+        stored <- readClaims plainPorts dir "plans/t.md"
+        (cjMode <$> (M.lookup q stored >>= seCheck)) `shouldBe` Just CheckAnswer
+        TIO.readFile (dir </> "plans/t.md") `shouldReturn` (q <> "\n")
+    it "olifant/plans/ask with a character answers that sentence" $
+      withPythonPlan ("The helper exists. " <> q <> "\n") questions (answers [q, "The helper exists."]) $ \ports dir f cfg -> do
+        (r, _) <- inProcessWithConfig cfg ports dir $ do
+          p <- openDoc "plans/t.md" "markdown"
+          refreshed
+          blockMove askP (object ["textDocument" .= object ["uri" .= (p ^. L.uri)], "line" .= (0 :: Int), "character" .= (25 :: Int)])
+        r `shouldBe` Right (object ["key" .= q, "verdict" .= ("answered" :: Text), "answer" .= ("Yes, it returns 1." :: Text)])
+        asked' <- recordedAsked (dir </> "checks.json")
+        asked' `shouldBe` [q]
+        _ <- pure f
+        pure ()
+    it "ask on a checked sentence answers nothing" $
+      withPass right $ \ports dir _ cfg -> do
+        (r, _) <- inProcessWithConfig cfg ports dir $ do
+          p <- openDoc "plans/t.md" "markdown"
+          refreshed
+          _ <- request SMethod_WorkspaceExecuteCommand (ExecuteCommandParams Nothing "olifant.checkSentence" (Just [uriOf p, String "the helper returns one"]))
+          blockMove askP (object ["textDocument" .= object ["uri" .= (p ^. L.uri)], "line" .= (0 :: Int)])
+        r `shouldBe` Left "this sentence has a check: Show why reads it"
+        recordedAsked (dir </> "checks.json") `shouldReturn` ["the helper returns one"]
   it "Check this on steps ticked or not and on an aside sentence; Check the plan names what it would check" $
     withPython [("plans/t.md", "- [ ] make it\n- [x] made it\nThe helper returns one.\n"), (table, tableText)] $ \ports dir -> do
       (ts, _) <- inProcessWithConfig [] ports dir $ do

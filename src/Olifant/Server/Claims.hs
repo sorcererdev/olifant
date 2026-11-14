@@ -26,6 +26,7 @@ module Olifant.Server.Claims
   , unchecked
   , checkable
   , modeFor
+  , openSentences
   , stepUnit
   , stepCitations
   , retryAfter
@@ -56,7 +57,8 @@ import Olifant.App (Ports (..))
 import Olifant.Server.State (ServerState (..))
 import Data.Set (Set)
 import Data.Set qualified as S
-import Olifant.Plans (Anchor (..), Kind (Step), Line (..))
+import Olifant.Plans (Anchor (..), Kind (Step), Line (..), childrenOf)
+import Olifant.Plans qualified as P
 import Olifant.Plans.Sentences (Sentence (..), sentenceKey, sentences, sentencesJoined)
 import Olifant.Server.Checker (CheckMode (..), Citation (..), Confirmed (..), Judgement (..), Print (..), Source (..), UnitRef (..), checkModeName, checkModeOf, judgementName, judgementNamed)
 import Data.List (nub)
@@ -260,6 +262,27 @@ pruneClaims now ss = M.mapMaybeWithKey keep
 -- progress or answer, not a ticked step (you said it is done), and not checked.
 checkable :: Sentence -> SentenceEntry -> Bool
 checkable x e = seRoute e `elem` [Verify, Progress, Answer] && snKind x /= Step True && seCheck e == Nothing
+
+-- | The sentences less the questions answered in the file: a `- ? ` line
+-- with an evidence line (`- ✓`, `- ✗`) directly under it, or a sentence
+-- ending in "?" that is the last sentence ending on its row, when the next
+-- row is an evidence line at an indent at least its first row's. Such a
+-- question is never queued and shows no sign.
+openSentences :: [Line] -> [Sentence] -> [Sentence]
+openSentences ls ss = filter (not . answered) ss
+  where
+    rows = M.fromList [(lnRow l, l) | l <- ls]
+    answered x
+      | snKind x == P.Question = case M.lookup (snRow x) rows of
+          Just q -> any (\c -> lnIndent c == lnIndent q + 2 && lnKind c == P.Evidence) (childrenOf ls (snRow x))
+          Nothing -> False
+      | "?" `T.isSuffixOf` T.strip (snText x) =
+          lastOnRow x
+            && case (M.lookup (snRow x) rows, M.lookup (snEndRow x + 1) rows) of
+              (Just first, Just next) -> lnKind next == P.Evidence && lnIndent next >= lnIndent first
+              _ -> False
+      | otherwise = False
+    lastOnRow x = not (any (\y -> snEndRow y == snEndRow x && snEndCol y > snEndCol x) ss)
 
 -- | The mode a sentence's check is made in: the one asked for (*Answer
 -- this*), else its stored check's (a re-check asks the same), else its triage's.

@@ -34,10 +34,10 @@ import Data.Aeson.KeyMap qualified as KM
 import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe, mapMaybe)
 import Olifant.Plans (Anchor (..), Kind (..), Line (..), Verdict (..), anchorText, childrenOf, excerptInfo, excerptSpans, parsePlan, stepDone, testState, withVerdict)
 import Olifant.Server.Unit (Named (..))
-import Olifant.Server.Claims (ClaimStore, checkedKeys, claimsOf, sentencesOf, stepUnit)
+import Olifant.Server.Claims (ClaimStore, checkedKeys, claimsOf, modeFor, openSentences, sentencesOf, stepUnit)
 import Olifant.Server.Loop (PassAnswer (..), PassMode (..), Sweep (..), checkOne, checkPlan, claimPass, estimateFor, estimatesOf, sweepTargets)
 import Olifant.Server.Claims (CheckRecord (..), SentenceEntry (..))
-import Olifant.Server.Checker (CheckMode (..), Citation (..), Confirmed (..), Judgement (..), checkModeOf, evidenceText, judgementName)
+import Olifant.Server.Checker (CheckAsk (..), CheckMode (..), Citation (..), Confirmed (..), Judgement (..), checkModeOf, evidenceText, judgementName)
 import Olifant.Plans.Sentences (Sentence (..), sentenceKey)
 import Data.Text qualified as T
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
@@ -70,7 +70,7 @@ import Data.Time (getCurrentTimeZone)
 import System.Directory (getHomeDirectory)
 import Olifant.Server.LoopTypes (Fact (..))
 import Olifant.Server.Stale (staleIn)
-import Olifant.Server.Plans (Reopen (..), citationLocations, claimHover, countsText, keepEdit, planCounts, planTokensWith, whyBody)
+import Olifant.Server.Plans (Reopen (..), askFor, citationLocations, claimHover, countsText, keepEdit, planCounts, planTokensWith, whyBody)
 import System.FilePath (makeRelative, takeFileName, (</>))
 import Olifant.Generation (Plan (..), ProgressEvent (Said))
 import Olifant.Output (doctorJson, fileActionsJson, listJson, planJson, showJson)
@@ -186,7 +186,7 @@ serverDefinition ports = do
       , doInitialize = \lspEnv req -> configure env (req ^. L.params . L.initializationOptions) >> pure (Right lspEnv)
       , staticHandlers = \_ -> guarded env (handlers env)
       , interpretHandler = \lspEnv -> Iso (runLspT lspEnv) liftIO
-      , options = defaultOptions {optTextDocumentSync = Just sync, optServerInfo = Just (ServerInfo "olifant" Nothing), optCompletionTriggerCharacters = Just ['@', ':'], optExecuteCommandCommands = Just ["olifant.doctor", "olifant.checkSentence", "olifant.checkPlan", "olifant.showWhy", "olifant.showCode"]}
+      , options = defaultOptions {optTextDocumentSync = Just sync, optServerInfo = Just (ServerInfo "olifant" Nothing), optCompletionTriggerCharacters = Just ['@', ':'], optExecuteCommandCommands = Just ["olifant.doctor", "olifant.checkSentence", "olifant.answerSentence", "olifant.checkPlan", "olifant.showWhy", "olifant.showCode"]}
       }
   where
     -- open/close and incremental changes; saves are noticed (regions)
@@ -388,13 +388,24 @@ handlers env =
         -- Check this: one check, whatever the caps; the margin refreshed after
         "olifant.checkSentence" -> case req ^. L.params . L.arguments of
           Just [String uri, String key] | Just path <- uriToFilePath (Uri uri) -> inBackground env req respond $ \job -> do
-            r <- planProgress "checking" (\_ -> withSnapshotState job (checkOne (envCancel job) path key))
+            r <- planProgress "checking" (\_ -> withSnapshotState job (checkOne (envCancel job) Nothing path key))
             void (sendRequest SMethod_WorkspaceDiagnosticRefresh Nothing (\_ -> pure ()))
             semanticTokensChanged
             case snd r of
               Left why -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
               Right _ -> respond (Right (InR Null))
           _ -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "olifant.checkSentence needs a plan's uri and a sentence's key" Nothing))
+        -- Answer this: one answer, whatever the route and the caps; refused on
+        -- a sentence with a check (Show why reads it); the margin refreshed after
+        "olifant.answerSentence" -> case req ^. L.params . L.arguments of
+          Just [String uri, String key] | Just path <- uriToFilePath (Uri uri) -> inBackground env req respond $ \job -> do
+            r <- planProgress "answering" (\_ -> withSnapshotState job (checkOne (envCancel job) (Just CheckAnswer) path key))
+            void (sendRequest SMethod_WorkspaceDiagnosticRefresh Nothing (\_ -> pure ()))
+            semanticTokensChanged
+            case snd r of
+              Left why -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
+              Right _ -> respond (Right (InR Null))
+          _ -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "olifant.answerSentence needs a plan's uri and a sentence's key" Nothing))
         -- Check the plan: every unchecked and stale sentence, three at a time,
         -- under `check_cost`; one at a time per plan, and a save does not stop it
         "olifant.checkPlan" -> case req ^. L.params . L.arguments of
@@ -747,7 +758,7 @@ handlers env =
             respond (Right (object ["items" .= [object ["section" .= fiSection i, "row" .= fiRow i, "text" .= fiText i, "file" .= fiAbs i, "line" .= fiLine i] | i <- items]]))
     , -- a plan's line asked, validated or done by the runner (claude -p):
       -- ghost blocks to insert, nothing written to the plan
-      requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/plans/ask")) $ \req respond -> errandRequest env Ask "asking" req (req ^. L.params) respond
+      requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/plans/ask")) $ \req respond -> askRequest env req (req ^. L.params) respond
     , requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/plans/validate")) $ \req respond -> errandRequest env Validate "validating" req (req ^. L.params) respond
     , requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/plans/do")) $ \req respond -> errandRequest env Do "doing" req (req ^. L.params) respond
     , -- a past do, by id or by the journal line at a row (null: none)
@@ -1692,21 +1703,23 @@ planHover env project path (Position l c) = do
         store <- claimsOf s (prRoot project) path
         (store,,) <$> sentencesOf s (prRoot project) path (parsePlan text) <*> staleIn s project store
       let row = fromIntegral l
-      pure $ case claimHover store stale [x | x <- ss, snRow x <= row, row <= snEndRow x] of
+      pure $ case claimHover store stale [x | x <- openSentences (parsePlan text) ss, snRow x <= row, row <= snEndRow x] of
         Just md -> Just (Hover (InL (MarkupContent MarkupKind_Markdown md)) Nothing)
         Nothing -> Nothing
 
--- | The claim pass's actions on the sentence under the cursor: *Check this
--- (model, ~$cost)* on one with no check (queued, failed or aside; not a step
--- or a question), and *Show the code here* (its first citation, opened) and
--- *Show why* on a checked one.
+-- | The claim pass's actions on the sentence under the cursor: on one with
+-- no check (queued, failed, asked or aside), *Answer this (model, ~$cost)*,
+-- and *Check this* too unless it is a question; on a checked one *Re-check*
+-- (stale), *Keep this verdict* or *Keep this answer*, *Show the code here*
+-- (its first citation, opened) and *Show why*.
 sentenceActions :: Env -> FilePath -> Position -> IO [CodeAction]
 sentenceActions env path (Position l c) =
   planContext env path >>= \case
     Just (p, _, text) | isPlanPath p path -> do
       st <- readMVar (envState env)
       store <- claimsOf st (prRoot p) path
-      ss <- sentencesOf st (prRoot p) path (parsePlan text)
+      let ls = parsePlan text
+      ss <- sentencesOf st (prRoot p) path ls
       stale <- staleIn st p store
       es <- estimatesOf st (prRoot p)
       now <- pNow (envPorts env)
@@ -1718,32 +1731,35 @@ sentenceActions env path (Position l c) =
           cfg = catalogPlans (prCatalog p)
           act title cmd args = CodeAction title (Just CodeActionKind_Empty) Nothing Nothing Nothing Nothing (Just (Command title cmd (Just args))) Nothing
           dollars x = "~$" <> T.pack (showFFloat (Just 2) x "")
-          estimate = estimateFor (pcCheckModel cfg) es
-          -- the mode a sentence is checked in: its triage's, else a step's progress
-          modeOf x = maybe (case snKind x of Step _ -> CheckProgress; _ -> CheckClaim) (checkModeOf . seTriage) (M.lookup (sentenceKey (snText x)) store)
-          targets = sweepTargets now ss store stale
-          (n, m) = planCounts now ss store stale
+          estimate ask = estimateFor (pcCheckModel cfg) es (ckMode ask) (ckWeb ask)
+          -- the mode a sentence is checked in: its entry's ('modeFor'), else a step's progress
+          modeOf x = maybe (case snKind x of Step _ -> CheckProgress; _ -> CheckClaim) (modeFor Nothing) (M.lookup (sentenceKey (snText x)) store)
+          open = openSentences ls ss
+          targets = sweepTargets cfg ls now ss store stale
+          (n, m) = planCounts now open store stale
           whole =
-            [ act ("Check the plan (" <> countsText (n, m) <> ", " <> dollars (sum [estimate md | (_, md) <- targets]) <> ")") "olifant.checkPlan" [toJSON uri]
+            [ act ("Check the plan (" <> countsText (n, m) <> ", " <> dollars (sum [estimate a | (_, a) <- targets]) <> ")") "olifant.checkPlan" [toJSON uri]
             | not (null targets) ]
       mine <- case filter inside onRow ++ onRow of
         x : _ -> do
           let key = sentenceKey (snText x)
               entry = M.lookup key store
-              checkThis word = act (word <> " (" <> pcCheckModel cfg <> ", " <> dollars (estimate (modeOf x)) <> ")") "olifant.checkSentence" [toJSON uri, toJSON key]
+              priced word cmd mode = act (word <> " (" <> pcCheckModel cfg <> ", " <> dollars (estimate (askFor cfg store ls mode x)) <> ")") cmd [toJSON uri, toJSON key]
+              checkThis word = priced word "olifant.checkSentence" (modeOf x)
+              answerThis = priced "Answer this" "olifant.answerSentence" CheckAnswer
+              question = snKind x == Question || maybe False ((`elem` [Answer, Asked]) . seRoute) entry
           case entry >>= seCheck of
             Just ch -> do
               place <- citationPlace env p (cjConfirmed ch)
-              let keep te = CodeAction "Keep this verdict" (Just CodeActionKind_Empty) Nothing Nothing Nothing (Just (WorkspaceEdit (Just (M.singleton (Uri uri) [te])) Nothing Nothing)) Nothing Nothing
+              let keepTitle = if cfJudgement (cjConfirmed ch) == JAnswered then "Keep this answer" else "Keep this verdict"
+                  keep te = CodeAction keepTitle (Just CodeActionKind_Empty) Nothing Nothing Nothing (Just (WorkspaceEdit (Just (M.singleton (Uri uri) [te])) Nothing Nothing)) Nothing Nothing
               pure $
                 [checkThis "Re-check" | key `S.member` stale]
-                  ++ [keep te | Just te <- [keepEdit (parsePlan text) x ch]]
+                  ++ [keep te | Just te <- [keepEdit ls x ch]]
                   ++ [act "Show the code here" "olifant.showCode" [toJSON file, toJSON line] | Just (file, line) <- [place]]
                   ++ [act "Show why" "olifant.showWhy" [toJSON uri, toJSON key]]
-            Nothing
-              -- questions wait for their answers (2b)
-              | snKind x /= Question, maybe True ((/= Asked) . seRoute) entry -> pure [checkThis "Check this"]
-              | otherwise -> pure []
+            -- no check: a question is answered; anything else checked or answered
+            Nothing -> pure ([checkThis "Check this" | not question] ++ [answerThis])
         [] -> pure []
       pure (mine ++ whole)
     _ -> pure []
@@ -2019,6 +2035,36 @@ errandRequest env verb title req params respond = case documentPath params of
           liftIO land
           respond (Right (errandJson name a {eaFacts = withJournal (eaFacts a) jf}))
         Right a -> respond (Right (errandJson name a)) >> when (verb == Do) (flushJournal env path)
+
+-- | `olifant/plans/ask`: *Answer this* on the sentence at `line` (and
+-- `character`, else the row's first sentence), beside the plan: the answer
+-- is stored, never written in. Answers `{"key", "verdict", "answer"}`, or an
+-- error that says why (a sentence being checked, one with a check).
+askRequest :: Env -> TRequestMessage m -> Value -> (Either (TResponseError m) Value -> LspM () ()) -> LspM () ()
+askRequest env req params respond = case (documentPath params, lineOf params) of
+  (Just path, Just row) -> do
+    text <- liftIO (documentText env path)
+    ss <- liftIO (readMVar (envState env) >>= \s -> projectFor path s >>= \case
+      (s', Just (_, p)) -> sentencesOf s' (prRoot p) path (parsePlan text)
+      _ -> pure [])
+    let col = case params of
+          Object o | Just (Number c) <- KM.lookup "character" o, Just c' <- toBoundedInteger c -> Just (T.length (takeUtf16 c' (lineAt (T.splitOn "\n" text) row)))
+          _ -> Nothing
+        onRow = [x | x <- ss, snRow x <= row, row <= snEndRow x]
+        inside x = maybe False (\c -> (snRow x, snCol x) <= (row, c) && (row, c) <= (snEndRow x, snEndCol x)) col
+    case filter inside onRow ++ onRow of
+      [] -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) "no sentence to answer here" Nothing))
+      x : _ -> inBackground env req respond $ \job -> do
+        let key = sentenceKey (snText x)
+        r <- planProgress "answering" (\_ -> withSnapshotState job (checkOne (envCancel job) (Just CheckAnswer) path key))
+        void (sendRequest SMethod_WorkspaceDiagnosticRefresh Nothing (\_ -> pure ()))
+        semanticTokensChanged
+        case snd r of
+          Left why -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
+          Right store -> do
+            let cf = cjConfirmed <$> (M.lookup key store >>= seCheck)
+            respond (Right (object ["key" .= key, "verdict" .= fmap (judgementName . cfJudgement) cf, "answer" .= (cf >>= cfAnswer)]))
+  _ -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "olifant/plans/ask needs a textDocument and a line" Nothing))
 
 -- | What `olifant/plans/<verb>` answers.
 errandJson :: T.Text -> ErrandAnswer -> Value

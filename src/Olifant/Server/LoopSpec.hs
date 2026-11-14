@@ -14,7 +14,7 @@ import Data.Time (UTCTime (..), addUTCTime, fromGregorian, getCurrentTime)
 import Olifant.Decide (Question (..), Shape (..))
 import Olifant.Process (cancelAfter, newCancel, neverCancel)
 import Olifant.Server.Edits (FileEdit (..))
-import Olifant.Server.Errand (Block (..), Ghost (..))
+import Olifant.Server.Errand (Block (..), Ghost (..), Status (..))
 import Olifant.Server.Stub (StubAnswer (..))
 import Olifant.Server.State (ServerConfig (..), ServerState (..), filesChanged)
 import Olifant.Server.Telemetry (ErrandRecord (..), OutcomeRecord (..), PassRecord (..), ReconcileRecord (..), Record (..), appendRecord, readRecords, recordsPath)
@@ -41,12 +41,12 @@ import Olifant.Fill (FillHole (..), FillRequest (..), Filler (..), ModelFiller (
 import Data.IORef (modifyIORef, newIORef, readIORef)
 import Olifant.Language (Failure (..), Runner (..), TestRun (..))
 import Olifant.Server.Loop
-import Olifant.Server.Plans (Resolved (..), claimHover, resolveAnchor)
-import Olifant.Plans.Sentences (sentences)
+import Olifant.Server.Plans (Resolved (..), claimHover, planCounts, resolveAnchor)
+import Olifant.Plans.Sentences (Sentence (..), sentences)
 import Olifant.Server.ReviewReadings (applyFactsText)
 import System.Directory (createDirectoryIfMissing)
 import System.FilePath (takeDirectory, (</>))
-import Control.Concurrent.Async (async, waitCatch)
+import Control.Concurrent.Async (async, wait, waitCatch)
 import Control.Exception (SomeException, bracket, throwIO, try)
 import System.IO (hGetLine)
 import System.Process (CreateProcess (..), StdStream (..), callProcess, createProcess, proc, readProcess, terminateProcess)
@@ -1041,7 +1041,7 @@ claimPassSpec = describe "Olifant.Server.Loop (claimPass)" $ describe "claimPass
         readJoins (ssPorts s) dir "plans/t.md" `shouldReturn` M.empty
   it "Check this on a step records a progress check, and its errand line says so" $
     withPass "- [ ] Make the helper return one\n" "" [("Make the helper return one", reply "done")] $ \dir s -> do
-      (_, r) <- checkOne neverCancel (dir </> "plans/t.md") "Make the helper return one" s
+      (_, r) <- checkOne neverCancel Nothing (dir </> "plans/t.md") "Make the helper return one" s
       store <- either (fail . T.unpack) pure r
       let ch = M.lookup "Make the helper return one" store >>= seCheck
       fmap (\c -> (cjMode c, cfJudgement (cjConfirmed c))) ch `shouldBe` Just (CheckProgress, JDone)
@@ -1104,6 +1104,109 @@ claimPassSpec = describe "Olifant.Server.Loop (claimPass)" $ describe "claimPass
         _ <- pass OpenPass dir s2
         asked dir `shouldReturn` ["sentence-kind", "about-code", "wants-answer", "about-public"]
         checksAsked dir `shouldReturn` []
+  describe "questions answered (2b)" $ do
+    let jevSays kvs = TE.decodeUtf8 (BL.toStrict (encode (object ["answers" .= object [K.fromText k .= v | (k, v) <- kvs]])))
+        kindIs k = object ["choice" .= (k :: Text), "confidence" .= (0.9 :: Double), "probabilities" .= object [K.fromText k .= (0.9 :: Double)]]
+        yes = object ["choice" .= True, "confidence" .= (0.9 :: Double)]
+        asking = [("sentence-kind", kindIs "question"), ("about-code", yes), ("wants-answer", yes)]
+        answerReply :: Value
+        answerReply = object ["text" .= ("I read it.\n```json\n{\"verdict\": \"answered\", \"answer\": \"Yes, it returns 1.\", \"why\": \"the helper returns 1\", \"evidence\": [{\"path\": \"" <> T.pack table <> "\", \"unit\": \"helper\"}]}\n```" :: Text), "cost" .= (0.1 :: Double)]
+        slowAnswer = object ["text" .= ("```json\n{\"verdict\": \"right\", \"why\": \"w\", \"evidence\": [{\"path\": \"" <> T.pack table <> "\", \"unit\": \"helper\"}]}\n```" :: Text), "cost" .= (0.1 :: Double), "delay" .= (0.5 :: Double)]
+        q = "Does the helper return one?"
+        withJev answers text checks act =
+          withReconcile text [] jevConfig (Just (jevSays answers)) $ \dir s -> do
+            TIO.writeFile (checksFile dir) (replies checks)
+            act dir s {ssConfig = (ssConfig s) {scCheckAnswers = Just (checksFile dir)}}
+        writtenThenSaved dir s text = do
+          -- written in this editor: the idle pass triages it, owed; the save answers it
+          TIO.writeFile (dir </> "plans/t.md") text
+          (s1, _) <- pass IdlePass dir s
+          pass SavePass dir s1
+    it "a question written then saved is answered once" $
+      withJev asking "" [(q, answerReply)] $ \dir s -> do
+        (s2, a) <- writtenThenSaved dir s (q <> "\n")
+        checksAsked dir `shouldReturn` [q]
+        prompts <- TIO.readFile (checksFile dir <> ".prompts")
+        prompts `shouldSatisfy` T.isInfixOf "answered | cannot_tell"
+        let c = entry a q >>= seCheck
+        fmap (\ch -> (cjMode ch, cfJudgement (cjConfirmed ch), cfAnswer (cjConfirmed ch))) c `shouldBe` Just (CheckAnswer, JAnswered, Just "Yes, it returns 1.")
+        _ <- pass SavePass dir s2
+        checksAsked dir `shouldReturn` [q]
+    it "an old question is backlog" $
+      withJev asking (q <> "\n") [(q, answerReply)] $ \dir s -> do
+        (s1, a) <- pass OpenPass dir s
+        fmap (\e -> (seRoute e, seOwed e)) (entry a q) `shouldBe` Just (Answer, False)
+        _ <- pass SavePass dir s1
+        checksAsked dir `shouldReturn` []
+    it "the sweep answers questions" $
+      withJev asking (q <> "\n") [(q, answerReply)] $ \dir s -> do
+        (s1, _) <- pass OpenPass dir s
+        (_, r) <- checkPlan neverCancel (\_ _ -> pure ()) (dir </> "plans/t.md") s1
+        fmap swChecked r `shouldBe` Right 1
+        store <- readClaims (ssPorts s) dir "plans/t.md"
+        (cfJudgement . cjConfirmed <$> (M.lookup q store >>= seCheck)) `shouldBe` Just JAnswered
+    it "Answer this on a key in flight is refused" $
+      withPass plan "" [("The helper returns one.", slowAnswer)] $ \dir s -> do
+        (s1, _) <- pass IdlePass dir s
+        running <- async (pass SavePass dir s1)
+        let waitAsked = checksAsked dir >>= \ks -> if not (null ks) then pure () else threadDelay 10000 >> waitAsked
+        waitAsked
+        (_, r) <- checkOne neverCancel (Just CheckAnswer) (dir </> "plans/t.md") "The helper returns one." s1
+        r `shouldSatisfy` either (== "this sentence is being checked now") (const False)
+        _ <- wait running
+        checksAsked dir `shouldReturn` ["The helper returns one."]
+    it "Answer this on a checked sentence answers nothing" $
+      withPass plan "" [("The helper returns one.", reply "right")] $ \dir s -> do
+        (s1, _) <- pass IdlePass dir s
+        (s2, _) <- pass SavePass dir s1
+        (_, r) <- checkOne neverCancel (Just CheckAnswer) (dir </> "plans/t.md") "The helper returns one." s2
+        r `shouldSatisfy` either (== "this sentence has a check: Show why reads it") (const False)
+        checksAsked dir `shouldReturn` ["The helper returns one."]
+        -- Answer this on an unchecked claim answers it, in the answer mode
+        TIO.writeFile (checksFile dir) (replies [("Another claim holds.", answerReply)])
+        TIO.writeFile (dir </> "plans/t.md") (plan <> "Another claim holds.\n")
+        (_, r2) <- checkOne neverCancel (Just CheckAnswer) (dir </> "plans/t.md") "Another claim holds." s2
+        fmap (fmap (\e -> fmap cjMode (seCheck e)) . M.lookup "Another claim holds.") r2 `shouldBe` Right (Just (Just CheckAnswer))
+    it "a kept answer ends the question's sign" $ do
+      let now = UTCTime (fromGregorian 2026 11 14) 0
+          owed = SentenceEntry (Triage "question" 0.9 0.9 "jev" (Just 0.9) Nothing) Answer Nothing Nothing now Nothing True
+          check text keys = do
+            let ls = parsePlan text
+                ss = sentences ls
+                store = M.fromList [(k, owed) | k <- keys]
+                open = C.openSentences ls ss
+            (map snText (C.queued now open store), planCounts now open store S.empty)
+      -- a `- ? ` line with a kept line under it
+      check "- ? Does it keep D?\n  - ✓ Yes · app/x.py:f\n" ["Does it keep D?"] `shouldBe` ([], (0, 0))
+      check "- ? Does it keep D?\n" ["Does it keep D?"] `shouldBe` (["Does it keep D?"], (1, 0))
+      -- a paragraph question, its kept line after its row
+      check "Does it keep D?\n- ✓ Yes · app/x.py:f\n" ["Does it keep D?"] `shouldBe` ([], (0, 0))
+      check "The loader runs. Does it keep D?\n- ✓ Yes\n" ["Does it keep D?"] `shouldBe` ([], (0, 0))
+    it "a kept line does not answer an earlier sentence on the row" $ do
+      let now = UTCTime (fromGregorian 2026 11 14) 0
+          owed = SentenceEntry (Triage "question" 0.9 0.9 "jev" (Just 0.9) Nothing) Answer Nothing Nothing now Nothing True
+          ls = parsePlan "Does it keep D? The loader keeps D.\n- ✓ Yes\n"
+          open = C.openSentences ls (sentences ls)
+      map snText (C.queued now open (M.fromList [("Does it keep D?", owed)])) `shouldBe` ["Does it keep D?"]
+    it "estimates are kept per mode and web" $ do
+      estimateKey CheckAnswer True `shouldBe` "answer+web"
+      estimateKey CheckClaim False `shouldBe` "verify"
+      let es = M.fromList [("answer+web", [0.2, 0.4])]
+      estimateFor "sonnet" es CheckAnswer True `shouldBe` 0.30000000000000004
+      estimateFor "sonnet" es CheckAnswer False `shouldBe` 0.10
+      estimateFor "sonnet" M.empty CheckClaim True `shouldBe` unpricedWebCheck
+      estimateFor "haiku" M.empty CheckClaim False `shouldBe` 0.01
+    it "estimatesOf reads web checks under their own key" $
+      withPass plan "" [] $ \dir s -> do
+        let at = UTCTime (fromGregorian 2026 11 14) 0
+            rec c web = AnErrand ErrandRecord
+              { erId = "c", erAt = at, erVerb = "check", erPlan = "plans/t.md", erRow = 0, erSection = "", erBranch = Nothing, erModel = "sonnet"
+              , erStatus = Ok, erWhy = Nothing, erSession = Nothing, erSeconds = Nothing, erTurns = Nothing, erTokens = Nothing, erCost = Just c
+              , erModels = [], erPromptChars = 0, erGrounded = 0, erBlocks = 0, erLines = 0, erDropped = 0, erUnresolved = 0, erChanged = 0
+              , erDenials = 0, erParent = Nothing, erAuto = False, erMode = Just "answer", erVerdict = Just "answered", erWeb = web }
+        mapM_ (appendRecord (ssPorts s) dir) [rec 0.2 True, rec 0.4 True, rec 0.05 False]
+        es <- estimatesOf s dir
+        (M.lookup "answer+web" es, M.lookup "answer" es) `shouldBe` (Just [0.4, 0.2], Just [0.05])
   it "idle triages and checks nothing" $
     withPass plan "" [("The helper returns one.", reply "right")] $ \dir s -> do
       (_, a) <- pass IdlePass dir s
@@ -1190,7 +1293,7 @@ claimPassSpec = describe "Olifant.Server.Loop (claimPass)" $ describe "claimPass
     it "the sweep skips ticked steps and checks stale verdicts" $
       withPass "- [x] Make the helper return one\nThe helper returns one.\nAnother claim holds.\n" "" [("Make the helper return one", reply "done"), ("The helper returns one.", reply "right"), ("Another claim holds.", reply "right")] $ \dir s -> do
         (s1, _) <- pass OpenPass dir s
-        _ <- checkOne neverCancel (dir </> "plans/t.md") "The helper returns one." s1
+        _ <- checkOne neverCancel Nothing (dir </> "plans/t.md") "The helper returns one." s1
         TIO.writeFile (dir </> table) (T.replace "return 1" "return 2" tableText)
         s2 <- filesChanged [dir </> table] s1
         (_, r) <- sweep dir s2
@@ -1232,22 +1335,22 @@ claimPassSpec = describe "Olifant.Server.Loop (claimPass)" $ describe "claimPass
     it "a stale verdict re-checked during a sweep is not checked again by the sweep" $
       withPass (T.unlines claims3 <> "The helper returns one.\n") "" ([(k, slowFor 1) | k <- claims3] ++ [("The helper returns one.", reply "right")]) $ \dir s -> do
         (s1, _) <- pass OpenPass dir s
-        _ <- checkOne neverCancel (dir </> "plans/t.md") "The helper returns one." s1
+        _ <- checkOne neverCancel Nothing (dir </> "plans/t.md") "The helper returns one." s1
         s2 <- editHelper dir s1
         running <- async (checkPlan neverCancel (\_ _ -> pure ()) (dir </> "plans/t.md") s2)
         -- the sweep's three workers busy with the claims; the stale one waits
         mapM_ (holding s2) claims3
-        _ <- checkOne neverCancel (dir </> "plans/t.md") "The helper returns one." s2
+        _ <- checkOne neverCancel Nothing (dir </> "plans/t.md") "The helper returns one." s2
         _ <- waitCatch running
         length . filter (== "The helper returns one.") <$> checksAsked dir `shouldReturn` 2
     it "with recheck = \"save\", a stale verdict re-checked during the save pass is not checked again by it" $
       withPass "Claim number 1 holds.\nThe helper returns one.\n" "[plans]\nrecheck = \"save\"\n" [("Claim number 1 holds.", slowFor 1), ("The helper returns one.", reply "right")] $ \dir s -> do
         (s1, _) <- pass IdlePass dir s
-        _ <- checkOne neverCancel (dir </> "plans/t.md") "The helper returns one." s1
+        _ <- checkOne neverCancel Nothing (dir </> "plans/t.md") "The helper returns one." s1
         s2 <- editHelper dir s1
         running <- async (pass SavePass dir s2)
         holding s2 "Claim number 1 holds."
-        _ <- checkOne neverCancel (dir </> "plans/t.md") "The helper returns one." s2
+        _ <- checkOne neverCancel Nothing (dir </> "plans/t.md") "The helper returns one." s2
         _ <- waitCatch running
         length . filter (== "The helper returns one.") <$> checksAsked dir `shouldReturn` 2
     it "with recheck = \"save\", a save re-checks a stale verdict" $
@@ -1388,7 +1491,7 @@ claimPassSpec = describe "Olifant.Server.Loop (claimPass)" $ describe "claimPass
     withPass two "" [("First claim holds.", slow), ("Second claim holds.", reply "wrong")] $ \dir s -> do
       (s1, _) <- pass IdlePass dir s
       -- Check this on the second while the pass checks the first
-      one <- async (let go = checksAsked dir >>= \ks -> if length ks >= 1 then checkOne neverCancel (dir </> "plans/t.md") "Second claim holds." s1 else threadDelay 10000 >> go in go)
+      one <- async (let go = checksAsked dir >>= \ks -> if length ks >= 1 then checkOne neverCancel Nothing (dir </> "plans/t.md") "Second claim holds." s1 else threadDelay 10000 >> go in go)
       _ <- pass SavePass dir s1
       _ <- waitCatch one
       stored <- readClaims (ssPorts s) dir "plans/t.md"
@@ -1403,7 +1506,7 @@ claimPassSpec = describe "Olifant.Server.Loop (claimPass)" $ describe "claimPass
       let held = M.foldr S.union S.empty <$> readIORef (ssChecking s1)
           holding = held >>= \h -> if "The helper returns one." `S.member` h then pure () else threadDelay 5000 >> holding
       holding
-      (_, r) <- checkOne neverCancel (dir </> "plans/t.md") "The helper returns one." s1
+      (_, r) <- checkOne neverCancel Nothing (dir </> "plans/t.md") "The helper returns one." s1
       stillHeld <- S.member "The helper returns one." <$> held
       _ <- waitCatch running
       (either Just (const Nothing) r, stillHeld) `shouldBe` (Just "this sentence is being checked now", True)

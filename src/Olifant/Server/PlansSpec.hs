@@ -25,7 +25,7 @@ import Olifant.Plans.Sentences (Sentence (..), sentences, sentencesWith)
 import Olifant.Catalog (PlansConfig (..), defaultPlans)
 import Olifant.Server.Triage (Route (..), Triage (..))
 import Olifant.Server.Errand (Belief (..), BeliefCheck (..))
-import Olifant.Server.Checker (CheckAsk (..), CheckMode (..), Citation (..), Confirmed (..), Judgement (..), UnitRef (..))
+import Olifant.Server.Checker (CheckAsk (..), CheckMode (..), Citation (..), Confirmed (..), Judgement (..), Source (..), UnitRef (..))
 import Olifant.Server.Unit (Named (..))
 import Olifant.Workspace (memoryWorkspace)
 import System.Directory (canonicalizePath, doesDirectoryExist, listDirectory)
@@ -299,6 +299,67 @@ spec = describe "Olifant.Server.Plans (anchors in the server)" $ do
         `shouldBe` Just "Right · it returns 1 · src/a.py:Foo\n\ngd: the code · Keep this verdict: <leader>mpk"
       claimHover (M.fromList [("Queued one.", queuedEntry)]) S.empty (ss ["Queued one."])
         `shouldBe` Just "Unchecked · Check this, or Check the plan"
+  describe "questions in the margin (2b)" $ do
+    let ss = sentences . parsePlan . T.unlines
+        show' d = (d ^. L.code, d ^. L.severity, d ^. L.message)
+        qTriage = Triage "question" 0.9 0.9 "jev" (Just 0.9) Nothing
+        src = Source "https://docs.djangoproject.com/en/5.2/ref/" "QuerySet API"
+        answerE j why ans evidence sources web =
+          queuedEntry {seTriage = qTriage, seRoute = Answer, seCheck = Just (CheckRecord (Confirmed j why evidence (if null evidence then Nothing else Just (UnitRef "src/a.py" "Foo")) (if null evidence then Nothing else Just "abc1234") [] ans (Just "The longer story.") sources) "sonnet" (Just 0.2) 20 at0 CheckAnswer web)}
+        cite = [Citation "src/a.py" (Just "Foo") Nothing]
+        answered = answerE JAnswered "it returns 1" (Just "Yes, it returns 1.") cite [src] True
+        sourceOnly j = (verdictEntry j "the docs say so") {seCheck = fmap (\c -> c {cjConfirmed = (cjConfirmed c) {cfEvidence = [], cfUnit = Nothing, cfFingerprint = Nothing, cfSources = [Source "https://www.htmx.org/attributes/hx-on/" "hx-on"]}}) (seCheck (verdictEntry j "the docs say so"))}
+        store = M.fromList
+          [ ("Answering one?", queuedEntry {seTriage = qTriage, seRoute = Answer})
+          , ("Answered one?", answered)
+          , ("Unanswered one?", answerE JCannotTell "the code does not say" Nothing [] [] False)
+          , ("Stale one?", answered)
+          , ("Per right.", sourceOnly JRight)
+          , ("Per wrong.", sourceOnly JWrong)
+          , ("Owed one?", queuedEntry {seTriage = qTriage, seRoute = Answer, seOwed = True})
+          , ("Backlog one?", queuedEntry {seTriage = qTriage, seRoute = Answer})
+          , ("Asked one?", queuedEntry {seTriage = qTriage {trWantsAnswer = Just 0.1}, seRoute = Asked})
+          , ("Aside one.", queuedEntry {seRoute = Aside}) ]
+    it "one row of the table each: answering, answered, could not answer, stale, per a source, owed, backlog, asked and aside" $
+      map show' (claimHints True store (S.singleton "Answering one?") (S.singleton "Stale one?") (ss ["Answering one?", "Answered one?", "Unanswered one?", "Stale one?", "Per right.", "Per wrong.", "Owed one?", "Backlog one?", "Asked one?", "Aside one."]))
+        `shouldBe`
+          [ (Just (InR "claim-checking"), Just DiagnosticSeverity_Hint, "… Answering")
+          , (Just (InR "question-answered"), Just DiagnosticSeverity_Hint, "» Answer · Yes, it returns 1. · src/a.py:Foo · QuerySet API (docs.djangoproject.com)")
+          , (Just (InR "question-unsure"), Just DiagnosticSeverity_Hint, "? Could not answer · the code does not say")
+          , (Just (InR "question-answered-stale"), Just DiagnosticSeverity_Hint, "» Answered when checked · the code changed since · Yes, it returns 1. · src/a.py:Foo")
+          , (Just (InR "claim-right"), Just DiagnosticSeverity_Hint, "✓ Right, per htmx.org · the docs say so · hx-on")
+          , (Just (InR "claim-wrong"), Just DiagnosticSeverity_Warning, "✗ Wrong, per htmx.org · the docs say so · hx-on")
+          , (Just (InR "claim-queued"), Just DiagnosticSeverity_Hint, "○ Unchecked · the next save checks it")
+          , (Just (InR "claim-queued"), Just DiagnosticSeverity_Hint, "○ Unchecked · Check this, or Check the plan") ]
+    it "an answer's hover drops the glyph and ends with Keep this answer; a mixed row keeps the verdict footer" $ do
+      claimHover store S.empty (ss ["Answered one?"])
+        `shouldBe` Just "Answer · Yes, it returns 1. · src/a.py:Foo · QuerySet API (docs.djangoproject.com)\n\ngd: the code · Keep this answer: <leader>mpk"
+      claimHover (M.insert "Right one." (verdictEntry JRight "it returns 1") store) S.empty (ss ["Answered one? Right one."])
+        `shouldSatisfy` maybe False ("Keep this verdict: <leader>mpk" `T.isSuffixOf`)
+    it "Show why prints the answer, its detail, the code, the sources and the web" $ do
+      let Just c = seCheck answered
+          body = whyBody "Answered one?" c
+      mapM_ (\w -> body `shouldSatisfy` T.isInfixOf w)
+        [ "Answer · Yes, it returns 1.", "The longer story.", "- src/a.py:Foo", "## Sources", "- QuerySet API — https://docs.djangoproject.com/en/5.2/ref/"
+        , "A source is the model's word and a link: olifant did not open it.", " · with web search", "(answered)" ]
+      let Just r = seCheck (sourceOnly JRight)
+      whyBody "Per right." r `shouldSatisfy` T.isInfixOf "## Sources"
+      whyBody "Per right." r `shouldSatisfy` (not . T.isInfixOf "with web search")
+      let Just n = seCheck (verdictEntry JRight "x")
+      whyBody "Right one." n `shouldSatisfy` (not . T.isInfixOf "## Sources")
+    it "Keep this answer writes one evidence line: the answer, the code, the first source" $ do
+      let insertOf (TextEdit r t) = ((r ^. L.start . L.line, r ^. L.start . L.character), t)
+          Just c = seCheck answered
+          ls = parsePlan "- ? Does the helper return one?\n- next\n"
+          [x] = take 1 (sentences ls)
+      fmap insertOf (keepEdit ls x c) `shouldBe` Just ((0, 31), "\n  - ✓ Yes, it returns 1. · src/a.py:Foo · https://docs.djangoproject.com/en/5.2/ref/")
+      let Just c2 = seCheck (answerE JAnswered "the docs" (Just "Yes.") [] [src] True)
+          ls2 = parsePlan "Does bulk_create return keys?\n"
+          [y] = sentences ls2
+      fmap insertOf (keepEdit ls2 y c2) `shouldBe` Just ((0, 29), "\n- ✓ Yes. · https://docs.djangoproject.com/en/5.2/ref/")
+      -- already kept: not offered again
+      let ls3 = parsePlan "Does bulk_create return keys?\n- ✓ Yes. · https://docs.djangoproject.com/en/5.2/ref/\n"
+      fmap insertOf (keepEdit ls3 (head (sentences ls3)) c2) `shouldBe` Nothing
   describe "planTokensWith (claim modifiers)" $
     it "a bare line's text carries checked or wrong from its check" $ do
       let e j = verdictEntry j "no"
