@@ -621,7 +621,8 @@ citations are confirmed as always; then one Jev request asks three yes-or-no que
 haiku's verdict:
 
 - **why-fits**: does the reason speak to what the sentence says (not a neighbouring thing)?
-- **evidence-fits**: is the cited code what the sentence is about? For a web check, which cites
+- **evidence-fits**: is the cited code what the sentence is about? It is shown each citation's
+  lines around the cited line (up to three citations), so a field deep in a model class is seen. For a web check, which cites
   pages and no code: are the pages the named library's own documentation, release notes or
   migration guide for the version the sentence names?
 - **verdict-follows**: does the verdict follow from the reason?

@@ -78,9 +78,10 @@ guardQuestions ask s c evidence =
       , ("evidence", if T.null evidence then "(nothing cited)" else evidence) ]
 
 -- | What the guards are shown as evidence: a web check's pages (title and
--- address); a code check's citations (up to three), each `path:Unit` with
--- the unit's first 12 lines (else 12 from the cited line, else the file's
--- first 12), read from the workspace.
+-- address); a code check's citations (up to three), each `path:Unit line N`
+-- with 12 lines from 4 before the cited line (2c-2: a unit's header seldom
+-- reaches the field the reason names), else the unit's first 12, else the
+-- file's first 12, read from the workspace.
 guardEvidence :: ServerState -> Project -> CheckAsk -> Confirmed -> IO Text
 guardEvidence s p ask c
   | ckWeb ask = pure (T.intercalate "\n" [soTitle x <> " <" <> soUrl x <> ">" | x <- cfSources c])
@@ -97,9 +98,12 @@ guardEvidence s p ask c
               Just lang -> safely [] (either (const []) id <$> unitsWithKinds (pSyntax (ssPorts s)) lang (Just rel) t)
               Nothing -> pure []
             let byName = ciUnit ci >>= \u -> either (const Nothing) Just (unitLookupIn u units)
-                start = case (byName, ciLine ci) of
-                  (Just n, _) -> fst (namedLines n)
-                  (_, Just l) -> l
+                rows = length (T.lines t)
+                -- the cited line with 4 before it (the field the reason names, not
+                -- the class's header); no line, the unit's first lines
+                start = case (ciLine ci, byName) of
+                  (Just l, _) | l >= 1 && l <= rows -> max 1 (l - 4)
+                  (_, Just n) -> fst (namedLines n)
                   _ -> 1
                 label = T.pack rel <> maybe "" (":" <>) (ciUnit ci) <> maybe "" (\l -> " line " <> T.pack (show l)) (ciLine ci)
             pure (Just (label <> "\n" <> T.unlines (take 12 (drop (max 0 (start - 1)) (T.lines t)))))
@@ -177,7 +181,7 @@ whyTrue = "the reason addresses the very thing the sentence says, asks or asks f
 whyFalse = "the reason addresses something else: another component or behaviour, a reframed or narrower question, or only part of what the sentence says while the verdict covers all of it"
 
 evCodeInstructions, evCodeTrue, evCodeFalse :: Text
-evCodeInstructions = "A checker read a software project and judged one sentence of the project's plan; `evidence` is the code it cites (each unit's name and first lines). Is the cited code what the sentence is about: where what it states would be true or false, what it asks about, or what the step would change or has changed?"
+evCodeInstructions = "A checker read a software project and judged one sentence of the project's plan; `evidence` is the code it cites (each citation's path, unit and cited line, with the lines around that line). Is the cited code what the sentence is about: where what it states would be true or false, what it asks about, or what the step would change or has changed?"
 evCodeTrue = "the cited code is where the behaviour, data or feature the sentence names lives, or plainly shows it (or, for a step not done yet, the code it would change)"
 evCodeFalse = "the cited code is beside the point: another feature, a similarly named thing, a caller or test that does not show what the reason claims; or nothing is cited for a verdict that rests on code"
 

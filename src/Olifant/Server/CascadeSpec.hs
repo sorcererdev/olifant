@@ -69,13 +69,13 @@ spec = describe "Olifant.Server.Cascade" $ do
     lookup "evidence" (qContext evCode) `shouldBe` Just "(nothing cited)"
     lookup "check" (qContext ev) `shouldBe` Just "a statement checked against public web sources (the checker saw no code)"
 
-  it "shows a web check its pages and a code check each cited unit's first lines" $ do
+  it "shows a web check its pages and a code check the lines around each cited line" $ do
     (s, proj) <- checkerServer
     let src = [Source "https://docs.example.org/5.1/" "Release notes"]
     web <- guardEvidence s proj (CheckAsk CheckClaim True []) (confirmed JRight "w" [] src)
     web `shouldBe` "Release notes <https://docs.example.org/5.1/>"
     code <- guardEvidence s proj (CheckAsk CheckClaim False []) (confirmed JRight "w" [Citation "src/a.py" Nothing (Just 2), Citation "src/nope.py" Nothing Nothing] [])
-    code `shouldBe` "src/a.py line 2\n    def bar(self):\n        return 1\n"
+    code `shouldBe` "src/a.py line 2\nclass Foo:\n    def bar(self):\n        return 1\n"
 
   it "runs sonnet alone with no decide model to guard haiku: the model a check runs on and is priced as" $ do
     (s, proj) <- checkerServer
@@ -99,3 +99,13 @@ spec = describe "Olifant.Server.Cascade" $ do
     citesOnlyUnreadable s proj defaultPlans (failed [Citation "src/a.py" (Just "Nope") Nothing]) `shouldReturn` False
     -- not a citation failure
     citesOnlyUnreadable s proj defaultPlans (confirmed JCannotTell "the code does not say" [js] []) `shouldReturn` False
+
+  it "shows evidence-fits the lines around a cited line deep in a unit, not the unit's header" $ do
+    (s, proj) <- checkerServer
+    code <- guardEvidence s proj (CheckAsk CheckClaim False []) (confirmed JRight "w" [Citation "src/models.py" (Just "Comparison") (Just 25)] [])
+    T.lines code `shouldSatisfy` (\ls -> take 1 ls == ["src/models.py:Comparison line 25"])
+    code `shouldSatisfy` T.isInfixOf "field_25 ="
+    code `shouldSatisfy` T.isInfixOf "field_21 ="
+    code `shouldSatisfy` (not . T.isInfixOf "class Comparison:")
+    -- the label, then lines 21 to the file's end (30)
+    length (T.lines code) `shouldBe` 11
