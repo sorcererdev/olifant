@@ -44,7 +44,9 @@ data ErrandRecord = ErrandRecord
   , -- | a check's mode (`verify`, `progress`) and verdict, written only when known
     erMode :: Maybe Text, erVerdict :: Maybe Text
   , -- | a check that had the web tools (`web`, written only when true)
-    erWeb :: Bool }
+    erWeb :: Bool
+  , -- | a cascade check that went on to the strong model (`escalated`, written only when true)
+    erEscalated :: Bool }
   deriving (Eq, Show)
 
 -- | A decision on one ghost block (0-based) of an errand's answer.
@@ -109,6 +111,7 @@ recordJson = \case
           , ("parent" .=) <$> erParent e, ("mode" .=) <$> erMode e, ("verdict" .=) <$> erVerdict e ]
         ++ [("auto", Bool True) | erAuto e]
         ++ [("web", Bool True) | erWeb e]
+        ++ [("escalated", Bool True) | erEscalated e]
   AnOutcome o ->
     object ["kind" .= ("outcome" :: Text), "id" .= orId o, "block" .= orBlock o, "at" .= stamp (orAt o), "outcome" .= orOutcome o]
   AReconcile r ->
@@ -167,7 +170,7 @@ parseRecord = parseMaybe $ \case
         <*> o .:? "cost" <*> pure models <*> o .: "prompt_chars" <*> o .: "grounded"
         <*> o .: "blocks" <*> o .: "lines" <*> o .: "dropped" <*> o .: "unresolved" <*> o .: "changed" <*> o .: "denials"
         <*> o .:? "parent" <*> (fromMaybe False <$> o .:? "auto")
-        <*> o .:? "mode" <*> o .:? "verdict" <*> (fromMaybe False <$> o .:? "web")
+        <*> o .:? "mode" <*> o .:? "verdict" <*> (fromMaybe False <$> o .:? "web") <*> (fromMaybe False <$> o .:? "escalated")
     reconcileP o = do
       climbs <- o .: "climbs" >>= traverse (\case Object c -> (,) <$> c .: "rung" <*> c .: "seconds"; _ -> fail "a climb is not an object")
       decisions <- o .: "decisions" >>= traverse (\case Object d -> Decision <$> d .: "kind" <*> d .: "options" <*> d .:? "chosen" <*> d .:? "confidence" <*> d .: "rung"; _ -> fail "a decision is not an object")

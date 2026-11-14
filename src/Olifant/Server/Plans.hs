@@ -724,7 +724,7 @@ runErrand after reviewed reopen token verb path row s0 =
                     , erTokens = mrr >>= rrTokens, erCost = mrr >>= rrCost, erModels = maybe [] rrModels mrr
                     , erPromptChars = T.length prompt, erGrounded = length grounded
                     , erBlocks = blocks, erLines = ghosts, erDropped = dropped, erUnresolved = unresolved
-                    , erChanged = changed, erDenials = maybe 0 rrDenials mrr, erParent = roParent <$> reopen, erAuto = False, erMode = Nothing, erVerdict = Nothing, erWeb = False }
+                    , erChanged = changed, erDenials = maybe 0 rrDenials mrr, erParent = roParent <$> reopen, erAuto = False, erMode = Nothing, erVerdict = Nothing, erWeb = False, erEscalated = False }
                 appendStepLine (ssPorts s) root
                   [ "plan-" <> verbName
                   , T.pack rel <> ":" <> tshow row

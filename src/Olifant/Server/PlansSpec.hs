@@ -261,7 +261,7 @@ spec = describe "Olifant.Server.Plans (anchors in the server)" $ do
     let checkOf e = case seCheck e of
           Just c -> c
           Nothing -> error "no check"
-        two = queuedEntry {seCheck = Just (CheckRecord (Confirmed JWrong "it drops D" [Citation "app/x.py" (Just "f") (Just 2), Citation "app/y.py" (Just "g") Nothing] (Just (UnitRef "app/x.py" "f")) Nothing [] Nothing Nothing []) "m" Nothing 1 at0 CheckClaim False)}
+        two = queuedEntry {seCheck = Just (CheckRecord (Confirmed JWrong "it drops D" [Citation "app/x.py" (Just "f") (Just 2), Citation "app/y.py" (Just "g") Nothing] (Just (UnitRef "app/x.py" "f")) Nothing [] Nothing Nothing []) "m" Nothing 1 at0 CheckClaim False False)}
         insertOf (TextEdit r t) = ((r ^. L.start . L.line, r ^. L.start . L.character), (r ^. L.end . L.line, r ^. L.end . L.character), t)
         one_ ls = case sentences ls of
           x : _ -> x
@@ -305,7 +305,7 @@ spec = describe "Olifant.Server.Plans (anchors in the server)" $ do
         qTriage = Triage "question" 0.9 0.9 "jev" (Just 0.9) Nothing
         src = Source "https://docs.djangoproject.com/en/5.2/ref/" "QuerySet API"
         answerE j why ans evidence sources web =
-          queuedEntry {seTriage = qTriage, seRoute = Answer, seCheck = Just (CheckRecord (Confirmed j why evidence (if null evidence then Nothing else Just (UnitRef "src/a.py" "Foo")) (if null evidence then Nothing else Just "abc1234") [] ans (Just "The longer story.") sources) "sonnet" (Just 0.2) 20 at0 CheckAnswer web)}
+          queuedEntry {seTriage = qTriage, seRoute = Answer, seCheck = Just (CheckRecord (Confirmed j why evidence (if null evidence then Nothing else Just (UnitRef "src/a.py" "Foo")) (if null evidence then Nothing else Just "abc1234") [] ans (Just "The longer story.") sources) "sonnet" (Just 0.2) 20 at0 CheckAnswer web False)}
         cite = [Citation "src/a.py" (Just "Foo") Nothing]
         answered = answerE JAnswered "it returns 1" (Just "Yes, it returns 1.") cite [src] True
         sourceOnly j = (verdictEntry j "the docs say so") {seCheck = fmap (\c -> c {cjConfirmed = (cjConfirmed c) {cfEvidence = [], cfUnit = Nothing, cfFingerprint = Nothing, cfSources = [Source "https://www.htmx.org/attributes/hx-on/" "hx-on"]}}) (seCheck (verdictEntry j "the docs say so"))}
@@ -435,7 +435,7 @@ queuedEntry = SentenceEntry (Triage "claim" 0.9 0.9 "jev" Nothing Nothing) Verif
 
 -- | A verify sentence checked J, with WHY, citing src/a.py:Foo.
 verdictEntry :: Judgement -> Text -> SentenceEntry
-verdictEntry j why = queuedEntry {seCheck = Just (CheckRecord (Confirmed j why [Citation "src/a.py" (Just "Foo") Nothing] (Just (UnitRef "src/a.py" "Foo")) (Just "abc1234") [] Nothing Nothing []) "claude-sonnet-5-5" (Just 0.1) 12 at0 CheckClaim False)}
+verdictEntry j why = queuedEntry {seCheck = Just (CheckRecord (Confirmed j why [Citation "src/a.py" (Just "Foo") Nothing] (Just (UnitRef "src/a.py" "Foo")) (Just "abc1234") [] Nothing Nothing []) "claude-sonnet-5-5" (Just 0.1) 12 at0 CheckClaim False False)}
 
 -- | /r1 with the python pack, `src/a.py` (class Foo with def bar) and a
 -- plan; a syntax whose units are Foo (lines 0-2) and Foo.bar (1-2).

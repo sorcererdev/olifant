@@ -117,7 +117,7 @@ spec = describe "catalog" $ do
       withCatalog [("/proj/.olifant/config.toml", "[plans]\npass_cost = 1.5\ncheck_model = \"haiku\"\ncheck_timeout = 60\nnot_evidence = [\"docs\", \"book\"]\n")] $ \_ cat ->
         let c = catalogPlans cat in (pcPassCost c, pcCheckModel c, pcCheckTimeout c, pcNotEvidence c) `shouldBe` (Just 1.5, "haiku", 60, ["docs", "book"])
       withCatalog [("/proj/.olifant/config.toml", "")] $ \_ cat ->
-        let c = catalogPlans cat in (pcPassCost c, pcCheckModel c, pcCheckTimeout c, pcNotEvidence c) `shouldBe` (Nothing, "sonnet", 120, ["docs"])
+        let c = catalogPlans cat in (pcPassCost c, pcCheckModel c, pcCheckTimeout c, pcNotEvidence c) `shouldBe` (Nothing, "cascade", 120, ["docs"])
       let bad toml word = openWith [("/proj/.olifant/config.toml", toml)] >>= \case
             Left (ConfigInvalid _ e) -> e `shouldSatisfy` T.isInfixOf word
             _ -> expectationFailure ("expected ConfigInvalid naming " <> T.unpack word)

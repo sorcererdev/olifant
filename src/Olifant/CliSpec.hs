@@ -1607,7 +1607,7 @@ plansCostSpec = describe "plans cost" $ do
             , erBranch = branch, erModel = "sonnet", erStatus = status, erWhy = Nothing
             , erSession = session, erSeconds = Just 10, erTurns = Just 2, erTokens = Nothing
             , erCost = cost, erModels = [], erPromptChars = 100, erGrounded = 0
-            , erBlocks = blocks, erLines = 4, erDropped = 0, erUnresolved = 0, erChanged = 0, erDenials = 0, erParent = Nothing, erAuto = False, erMode = Nothing, erVerdict = Nothing, erWeb = False }
+            , erBlocks = blocks, erLines = 4, erDropped = 0, erUnresolved = 0, erChanged = 0, erDenials = 0, erParent = Nothing, erAuto = False, erMode = Nothing, erVerdict = Nothing, erWeb = False, erEscalated = False }
       outcome i b o = AnOutcome (OutcomeRecord i b (at 25 12) o)
       line r = TL.toStrict (TLE.decodeUtf8 (encode (recordJson r)))
       records rs extra = ("/proj/.olifant/state/errands.jsonl", T.unlines (map line rs ++ extra))
@@ -1675,7 +1675,7 @@ plansCostSpec = describe "plans cost" $ do
               , erSession = Nothing, erSeconds = Just 10, erTurns = Nothing, erTokens = Nothing
               , erCost = cost, erModels = [], erPromptChars = 100, erGrounded = 0
               , erBlocks = 0, erLines = 0, erDropped = 0, erUnresolved = 0, erChanged = 0, erDenials = 0, erParent = Nothing
-              , erAuto = auto, erMode = mode, erVerdict = verdict, erWeb = False }
+              , erAuto = auto, erMode = mode, erVerdict = verdict, erWeb = False, erEscalated = False }
         passOf plan triaged = APass (PassRecord ("pass-" <> T.pack plan) (at 25 8) plan "save" 9 triaged [] 0 0 0 0 0 0 1 1 0)
         checksRecords =
           [ passOf "plans/p.md" 5, passOf "plans/q.md" 2
@@ -1719,7 +1719,7 @@ plansCostSpec = describe "plans cost" $ do
               , erSession = Nothing, erSeconds = Just 10, erTurns = Nothing, erTokens = Nothing
               , erCost = Just cost, erModels = [], erPromptChars = 100, erGrounded = 0
               , erBlocks = 0, erLines = 0, erDropped = 0, erUnresolved = 0, erChanged = 0, erDenials = 0, erParent = Nothing
-              , erAuto = False, erMode = mode, erVerdict = verdict, erWeb = web }
+              , erAuto = False, erMode = mode, erVerdict = verdict, erWeb = web, erEscalated = False }
         recs =
           [ check "A1" "plans/a.md" (Just "answer") (Just "answered") False 0.1
           , check "A2" "plans/a.md" (Just "answer") (Just "cannot_tell") False 0.05

@@ -78,7 +78,7 @@ import Numeric (showFFloat)
 import Olifant.App (Ports (..), Project (..))
 import Olifant.Catalog (Catalog (..), PlansConfig (..), Recheck (..))
 import Olifant.Server.Stale (staleIn)
-import Olifant.Decide (Answer (..), Confidence (..), Question (..), qOptions)
+import Olifant.Decide (Answer (..), Confidence (..), Decider (..), Question (..), qOptions)
 import Olifant.Language.Adapter (languageFor)
 import Olifant.Model (ModelConfig (..), Rung (..))
 import Olifant.Plans (Anchor (..), Kind (..), Line (..), Section (..), TestState (..), Verdict (..), childrenOf, evidenceTag, parsePlan, sections, stepDone, testState, withTestState, withVerdict)
@@ -97,6 +97,7 @@ import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, readMVar)
 import Olifant.Plans.Sentences (Sentence (..), joinCandidates, pairKey, sentenceKey, sentencesJoined)
 import Olifant.Server.Checker (CheckAsk (..), CheckMode (..), Checker, Confirmed (..), Judgement (..), checkModeName, checkModeOf, judgementName, checkPrompt, checkerUnder, confirm, fences, parseCheckReply)
 import Olifant.Server.Errand (RunFailure (..), RunResult (..), Status (..))
+import Olifant.Server.Cascade (cascadeFirst, cascadeStrong, cascadeThreshold, checkModelIn, citesOnlyUnreadable, escalation, guardEvidence, guardQuestions, guardScores, isCascade)
 import Olifant.Server.Triage (Route (..), Triage (..), decideJoins, needsRetriage, retriage, route, routeName, triage)
 import Olifant.Server.Unit (Named (..), fingerprint, unitsOf)
 import Olifant.Workspace (Workspace (..), normalisePath)
@@ -709,7 +710,7 @@ claimPass token mode path s0 = do
               queue = if checking && not stoppedEarly then owedQueue ++ staleQueue else []
               -- the checker is killed only by the server's own cancel (the
               -- client's progress cancel, shutdown), not by the pass's TOKEN
-              checker = checkerUnder s (ssCancel s) cfg root
+              checker c = checkerUnder s (ssCancel s) c root
               -- the plan's keys as the editor has it now
               keysNow = do
                 live <- maybe (pure Nothing) ($ path) (ssLiveDoc s)
@@ -832,7 +833,7 @@ checkOne token forced path wanted s0 =
                   then pure (Left "this sentence has a check: Show why reads it")
                   else do
                     let ask = askFor cfg cur (parsePlan text) (maybe CheckClaim (modeFor forced) (M.lookup wanted cur)) x
-                    (result, _) <- checkSentence s p cfg (checkerUnder s token cfg root) False now rel ask x
+                    (result, _) <- checkSentence s p cfg (\c -> checkerUnder s token c root) False now rel ask x
                     cancelled token >>= \case
                       True -> pure (Left "cancelled")
                       False -> do
@@ -882,40 +883,81 @@ tallied t0 (r, cost) = case r of
 -- | One check of one sentence, recorded as a `check` errand (AUTO when the
 -- pass asked, not the user): the stored check or the failure, and what it
 -- cost against the pass's cap (a run with no reported cost, 'unpricedCheck';
--- a run that never answered, nothing).
-checkSentence :: ServerState -> Project -> PlansConfig -> Checker -> Bool -> UTCTime -> FilePath -> CheckAsk -> Sentence -> IO (Either Failure CheckRecord, Double)
-checkSentence s p cfg checker auto now plan ask x = do
-  let mode = ckMode ask
-  r <- checker ask x
-  let root = prRoot p
-      record status why verdict mrr =
-        appendRecord (ssPorts s) root . AnErrand $
-          ErrandRecord
-            { erId = errandId now "check" plan (snRow x) (mrr >>= rrSession), erAt = now, erVerb = "check", erPlan = plan, erRow = snRow x
-            , erSection = snHeading x, erBranch = Nothing, erModel = pcCheckModel cfg, erStatus = status, erWhy = why
-            , erSession = mrr >>= rrSession, erSeconds = rrSeconds <$> mrr, erTurns = mrr >>= rrTurns, erTokens = mrr >>= rrTokens
-            , erCost = mrr >>= rrCost, erModels = maybe [] rrModels mrr, erPromptChars = T.length (checkPrompt ask x), erGrounded = 0
-            , erBlocks = 0, erLines = 0, erDropped = 0, erUnresolved = 0, erChanged = 0, erDenials = maybe 0 rrDenials mrr
-            , erParent = Nothing, erAuto = auto, erMode = Just (checkModeName mode), erVerdict = verdict, erWeb = ckWeb ask }
-  case r of
-    Left f -> do
-      record (rfStatus f) (Just (rfWhy f)) Nothing Nothing
-      -- a run that never started costs nothing; one that ran out of time or answered an error may have
-      pure (Left (Failure (rfWhy f) now), if rfStatus f == Timeout || isJust (rfSession f) then unpricedCheck else 0)
-    Right rr -> do
-      let cost = fromMaybe unpricedCheck (rrCost rr)
+-- a run that never answered, nothing). CHECKER gives the checker for a
+-- config (its `check_model`). With `check_model = "cascade"` the check is
+-- 'cascadeFirst''s; Jev's guards ('guardQuestions', one request) keep it or
+-- send it on to 'cascadeStrong' ('escalation'), whose verdict is stored,
+-- marked escalated, with both runs' cost and seconds. No Jev: no guards, so
+-- the cascade checks with 'cascadeStrong' alone.
+checkSentence :: ServerState -> Project -> PlansConfig -> (PlansConfig -> Checker) -> Bool -> UTCTime -> FilePath -> CheckAsk -> Sentence -> IO (Either Failure CheckRecord, Double)
+checkSentence s p cfg checkerFor auto now plan ask x
+  | not (isCascade cfg) = attempt (pcCheckModel cfg) >>= \a -> finish [a] False
+  | otherwise = case rgJev (rungsFor s p False) of
+      Nothing -> attempt cascadeStrong >>= \a -> finish [a] False
+      Just jev -> do
+        first <- attempt cascadeFirst
+        why <- case first of
+          (_, Left f, _) | rfStatus f == Cancelled -> pure Nothing
+          (_, Right _, Just (Right c))
+            | cfJudgement c /= JCannotTell -> do
+                ev <- guardEvidence s p ask c
+                as <- askAll jev (guardQuestions ask x c ev)
+                pure (escalation cascadeThreshold c (guardScores as))
+            -- a citation sonnet could not have confirmed either: haiku's cannot_tell stands
+            | otherwise -> citesOnlyUnreadable s p cfg c <&> \case
+                True -> Nothing
+                False -> escalation cascadeThreshold c []
+          _ -> pure (Just "failed")
+        case why of
+          Nothing -> finish [first] False
+          Just _ -> attempt cascadeStrong >>= \second -> finish [first, second] True
+  where
+    mode = ckMode ask
+    root = prRoot p
+    -- one run on model M: its result, and (when it answered) its verdict or why it has none
+    attempt m = do
+      r <- checkerFor cfg {pcCheckModel = m} ask x
+      case r of
+        Left f -> pure (m, Left f, Nothing)
+        Right rr -> case parseCheckReply ask (rrText rr) of
+          Left why -> pure (m, Right rr, Just (Left why))
+          Right reply -> (\c -> (m, Right rr, Just (Right c))) <$> confirm s p (fences cfg) reply
+    -- a run that never started costs nothing; one that ran out of time or answered an error may have
+    costOf = \case
+      Left f -> if rfStatus f == Timeout || isJust (rfSession f) then unpricedCheck else 0
+      Right rr -> fromMaybe unpricedCheck (rrCost rr)
+    finish attempts escalated = do
+      let runs = [rr | (_, Right rr, _) <- attempts]
+          priced = [c | rr <- runs, Just c <- [rrCost rr]]
+          cost = sum [costOf r | (_, r, _) <- attempts]
+          -- the runs as one: the last run's, with every run's cost, seconds and models
+          whole = case reverse runs of
+            [] -> Nothing
+            lastRun : _ -> Just lastRun {rrCost = if null priced then Nothing else Just (sum priced), rrSeconds = sum (map rrSeconds runs), rrModels = concatMap rrModels runs}
+          record status why verdict =
+            appendRecord (ssPorts s) root . AnErrand $
+              ErrandRecord
+                { erId = errandId now "check" plan (snRow x) (whole >>= rrSession), erAt = now, erVerb = "check", erPlan = plan, erRow = snRow x
+                , erSection = snHeading x, erBranch = Nothing, erModel = checkModelIn s p cfg, erStatus = status, erWhy = why
+                , erSession = whole >>= rrSession, erSeconds = rrSeconds <$> whole, erTurns = whole >>= rrTurns, erTokens = whole >>= rrTokens
+                , erCost = whole >>= rrCost, erModels = maybe [] rrModels whole, erPromptChars = T.length (checkPrompt ask x), erGrounded = 0
+                , erBlocks = 0, erLines = 0, erDropped = 0, erUnresolved = 0, erChanged = 0, erDenials = sum (map rrDenials runs)
+                , erParent = Nothing, erAuto = auto, erMode = Just (checkModeName mode), erVerdict = verdict, erWeb = ckWeb ask, erEscalated = escalated }
       -- a priced check moves its mode's estimate (when the estimates were read)
-      forM_ (rrCost rr) $ \c ->
-        atomicModifyIORef' (ssEstimates s) (\m -> (M.adjust (M.insertWith (\new old -> take 20 (new ++ old)) (estimateKey mode (ckWeb ask)) [c]) (prRoot p) m, ()))
-      case parseCheckReply ask (rrText rr) of
-        Left why -> do
-          record Empty (Just why) Nothing (Just rr)
+      forM_ (whole >>= rrCost) $ \c ->
+        atomicModifyIORef' (ssEstimates s) (\m -> (M.adjust (M.insertWith (\new old -> take 20 (new ++ old)) (estimateKey mode (ckWeb ask)) [c]) root m, ()))
+      case last attempts of
+        (_, Left f, _) -> do
+          record (rfStatus f) (Just (rfWhy f)) Nothing
+          pure (Left (Failure (rfWhy f) now), cost)
+        (_, Right _, Just (Left why)) -> do
+          record Empty (Just why) Nothing
           pure (Left (Failure why now), cost)
-        Right reply -> do
-          c <- confirm s p (fences cfg) reply
-          record Ok Nothing (Just (judgementName (cfJudgement c))) (Just rr)
-          let model = maybe (pcCheckModel cfg) fst (listToMaybe (rrModels rr))
-          pure (Right (CheckRecord c model (rrCost rr) (rrSeconds rr) now mode (ckWeb ask)), cost)
+        (m, Right rr, Just (Right c)) -> do
+          record Ok Nothing (Just (judgementName (cfJudgement c)))
+          let model = maybe m fst (listToMaybe (rrModels rr))
+          pure (Right (CheckRecord c model (whole >>= rrCost) (maybe 0 rrSeconds whole) now mode (ckWeb ask) escalated), cost)
+        (_, Right _, Nothing) -> pure (Left (Failure "no verdict" now), cost)
 
 -- | How many checks *Check the plan* runs at once.
 sweepWidth :: Int
@@ -948,12 +990,14 @@ estimateKey mode web = checkModeName mode <> (if web then "+web" else "")
 
 -- | What one check of MODE (with WEB) should cost: the mean of its recent
 -- priced checks, else $0.30 for a web check ('unpricedWebCheck'), else
--- $0.10 ($0.01 when the model is a haiku).
+-- $0.10 ($0.01 when the model is a haiku, $0.04 for the cascade: its mean on
+-- the prose corpus).
 estimateFor :: Text -> M.Map Text [Double] -> CheckMode -> Bool -> Double
 estimateFor model es mode web = case M.findWithDefault [] (estimateKey mode web) es of
   []
     | web -> unpricedWebCheck
     | "haiku" `T.isInfixOf` T.toLower model -> 0.01
+    | model == "cascade" -> 0.04
     | otherwise -> unpricedCheck
   cs -> sum cs / fromIntegral (length cs)
 
@@ -999,7 +1043,7 @@ checkPlan token progress path s0 =
           key = sentenceKey . snText
           -- the checks in flight are killed by the server's own cancel (the
           -- request's), not by TOKEN: a stopped sweep lets them land
-          checker = checkerUnder s (ssCancel s) cfg root
+          checker c = checkerUnder s (ssCancel s) c root
       now <- pNow (ssPorts s)
       ss <- sentencesOf s root path (parsePlan text)
       store <- claimsOf s root path
@@ -1020,7 +1064,7 @@ checkPlan token progress path s0 =
             if stop then pure Nothing else
               atomicModifyIORef' st (\q -> case quTargets q of
                 (x, ask) : rest
-                  | let est = estimateFor (pcCheckModel cfg) es (ckMode ask) (ckWeb ask)
+                  | let est = estimateFor (checkModelIn s p cfg) es (ckMode ask) (ckWeb ask)
                   , quSpent q + quReserved q + est <= ceiling' + 1e-9 ->
                       (q {quTargets = rest, quReserved = quReserved q + est, quInFlight = quInFlight q + 1, quStopped = False}, Right (Just (x, ask, est)))
                   | quInFlight q > 0 -> (q, Left (quLanded q))

@@ -1,0 +1,81 @@
+29 checks (22 code, 7 web)
+A3    verify  web=False sonnet=right       haiku=right       $0.004  14.0s guards=why 0.93 ev 0.87 follows 0.90 (0.5s)
+A7    verify  web=False sonnet=wrong       haiku=wrong       $0.002   8.9s guards=why 0.97 ev 0.98 follows 0.97 (0.4s)
+A8    verify  web=False sonnet=wrong       haiku=wrong       $0.002  14.1s guards=why 0.96 ev 0.95 follows 0.97 (0.4s)
+H1/H1s answer  web=False sonnet=answered    haiku=answered    $0.002   8.5s guards=why 0.94 ev 0.92 follows 0.86 (0.3s)
+H2    progress web=False sonnet=done        haiku=done        $0.005  13.8s guards=why 0.95 ev 0.96 follows 0.93 (0.3s)
+H3    progress web=False sonnet=done        haiku=done        $0.004  10.2s guards=why 0.92 ev 0.96 follows 0.92 (0.3s)
+H4    verify  web=False sonnet=cannot_tell haiku=cannot_tell $0.003  15.1s guards=-
+H5    progress web=False sonnet=cannot_tell haiku=cannot_tell $0.008  17.8s guards=-
+S1    verify  web=False sonnet=right       haiku=right       $0.006  15.5s guards=why 0.94 ev 0.90 follows 0.95 (0.3s)
+S2/S2s answer  web=False sonnet=answered    haiku=answered    $0.009  26.5s guards=why 0.82 ev 0.83 follows 0.73 (0.3s)
+S3/S3s answer  web=False sonnet=answered    haiku=answered    $0.004  12.0s guards=why 0.96 ev 0.97 follows 0.92 (0.3s)
+S4    progress web=False sonnet=misfit      haiku=misfit      $0.005  14.4s guards=why 0.92 ev 0.97 follows 0.89 (0.2s)
+R1/R1s answer  web=False sonnet=answered    haiku=answered    $0.008  25.4s guards=why 0.91 ev 0.71 follows 0.65 (0.4s)
+R2/Q2 progress web=False sonnet=done        haiku=done        $0.004  10.4s guards=why 0.98 ev 0.98 follows 0.97 (0.2s)
+R3    progress web=False sonnet=cannot_tell haiku=done        $0.007  25.6s guards=why 0.90 ev 0.94 follows 0.86 (0.4s)
+R7    progress web=False sonnet=done        haiku=done        $0.009  21.7s guards=why 0.93 ev 0.93 follows 0.92 (0.3s)
+R8/R8s answer  web=False sonnet=answered    haiku=answered    $0.005  18.9s guards=why 0.97 ev 0.93 follows 0.76 (0.2s)
+X1    progress web=False sonnet=done        haiku=done        $0.011  34.8s guards=why 0.58 ev 0.56 follows 0.62 (0.4s)
+X2    progress web=False sonnet=done        haiku=done        $0.003   9.6s guards=why 0.96 ev 0.98 follows 0.96 (0.3s)
+W1    verify  web=False sonnet=right       haiku=wrong       $0.003  10.0s guards=why 0.23 ev 0.35 follows 0.57 (0.3s)
+W2    verify  web=True  sonnet=right       haiku=right       $0.014   9.5s guards=why 0.98 ev 0.99 follows 0.98 (0.3s)
+W3    verify  web=True  sonnet=right       haiku=right       $0.026   9.9s guards=why 0.98 ev 0.96 follows 0.96 (0.2s)
+W4    verify  web=True  sonnet=wrong       haiku=wrong       $0.026   9.1s guards=why 0.98 ev 0.98 follows 0.96 (0.2s)
+W5    verify  web=True  sonnet=wrong       haiku=wrong       $0.039  24.2s guards=why 0.99 ev 0.97 follows 0.97 (0.5s)
+W6    verify  web=True  sonnet=right       haiku=right       $0.026  13.9s guards=why 0.94 ev 0.89 follows 0.89 (0.5s)
+W7    answer  web=True  sonnet=answered    haiku=answered    $0.025  14.6s guards=why 0.98 ev 0.97 follows 0.82 (0.4s)
+W8    answer  web=False sonnet=answered    haiku=answered    $0.003   9.9s guards=why 0.92 ev 0.96 follows 0.94 (0.4s)
+W9    answer  web=False sonnet=answered    haiku=answered    $0.003   8.1s guards=why 0.83 ev 0.92 follows 0.80 (0.4s)
+W10   answer  web=True  sonnet=answered    haiku=answered    $0.026   9.8s guards=why 0.97 ev 0.91 follows 0.84 (0.2s)
+
+sonnet: agrees 25/27 labelled, wrong-sure [], mean $0.0816, median 10.3s over 29 checks
+haiku alone: agrees 25/27, wrong-sure ["W1"], mean $0.0101 (no Jev), median 14.4s (with the guard request)
+bars: agree wherever sonnet did (25), no new wrong-sure, mean <= $0.0408, median <= 15.5s
+
+threshold 0.6: escalated 2/29; agrees 26/27; lost where sonnet agreed []; new wrong-sure []; mean $0.0157 (19% of sonnet); median 14.4s (1.40x sonnet) -> PASS
+  kept but off the label: H4 guards -
+  escalated though haiku agreed: X1 (why-fits+evidence-fits)
+
+threshold 0.7: escalated 3/29; agrees 26/27; lost where sonnet agreed []; new wrong-sure []; mean $0.0186 (23% of sonnet); median 14.4s (1.40x sonnet) -> PASS
+  kept but off the label: H4 guards -
+  escalated though haiku agreed: R1/R1s (verdict-follows)
+  escalated though haiku agreed: X1 (why-fits+evidence-fits+verdict-follows)
+
+threshold 0.8: escalated 5/29; agrees 26/27; lost where sonnet agreed []; new wrong-sure []; mean $0.0222 (27% of sonnet); median 14.4s (1.40x sonnet) -> PASS
+  kept but off the label: H4 guards -
+  escalated though haiku agreed: S2/S2s (verdict-follows)
+  escalated though haiku agreed: R1/R1s (evidence-fits+verdict-follows)
+  escalated though haiku agreed: R8/R8s (verdict-follows)
+  escalated though haiku agreed: X1 (why-fits+evidence-fits+verdict-follows)
+
+per check:
+A3        verify   web=False sonnet=right       agrees         $0.096  9.5s | haiku=right       agrees         $0.004 14.0s | why 0.93 ev 0.87 follows 0.90 (0.5s) |  why: No product code, dependency or feature in the repository uses AI or ML: the only AI-related strings are a Claude Code attribution footer and a co-author line in
+A7        verify   web=False sonnet=wrong       agrees         $0.082  4.8s | haiku=wrong       agrees         $0.002  8.9s | why 0.97 ev 0.98 follows 0.97 (0.4s) |  why: WebFetcher defaults to retries=1, so a failed request is attempted twice in total (one retry), not three times, and 404/410 and refused or unresolvable hosts ar
+A8        verify   web=False sonnet=wrong       agrees         $0.091  9.9s | haiku=wrong       agrees         $0.002 14.1s | why 0.96 ev 0.95 follows 0.97 (0.4s) |  why: The collector's fetcher, WebFetcher, defaults to retries=1, so a failed request is attempted at most twice, not retried three times.
+H1/H1s    answer   web=False sonnet=answered    agrees         $0.040  6.4s | haiku=answered    agrees         $0.002  8.5s | why 0.94 ev 0.92 follows 0.86 (0.3s) |  why: The confidence() function and the LEAST_CONFIDENT/MOST_CONFIDENT sets in priority.py define which counties are low confidence, and arrange() orders them. answer: Yes. Low confidence is a score computed in code: a collector county is low (0) if its source code is in the hand-maintained LEAST_CONFIDENT set or it needs the 
+H2        progress web=False sonnet=done        agrees         $0.161 19.3s | haiku=done        agrees         $0.005 13.8s | why 0.95 ev 0.96 follows 0.93 (0.3s) |  why: arrange sorts hand-entry counties first, then low-confidence collector counties, and OrderTests asserts that order.
+H3        progress web=False sonnet=done        agrees         $0.100  7.5s | haiku=done        agrees         $0.004 10.2s | why 0.92 ev 0.96 follows 0.92 (0.3s) |  why: The sort key in arrange puts hand-entry counties ahead of every other group except the login's own desk counties, and the county list pages call it with priorit
+H4        verify   web=False sonnet=cannot_tell off            $0.111  9.9s | haiku=cannot_tell off            $0.003 15.1s | - |  why: cited code not found
+H5        progress web=False sonnet=cannot_tell unlabelled     $0.111 12.3s | haiku=cannot_tell unlabelled     $0.008 17.8s | - |  why: cited code not found
+S1        verify   web=False sonnet=right       unlabelled     $0.120 14.8s | haiku=right       unlabelled     $0.006 15.5s | why 0.94 ev 0.90 follows 0.95 (0.3s) |  why: Assigning a county to a login goes through the staff-only give endpoint, which rejects any non-staff user (including a volunteer assigning to themselves) with a
+S2/S2s    answer   web=False sonnet=answered    agrees         $0.068 15.6s | haiku=answered    agrees         $0.009 26.5s | why 0.82 ev 0.83 follows 0.73 (0.3s) |  why: volunteers() in board.py is the only source of the board's columns and the give-to choices, and its filter is what excludes a login. answer: There is no self-assign: staff give counties to logins from the Assignments board, and that board lists only the logins returned by volunteers(). Your login app
+S3/S3s    answer   web=False sonnet=answered    agrees         $0.063  6.7s | haiku=answered    agrees         $0.004 12.0s | why 0.96 ev 0.97 follows 0.92 (0.3s) |  why: The User model's `role` is a single CharField, and `desk_counties` is a many-to-many field on the same model. answer: No, a login has one role (a single `role` field: Superuser, Admin, Staff, Desk, or a role Thomas added), so you can't be Desk and Staff at once. Being on a desk
+S4        progress web=False sonnet=misfit      agrees         $0.091  9.2s | haiku=misfit      agrees         $0.005 14.4s | why 0.92 ev 0.97 follows 0.89 (0.2s) |  why: Q(is_staff=True) cannot reach Staff logins because User.save sets is_staff only for the Superuser and Admin roles; Staff logins are already included through Q(r
+R1/R1s    answer   web=False sonnet=answered    agrees         $0.084 24.0s | haiku=answered    agrees         $0.008 25.4s | why 0.91 ev 0.71 follows 0.65 (0.4s) |  why: The loaders write prior-year vote counts to the database, and the models define the stored fields for 2018. answer: Yes. The workbook loader stores 2024 and 2022 precinct-level D, R and total votes as UnitReport and VoteCount rows, and the 2018 SVF loader stores campus-precin
+R2/Q2     progress web=False sonnet=done        agrees         $0.109 11.0s | haiku=done        agrees         $0.004 10.4s | why 0.98 ev 0.98 follows 0.97 (0.2s) |  why: Comparison2018 has votes_d_2018 and votes_r_2018 fields, read_tracker fills them from the 2018 Gov D and R columns, and apply writes them to the table; the tota
+R3        progress web=False sonnet=cannot_tell off            $0.122 15.4s | haiku=done        agrees         $0.007 25.6s | why 0.90 ev 0.94 follows 0.86 (0.4s) |  why: Both fields added by the newest elections migrations have defaults (margin_only default=False; no_longer_votes blank with an empty-string default), and the read
+R7        progress web=False sonnet=done        agrees         $0.161 16.7s | haiku=done        agrees         $0.009 21.7s | why 0.93 ev 0.93 follows 0.92 (0.3s) |  why: The comparison columns already emit Votes, D and R for each baseline's prior race, and the picked 'Compare with' race fills the main baseline slot, so its raw t
+R8/R8s    answer   web=False sonnet=answered    agrees         $0.037  6.2s | haiku=answered    agrees         $0.005 18.9s | why 0.97 ev 0.93 follows 0.76 (0.2s) |  why: The @admin.register(models.Comparison2018) decorator and its ModelAdmin class are in the elections admin module, and a repo-wide search finds no unregister call answer: No. The 2018 results model, Comparison2018, is registered in the Django admin with its own Comparison2018Admin class, which lists its 2018 votes and margin and 
+X1        progress web=False sonnet=done        agrees         $0.115 11.6s | haiku=done        agrees         $0.011 34.8s | why 0.58 ev 0.56 follows 0.62 (0.4s) |  why: htmx 4.0.0 is vendored and loaded by base.html, templates set htmx attributes per element, and the hand-written AI-context artifacts are replaced by the officia
+X2        progress web=False sonnet=done        agrees         $0.119 17.0s | haiku=done        agrees         $0.003  9.6s | why 0.96 ev 0.98 follows 0.96 (0.3s) |  why: The vendored htmx bundle identifies itself as version 4.0.0, and the base template loads that bundle with a comment naming HTMX 4.0.0.
+W1        verify   web=False sonnet=right       agrees         $0.047 13.7s | haiku=wrong       WRONG-SURE     $0.003 10.0s | why 0.23 ev 0.35 follows 0.57 (0.3s) |  why: The project pins Django 5.2.18 in poetry.lock (and the README says Django 5.2), so the stack is not Django 5.1 as the sentence states.
+W2        verify   web=True  sonnet=right       agrees         $0.042 11.2s | haiku=right       agrees         $0.014  9.5s | why 0.98 ev 0.99 follows 0.98 (0.3s) |  why: Django's 5.1 release notes introduce the {% querystring %} template tag for changing query parameters in URLs while keeping the existing ones.
+W3        verify   web=True  sonnet=right       agrees         $0.042  7.7s | haiku=right       agrees         $0.026  9.9s | why 0.98 ev 0.96 follows 0.96 (0.2s) |  why: Django 5.0's release notes list the change of the USE_TZ default from False to True as a backwards-incompatible change in that release.
+W4        verify   web=True  sonnet=wrong       agrees         $0.046  9.2s | haiku=wrong       agrees         $0.026  9.1s | why 0.98 ev 0.98 follows 0.96 (0.2s) |  why: The Django 5.1 release notes state that Django 5.1 supports PostgreSQL 13 and higher (PostgreSQL 12 was dropped), so the minimum is 13, not 14.
+W5        verify   web=True  sonnet=wrong       agrees         $0.063 15.4s | haiku=wrong       agrees         $0.039 24.2s | why 0.99 ev 0.97 follows 0.97 (0.5s) |  why: htmx 4 keeps the hx-on attribute, documenting hx-on:event and hx-on="event -> code" forms, and only its syntax and event names changed.
+W6        verify   web=True  sonnet=right       agrees         $0.044 10.0s | haiku=right       agrees         $0.026 13.9s | why 0.94 ev 0.89 follows 0.89 (0.5s) |  why: htmx 4's docs say all HTTP responses swap by default except 204 and 304, so 4xx and 5xx responses are swapped into the target unless htmx.config.noSwap is chang
+W7        answer   web=True  sonnet=answered    agrees         $0.046 10.8s | haiku=answered    agrees         $0.025 14.6s | why 0.98 ev 0.97 follows 0.82 (0.4s) |  why: The Django 5.2 release notes and the 5.2 composite primary keys guide document CompositePrimaryKey as a 5.2 feature (seen in search excerpts; full pages not ope answer: Yes. Django 5.2 added native composite primary keys via `models.CompositePrimaryKey`, assigned as a model's `pk` (e.g. `pk = models.CompositePrimaryKey("version
+W8        answer   web=False sonnet=answered    agrees         $0.047  8.9s | haiku=answered    agrees         $0.003  9.9s | why 0.92 ev 0.96 follows 0.94 (0.4s) |  why: The vendored htmx 4.0 source calls fetch() for requests and contains no XMLHttpRequest reference. answer: htmx 4 sends its requests with the browser's fetch() API rather than XMLHttpRequest. The vendored htmx 4.0 build awaits fetch(e.request.action, e.request) and n
+W9        answer   web=False sonnet=answered    agrees         $0.066  8.7s | haiku=answered    agrees         $0.003  8.1s | why 0.83 ev 0.92 follows 0.80 (0.4s) |  why: The default value comes from the vendored htmx 4.0 source, and no repo code overrides it. answer: No. In the vendored htmx 4.0 build, the default config sets implicitInheritance to false, so attributes do not inherit from parents unless marked with the :inhe
+W10       answer   web=True  sonnet=answered    agrees         $0.045 10.3s | haiku=answered    agrees         $0.026  9.8s | why 0.97 ev 0.91 follows 0.84 (0.2s) |  why: The official htmx 4 migration guide's removed-attributes table names hx-vals with the js: prefix as the replacement for hx-vars. answer: In htmx 4, hx-vars is removed and hx-vals replaces it. To keep the old JavaScript-evaluating behaviour, prefix the value with js:.

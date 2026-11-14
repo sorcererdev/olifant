@@ -34,6 +34,7 @@ import Data.Aeson.KeyMap qualified as KM
 import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe, mapMaybe)
 import Olifant.Plans (Anchor (..), Kind (..), Line (..), Verdict (..), anchorText, childrenOf, excerptInfo, excerptSpans, parsePlan, stepDone, testState, withVerdict)
 import Olifant.Server.Unit (Named (..))
+import Olifant.Server.Cascade (checkModelIn)
 import Olifant.Server.Claims (ClaimStore, checkedKeys, claimsOf, modeFor, openSentences, sentencesOf, stepUnit)
 import Olifant.Server.Loop (PassAnswer (..), PassMode (..), Sweep (..), checkOne, checkPlan, claimPass, estimateFor, estimatesOf, sweepTargets)
 import Olifant.Server.Claims (CheckRecord (..), SentenceEntry (..))
@@ -1731,7 +1732,8 @@ sentenceActions env path (Position l c) =
           cfg = catalogPlans (prCatalog p)
           act title cmd args = CodeAction title (Just CodeActionKind_Empty) Nothing Nothing Nothing Nothing (Just (Command title cmd (Just args))) Nothing
           dollars x = "~$" <> T.pack (showFFloat (Just 2) x "")
-          estimate ask = estimateFor (pcCheckModel cfg) es (ckMode ask) (ckWeb ask)
+          model = checkModelIn st p cfg
+          estimate ask = estimateFor model es (ckMode ask) (ckWeb ask)
           -- the mode a sentence is checked in: its entry's ('modeFor'), else a step's progress
           modeOf x = maybe (case snKind x of Step _ -> CheckProgress; _ -> CheckClaim) (modeFor Nothing) (M.lookup (sentenceKey (snText x)) store)
           open = openSentences ls ss
@@ -1744,7 +1746,7 @@ sentenceActions env path (Position l c) =
         x : _ -> do
           let key = sentenceKey (snText x)
               entry = M.lookup key store
-              priced word cmd mode = act (word <> " (" <> pcCheckModel cfg <> ", " <> dollars (estimate (askFor cfg store ls mode x)) <> ")") cmd [toJSON uri, toJSON key]
+              priced word cmd mode = act (word <> " (" <> model <> ", " <> dollars (estimate (askFor cfg store ls mode x)) <> ")") cmd [toJSON uri, toJSON key]
               checkThis word = priced word "olifant.checkSentence" (modeOf x)
               answerThis = priced "Answer this" "olifant.answerSentence" CheckAnswer
               question = snKind x == Question || maybe False ((`elem` [Answer, Asked]) . seRoute) entry

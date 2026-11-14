@@ -31,6 +31,7 @@ module Olifant.Server.Checker
   , confirm
   , liveChecker
   , recordedChecker
+  , recordedCheckerAs
   , recordedAsked
   , replayChecker
   , checkerUnder
@@ -475,8 +476,17 @@ liveChecker token cfg root ask s
 -- Each key asked is appended to FILE.asked and each prompt to
 -- FILE.prompts; a key not in the file is a failure.
 recordedChecker :: FilePath -> Checker
-recordedChecker file ask s = do
-  let key = sentenceKey (snText s)
+recordedChecker = recordedCheckerAs ""
+
+-- | 'recordedChecker' for one model (the cascade's two): a reply under
+-- "MODEL: KEY" is that model's, and is asked (in FILE.asked) under that
+-- name; else the plain KEY's.
+recordedCheckerAs :: Text -> FilePath -> Checker
+recordedCheckerAs model file ask s = do
+  let plain = sentenceKey (snText s)
+      named = model <> ": " <> plain
+  replies0 <- readReplies file
+  let key = if not (T.null model) && KM.member (Key.fromText named) replies0 then named else plain
   -- checks run side by side (Check the plan): one writer at a time
   withMVar recordLock $ \() -> do
     appendFile (file <> ".asked") (T.unpack key <> "\n")
@@ -531,7 +541,7 @@ recordLock = unsafePerformIO (newMVar ())
 
 -- | The recorded checker when the server has `scCheckAnswers` (tests), else the live one.
 checkerUnder :: ServerState -> Cancel -> PlansConfig -> FilePath -> Checker
-checkerUnder s token cfg root = maybe (liveChecker token cfg root) recordedChecker (scCheckAnswers (ssConfig s))
+checkerUnder s token cfg root = maybe (liveChecker token cfg root) (recordedCheckerAs (pcCheckModel cfg)) (scCheckAnswers (ssConfig s))
 
 readReplies :: FilePath -> IO (KM.KeyMap Value)
 readReplies file =

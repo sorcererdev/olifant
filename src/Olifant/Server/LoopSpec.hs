@@ -878,7 +878,7 @@ stepTestsSpec = describe "Olifant.Server.Loop (a step's tests)" $ do
   it "(c2) stepStub on a checked step with no anchor stubs its cited unit; a typed anchor still wins" $
     withLoop plan [] $ \s _ dir -> do
       fp <- fpNow dir s "Table.label"
-      let check unit = CheckRecord (Confirmed JDone "it does" [Citation table (Just unit) Nothing] (Just (UnitRef table unit)) (Just fp) [Print table (Just unit) fp] Nothing Nothing []) "sonnet" (Just 0.1) 1 (UTCTime (fromGregorian 2026 11 7) 0) CheckProgress False
+      let check unit = CheckRecord (Confirmed JDone "it does" [Citation table (Just unit) Nothing] (Just (UnitRef table unit)) (Just fp) [Print table (Just unit) fp] Nothing Nothing []) "sonnet" (Just 0.1) 1 (UTCTime (fromGregorian 2026 11 7) 0) CheckProgress False False
           entry unit = SentenceEntry (Triage "step" 1 1 "grammar" Nothing Nothing) Progress (Just (check unit)) Nothing (UTCTime (fromGregorian 2026 11 7) 0) Nothing False
       storeClaims s dir (planPath dir) (M.fromList [("no anchor here", entry "Table.label"), ("the table is wrong", entry "Table.label")])
       (_, r) <- stepStub (planPath dir) 8 s
@@ -914,6 +914,13 @@ stepTestsSpec = describe "Olifant.Server.Loop (a step's tests)" $ do
 tidyPlan, jevConfig, climbConfig, helperEdited, withSpare :: Text
 tidyPlan = "# T\n\n## Tables\n\nThe tables a bistro seats.\n\n- [ ] count the seats\n- [ ] tidy the helper\n"
 jevConfig = "[decide]\nmodel = \"jev\"\n\n[model.backends.jev]\nkind = \"jev\"\n"
+
+-- | CONFIG with `check_model = "sonnet"` in its `[plans]` (one added when
+-- it has none): a spec about something besides the cascade.
+onSonnet :: Text -> Text
+onSonnet config
+  | "[plans]\n" `T.isInfixOf` config = T.replace "[plans]\n" "[plans]\ncheck_model = \"sonnet\"\n" config
+  | otherwise = config <> "\n[plans]\ncheck_model = \"sonnet\"\n"
 climbConfig =
   T.unlines
     [ "[model.backends.local]", "kind = \"openai-compatible\"", "url = \"http://127.0.0.1:1/v1\"", "model = \"x\"", "escalate = \"auto\""
@@ -993,8 +1000,10 @@ claimPassSpec = describe "Olifant.Server.Loop (claimPass)" $ describe "claimPass
       reply verdict = object ["text" .= ("I read it.\n```json\n{\"verdict\": \"" <> verdict <> "\", \"why\": \"it returns 1\", \"evidence\": [{\"path\": \"" <> T.pack table <> "\", \"unit\": \"helper\"}]}\n```"), "cost" .= (0.1 :: Double)]
       replies :: [(Text, Value)] -> Text
       replies kvs = TE.decodeUtf8 (BL.toStrict (encode (object ["replies" .= object [K.fromText k .= v | (k, v) <- kvs]])))
+      -- these specs are about the pass, not the cascade (the default): one
+      -- sonnet run a check
       withPass text extra checks act =
-        withReconcile text [] (jevConfig <> extra) (Just claims) $ \dir s -> do
+        withReconcile text [] (jevConfig <> onSonnet extra) (Just claims) $ \dir s -> do
           TIO.writeFile (checksFile dir) (replies checks)
           act dir s {ssConfig = (ssConfig s) {scCheckAnswers = Just (checksFile dir)}}
       pass mode dir s =
@@ -1049,12 +1058,77 @@ claimPassSpec = describe "Olifant.Server.Loop (claimPass)" $ describe "claimPass
       map (\e -> (erVerb e, erMode e, erVerdict e)) es `shouldBe` [("check", Just "progress", Just "done")]
       prompts <- TIO.readFile (checksFile dir <> ".prompts")
       prompts `shouldSatisfy` T.isInfixOf "done | open | misfit | cannot_tell"
+  describe "the cascade (2c)" $ do
+    let key = "The helper returns one."
+        sure :: Double -> Value
+        sure p = object ["choice" .= (p >= 0.5), "confidence" .= (if p >= 0.5 then p else 1 - p)]
+        jevWith :: Double -> Text
+        jevWith ev = TE.decodeUtf8 (BL.toStrict (encode (object ["answers" .= object
+          [ "sentence-kind" .= object ["choice" .= ("claim" :: Text), "confidence" .= (0.9 :: Double), "probabilities" .= object ["claim" .= (0.9 :: Double), "prose" .= (0.1 :: Double)]]
+          , "about-code" .= sure 0.9, "why-fits" .= sure 0.9, "evidence-fits" .= sure ev, "verdict-follows" .= sure 0.9 ]])))
+        priced :: Text -> Double -> Value
+        priced verdict cost = object ["text" .= ("```json\n{\"verdict\": \"" <> verdict <> "\", \"why\": \"it returns 1\", \"evidence\": [{\"path\": \"" <> T.pack table <> "\", \"unit\": \"helper\"}]}\n```"), "cost" .= cost, "seconds" .= (2 :: Double)]
+        cascadeConfig = "\n[plans]\ncheck_model = \"cascade\"\n"
+        withCascade text jev checks act =
+          withReconcile text [] (maybe "" (const jevConfig) jev <> cascadeConfig) jev $ \dir s -> do
+            TIO.writeFile (checksFile dir) (replies checks)
+            act dir s {ssConfig = (ssConfig s) {scCheckAnswers = Just (checksFile dir)}}
+        checkIt dir s = checkOne neverCancel Nothing (dir </> "plans/t.md") key s >>= \case
+          (_, Right store) -> maybe (fail "no check stored") pure (M.lookup key store >>= seCheck)
+          (_, Left e) -> fail (T.unpack e)
+        twoModels = [("haiku: " <> key, priced "right" 0.004), ("sonnet: " <> key, priced "wrong" 0.1)]
+    it "guards that hold keep haiku's verdict, and sonnet is not asked" $
+      withCascade plan (Just (jevWith 0.9)) twoModels $ \dir s -> do
+        c <- checkIt dir s
+        (cfJudgement (cjConfirmed c), cjEscalated c, cjCost c, cjSeconds c) `shouldBe` (JRight, False, Just 0.004, 2)
+        checksAsked dir `shouldReturn` ["haiku: " <> key]
+        kinds <- asked dir
+        filter (`elem` ["why-fits", "evidence-fits", "verdict-follows"]) kinds `shouldBe` ["why-fits", "evidence-fits", "verdict-follows"]
+        (_, es) <- passes dir
+        map (\e -> (erModel e, erVerdict e, erEscalated e, erCost e)) es `shouldBe` [("cascade", Just "right", False, Just 0.004)]
+    it "a guard under 0.60 checks again with sonnet: its verdict, both costs and times, escalated" $
+      withCascade plan (Just (jevWith 0.3)) twoModels $ \dir s -> do
+        c <- checkIt dir s
+        (cfJudgement (cjConfirmed c), cjEscalated c, cjSeconds c) `shouldBe` (JWrong, True, 4)
+        fmap (\x -> abs (x - 0.104) < 1e-9) (cjCost c) `shouldBe` Just True
+        checksAsked dir `shouldReturn` ["haiku: " <> key, "sonnet: " <> key]
+        (_, es) <- passes dir
+        map (\e -> (erModel e, erVerdict e, erEscalated e)) es `shouldBe` [("cascade", Just "wrong", True)]
+    it "haiku's cannot_tell goes to sonnet without asking the guards" $
+      withCascade plan (Just (jevWith 0.9)) [("haiku: " <> key, priced "cannot_tell" 0.004), ("sonnet: " <> key, priced "wrong" 0.1)] $ \dir s -> do
+        c <- checkIt dir s
+        (cfJudgement (cjConfirmed c), cjEscalated c) `shouldBe` (JWrong, True)
+        kinds <- asked dir
+        filter (== "why-fits") kinds `shouldBe` []
+    it "the store and the errand line keep escalated" $
+      withCascade plan (Just (jevWith 0.3)) twoModels $ \dir s -> do
+        _ <- checkIt dir s
+        store <- TIO.readFile (C.claimsPath dir "plans/t.md")
+        store `shouldSatisfy` T.isInfixOf "\"escalated\":true"
+        records <- TIO.readFile (recordsPath dir)
+        records `shouldSatisfy` T.isInfixOf "\"escalated\":true"
+    it "haiku's citation failure on code olifant cannot read stands: sonnet is not asked" $
+      withReconcile plan [("static/app.js", "function f() {\n  return 1;\n}\n")] (jevConfig <> cascadeConfig) (Just (jevWith 0.9)) $ \dir s0 -> do
+        let s = s0 {ssConfig = (ssConfig s0) {scCheckAnswers = Just (checksFile dir)}}
+            js = object ["text" .= ("```json\n{\"verdict\": \"right\", \"why\": \"f returns 1\", \"evidence\": [{\"path\": \"static/app.js\", \"unit\": \"f\"}]}\n```" :: Text), "cost" .= (0.004 :: Double), "seconds" .= (2 :: Double)]
+        TIO.writeFile (checksFile dir) (replies [("haiku: " <> key, js), ("sonnet: " <> key, priced "wrong" 0.1)])
+        c <- checkIt dir s
+        (cfJudgement (cjConfirmed c), cfWhy (cjConfirmed c), cjEscalated c, cjCost c) `shouldBe` (JCannotTell, "cited code not found", False, Just 0.004)
+        checksAsked dir `shouldReturn` ["haiku: " <> key]
+    it "with no Jev the cascade checks with sonnet alone" $
+      withCascade ("- " <> plan) Nothing twoModels $ \dir s -> do
+        c <- checkIt dir s
+        (cfJudgement (cjConfirmed c), cjEscalated c) `shouldBe` (JWrong, False)
+        checksAsked dir `shouldReturn` ["sonnet: " <> key]
+        -- named and priced as sonnet: a project without Jev pays as before
+        (_, es) <- passes dir
+        map erModel es `shouldBe` ["sonnet"]
   describe "questions and web in triage (2b)" $ do
     let jevSays kvs = TE.decodeUtf8 (BL.toStrict (encode (object ["answers" .= object [K.fromText k .= v | (k, v) <- kvs]])))
         kindIs k = object ["choice" .= (k :: Text), "confidence" .= (0.9 :: Double), "probabilities" .= object [K.fromText k .= (0.9 :: Double)]]
         noulIs b = object ["choice" .= (b :: Bool), "confidence" .= (0.9 :: Double)]
         withJev answers text extra checks act =
-          withReconcile text [] (jevConfig <> extra) (Just (jevSays answers)) $ \dir s -> do
+          withReconcile text [] (jevConfig <> onSonnet extra) (Just (jevSays answers)) $ \dir s -> do
             TIO.writeFile (checksFile dir) (replies checks)
             act dir s {ssConfig = (ssConfig s) {scCheckAnswers = Just (checksFile dir)}}
         -- a fresh server state on the same directory (a config change is read anew)
@@ -1116,7 +1190,7 @@ claimPassSpec = describe "Olifant.Server.Loop (claimPass)" $ describe "claimPass
         slowAnswer = object ["text" .= ("```json\n{\"verdict\": \"right\", \"why\": \"w\", \"evidence\": [{\"path\": \"" <> T.pack table <> "\", \"unit\": \"helper\"}]}\n```" :: Text), "cost" .= (0.1 :: Double), "delay" .= (0.5 :: Double)]
         q = "Does the helper return one?"
         withJev answers text checks act =
-          withReconcile text [] jevConfig (Just (jevSays answers)) $ \dir s -> do
+          withReconcile text [] (onSonnet jevConfig) (Just (jevSays answers)) $ \dir s -> do
             TIO.writeFile (checksFile dir) (replies checks)
             act dir s {ssConfig = (ssConfig s) {scCheckAnswers = Just (checksFile dir)}}
         writtenThenSaved dir s text = do
@@ -1198,6 +1272,8 @@ claimPassSpec = describe "Olifant.Server.Loop (claimPass)" $ describe "claimPass
       estimateFor "sonnet" es CheckAnswer False `shouldBe` 0.10
       estimateFor "sonnet" M.empty CheckClaim True `shouldBe` unpricedWebCheck
       estimateFor "haiku" M.empty CheckClaim False `shouldBe` 0.01
+      -- the cascade's measured mean (2c): $0.038 a check
+      estimateFor "cascade" M.empty CheckClaim False `shouldBe` 0.04
     it "estimatesOf reads web checks under their own key" $
       withPass plan "" [] $ \dir s -> do
         let at = UTCTime (fromGregorian 2026 11 14) 0
@@ -1205,7 +1281,7 @@ claimPassSpec = describe "Olifant.Server.Loop (claimPass)" $ describe "claimPass
               { erId = "c", erAt = at, erVerb = "check", erPlan = "plans/t.md", erRow = 0, erSection = "", erBranch = Nothing, erModel = "sonnet"
               , erStatus = Ok, erWhy = Nothing, erSession = Nothing, erSeconds = Nothing, erTurns = Nothing, erTokens = Nothing, erCost = Just c
               , erModels = [], erPromptChars = 0, erGrounded = 0, erBlocks = 0, erLines = 0, erDropped = 0, erUnresolved = 0, erChanged = 0
-              , erDenials = 0, erParent = Nothing, erAuto = False, erMode = Just "answer", erVerdict = Just "answered", erWeb = web }
+              , erDenials = 0, erParent = Nothing, erAuto = False, erMode = Just "answer", erVerdict = Just "answered", erWeb = web, erEscalated = False }
         mapM_ (appendRecord (ssPorts s) dir) [rec 0.2 True, rec 0.4 True, rec 0.05 False]
         es <- estimatesOf s dir
         (M.lookup "answer+web" es, M.lookup "answer" es) `shouldBe` (Just [0.4, 0.2], Just [0.05])

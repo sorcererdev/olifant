@@ -175,7 +175,7 @@ In `.olifant/config.toml`, all optional:
 | `pass_cost` | `0.50` | dollars an automatic claim pass may spend on checks: before each check it adds the mean cost of this pass's checks so far that cost something (a run that never started costs nothing and is left out; else $0.10) and stops if that would pass the cap; `0` checks nothing. A check whose cost the runner did not report counts as $0.10 |
 | `check_cost` | `5.00` | dollars one *Check the plan* may spend: before each check it adds the estimates of the checks in flight and the next one, and stops when that would pass the cap; at least 0 |
 | `recheck` | `"asked"` | who re-checks a stale verdict: `"asked"`, only *Re-check* and *Check the plan*; `"save"`, each save too, after the owed sentences and under the same caps. Anything else is a configuration error |
-| `check_model` | `"sonnet"` | the model a check runs on (`--model`) |
+| `check_model` | `"cascade"` | the model a check runs on: `"cascade"` checks with haiku first and with sonnet only when Jev doubts haiku's verdict, and with sonnet alone when there is no `[decide] model` ([The cascade](#the-cascade)); any other name (`"sonnet"`, `"haiku"`, `"opus"`) is passed as `--model` and runs alone |
 | `check_timeout` | `120` | seconds before a check is killed (at least 1) |
 | `not_evidence` | `["docs"]` | folders a check may not read, besides `dir` and `.olifant/` (add `"book"` when a project's book repeats its plans) |
 | `web` | `true` | a claim or question that public sources settle (Jev's about-public ≥ 0.70) and the code does not is checked with web search instead of the code ([Web research](#web-research)); `false` asks Jev nothing about it and buys no such check |
@@ -493,15 +493,17 @@ semantic-token modifiers `checked` and `wrong`.
 
 **The actions** (code actions on the sentence under the cursor):
 
-- *Check this (sonnet, ~$0.10)* on any sentence with no check (a claim, a step ticked or not, one
+- *Check this (cascade, ~$0.04)* on any sentence with no check (a claim, a step ticked or not, one
   the triage set aside; not a question): one check now, whatever the caps, a claim check or a
-  progress check by its triage. The estimate is the mean cost of the last 20 checks of that kind
-  (else $0.10, $0.30 with web, or $0.01 for haiku), read from `errands.jsonl` once and kept as checks are made.
-- *Answer this (sonnet, ~$0.10)* on any sentence with no check, of any route: answers it now,
+  progress check by its triage. The title names the model the check will run on: `cascade`, or
+  `sonnet` when the cascade has no Jev to guard it (then it is priced as sonnet). The estimate is
+  the mean cost of the last 20 checks of that kind (else $0.04 for the cascade, $0.10 for sonnet,
+  $0.30 with web, or $0.01 for haiku), read from `errands.jsonl` once and kept as checks are made.
+- *Answer this (cascade, ~$0.04)* on any sentence with no check, of any route: answers it now,
   whatever the caps ("say what the code says about this"). On a question it is the only one
   offered. On a sentence that has a check it is not offered, and `olifant/plans/ask` there says
   `this sentence has a check: Show why reads it` (one check a sentence: the verdict stays).
-- *Re-check (sonnet, ~$0.10)* on a stale verdict: the same, again.
+- *Re-check (cascade, ~$0.04)* on a stale verdict: the same, again.
 - *Check the plan (12 unchecked, 3 stale, ~$1.50)* on any row of a plan with something to check
   ([above](#checked-as-you-go)).
 - *Show the code here* on a checked sentence: opens the first cited code.
@@ -610,6 +612,55 @@ on its own (it was written before), it waits as backlog for *Check this* or *Che
 | re-triage of an older store | about $0.0001–0.0002 a stored sentence, once (a 60-sentence plan: about a cent) | the first pass that sees it |
 | an answer from code | about $0.12 (measured mean $0.117, sonnet) | automatically only for a question written since the last save, under `pass_cost`; else on request, the estimate in the title |
 | a web check | $0.01 a search plus the pages' tokens (measured mean $0.047) | with `web = true` (the default), about-public ≥ 0.70 and the code not settling it; automatically only for a sentence written since the last save, under `pass_cost` |
+
+### The cascade
+
+`check_model = "cascade"` is the default (since 2026-11-14; `check_model = "sonnet"` checks with
+sonnet alone, as before). Each check runs on haiku first; its
+citations are confirmed as always; then one Jev request asks three yes-or-no questions about
+haiku's verdict:
+
+- **why-fits**: does the reason speak to what the sentence says (not a neighbouring thing)?
+- **evidence-fits**: is the cited code what the sentence is about? It is shown each citation's
+  lines around the cited line (up to three citations), so a field deep in a model class is seen. For a web check, which cites
+  pages and no code: are the pages the named library's own documentation, release notes or
+  migration guide for the version the sentence names?
+- **verdict-follows**: does the verdict follow from the reason?
+
+The check goes on to sonnet when a citation fails, haiku cannot tell, its run fails, or any
+answer is under 0.60. One citation failure does not: haiku citing a function in a file olifant
+has no language for (a JavaScript file in a Python project, say), with every other citation
+found. Sonnet could not confirm it either, so haiku's *Could not tell · cited code not found*
+stands, at haiku's price. Sonnet's verdict is then the one shown; the stored check and its errand
+line say `"escalated": true`, and the cost and seconds are both runs'. Without Jev (no `[decide]
+model`) nothing can guard haiku, so the cascade checks with sonnet alone: the titles say
+`sonnet`, the errand line `"model": "sonnet"`, and a check costs what it did before. When Jev is
+configured but does not answer (down, no key), every guard counts as 0, so every check goes on
+to sonnet and costs haiku's run more than sonnet alone (about $0.005 a code check, $0.026 a web
+check). A web check stays a web check on either model, and a code check a code check.
+
+What you see is the same margin and hover; only the price and the wait move. Measured on the
+corpus's 29 recorded checks (claims, steps, answers and web, 2026-11-14, with the guards as they
+ship: the lines around each cited line, and a JavaScript citation kept):
+
+| | sonnet | cascade (0.60) |
+|---|---|---|
+| agrees with the labels | 25 of 27 | 26 of 27: the same 25, and R3 (sonnet could not tell; haiku's done, which the guards kept, is the label) |
+| wrong and sure | 0 | 0 (haiku alone was wrong-sure once, on W1; the guards sent it on) |
+| mean cost a check | $0.082 | $0.016 (haiku about $0.010; 2 of 29 went on to sonnet) |
+| median seconds | 10.3 | 14.4 (haiku takes more turns than sonnet; Jev adds about 0.3 s) |
+
+0.70 and 0.80 met the same bars (3 and 5 of 29 sent on). The threshold and the guards were
+tuned on the same 29 checks that score them: a check on a project of yours may escalate more
+often (`olifant plans cost --checks` shows the mean a check, and `.olifant/state/errands.jsonl`
+marks each escalated check). The Jev request is unpriced in `plans cost` (it carries the cited
+code). *Check this* and *Check the plan* estimate a cascade check with no history at $0.04,
+above the measured mean, so a sweep's `check_cost` errs on the side of stopping early.
+
+**What leaves your machine.** Each guarded check sends Jev (`api.typesafe.ai`) the sentence, the
+verdict and its reason, and the lines around each cited line: up to three citations, about a dozen
+lines each, so about 36 lines of your code a check. Triage sends Jev the sentence only. If your
+code must not go to Jev, set `check_model = "sonnet"`: Jev then sees sentences, never code.
 
 ## Reviews and the journal
 
