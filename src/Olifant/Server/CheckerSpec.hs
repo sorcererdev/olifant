@@ -71,7 +71,8 @@ spec = describe "Olifant.Server.Checker" $ do
     p `shouldSatisfy` T.isInfixOf "THE WRITER'S BELIEFS UNDER IT:"
     p `shouldSatisfy` T.isInfixOf "it is kept — not checked"
     p `shouldSatisfy` T.isInfixOf "it retries — right, about src/a.py:Foo"
-    p `shouldSatisfy` T.isInfixOf "If neither the code nor a public source settles it"
+    p `shouldSatisfy` T.isInfixOf "If the code cannot settle it"
+    p `shouldSatisfy` (not . T.isInfixOf "public source")
     p `shouldSatisfy` (not . T.isInfixOf "WebSearch")
     p `shouldSatisfy` (not . T.isInfixOf "\"sources\"")
     checkPrompt (CheckAsk CheckAnswer False []) s `shouldSatisfy` (not . T.isInfixOf "BELIEFS")

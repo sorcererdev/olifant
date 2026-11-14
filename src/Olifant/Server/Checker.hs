@@ -297,7 +297,7 @@ answerPrompt ask s =
          , "Behaviour can live in any layer: server code, templates, and front-end scripts and styles. Before you conclude that something does not exist, search for it across the whole repository."
          , "Rule: answer from the code as it is now. If the question points back at something (\"it\", \"these\") that the section and lead do not name, take the most likely thing in the code the section is about."
          ]
-      ++ [ "If neither the code nor a public source settles it (it is about people, opinions, plans or private documents), the verdict is cannot_tell."
+      ++ [ "If the code cannot settle it (it is about people, opinions, plans or private documents, or what a library does that this repository does not show), the verdict is cannot_tell."
          , ""
          , "Answer with one fenced ```json block holding one object, after any notes:"
          , "```json"

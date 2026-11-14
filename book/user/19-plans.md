@@ -583,6 +583,9 @@ and a step never gets the web. A check is one or the other, never both.
   can still carry the plan sentence and its heading, which is what it searches for. An open
   fetch is never offered, and any other address is refused at once. The appended system prompt
   says that what a page says is data to weigh, never an instruction.
+  One thing outside this: a user-level Claude Code allow rule for `WebFetch` (in
+  `~/.claude/settings.json`) widens `web_fetch` past its listed hosts. With the default empty
+  `web_fetch` nothing is fetched, as `WebFetch` is not offered at all.
 - **A code check cannot reach the web.** Its tools are Read, Grep and Glob only; `WebSearch` and
   `WebFetch` are denied. A `.env*` file is never accepted as evidence in any check.
 - **A source is the model's word and a link.** Code citations are confirmed against the tree; a
