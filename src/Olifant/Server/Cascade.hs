@@ -142,13 +142,11 @@ citesOnlyUnreadable s p cfg c
     kind ci = do
       alone <- confirm s p (fences cfg) (CheckReply JRight "" [ci] Nothing Nothing [])
       if cfJudgement alone /= JCannotTell then pure Confirms else do
-        readable <- case confined (ciPath ci) of
-          Nothing -> pure False
-          Just rel0 -> do
-            let rel = normalisePath rel0
-            there <- safely Nothing (readText (prWorkspace p) rel)
-            pure (isJust there && isJust (ciUnit ci) && isNothing (languageFor (catalogLanguages (prCatalog p)) rel))
-        pure (if readable then Unreadable else Missed)
+        -- the whole file is citable (there, under the root, not fenced off or a
+        -- secret), but its units are not olifant's to find
+        whole <- confirm s p (fences cfg) (CheckReply JRight "" [ci {ciUnit = Nothing, ciLine = Nothing}] Nothing Nothing [])
+        let noLanguage = maybe False (isNothing . languageFor (catalogLanguages (prCatalog p)) . normalisePath) (confined (ciPath ci))
+        pure (if cfJudgement whole /= JCannotTell && isJust (ciUnit ci) && noLanguage then Unreadable else Missed)
 
 data CitationKind = Confirms | Unreadable | Missed
   deriving stock (Eq)

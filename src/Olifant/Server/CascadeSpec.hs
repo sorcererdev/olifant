@@ -99,6 +99,9 @@ spec = describe "Olifant.Server.Cascade" $ do
     citesOnlyUnreadable s proj defaultPlans (failed [Citation "src/a.py" (Just "Nope") Nothing]) `shouldReturn` False
     -- not a citation failure
     citesOnlyUnreadable s proj defaultPlans (confirmed JCannotTell "the code does not say" [js] []) `shouldReturn` False
+    -- a file the checker may not cite (fenced off, a secret) is haiku's miss, not olifant's blind spot
+    citesOnlyUnreadable s proj defaultPlans (failed [Citation "docs/table.txt" (Just "T") Nothing]) `shouldReturn` False
+    citesOnlyUnreadable s proj defaultPlans (failed [Citation ".env" (Just "SECRET") Nothing]) `shouldReturn` False
 
   it "shows evidence-fits the lines around a cited line deep in a unit, not the unit's header" $ do
     (s, proj) <- checkerServer
