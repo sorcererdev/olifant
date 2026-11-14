@@ -19,6 +19,7 @@ module Olifant.Server.Triage
   , codeSettles
   , byGrammar
   , triageQuestions
+  , kindOptions
   , gradeQuestions
   , fromAnswers
   , noJev
@@ -146,10 +147,10 @@ kindInstructions = "What kind of sentence is this, in a software plan its author
 
 kindOptions :: [(Text, Text)]
 kindOptions =
-  [ ("claim", "Covers: a statement that something is or is not so about the software now, which reading the code could confirm or refute: what the code contains, how the app behaves when someone uses it (what happens after a click, what is kept or lost), or what fixing something would take (whether it needs a code change and a redeploy). Does not cover: what to do, wishes, opinions, estimates of effort or cost, or facts about people, documents or outside services. Examples: \"There is no AI in the codebase yet.\"; \"WebFetcher retries a failed request three times\"; \"Saving the form clears the search box.\"")
+  [ ("claim", "Covers: a statement that something is or is not so about the software now, which reading the code could confirm or refute: what the code contains, how the app behaves when someone uses it (what happens after a click, what is kept or lost), or what fixing something would take (whether it needs a code change and a redeploy); or what a named library, framework or service does or offers (in a version, if it names one), which its documentation could confirm or refute. Does not cover: what to do, wishes, opinions, estimates of effort or cost, or facts about people or documents. Examples: \"There is no AI in the codebase yet.\"; \"WebFetcher retries a failed request three times\"; \"Saving the form clears the search box.\"; \"requests follows redirects by default.\"")
   , ("question", "Covers: the author asks something. Does not cover: a statement or a task phrased with a question mark at the end of a request to do it. Examples: \"Do we have raw vote totals from previous years stored?\"; \"Is the 2018 results model not in admin?\"")
   , ("step", "Covers: says what to do or what was done: a task, change, proposal or idea for work. Does not cover: how the code is now, or opinions about the work. Examples: \"Add D and R fields to Comparison 2018\"; \"Make sure these new fields don't break the app if the data is missing.\"")
-  , ("prose", "Covers: opinion, estimate of effort or cost, process, context, narration or a wish the code cannot settle. Does not cover: statements about how the code is now, or tasks. Examples: \"We should break these up into small individual PRs\"; \"Having AI scrape specific gov websites at a regular cadence would not be difficult or expensive.\"")
+  , ("prose", "Covers: opinion, estimate of effort or cost, process, context, narration or a wish the code cannot settle. Does not cover: statements about how the code is now or what a named library or service does, or tasks. Examples: \"We should break these up into small individual PRs\"; \"Having AI scrape specific gov websites at a regular cadence would not be difficult or expensive.\"")
   ]
 
 wantsInstructions, wantsTrue, wantsFalse :: Text

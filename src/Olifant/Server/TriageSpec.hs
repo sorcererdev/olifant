@@ -75,6 +75,13 @@ spec = describe "Olifant.Server.Triage" $ do
     useWeb True (q 0.9 0.55 0.9) `shouldBe` False
     useWeb True (q 0.9 0.45 0.9) `shouldBe` True
 
+  it "a claim covers what a named library or service does (user ruling 2026-11-14)" $ do
+    let Just claimText = lookup "claim" kindOptions
+        Just proseText = lookup "prose" kindOptions
+    claimText `shouldSatisfy` T.isInfixOf "what a named library, framework or service does or offers"
+    claimText `shouldSatisfy` (not . T.isInfixOf "outside services")
+    proseText `shouldSatisfy` T.isInfixOf "Does not cover: statements about how the code is now or what a named library or service does"
+
   it "knows steps and questions by their grammar" $ do
     byGrammar (one "- [ ] Add a field") `shouldBe` Just (Triage "step" 1 1 "grammar" Nothing Nothing)
     byGrammar (one "- ? Why is it slow?") `shouldBe` Just (Triage "question" 1 1 "grammar" (Just 1) Nothing)
