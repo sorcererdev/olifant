@@ -1,8 +1,8 @@
 # 19. Plans
 
 A plan is a markdown file in which you write what you believe about the code and what you mean to
-do, in lines the engine can check. You ask the model about it: an `ask`'s answer goes straight
-into the plan (one `u` takes it out), a `validate`'s lands as ghost blocks you accept or reject. Plans live under `plans/` of the project (`[plans] dir`);
+do, in lines the engine can check. A question you write is answered beside the plan (nothing is
+written in until you keep it), and a `validate`'s answer lands as ghost blocks you accept or reject. Plans live under `plans/` of the project (`[plans] dir`);
 durandal.nvim treats a markdown file there as a plan, and any other buffer after
 `:Durandal plan`.
 
@@ -13,7 +13,7 @@ Prose is ignored. Lines are read by prefix:
 | line | shape |
 |---|---|
 | claim | `- <text> @path:Unit`, then the verdict: `✓ <7hex>` verified at that fingerprint, `✗ stale · why`, `? not found` |
-| question | `- ? <text>`: what `ask` answers |
+| question | `- ? <text>`: a question to answer; a question written as prose is one too ([Answers](#answers)) |
 | step | `- [ ] <text> @path:Unit`, or ending `· by hand`; `- [x] <text> @path:Unit ✓ <7hex>` when done, at that fingerprint (an open step may carry the one its tests last ran at); a step may nest |
 | section branch | `## <title> · branch <name>`: when that branch is checked out, the section's open steps are offered first |
 | test child | `  - test: <sentence> @file:name`, then its state: `○` pending, `●` green, `✗` red |
@@ -65,9 +65,9 @@ durandal.nvim the text reads as in `cat` by default: no text is hidden or moved.
   lines are dim; a conclusion (an unanchored claim under a question) is plain text; a question
   stands out. A `✓` whose unit has changed since is dimmer still.
 - **Done work folds.** A ticked step with children and an answered question are closed when you
-  enter the plan. A question is answered when a line directly under it is evidence (`- ✓`, `- ✗`),
-  a verified anchored claim, an `ask`'s answer (anchored claims, whatever their verdicts, then a
-  bare conclusion), or a belief of yours that the claim pass has
+  enter the plan. A question is answered when a line directly under it is evidence (`- ✓`, `- ✗`;
+  a kept answer is one), a verified anchored claim, an old `ask`'s answer (anchored claims,
+  whatever their verdicts, then a bare conclusion), or a belief of yours that the claim pass has
   checked, right or wrong. A bare line you write under a question is a belief awaiting its check,
   so the question stays open until the check lands. A question's fold line is the question, ` — `,
   and its conclusion (the last unanchored child, so a note you add later wins), cut to the window,
@@ -86,13 +86,19 @@ durandal.nvim the text reads as in `cat` by default: no text is hidden or moved.
   own step. A step written as prose ("Add D and R fields to Comparison 2018") is a step when Jev
   says so ([triage](#checked-as-you-go)). What each kind gets:
 
-  | sentence | route | checked |
-  |---|---|---|
-  | a claim (kind ≥ 0.80, about the code ≥ 0.70) | verify | right, wrong or could not tell |
-  | an unticked checkbox, or a prose step over the same thresholds | progress | done, open, misfit or could not tell |
-  | a ticked checkbox | progress | only when you ask |
-  | a question (`- ? `, or Jev's) | asked | not yet (answers come in a later milestone) |
-  | everything else | aside | only when you ask |
+  | sentence | route | with `web = false` | with `web = true` |
+  |---|---|---|---|
+  | a claim (kind ≥ 0.80) the code settles (about-code ≥ 0.70) | verify | right, wrong or could not tell | the same |
+  | a claim (kind ≥ 0.80) only public sources settle (about-public ≥ 0.70) | verify with web | aside | checked with web search |
+  | an unticked checkbox, or a prose step (kind ≥ 0.80, about-code ≥ 0.70) | progress | done, open, misfit or could not tell | the same (never the web) |
+  | a ticked checkbox | progress | only when you ask | the same |
+  | a question (kind ≥ 0.80) the writer wants answered (wants-answer ≥ 0.70) and something settles | answer | answered from the code | from the code, or with web search |
+  | any other question | asked | only when you ask | the same |
+  | everything else | aside | only when you ask | the same |
+
+  The rule under the table: a check is bought automatically only when something can settle it, so
+  never a check that can only end "could not tell". Turning `web` on or off takes effect on the
+  next pass: routes are worked out again from the stored triage, for nothing.
 
 - **Diagnostics are signs.** A plan line is prose, so olifant's diagnostics in a plan buffer are
   signs (one per row, the claim pass's verdicts by glyph) and underlines on the anchor, with no
@@ -105,7 +111,8 @@ durandal.nvim the text reads as in `cat` by default: no text is hidden or moved.
 plans = {
   conceal = false,  -- true: hide markers, paths and hashes off the cursor line
   glyphs = {},      -- override: todo, done, question, test, also, dash, path, hex,
-                    -- and the verdict signs queued ○, checking …, right ✓, wrong ✗, unsure ?, misfit !
+                    -- and the verdict signs queued ○, checking …, right ✓, wrong ✗, unsure ?, misfit !,
+                    -- answered »
   fold_done = true, -- false: on entry close only excerpts, leave done work open
 }
 ```
@@ -118,11 +125,13 @@ wins: `planEvidence`, `planAlso` and `planJournal` to `Comment`, `planQuestion` 
 
 - Diagnostics: a missing anchor (`? not found`), and `changed since this was verified` on a claim
   of your own whose unit has changed; and the claim pass's verdicts on sentences
-  ([Checked as you go](#checked-as-you-go)). Evidence an `ask` left under a question, and steps, raise no
+  ([Checked as you go](#checked-as-you-go)). Evidence an old `ask` left under a question, and steps, raise no
   `changed since`: the evidence's `✓` is dimmed instead and the step answers with the loop below.
 - `@` completes files, then units. `gd` on an anchor goes to the unit (`textDocument/definition`).
-- Three errands, each one `claude -p` run from the project root, never more than one `do` at a time:
-  - **ask** (on a `- ?` line): answers with claims that carry anchors the index resolves.
+- `olifant/plans/ask` (durandal.nvim's `<leader>mpq`) is *Answer this* on the sentence there
+  ([Answers](#answers)): the answer is stored beside the plan, never written in. The old `ask`
+  errand, which wrote anchored claims into the plan, is retired.
+- Two errands, each one `claude -p` run from the project root, never more than one `do` at a time:
   - **validate** (on a claim, or a `##` heading for the section): checks claims against the
     units' code and answers verdicts and evidence.
   - **do** (on a step or test child): does the step in the repository, with edit rights and the
@@ -142,9 +151,9 @@ wins: `planEvidence`, `planAlso` and `planJournal` to `Comment`, `planQuestion` 
   grounded, and the blocks, lines, dropped lines, unresolved anchors, changed files and permission
   denials of its answer. The status is `ok`, `empty` (answered, nothing in the grammar), `error`,
   `timeout` or `cancelled`. A line the verb refuses writes nothing. The answer carries the same id.
-- `.olifant/state/steps.log` keeps a readable echo of each: `plan-ask`, `plan-validate` or
+- `.olifant/state/steps.log` keeps a readable echo of each: `plan-validate` or
   `plan-do`, the plan and line, lines returned, anchors resolved, seconds, cost, model and status.
-  Measured on a clone of the demo: `plan-ask` 4.1 s, $0.054; `plan-validate`
+  Measured on a clone of the demo: `plan-validate`
   10.7 s, $0.077; `plan-do` 5.3 s, $0.060 (model `sonnet`).
 
 ## `[plans]`
@@ -166,6 +175,8 @@ In `.olifant/config.toml`, all optional:
 | `check_model` | `"sonnet"` | the model a check runs on (`--model`) |
 | `check_timeout` | `120` | seconds before a check is killed (at least 1) |
 | `not_evidence` | `["docs"]` | folders a check may not read, besides `dir` and `.olifant/` (add `"book"` when a project's book repeats its plans) |
+| `web` | `false` | `true`: a claim or question that public sources settle (Jev's about-public ≥ 0.70) is checked with web search too ([Web research](#web-research)); `false` asks Jev nothing about it and buys no such check |
+| `web_fetch` | `[]` | hosts a web check may also open pages on, e.g. `["docs.djangoproject.com"]`: lowercase host names with a dot, no scheme, path, port or `*` (anything else is a configuration error naming `web_fetch`) |
 | `budget` | `[model] budget` (180) | seconds per reconcile, counted from its start and checked before each question; past it, the units not yet asked about are only counted (`more` in the reconcile's answer and its record) and the next reconcile asks again |
 | `prices` | the current models at list price | `[plans.prices."<model id>"]` rows for `plans cost`, below |
 
@@ -239,7 +250,8 @@ the reconcile's `blocks` by index.
 
 The **claim pass** reads every sentence of a plan, works out which ones say something about the
 code (a claim) or ask it to change (a step), and has a model that searches the repository check
-those against the code: a claim for whether it is so, a step for how far the code has got. The verdict shows
+those against the code: a claim for whether it is so, a step for how far the code has got, a
+question for its answer ([Answers](#answers)). The verdict shows
 in the margin and on hover. Nothing is ever written into the plan: verdicts live in
 `.olifant/state/claims/<plan>.json` (ignored by git) and in the margin.
 
@@ -287,15 +299,26 @@ not triaged, checked or marked while you are still typing it.
   `[model.backends.jev] kind = "jev"`); the Jev version is that backend's own `model` key, pinned
   to `jev-1.14.0` by default. A `[decide] model` that names no backend (a version id put there by
   mistake) is a config error, not a quiet fall back to the grammar. One request per
-  sentence with its heading and the sentence or question before it: its kind (`claim`,
-  `question`, `step` or `prose`, with no "unsure" option) and whether this project's code can
-  settle it.
-- The route is fixed: a **claim** with kind probability at least 0.80 and about-code at least
-  0.70 goes to the claim check (`verify`); a **step** over the same thresholds, and every
-  checkbox, to the progress check (`progress`). Questions and everything else are stored and
-  never asked about again until their words change.
+  sentence with its heading and the sentence or question before it, with three questions (four
+  with `web = true`) over one shared context: its kind (`claim`, `question`, `step` or `prose`,
+  with no "unsure" option), whether this project's code can settle it (`about-code`), whether the
+  writer wants it answered (`wants-answer`: a real question about the code, the product or
+  another technical matter, not a request phrased as a question, a question to the team, a
+  rhetorical one or one inside a step), and with web on whether public technical sources (a
+  library's documentation, a standard, a public API) can settle it (`about-public`). A `- ? `
+  line is a question by its mark: Jev is asked only `about-code` (and `about-public` with web).
+- The route is fixed, from the table in [How a plan reads](#how-a-plan-reads): a **claim** with
+  kind probability at least 0.80 goes to the claim check (`verify`) when something can settle it
+  (about-code at least 0.70, or web on and about-public at least 0.70); a **step** with kind and
+  about-code over the thresholds, and every checkbox, to the progress check (`progress`); a
+  **question** the writer wants answered and something can settle, to the answer (`answer`).
+  Everything else is stored and never asked about again until its words change.
+- A plan stored before questions were answered (its entries have no `wants`) is re-triaged once:
+  Jev is asked only the missing questions, never the kind again, so a claim keeps its route and
+  its verdict, and nothing is checked for it: a question that becomes answerable is backlog.
+  Turning `web` on asks `about-public` of each stored sentence once, the same way.
 - With no `[decide] model` the grammar alone classifies: `- ` bullets are claims, checkboxes
-  steps, paragraphs prose (never checked).
+  steps, `- ? ` lines questions answered from the code, paragraphs prose (never checked).
 
 **The check.** A claim is checked by one `claude -p` run (the `runner`, `check_model`,
 `check_timeout`) from the project root with Read, Grep and Glob, that searches the repository for
@@ -356,8 +379,8 @@ either way), and what the replaced pass had not reached stays owed for the new o
 check is on is not taken by another: each check holds its sentence until its verdict is stored
 (*Check this* on a sentence showing `…` says `this sentence is being checked now`).
 Cancelling the "checking" progress stops the check in flight too. Each check is an errand record
-(`verb: check`, its `mode`, `verify` or `progress`, and its `verdict`; `auto: true` when the pass
-asked), so `plans cost` counts it; each pass that asked Jev or checked anything adds a `pass`
+(`verb: check`, its `mode`, `verify`, `progress` or `answer`, and its `verdict`; `auto: true` when
+the pass asked; `web: true` when it had the web tools), so `plans cost` counts it; each pass that asked Jev or checked anything adds a `pass`
 record (its mode, sentences, triaged, routes, checks and verdicts, failures, what is left queued,
 seconds, Jev calls, cost).
 
@@ -381,8 +404,10 @@ template, a stylesheet, a line outside any unit) goes stale on any edit to that 
 **Check the plan.** One action checks what is left: every sentence routed to a check with none yet
 (owed or backlog; ticked steps excluded) and every stale verdict, in plan order, three at a time.
 Its title says what and how much: *Check the plan (12 unchecked, 3 stale, ~$1.50)*, the estimate
-the sum over those sentences of the mean cost of the last 20 checks of their kind (else $0.10, or
-$0.01 for haiku). It stops before the check that would pass `[plans] check_cost` (default $5.00;
+the sum over those sentences of the mean cost of the last 20 checks of their kind, kept apart for
+each mode and for web (`verify`, `answer+web`, …; else $0.10, $0.30 for a web check, or $0.01 for
+haiku). Questions routed to an answer are counted and answered too; a question answered in the
+file is not. It stops before the check that would pass `[plans] check_cost` (default $5.00;
 there is no seconds cap) and says `Stopped at $5.00 · 9 left`. It runs under the "checking"
 progress with a count (`checking 4 of 15`); cancelling it stops it after the checks in flight,
 which are kept. A save while it runs does not stop it, and the save's own pass skips the sentences
@@ -408,6 +433,22 @@ line was not in its file; none is marked done or misfit against its label; none 
 lines ("use AI to …") reaches a check; a progress check costs $0.12 on average (the bar is
 $0.125).
 
+The question gate (2b), on the corpus's five `- ? ` questions, their twins with the mark
+stripped, and five questions that should not be answered: asking four questions in one request
+leaves the kind where it was (25 of 27, live); none of the five that should not be answered is
+routed to an answer; three of the five questions (and their stripped twins) are answered, each
+agreeing with the label and citing the right code, none wrong-sure, at $0.104 an answer. The
+other two ("Do we have raw vote totals from previous years stored?", "Is the 2018 results model
+not in admin?") are set aside as questions the code cannot settle (about-code 0.52 to 0.69, under
+0.70), so they wait for *Answer this*. That misses the gate's bar (four of five) and waits on a
+ruling.
+
+The web gate, on ten sentences about Django 5.x and htmx 4 that public sources settle: six are
+given web tools (four claims are read as prose by the kind, not as claims), none of the 29 corpus
+sentences is; three are right with a source cited (three more were right from the vendored code
+instead), none wrong-sure, $0.087 a web check. Short of the bar for turning `web` on by default
+(7 of 10 right, $0.30 a check).
+
 **The margin.** One diagnostic per sentence, over the sentence's range (source `olifant-plan`):
 
 | code | severity | message |
@@ -417,6 +458,11 @@ $0.125).
 | `claim-right` | hint | `✓ Right · <why> · <path>:<unit>` |
 | `claim-wrong` | warning | `✗ Wrong · <why> · <path>:<unit>` |
 | `claim-unsure` | hint | `? Could not tell · <why>` |
+| `claim-right`, `claim-wrong` resting only on web pages | hint, warning | `✓ Right, per <domain> · <why> · <title>` (`✗ Wrong, per …`) |
+| `claim-checking` on a question | hint | `… Answering` |
+| `question-answered` | hint | `» Answer · <answer> · <path>:<unit> · <title> (<domain>)` |
+| `question-unsure` | hint | `? Could not answer · <why>` |
+| `question-answered-stale` | hint | `» Answered when checked · the code changed since · <answer> · <path>:<unit>` |
 | `step-done` | hint | `✓ Done in the code · <why> · <path>:<unit> · Mark done?` (no `Mark done?` on a prose step) |
 | `step-misfit` | warning | `! As written this would not work · <why> · <path>:<unit>` |
 | `step-open` | hover only | `Still open · <why>` |
@@ -431,9 +477,10 @@ $0.125).
 `claim-queued` and `plan-unchecked` show only when checks can run (the runner is found and neither
 cap is 0); a failed check shows as queued. An open step, and a step the checker could not tell
 about, are silent in the margin (an open step is the normal state): their line is on hover only.
-Prose, questions and AI off show nothing. Hover (`K`) on a row lists each of its sentences'
-lines, without the glyph; when one is checked it ends with
-`gd: the code · Keep this verdict: <leader>mpk` (the server does not know your key: it names
+Prose, asked questions, questions answered in the file and AI off show nothing. Hover (`K`) on a
+row lists each of its sentences' lines, without the glyph; when one is checked it ends with
+`gd: the code · Keep this verdict: <leader>mpk` (`Keep this answer` when every check on the row is
+an answer) (the server does not know your key: it names
 durandal.nvim's default). The claim's words carry the
 semantic-token modifiers `checked` and `wrong`.
 
@@ -442,7 +489,11 @@ semantic-token modifiers `checked` and `wrong`.
 - *Check this (sonnet, ~$0.10)* on any sentence with no check (a claim, a step ticked or not, one
   the triage set aside; not a question): one check now, whatever the caps, a claim check or a
   progress check by its triage. The estimate is the mean cost of the last 20 checks of that kind
-  (else $0.10, or $0.01 for haiku), read from `errands.jsonl` once and kept as checks are made.
+  (else $0.10, $0.30 with web, or $0.01 for haiku), read from `errands.jsonl` once and kept as checks are made.
+- *Answer this (sonnet, ~$0.10)* on any sentence with no check, of any route: answers it now,
+  whatever the caps ("say what the code says about this"). On a question it is the only one
+  offered. On a sentence that has a check it is not offered, and `olifant/plans/ask` there says
+  `this sentence has a check: Show why reads it` (one check a sentence: the verdict stays).
 - *Re-check (sonnet, ~$0.10)* on a stale verdict: the same, again.
 - *Check the plan (12 unchecked, 3 stale, ~$1.50)* on any row of a plan with something to check
   ([above](#checked-as-you-go)).
@@ -452,6 +503,9 @@ semantic-token modifiers `checked` and `wrong`.
   that anchor with its `✓ <fingerprint>`, *Show the code here* (`<leader>mpe`) shows that unit, a
   stub (`<leader>ms`) goes to its tests, and a `do` on the step is grounded in every unit the
   check cited. A typed anchor still wins.
+- *Keep this answer* on an answered sentence: one `- ✓ <answer> · <path>:<unit> · <url>` line
+  (the first code citation and the first source, each left out when absent), placed as *Keep this
+  verdict* places its line ([Answers](#answers)).
 - *Keep this verdict* on a checked sentence (right or wrong; not on *could not tell*): writes
   the verdict into the plan as one evidence line after the sentence's last row, `- ✓ <why>
   (<path>:<unit>)` or `- ✗ …`, one level under a bullet or step, at the sentence's indent under
@@ -462,12 +516,84 @@ semantic-token modifiers `checked` and `wrong`.
   checker's order (the line cited, else the unit's first line), so an editor shows a list when
   there are several. On an anchor `gd` still goes to its unit; on a sentence with no check it
   does nothing.
-- *Show why*: the sentence, its verdict and why, and every citation, in
-  `.olifant/state/why/<hash>.md`, opened.
+- *Show why*: the sentence, its verdict and why (an answer: `Answer · <answer>` and its detail),
+  every citation, every web source as `- <title> — <url>` under `## Sources` with the line `A
+  source is the model's word and a link: olifant did not open it.`, and `Checked … · with web
+  search` for a web check, in `.olifant/state/why/<hash>.md`, opened.
 
-**An `ask` under your beliefs.** When a question has beliefs under it with a check, `<leader>mpq`
-sends them along: the prompt lists each with its verdict and the code it rests on (`not checked`
-for the rest) and asks the answer to add what they miss rather than repeat them.
+### Answers
+
+A question in a plan is answered beside it. Write it as prose ("Do we have raw vote totals from
+previous years stored?") or as a `- ? ` line; triage decides whether you want it answered and
+whether the code (or, with web, a public source) can settle it ([the route table](#how-a-plan-reads)).
+A question you write in the editor is answered on the save after you write it, under the same
+caps as a claim; a question already in the file when you opened it is backlog (`○`), answered by
+*Answer this* or *Check the plan*. A request phrased as a question ("Can we put hand entry at the
+top?"), a question to the team or a rhetorical one is left alone, with *Answer this* on the menu.
+
+The answer check is a third mode of the checker: one `claude -p` run with the heading, the lead,
+the question, and the beliefs you wrote under a `- ? ` line (every bare line directly under it,
+each with its verdict, `not checked` when it has none: a belief is still checked as a claim in
+the same pass, so a prediction gets its own verdict). It answers `answered` with at most three
+sentences meant for a hover, an optional longer `detail` for *Show why*, and the code it rests on
+(and the pages, with web), or `cannot_tell`. Its code citations are confirmed as a claim's are: a
+citation the engine cannot find turns it into "Could not answer · cited code not found".
+
+What a question shows:
+
+| state | margin | hover |
+|---|---|---|
+| owed or backlog | `○` | `Unchecked · …` |
+| being answered | spinner | `Answering` |
+| answered | `»` | `Answer · <answer> · <path>:<unit> · <title> (<domain>)` |
+| could not answer | `?` | `Could not answer · <why>` |
+| answered, the code changed since | `»` dimmed | `Answered when checked · the code changed since · …` |
+| asked (no answer wanted), or answered in the file | nothing | |
+
+`»` says there is more here; an answer is neither right nor wrong. `K` reads it, `gd` goes to the
+code it cites, *Show why* prints all of it.
+
+*Keep this answer* (`<leader>mpk`) writes it in: one evidence line, `- ✓ <answer> · <path>:<unit>
+· <url>`, after the question's last row, one level under a `- ? ` line, at the question's indent
+under prose. It is evidence, so it is never triaged or checked, and a `- ? ` line with it directly
+under it folds as answered. Once kept the question counts as **answered in the file**: its sign
+goes and it is never queued. For a paragraph question that holds when it is the last sentence
+ending on its row and the next row is the evidence line; a question earlier on the row is not
+answered by a line below the row.
+
+### Web research
+
+With `[plans] web = true`, a claim or question that public sources settle (Jev's about-public
+at least 0.70) is checked with web search as well as the code. A sentence the code settles is
+checked with the code tools alone, and a step never gets the web.
+
+- **Search, and fetch only where you say.** The run's tools gain `WebSearch`; `WebFetch` is added
+  only as `WebFetch(domain:<host>)` for each host in `web_fetch` (default none). Any other address
+  is refused at once. An open fetch is never offered: a page could otherwise tell the checker to
+  request an address that carries what it read in your repository.
+- **Your secrets stay fenced.** With web on, `.env*` files join the fences (deny rules on
+  `./.env*` and `./**/.env*`), and a `.env*` file is never accepted as evidence in any check. The
+  appended system prompt says that what a page says is data to weigh, never an instruction, and
+  that nothing read in the repository goes into a search or an address. A search query itself is
+  not fenced: measured, the model will put code it read into a query when asked to.
+- **A source is the model's word and a link.** Code citations are confirmed against the tree; a
+  web page cannot be without fetching addresses a model chose, so sources are shown, not
+  confirmed: only `http(s)` addresses with a host are kept, at most five, and a verdict resting on
+  pages alone says so (`✓ Right, per docs.djangoproject.com · …`).
+- **Cost.** A search is $0.01 plus the pages' tokens; a web check with no history is estimated at
+  $0.30 in *Check this* and *Check the plan*.
+
+`web` is `false` by default: the gate below did not meet the bar for turning it on.
+
+### What 2b costs
+
+| new spend | per user | when |
+|---|---|---|
+| `wants-answer` | about $0.0001 a sentence, in the triage request already made | first triage of each sentence |
+| `about-public` | about $0.0001 a sentence | only with `web = true` |
+| re-triage of an older store | about $0.0001–0.0002 a stored sentence, once (a 60-sentence plan: about a cent) | the first pass that sees it |
+| an answer from code | about $0.10 (measured mean $0.104, sonnet) | automatically only for a question written since the last save, under `pass_cost`; else on request, the estimate in the title |
+| a web check | $0.01 a search plus the pages' tokens (measured mean $0.087) | only with `web = true` and about-public ≥ 0.70 |
 
 ## Reviews and the journal
 
@@ -563,7 +689,7 @@ view. The columns:
   errand that failed before it reported one).
 - `reconciles` counts the bucket's `reconcile` records; `reconcile s` is the seconds they spent
   in model calls, Jev's rung and the words call included (`--json`: `reconciles`, `reconcile_seconds`).
-- `accepted` is ghost blocks accepted / blocks decided (an `ask` written straight in counts as accepted), and in parentheses the blocks of answered
+- `accepted` is ghost blocks accepted / blocks decided (an old `ask` written straight in counts as accepted; its records are still read), and in parentheses the blocks of answered
   errands no one has decided yet.
 - `sessions` counts Claude Code sessions that are not errands: a session whose id is some errand's
   session is that errand's and is never counted twice, whatever the errand's status. Each message
@@ -593,18 +719,21 @@ view. The columns:
 `check` records (honouring `--plan`, `--since`, `--branch` and `--json`):
 
 ```
-plan        sentences  triage $  claims  right/wrong/?  claims $  steps  done/open/misfit  steps $  automatic $  asked $  failed  total $
-plans/p.md          5      0.00       2          1/1/0      0.30      3             1/1/1     0.30         0.30     0.30       1     0.60
-plans/q.md          2      0.00       1          0/0/1      0.05      -                 -        -         0.00     0.05       0     0.05
+plan        sentences  triage $  claims  right/wrong/?  claims $  steps  done/open/misfit  steps $  answers  answered/?  answers $  by web  web $  automatic $  asked $  failed  total $
+plans/a.md          0      0.00       1          1/0/0      0.20      -                 -        -        3         2/1       0.45       2   0.50         0.00     0.65       0     0.65
+plans/b.md          0      0.00       1          1/0/0      0.10      -                 -        -        -           -          -       -      -         0.00     0.10       0     0.10
 ```
 
 `sentences` is what the passes triaged; `triage $` is 0 today (Jev is not priced yet). `claims` and
 `steps` count the answered checks of each kind with their verdicts (`?` is could not tell; a `check`
 record with no `mode` counts as a claim), and their `$` every check of that kind, failed ones too;
-a plan with none of a kind shows `-`. `automatic $` is what the save pass spent, `asked $` what
+`answers` counts the answer checks (`answered` / could not answer); `by web` and `web $` count the
+checks made with the web tools, which also count in their own mode's columns; a plan with none of
+a kind shows `-`. `automatic $` is what the save pass spent, `asked $` what
 *Check this*, *Re-check* and *Check the plan* spent, `failed` the checks that did not answer,
 `total $` the sum. `--json` prints `{"checks": [...]}`, each row with `plan`, `sentences`,
-`triage_cost`, `claims` and `steps` (each `n`, its verdict counts and `cost`), `automatic`,
+`triage_cost`, `claims` and `steps` (each `n`, its verdict counts and `cost`), `answers` (`n`,
+`answered`, `cannot_tell`, `cost`), `web` (`n`, `cost`), `automatic`,
 `asked`, `failed` and `total`. A pass record carries no branch, so `--branch` keeps its sentences
 only for `?`.
 
@@ -623,16 +752,16 @@ The fair comparison is a head-to-head: the same change made both ways.
 
 | key | |
 |---|---|
-| `<leader>mpq` | ask, on a `- ?` line: the answer is written under it at once (verified claims with their `✓ <fp>`, accepted to the engine), one undo step; while you type in the plan it waits for insert mode to end, and a plan that is not modifiable gets a ghost instead. `plans = { review_answers = true }` keeps the old ghost block for `<leader>mpy` / `<leader>mpn` |
+| `<leader>mpq` | *Answer this* on the sentence under the cursor: answered beside the plan (`»`, `K` reads it), never written in; on a sentence with a check it says `ask: nothing to answer here (checked already? K reads it)` |
 | `<leader>mpv` | validate, on a claim or a `##` heading |
 | `<leader>mpd` | do, on a step or test child |
-| `<leader>mpy` / `<leader>mpn` | accept / reject the ghost block on the line: a validate's, a no-git do's, or an ask's with `review_answers` (an accepted verified claim gains its `✓ <fp>`) |
+| `<leader>mpy` / `<leader>mpn` | accept / reject the ghost block on the line: a validate's or a no-git do's (an accepted verified claim gains its `✓ <fp>`) |
 | `<leader>mpc` | force a reconcile (and run the touched steps' tests) |
 | `<leader>mpx` | on a step (or a line under it): mark it done (ticked, `✓` its unit now, a live excerpt frozen) or reopen it (code actions "Mark done" / "Reopen step") |
 | `<leader>mpe` | on a step: its unit's code under it as an excerpt ("Show the code here"; frozen at once under a ticked step), or, where there is one, open or close its fold; where it cannot, the reason (LSP `disabled`). In a fold of done work or an answered question, it (like `zo`) opens or closes that fold |
 | `plans = { conceal, glyphs, fold_done }` | the reading layer ([above](#how-a-plan-reads)): `conceal = true` hides markers, paths and hashes off the cursor line (off by default); override a glyph or a verdict sign (`glyphs.checking` is a list of spinner frames); close done work on entry |
-| the sign column | one sign per row from the claim pass: `○`, a spinner (`⠋⠙⠹…`, 100 ms a frame) while checking, `✓ ✗ ?`, `!` for a misfit or a ticked step not done (a row with several sentences shows its worst, `✗ › ! › ? › checking › ○ › ✓`, a stale verdict last), a stale verdict's glyph dimmed (`DurandalPlanStale`, linked to `Comment`, no undercurl), no sign for the plan's `plan-unchecked` summary, other olifant diagnostics by severity; a row holding two or more checked sentences also shows a dim mark after each (`DurandalPlanMark`, linked to `Comment`; the sign's glyph, the spinner frame while checking), the sign keeping the worst; a wrong claim and a misfit step are undercurled; the sentence being checked is highlighted (`DurandalPlanChecking`: the cursor line's background, dotted underneath) until its verdict lands |
-| `<leader>mpk` | keep the checked verdict here as an evidence line (the code action *Keep this verdict*; `keys.plan_keep`) |
+| the sign column | one sign per row from the claim pass: `○`, a spinner (`⠋⠙⠹…`, 100 ms a frame) while checking, `✓ ✗ ?`, `!` for a misfit or a ticked step not done, `»` an answered question (`plans.glyphs.answered`; a row with several sentences shows its worst, `✗ › ! › ? › » › checking › ○ › ✓`, a stale verdict last), a stale verdict's glyph dimmed (`DurandalPlanStale`, linked to `Comment`, no undercurl), no sign for the plan's `plan-unchecked` summary, other olifant diagnostics by severity; a row holding two or more checked sentences also shows a dim mark after each (`DurandalPlanMark`, linked to `Comment`; the sign's glyph, the spinner frame while checking), the sign keeping the worst; a wrong claim and a misfit step are undercurled; the sentence being checked is highlighted (`DurandalPlanChecking`: the cursor line's background, dotted underneath) until its verdict lands |
+| `<leader>mpk` | keep the checked verdict or the answer here as an evidence line (the code action *Keep this verdict* or *Keep this answer*; `keys.plan_keep`) |
 | `<leader>mps` | check the sentence here: *Re-check* on a stale verdict, else *Check this* (`keys.plan_check`); says `check: nothing to check here` otherwise |
 | `<leader>mpS` | *Check the plan* (`keys.plan_check_all`); says `check: nothing left to check in this plan` otherwise |
 | `<leader>ms` / `<leader>mt` | on a step: stub a test under it / run its tests and tick it |
