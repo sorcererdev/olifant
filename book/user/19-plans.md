@@ -640,21 +640,22 @@ to sonnet and costs haiku's run more than sonnet alone (about $0.005 a code chec
 check). A web check stays a web check on either model, and a code check a code check.
 
 What you see is the same margin and hover; only the price and the wait move. Measured on the
-corpus's 29 recorded checks (claims, steps, answers and web, 2026-11-14):
+corpus's 29 recorded checks (claims, steps, answers and web, 2026-11-14, with the guards as they
+ship: the lines around each cited line, and a JavaScript citation kept):
 
 | | sonnet | cascade (0.60) |
 |---|---|---|
 | agrees with the labels | 25 of 27 | 26 of 27: the same 25, and R3 (sonnet could not tell; haiku's done, which the guards kept, is the label) |
 | wrong and sure | 0 | 0 (haiku alone was wrong-sure once, on W1; the guards sent it on) |
-| mean cost a check | $0.082 | $0.038 (haiku about $0.010; 8 of 29 went on to sonnet) |
-| median seconds | 10.3 | 14.6 (haiku takes more turns than sonnet; Jev adds about 0.3 s) |
+| mean cost a check | $0.082 | $0.016 (haiku about $0.010; 2 of 29 went on to sonnet) |
+| median seconds | 10.3 | 14.4 (haiku takes more turns than sonnet; Jev adds about 0.3 s) |
 
-At 0.70 it missed the half-the-cost bar by $0.0004 a check, at 0.80 the cost and time bars. The
-threshold was tuned on the same 29 checks that score it: a check on a project of yours may
-escalate more often (`olifant plans cost --checks` shows the mean a check, and
-`.olifant/state/errands.jsonl` marks each escalated check). The Jev request is unpriced in
-`plans cost` (about 3,200 input tokens, since it carries the cited code). *Check this* and *Check
-the plan* estimate a cascade check with no history at $0.04.
+0.70 and 0.80 met the same bars (3 and 5 of 29 sent on). The threshold and the guards were
+tuned on the same 29 checks that score them: a check on a project of yours may escalate more
+often (`olifant plans cost --checks` shows the mean a check, and `.olifant/state/errands.jsonl`
+marks each escalated check). The Jev request is unpriced in `plans cost` (it carries the cited
+code). *Check this* and *Check the plan* estimate a cascade check with no history at $0.04,
+above the measured mean, so a sweep's `check_cost` errs on the side of stopping early.
 
 ## Reviews and the journal
 
