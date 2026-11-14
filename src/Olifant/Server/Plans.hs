@@ -365,7 +365,7 @@ keepEdit ls x ch = do
     JRight -> Just (verdict "✓")
     JWrong -> Just (verdict "✗")
     -- *Keep this answer*: `- ✓ <answer> · <path>:<unit> · <url>`
-    JAnswered | Just a <- cfAnswer cf -> Just ("✓ " <> T.intercalate " · " ([a] ++ [w | let w = evidenceText cf, not (T.null w)] ++ [soUrl so | so <- take 1 (cfSources cf)]))
+    JAnswered | Just a <- cfAnswer cf -> Just ("✓ " <> T.intercalate " · " ([oneLine a] ++ [w | let w = evidenceText cf, not (T.null w)] ++ [soUrl so | so <- take 1 (cfSources cf)]))
     _ -> Nothing
   first <- find ((== snRow x) . lnRow) ls
   lastRow <- find ((== snEndRow x) . lnRow) ls
@@ -379,8 +379,10 @@ keepEdit ls x ch = do
     Just (TextEdit (Range end end) ("\n" <> line))
   where
     cf = cjConfirmed ch
-    verdict glyph = glyph <> " " <> T.intercalate " " ([cfWhy cf | not (T.null (cfWhy cf))] ++ ["(" <> w <> ")" | let w = evidenceText cf, not (T.null w)])
+    verdict glyph = glyph <> " " <> T.intercalate " " ([oneLine (cfWhy cf) | not (T.null (cfWhy cf))] ++ ["(" <> w <> ")" | let w = evidenceText cf, not (T.null w)])
     isBullet l = "- " `T.isPrefixOf` T.drop (lnIndent l) (lnText l)
+    -- the model's text on one row: a newline in it would write more lines (a heading, a step) into the plan
+    oneLine = T.unwords . T.words
 
 -- | (path, unit) -> the unit's fingerprint now; Nothing = not found. A key
 -- that is absent has not been read yet. Beside the anchors', the prints of

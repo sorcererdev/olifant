@@ -360,6 +360,14 @@ spec = describe "Olifant.Server.Plans (anchors in the server)" $ do
       -- already kept: not offered again
       let ls3 = parsePlan "Does bulk_create return keys?\n- ✓ Yes. · https://docs.djangoproject.com/en/5.2/ref/\n"
       fmap insertOf (keepEdit ls3 (head (sentences ls3)) c2) `shouldBe` Nothing
+    it "Keep this answer (or verdict) writes one line whatever newlines the reply held" $ do
+      let insertOf (TextEdit _ t) = t
+          ls = parsePlan "Does bulk_create return keys?\n"
+          [y] = sentences ls
+          Just c = seCheck (answerE JAnswered "the docs" (Just "Yes.\n\n# It sets pk\n- on PostgreSQL") [] [src] True)
+          Just v = seCheck (answerE JRight "it does\n## so" Nothing cite [] False)
+      fmap insertOf (keepEdit ls y c) `shouldBe` Just "\n- ✓ Yes. # It sets pk - on PostgreSQL · https://docs.djangoproject.com/en/5.2/ref/"
+      fmap insertOf (keepEdit ls y v) `shouldBe` Just "\n- ✓ it does ## so (src/a.py:Foo)"
   describe "planTokensWith (claim modifiers)" $
     it "a bare line's text carries checked or wrong from its check" $ do
       let e j = verdictEntry j "no"
