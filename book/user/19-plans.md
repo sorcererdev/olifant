@@ -89,15 +89,18 @@ durandal.nvim the text reads as in `cat` by default: no text is hidden or moved.
   | sentence | route | with `web = false` | with `web = true` |
   |---|---|---|---|
   | a claim (kind ≥ 0.80) the code settles (about-code ≥ 0.70) | verify | right, wrong or could not tell | the same |
-  | a claim (kind ≥ 0.80) only public sources settle (about-public ≥ 0.70) | verify with web | aside | checked with web search |
+  | a claim (kind ≥ 0.80) only public sources settle (about-public ≥ 0.70, about-code under 0.70) | verify with web | aside | checked with web search alone |
   | an unticked checkbox, or a prose step (kind ≥ 0.80, about-code ≥ 0.70) | progress | done, open, misfit or could not tell | the same (never the web) |
   | a ticked checkbox | progress | only when you ask | the same |
-  | a question (kind ≥ 0.80) the writer wants answered (wants-answer ≥ 0.70) and something settles | answer | answered from the code | from the code, or with web search |
+  | a question (kind ≥ 0.80) the writer wants answered (wants-answer ≥ 0.70) and something settles (about-code ≥ 0.50, or about-public ≥ 0.70) | answer | answered from the code | from the code when it settles it, else with web search alone |
   | any other question | asked | only when you ask | the same |
   | everything else | aside | only when you ask | the same |
 
   The rule under the table: a check is bought automatically only when something can settle it, so
-  never a check that can only end "could not tell". Turning `web` on or off takes effect on the
+  never a check that can only end "could not tell". A question needs less about-code than a
+  claim (0.50, not 0.70): "Do we have raw vote totals from previous years stored?" scores 0.62
+  and the code answers it. A sentence both the code and public sources settle gets the code
+  check. Turning `web` on or off takes effect on the
   next pass: routes are worked out again from the stored triage, for nothing.
 
 - **Diagnostics are signs.** A plan line is prose, so olifant's diagnostics in a plan buffer are
@@ -175,7 +178,7 @@ In `.olifant/config.toml`, all optional:
 | `check_model` | `"sonnet"` | the model a check runs on (`--model`) |
 | `check_timeout` | `120` | seconds before a check is killed (at least 1) |
 | `not_evidence` | `["docs"]` | folders a check may not read, besides `dir` and `.olifant/` (add `"book"` when a project's book repeats its plans) |
-| `web` | `false` | `true`: a claim or question that public sources settle (Jev's about-public ≥ 0.70) is checked with web search too ([Web research](#web-research)); `false` asks Jev nothing about it and buys no such check |
+| `web` | `false` | `true`: a claim or question that public sources settle (Jev's about-public ≥ 0.70) and the code does not is checked with web search instead of the code ([Web research](#web-research)); `false` asks Jev nothing about it and buys no such check |
 | `web_fetch` | `[]` | hosts a web check may also open pages on, e.g. `["docs.djangoproject.com"]`: lowercase host names with a dot, no scheme, path, port or `*` (anything else is a configuration error naming `web_fetch`) |
 | `budget` | `[model] budget` (180) | seconds per reconcile, counted from its start and checked before each question; past it, the units not yet asked about are only counted (`more` in the reconcile's answer and its record) and the next reconcile asks again |
 | `prices` | the current models at list price | `[plans.prices."<model id>"]` rows for `plans cost`, below |
@@ -301,7 +304,8 @@ not triaged, checked or marked while you are still typing it.
   mistake) is a config error, not a quiet fall back to the grammar. One request per
   sentence with its heading and the sentence or question before it, with three questions (four
   with `web = true`) over one shared context: its kind (`claim`, `question`, `step` or `prose`,
-  with no "unsure" option), whether this project's code can settle it (`about-code`), whether the
+  with no "unsure" option; a claim is about this code, or about what a named library, framework
+  or service does: "Django 5.1 added the {% querystring %} template tag" is a claim), whether this project's code can settle it (`about-code`), whether the
   writer wants it answered (`wants-answer`: a real question about the code, the product or
   another technical matter, not a request phrased as a question, a question to the team, a
   rhetorical one or one inside a step), and with web on whether public technical sources (a
@@ -311,7 +315,9 @@ not triaged, checked or marked while you are still typing it.
   kind probability at least 0.80 goes to the claim check (`verify`) when something can settle it
   (about-code at least 0.70, or web on and about-public at least 0.70); a **step** with kind and
   about-code over the thresholds, and every checkbox, to the progress check (`progress`); a
-  **question** the writer wants answered and something can settle, to the answer (`answer`).
+  **question** the writer wants answered and something can settle (about-code at least 0.50, or
+  web on and about-public at least 0.70), to the answer (`answer`). A check is a code check or a
+  web check, never both: the code check when the code settles it.
   Everything else is stored and never asked about again until its words change.
 - A plan stored before questions were answered (its entries have no `wants`) is re-triaged once:
   Jev is asked only the missing questions, never the kind again, so a claim keeps its route and
@@ -435,19 +441,19 @@ $0.125).
 
 The question gate (2b), on the corpus's five `- ? ` questions, their twins with the mark
 stripped, and five questions that should not be answered: asking four questions in one request
-leaves the kind where it was (25 of 27, live); none of the five that should not be answered is
-routed to an answer; three of the five questions (and their stripped twins) are answered, each
-agreeing with the label and citing the right code, none wrong-sure, at $0.104 an answer. The
-other two ("Do we have raw vote totals from previous years stored?", "Is the 2018 results model
-not in admin?") are set aside as questions the code cannot settle (about-code 0.52 to 0.69, under
-0.70), so they wait for *Answer this*. That misses the gate's bar (four of five) and waits on a
-ruling.
+leaves the kind where it was (26 of 27, live); none of the five that should not be answered is
+routed to an answer; all five questions (and their stripped twins) are answered, each agreeing
+with the label and citing the right code, none wrong-sure, at $0.117 an answer. Two of them
+("Do we have raw vote totals from previous years stored?", "Is the 2018 results model not in
+admin?", about-code 0.52 to 0.69) are answered only because a question's about-code threshold is
+0.50.
 
-The web gate, on ten sentences about Django 5.x and htmx 4 that public sources settle: six are
-given web tools (four claims are read as prose by the kind, not as claims), none of the 29 corpus
-sentences is; three are right with a source cited (three more were right from the vendored code
-instead), none wrong-sure, $0.087 a web check. Short of the bar for turning `web` on by default
-(7 of 10 right, $0.30 a check).
+The web gate, on ten sentences about Django 5.x and htmx 4 that public sources settle: all ten
+are routed to a check and all ten come back right, none wrong-sure. Seven go to a web check,
+each right with a source, at $0.047 a web check; three go to the code check because the code
+settles them (two htmx 4 questions the repository's vendored htmx build answers, and a Django
+claim), and the gate's bar asks for eight of ten given web tools. None of the 29 corpus
+sentences about the code is given web tools. So `web` stays `false` by default for now.
 
 **The margin.** One diagnostic per sentence, over the sentence's range (source `olifant-plan`):
 
@@ -564,26 +570,29 @@ answered by a line below the row.
 ### Web research
 
 With `[plans] web = true`, a claim or question that public sources settle (Jev's about-public
-at least 0.70) is checked with web search as well as the code. A sentence the code settles is
-checked with the code tools alone, and a step never gets the web.
+at least 0.70) and the code does not is checked with web search instead of the code. A sentence
+the code settles is checked with the code tools alone, even when public sources settle it too,
+and a step never gets the web. A check is one or the other, never both.
 
-- **Search, and fetch only where you say.** The run's tools gain `WebSearch`; `WebFetch` is added
-  only as `WebFetch(domain:<host>)` for each host in `web_fetch` (default none). Any other address
-  is refused at once. An open fetch is never offered: a page could otherwise tell the checker to
-  request an address that carries what it read in your repository.
-- **Your secrets stay fenced.** With web on, `.env*` files join the fences (deny rules on
-  `./.env*` and `./**/.env*`), and a `.env*` file is never accepted as evidence in any check. The
-  appended system prompt says that what a page says is data to weigh, never an instruction, and
-  that nothing read in the repository goes into a search or an address. A search query itself is
-  not fenced: measured, the model will put code it read into a query when asked to.
+- **A web check cannot see your code.** Its only tools are `WebSearch` and, for each host in
+  `web_fetch` (default none), `WebFetch(domain:<host>)`; Read, Grep, Glob, Edit, Write and Bash
+  are not offered and are denied besides. It runs in an empty temporary directory, so no
+  repository file, `CLAUDE.md` or project settings reach it, and its prompt holds only the
+  sentence and its section heading. So a search can no longer carry your repository's code; it
+  can still carry the plan sentence and its heading, which is what it searches for. An open
+  fetch is never offered, and any other address is refused at once. The appended system prompt
+  says that what a page says is data to weigh, never an instruction.
+- **A code check cannot reach the web.** Its tools are Read, Grep and Glob only; `WebSearch` and
+  `WebFetch` are denied. A `.env*` file is never accepted as evidence in any check.
 - **A source is the model's word and a link.** Code citations are confirmed against the tree; a
   web page cannot be without fetching addresses a model chose, so sources are shown, not
-  confirmed: only `http(s)` addresses with a host are kept, at most five, and a verdict resting on
-  pages alone says so (`✓ Right, per docs.djangoproject.com · …`).
+  confirmed: only `http(s)` addresses with a host are kept, at most five, and a web check's
+  verdict rests on them alone (`✓ Right, per docs.djangoproject.com · …`); one with no source is
+  refused.
 - **Cost.** A search is $0.01 plus the pages' tokens; a web check with no history is estimated at
   $0.30 in *Check this* and *Check the plan*.
 
-`web` is `false` by default: the gate below did not meet the bar for turning it on.
+`web` is `false` by default: the gate below did not meet its routing bar for turning it on.
 
 ### What 2b costs
 
@@ -592,8 +601,8 @@ checked with the code tools alone, and a step never gets the web.
 | `wants-answer` | about $0.0001 a sentence, in the triage request already made | first triage of each sentence |
 | `about-public` | about $0.0001 a sentence | only with `web = true` |
 | re-triage of an older store | about $0.0001–0.0002 a stored sentence, once (a 60-sentence plan: about a cent) | the first pass that sees it |
-| an answer from code | about $0.10 (measured mean $0.104, sonnet) | automatically only for a question written since the last save, under `pass_cost`; else on request, the estimate in the title |
-| a web check | $0.01 a search plus the pages' tokens (measured mean $0.087) | only with `web = true` and about-public ≥ 0.70 |
+| an answer from code | about $0.12 (measured mean $0.117, sonnet) | automatically only for a question written since the last save, under `pass_cost`; else on request, the estimate in the title |
+| a web check | $0.01 a search plus the pages' tokens (measured mean $0.047) | only with `web = true`, about-public ≥ 0.70 and the code not settling it |
 
 ## Reviews and the journal
 

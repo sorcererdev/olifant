@@ -45,7 +45,7 @@ a new-step ghost worded from the unit's header.
 | `Server/Telemetry.hs` | `.olifant/state/errands.jsonl`: errand, outcome, reconcile and claim-pass (`PassRecord`, kind `pass`) records (`appendRecord`); the retired resolver's `resolve` lines still parse |
 | `Server/Excerpt.hs` | code excerpts kept under a step, and the hover over an anchor |
 | `Plans/Sentences.hs` | the **sentences** of a plan, pure: `sentencesWith :: (Int -> Bool) -> [Line] -> [Sentence]` (row and column range, the line's `Kind`, the text with markers stripped, heading, lead, anchor), where the predicate says which rows continue on the next (a row that does not ends its sentence at the line break); `sentences` joins none, `sentencesJoined` joins by a store's answers; `joinCandidates` (the rows that end without `. ? ! :`, with their and the next row's text), `pairKey`, and `sentenceKey`, a sentence's words without anchor or verdict; a span with no letter or digit (an empty `- `, `-  .`) gives no sentence, so nothing downstream sees it |
-| `Server/Triage.hs` | **triage**: `byGrammar` (steps, questions), `triageQuestions web` (Jev's `sentence-kind` choice with no unsure, its `about-code` Noul, the `wants-answer` Noul, and with web the `about-public` Noul, one state), `gradeQuestions` (a `- ? ` line: `about-code`, and `about-public` with web), `fromAnswers` (by question kind), `noJev`, `needsRetriage` and `retriage` (only the missing Nouls), `settleable`, `useWeb`, and `route web` with the two thresholds `kindThreshold` and `aboutThreshold`; the join question `joinQuestion` (a `line-continues` Noul, no unsure), `joinThreshold` (0.70), `joinsAnswer`, and `decideJoins` (one `weighAll` per candidate while the pass allows; unsure answers dropped; no Jev, none) |
+| `Server/Triage.hs` | **triage**: `byGrammar` (steps, questions), `triageQuestions web` (Jev's `sentence-kind` choice with no unsure, its `about-code` Noul, the `wants-answer` Noul, and with web the `about-public` Noul, one state), `gradeQuestions` (a `- ? ` line: `about-code`, and `about-public` with web), `fromAnswers` (by question kind), `noJev`, `needsRetriage` and `retriage` (only the missing Nouls), `settleable`, `codeSettles` (about-code at `aboutThreshold`, a question's at `questionAboutThreshold`, 0.50), `useWeb` (web on, about-public at the threshold, and not `codeSettles`: the code check wins), and `route web` with the thresholds `kindThreshold`, `aboutThreshold` and `questionAboutThreshold`; `kindOptions` (exported, its claim text covering what a named library, framework or service does); the join question `joinQuestion` (a `line-continues` Noul, no unsure), `joinThreshold` (0.70), `joinsAnswer`, and `decideJoins` (one `weighAll` per candidate while the pass allows; unsure answers dropped; no Jev, none) |
 | `Server/Checker.hs` | the **checker**: `Judgement` (right, wrong, cannot tell; done, open, misfit; answered), `CheckMode` (`CheckClaim`, JSON `verify`; `CheckProgress`, `progress`; `CheckAnswer`, `answer`) and `checkModeOf` (a triage of kind `step` is checked for progress, `question` answered), `CheckAsk` (mode, web, beliefs), `Source` and `sourceDomain`, `checkPrompt`/`checkPromptWith` and `parseCheckReply` in any mode, `confirm` (every citation checked against the tree and the catalog; a `Print` per citation found, `fileHash` for a whole file), `liveChecker` (the `Check` verb of `runClaude`), `recordedChecker`, `replayChecker`, `checkerUnder`; `UnitRef` |
 | `Server/Claims.hs` | the **claim store**, version 2 (`SentenceEntry`: triage, route, `CheckRecord` or `Failure`, `seGone`; `ClaimStore` keyed by `sentenceKey`; `readClaims`/`writeClaims` under `.olifant/state/claims/`; `claimsOf`/`updateClaims` through `ssClaims`: every write is a function of the store as held now, under one lock), `checkable` (routed verify, progress or answer), `modeFor` (the mode asked, else the stored check's, else the triage's), `openSentences` (the sentences less the questions answered in the file), `queued` (owed), `unchecked` (owed or not), `stepUnit` and `stepCitations` (a step's working unit from its check), `pruneClaims`, `checkedKeys`, `lineKey`; the **joins** beside the entries (`Joins`, by `pairKey`, the file's optional `"joins"` field, still version 2; `readJoins`, `writeClaimsWith`, `joinsOf`/`updateJoins` held in `ssClaims` under `<plan>#joins`, same lock and file) and `sentencesOf`, the plan's sentences with its joins, which everything reading sentences calls |
 | `Server/Stale.hs` | **stale verdicts**: `printsNow` (the cited files as they are now, read through the server's cache `ssCitePrints`), `isStale`, `staleKeys`, `staleIn`, `citedPrints`; `CitedFile` lives in `Server/State` (State is below Checker) |
@@ -346,8 +346,9 @@ the whole of it:
    `retriage` in the same loop, under the same budget and token: only the missing Nouls are
    asked, its kind, check, failure and owed mark kept; each counts as one Jev call. `route web`
    turns the `Triage` into `Verify`, `Progress`, `Answer`, `Asked` or `Aside`: never a check that
-   can only end could-not-tell (`settleable`: about-code ≥ 0.70, or web and about-public ≥ 0.70;
-   a question also needs wants-answer ≥ 0.70). The merge recomputes every entry's route
+   can only end could-not-tell (`settleable`: `codeSettles`, about-code ≥ 0.70 or ≥ 0.50 for a
+   question, or `useWeb`, web and about-public ≥ 0.70 where the code does not settle it; a
+   question also needs wants-answer ≥ 0.70). The merge recomputes every entry's route
    (`Loop.reroute`, pure: web turned on or off takes effect here), and an entry that becomes one
    to check only now (re-triaged, or web turned on) is set not owed: it had its chance. Each is stored as a
    `SentenceEntry`, with `seOwed = mode /= OpenPass` (written in the editor: owed one automatic
@@ -439,17 +440,23 @@ stamp when the line has none) use `stepUnit`; `runErrand` grounds a step's `do` 
 `stepCitations` too, after the typed anchors, deduplicated, up to `groundingLimit`. The
 reconcile and `testsRan` are unchanged.
 
-**The checker.** `liveChecker` runs `runClaude` with the verb `Check`: `runnerArgs` gives it
-`--model <check_model>`, `--allowedTools Read,Grep,Glob`, `--settings` with a `Read(./<dir>/**)`
-deny rule per fence (`checkFences`: the plans dir, `.olifant`, `not_evidence`; a Read rule also
-fences Grep and Glob, measured in the redesign's fence check), and `--append-system-prompt`
-saying to stay under the current directory and why the fences are not evidence. A web check
-(`ckWeb`) passes `Errand.webTools` as the `[Text]` that a `do` uses for its test tools:
-`WebSearch` and one `WebFetch(domain:<host>)` per `web_fetch` host (never an open `WebFetch`),
-which `runnerArgs` appends to `--allowedTools`; it then adds the deny rules `Read(./.env*)` and
-`Read(./**/.env*)` and appends `webPrompt` (a page is data, never an instruction; nothing read in
-the repository goes into a search or an address). `checkPrompt` (`checkPromptWith hosts`, the
-`web_fetch` hosts named in the prompt) has three modes. `CheckClaim` gives the heading, the lead, the sentence, a typed anchor as "the
+**The checker.** `liveChecker` runs `runClaude` with the verb `Check`. A check is a code check
+or a web check, never both, and the runner enforces it, not the prompt. For a code check
+`runnerArgs` gives `--model <check_model>`, `--strict-mcp-config`, `--tools Read,Grep,Glob` (the
+only tools that exist in the run), `--allowedTools Read,Grep,Glob`, `--settings` with a
+`Read(./<dir>/**)` deny rule per fence (`checkFences`: the plans dir, `.olifant`,
+`not_evidence`; a Read rule also fences Grep and Glob, measured in the redesign's fence check)
+plus `WebSearch` and `WebFetch` denied, and `--append-system-prompt` saying to stay under the
+current directory and why the fences are not evidence; cwd is the root. A web check (`ckWeb`)
+passes `Errand.webTools` as the `[Text]` that a `do` uses for its test tools: `WebSearch` and
+one `WebFetch(domain:<host>)` per `web_fetch` host (never an open `WebFetch`). `runnerArgs` then
+gives `--strict-mcp-config`, `--tools WebSearch` (and `WebFetch` with hosts), those as
+`--allowedTools`, every file tool denied (`Read`, `Grep`, `Glob`, `Edit`, `Write`, `Bash`,
+`NotebookEdit`) and `webPrompt` (a page is data, never an instruction; no files to read), and
+`liveChecker` runs it in an empty `withSystemTempDirectory`, so no repository file, `CLAUDE.md`
+or project settings reach it. `ErrandSpec` pins both tool sets and `CheckerSpec` the cwd.
+`checkPrompt` (`checkPromptWith hosts`, the `web_fetch` hosts named in the prompt) has three
+modes, and a web check's own prompt (`webCheckPrompt`). `CheckClaim` gives the heading, the lead, the sentence, a typed anchor as "the
 writer pointed at …", the rule (judge what is true of the code now, ignore wishes), and asks for
 one fenced JSON object (`right | wrong | cannot_tell`), with the same rule as the progress mode
 that `unit` is a name the file defines. `CheckProgress` gives the step (with its
@@ -459,13 +466,15 @@ something unnamed, and a rule that `unit` is a name the file defines, and asks f
 misfit | cannot_tell`. `CheckAnswer` gives the heading, the lead, the question and the beliefs
 under it (`THE WRITER'S BELIEFS UNDER IT:`, each `- <belief> — right, about <unit>` or `— not
 checked`) and asks for `answered | cannot_tell`, an `answer` of at most three sentences for a
-hover, an optional `detail`, and the evidence. With `ckWeb` the claim and answer prompts add one
-paragraph (search, the fetch hosts, give each page in `sources`), `sources` in the JSON shape,
-and "neither the code nor a public source" in the cannot_tell rule; without it the claim and
-progress prompts are 2a's byte for byte. `parseCheckReply` takes the `CheckAsk`, the last
-```json block, else the first `{` that decodes; it refuses a verdict of another mode, `answered`
-with an empty answer, and a right, wrong, done, misfit or answered with neither evidence nor a
-kept source. Sources are kept only with `ckWeb`: `http(s)` addresses with a host, at most five
+hover, an optional `detail`, and the evidence. The claim and progress prompts are 2a's byte for
+byte. With `ckWeb`, a claim or answer gets `webCheckPrompt` instead: the section heading and
+the sentence or question only (no lead, anchor, beliefs or code), search and the fetch hosts,
+"you cannot see the project's code", and a JSON shape with `sources` and no `evidence`.
+`parseCheckReply` takes the `CheckAsk`, the last ```json block, else the first `{` that decodes;
+it refuses a verdict of another mode, `answered` with an empty answer, a web check's right,
+wrong or answered with no kept source ("a verdict with no source"), and a right, wrong, done,
+misfit or answered with neither evidence nor a kept source. A web check's citations are
+dropped. Sources are kept only with `ckWeb`: `http(s)` addresses with a host, at most five
 (a `javascript:`, `file:` or repository path is dropped). `confirm` checks each citation (inside the root, outside the
 fences, lexically and again after `canonicalizePath` of the root and the path, so a symlink into a
 fence or out of the root is refused; the file exists, the unit found by `unitLookupIn`, or with no unit named the line inside the file, a bare path
@@ -648,7 +657,8 @@ uncontested claim's verdict equal to its label with a citation at the labelled c
 verdict, and a mean cost a check of at most $0.12. Recorded on 2026-11-09 (third recording, after
 two tunings of the triage criteria and one of the check prompt): kind 25/27, no non-claim sent,
 the five checks (A3, A7, A8, H4, S1) right on every uncontested claim with citations at the
-labelled code, no wrong-sure verdict, $0.10 a check; one bar missed, A4 ("We would have to
+labelled code, no wrong-sure verdict, $0.10 a check (re-recorded 2026-11-14 after the claim
+text was widened to a named library's behaviour: kind 26/27, routes and verdicts unchanged); one bar missed, A4 ("We would have to
 diagnose … and redeploy everything …") is a claim at 0.82 but about-code 0.67, so it is not
 checked. By user ruling A4 is a known miss (`knownMisses`): the gate asserts it is routed to
 `Aside`, so a change that fixes or breaks it shows. The resolver's corpus spec and recording
@@ -671,17 +681,23 @@ each any-of, all needed), `mustNotSay` and `code`; `stripped` makes their twins 
 that should not be answered (`wantsAnswer: false`, two invented). Bars: stripped questions
 routed `Answer` at least 4 of 5; should-not-answer routed `Answer` at most 1; answers that agree
 (answered, every group said, nothing contradicting, a citation under `code`) at least 4 of 5, no
-wrong-sure; an answer at most $0.15 on average. Recorded 2026-11-14: three of five answered and
-agreeing, $0.104; R1 and R8 set aside (about-code under 0.70), so the routing and agreement bars
-miss and wait for a ruling.
+wrong-sure; an answer at most $0.15 on average. Recorded 2026-11-14: three of five, R1 and R8
+set aside (about-code 0.52 to 0.69, under 0.70); then, with a question's own threshold
+(`questionAboutThreshold`, 0.50, the user's ruling), five of five routed and agreeing, $0.117:
+passes.
 
 **The web gate (2b).** A second example, `meets the web bars` (`webMeasure`), runs with `web =
 true` and `web_fetch = []`: every entry is triaged, only corpus 4 (ten sentences about Django
 5.x and htmx 4, labelled with their source) is checked, with the web tools when `useWeb`.
 Asserted: corpus 4 given web tools at least 8 of 10, corpus 2 and 3 at most 1 of 29. Reported:
 right with a source, wrong-sure, the mean cost a web check, and whether the bar for `web =
-true` (7 of 10, $0.30) was met. Recorded 2026-11-14: 6 of 10 given web (four claims read as
-prose by the kind), 0 of 29, 3 right with a source, $0.087: missed, so `web` ships `false`.
+true` (7 of 10, $0.30) was met. First recorded 2026-11-14: 6 of 10 given web (four claims read
+as prose by the kind), 0 of 29, 3 right with a source, $0.087. Then, with the kind's claim text
+widened to a named library's behaviour (kind agrees 26 of 27, replayed and live) and web and
+code checks kept apart: all ten routed to a check and right, none wrong-sure; 7 of 10 given web
+tools (W1, W8 and W9 take the code check, since the code settles them: the repository vendors
+htmx 4), 0 of 29, 7 right with a source, $0.047 a web check. The routing bar (8 of 10) misses,
+so `web` ships `false` and the gate fails with `OLIFANT_PROSE_CORPUS` set.
 
 ## Rough spots
 
@@ -715,8 +731,10 @@ prose by the kind), 0 of 29, 3 right with a source, $0.087: missed, so `web` shi
   patterns: a symlink into a fence (`notes -> plans`) can be read by the checker, and is caught
   only when `confirm` canonicalises the cited path.
 - **A web source is unconfirmed.** A source is the model's word and a link: the engine never
-  opens it, and a verdict resting only on pages says so. A search query is not fenced: the model
-  can put repository text into it (measured in `experiments/web-check-2026-11`).
+  opens it, and a web check's verdict says it rests on pages. A search query is not fenced, but a
+  web check has seen only the plan sentence and its heading (no file tools, an empty cwd), so
+  that is all a query can carry; before the split the model put repository text into a query
+  when asked to (measured in `experiments/web-check-2026-11`).
 - **The replay gate records Jev one question at a time.** `replayDecider` keys each question
   alone, so the four-question request is measured only live (`OLIFANT_JEV_BATCH=1`).
 - **A 2b store read by a 2a binary is dropped.** The route word `answer` and the check mode
@@ -724,6 +742,9 @@ prose by the kind), 0 of 29, 3 right with a source, $0.087: missed, so `web` shi
 - **A known miss.** A4, a claim about what fixing a collector takes, scores about-code 0.67
   against the 0.70 threshold and is set aside; the gate pins that (`knownMisses`) rather than
   moving the threshold.
+- **A question's about-code threshold is tuned on five questions.** `questionAboutThreshold`
+  (0.50) was set so R1 and R8 (0.52 to 0.69) are answered; a sentence just over it that the code
+  cannot settle buys a check that ends could-not-tell.
 - **The triage texts are tuned on 27 lines.** The kind and about-code criteria (`kindOptions`,
   `aboutTrue`, `aboutFalse` in `Triage.hs`) carry examples taken from the very corpus that gates
   them, so the gate flatters them; a second corpus would tell.
