@@ -20,7 +20,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
 import Olifant.App (Ports (..), Project (..))
-import Olifant.Catalog (Catalog (..))
+import Olifant.Catalog (Catalog (..), PlansConfig (..))
 import Olifant.Decide (recordMissing, replayDecider)
 import Olifant.Decide qualified as D
 import Olifant.Language.AstGrep (astGrepSyntax)
@@ -116,19 +116,24 @@ markedQuestions :: [Text]
 markedQuestions = ["H1", "S2", "S3", "R1", "R8"]
 
 spec :: Spec
-spec = describe "Olifant.Server.ProseCorpus" $ describe "the prose corpus gate" $
-  it "meets the milestone-1 bars" $
-    lookupEnv "OLIFANT_PROSE_CORPUS" >>= \case
-      Nothing -> pendingWith "set OLIFANT_PROSE_CORPUS to a checkout of electionnighttracker at 8488bb80"
-      Just checkout -> do
-        (code, out, _) <- readProcessWithExitCode "git" ["-C", checkout, "rev-parse", "HEAD"] ""
-        if code /= ExitSuccess || not (corpusCommit `isPrefixOf` out)
-          then pendingWith ("the checkout at " <> checkout <> " is not at " <> corpusCommit)
-          else measure checkout
+spec = describe "Olifant.Server.ProseCorpus" $ describe "the prose corpus gate" $ do
+  it "meets the milestone-1 bars" $ withCheckout measure
+  -- 2b: corpus 4 (sentences public sources settle) checked with web on
+  it "meets the web bars" $ withCheckout webMeasure
+  where
+    withCheckout act =
+      lookupEnv "OLIFANT_PROSE_CORPUS" >>= \case
+        Nothing -> pendingWith "set OLIFANT_PROSE_CORPUS to a checkout of electionnighttracker at 8488bb80"
+        Just checkout -> do
+          (code, out, _) <- readProcessWithExitCode "git" ["-C", checkout, "rev-parse", "HEAD"] ""
+          if code /= ExitSuccess || not (corpusCommit `isPrefixOf` out)
+            then pendingWith ("the checkout at " <> checkout <> " is not at " <> corpusCommit)
+            else act checkout
 
 measure :: FilePath -> IO ()
 measure checkout = do
-  entries <- either fail pure =<< eitherDecodeFileStrict corpusFile
+  -- corpus 4 is the web gate's ('webMeasure')
+  entries <- filter ((/= 4) . enCorpus) <$> (either fail pure =<< eitherDecodeFileStrict corpusFile)
   recordLive <- (== Just "1") <$> lookupEnv "OLIFANT_RECORD_CHECKS"
   recordJev <- (== Just "1") <$> lookupEnv "OLIFANT_RECORD_JEV"
   batch <- (== Just "1") <$> lookupEnv "OLIFANT_JEV_BATCH"
@@ -295,3 +300,89 @@ batchKind live entries = do
       off = [(enId e, enKind e, trKind t) | (e, t) <- ts, trKind t /= enKind e]
   hPutStrLn stderr (printf "batch kind agrees %d/%d; off %s" (length agrees) (length c2) (show off))
   unless (length agrees >= 25) (expectationFailure ("batch kind agrees on " <> show (length agrees) <> " of 27, under 25"))
+
+-- | The web gate (2b): `[plans] web = true`, `web_fetch = []` (the default a user turns on).
+-- Every entry is triaged (to count the ones given web tools); only corpus 4 (ten sentences
+-- public sources settle, labelled by the builder with their source) is checked, with the web
+-- tools when 'useWeb'. The routing bars are asserted; quality, cost and wrong-sure are
+-- reported (they set the `web` default, the user's ruling 2026-11-14).
+webMeasure :: FilePath -> IO ()
+webMeasure checkout = do
+  entries <- either fail pure =<< eitherDecodeFileStrict corpusFile
+  recordLive <- (== Just "1") <$> lookupEnv "OLIFANT_RECORD_CHECKS"
+  recordJev <- (== Just "1") <$> lookupEnv "OLIFANT_RECORD_JEV"
+  tmp <- getTemporaryDirectory
+  s0 <- newServerState plainPorts {pSyntax = astGrepSyntax (tmp </> "olifant-test-cache")}
+  (s, p) <-
+    projectFor (checkout </> "plans/corpus.md") s0 >>= \case
+      (s, Just (_, p)) -> pure (s, p)
+      _ -> fail "the corpus checkout does not load as a project"
+  let cfg = (catalogPlans (prCatalog p)) {pcWeb = True, pcWebFetch = []}
+      liveJev = D.jevDecider neverCancel 30 (Jev "jev-1.14.0" "JEV_API_KEY") (hPutStrLn stderr . T.unpack)
+      decider = if recordJev then recordMissing jevRecording liveJev else replayDecider jevRecording Nothing
+      replayed = replayChecker checksRecording Nothing
+      checker ask x
+        | recordLive = replayed ask x >>= \case
+            Right r -> pure (Right r)
+            Left _ -> replayChecker checksRecording (Just (liveChecker neverCancel cfg checkout)) ask x
+        | otherwise = replayed ask x
+  rows <- forM entries $ \e -> do
+    let x = sentenceOf e
+    t <- triage True (Just decider) x
+    let r = route True t
+        mode = case r of
+          Progress -> CheckProgress
+          Answer -> CheckAnswer
+          _ -> CheckClaim
+        ask = CheckAsk mode (mode /= CheckProgress && useWeb True t) []
+    if enCorpus e /= 4 || r `notElem` [Verify, Answer, Progress]
+      then pure (Row e t r Nothing Nothing, False)
+      else
+        checker ask x >>= \case
+          Left f -> do
+            hPutStrLn stderr ("check failed: " <> T.unpack (enId e) <> ": " <> show f)
+            pure (Row e t r Nothing Nothing, ckWeb ask)
+          Right rr -> case parseCheckReply ask (rrText rr) of
+            Left why -> do
+              hPutStrLn stderr ("no verdict: " <> T.unpack (enId e) <> ": " <> T.unpack why)
+              pure (Row e t r Nothing (rrCost rr), ckWeb ask)
+            Right reply -> do
+              c <- confirm s p (fences cfg) reply
+              pure (Row e t r (Just c) (rrCost rr), ckWeb ask)
+  let given (r, _) = useWeb True (rwTriage r) && rwRoute r `elem` [Verify, Answer]
+      c4 = [x | x@(r, _) <- rows, enCorpus (rwEntry r) == 4]
+      c23 = [x | x@(r, _) <- rows, enCorpus (rwEntry r) `elem` [2, 3]]
+      c4Given = [enId (rwEntry r) | x@(r, _) <- c4, given x]
+      c23Given = [enId (rwEntry r) | x@(r, _) <- c23, given x]
+      judged r = judgementName . cfJudgement <$> rwVerdict r
+      lower = T.toLower
+      answerText r = maybe "" (\c -> lower (T.unwords (catMaybes [cfAnswer c, cfDetail c]))) (rwVerdict r)
+      saysAll r = all (any (\w -> lower w `T.isInfixOf` answerText r)) (enMustSay (rwEntry r))
+      saysNot r = any (\w -> lower w `T.isInfixOf` answerText r) (enMustNot (rwEntry r))
+      sourced r = maybe False (not . null . cfSources) (rwVerdict r)
+      rightWithSource r = sourced r && case enKind (rwEntry r) of
+        "question" -> judged r == Just "answered" && saysAll r && not (saysNot r)
+        _ -> judged r == enVerdict (rwEntry r)
+      rightN = [enId (rwEntry r) | (r, _) <- c4, rightWithSource r]
+      wrongSure = [enId (rwEntry r) | (r, _) <- c4, case enKind (rwEntry r) of
+        "question" -> judged r == Just "answered" && saysNot r
+        _ -> maybe False (`elem` ["right", "wrong"]) (judged r) && judged r /= enVerdict (rwEntry r)]
+      webCosts = [fromMaybe unpriced (rwCost r) | (r, web) <- c4, web, isJust (rwCost r) || isJust (rwVerdict r)]
+      unpriced = 0.10
+      webMean = if null webCosts then 0 else sum webCosts / fromIntegral (length webCosts)
+      table = map webLine c4
+      webLine (r, web) =
+        let t = rwTriage r
+         in printf "%-4s %-8s jev=%s %.2f public=%s code=%.2f %-8s web=%-5s %-11s label=%-11s $%-5s %s"
+              (T.unpack (enId (rwEntry r))) (T.unpack (enKind (rwEntry r))) (T.unpack (trKind t)) (trKindP t) (maybe "-" (printf "%.2f") (trAboutPublic t) :: String) (trAboutCode t)
+              (T.unpack (routeName (rwRoute r))) (show web) (maybe "-" (T.unpack . judgementName . cfJudgement) (rwVerdict r))
+              (maybe "-" T.unpack (enVerdict (rwEntry r))) (maybe "-" (printf "%.3f") (rwCost r) :: String)
+              (maybe "" (\c -> T.unpack (T.intercalate "," (map (sourceDomain . soUrl) (cfSources c)) <> " | " <> fromMaybe (cfWhy c) (cfAnswer c))) (rwVerdict r))
+  mapM_ (hPutStrLn stderr) ("" : "web:" : table)
+  maybe (pure ()) (\f -> TIO.appendFile f (T.unlines (map T.pack ("" : "web:" : table)))) =<< lookupEnv "OLIFANT_PROSE_TABLE"
+  hPutStrLn stderr (printf "web: corpus 4 given web tools %d/10 %s; corpus 2 and 3 given web tools %d/%d %s; right with a source %d/10 %s; wrong-sure %s; mean cost a web check $%.3f over %d (default bar: <= $0.30 and >= 7/10: %s)"
+    (length c4Given) (show c4Given) (length c23Given) (length c23) (show c23Given) (length rightN) (show rightN) (show wrongSure) webMean (length webCosts)
+    (if webMean <= 0.30 && length rightN >= 7 then "met" else "missed" :: String))
+  when (length c4 /= 10) (expectationFailure "corpus 4 is 10 entries")
+  unless (length c4Given >= 8) (expectationFailure ("corpus 4 given web tools: " <> show c4Given <> ", under 8 of 10"))
+  unless (length c23Given <= 1) (expectationFailure ("corpus 2 and 3 given web tools: " <> show c23Given <> ", over 1"))

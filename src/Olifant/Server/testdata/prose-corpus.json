@@ -608,5 +608,182 @@
   "invented": true,
   "labelledBy": "builder",
   "note": "rhetorical"
+ },
+ {
+  "id": "W1",
+  "plan": "(builder)",
+  "line": "In Django 5.1, bulk_create sets the primary key on each new object when the database is PostgreSQL.",
+  "heading": "Nightvote's stack: Django 5.1 and htmx 4",
+  "lead": null,
+  "kind": "claim",
+  "corpus": 4,
+  "contested": false,
+  "invented": true,
+  "labelledBy": "builder",
+  "source": "https://docs.djangoproject.com/en/5.1/ref/models/querysets/#bulk-create",
+  "verdict": "right"
+ },
+ {
+  "id": "W2",
+  "plan": "(builder)",
+  "line": "Django 5.1 added the {% querystring %} template tag.",
+  "heading": "Nightvote's stack: Django 5.1 and htmx 4",
+  "lead": null,
+  "kind": "claim",
+  "corpus": 4,
+  "contested": false,
+  "invented": true,
+  "labelledBy": "builder",
+  "source": "https://docs.djangoproject.com/en/5.1/releases/5.1/",
+  "verdict": "right"
+ },
+ {
+  "id": "W3",
+  "plan": "(builder)",
+  "line": "Since Django 5.0, the USE_TZ setting defaults to True.",
+  "heading": "Nightvote's stack: Django 5.1 and htmx 4",
+  "lead": null,
+  "kind": "claim",
+  "corpus": 4,
+  "contested": false,
+  "invented": true,
+  "labelledBy": "builder",
+  "source": "https://docs.djangoproject.com/en/5.0/releases/5.0/",
+  "verdict": "right"
+ },
+ {
+  "id": "W4",
+  "plan": "(builder)",
+  "line": "Django 5.1 requires PostgreSQL 14 or later.",
+  "heading": "Nightvote's stack: Django 5.1 and htmx 4",
+  "lead": null,
+  "kind": "claim",
+  "corpus": 4,
+  "contested": false,
+  "invented": true,
+  "labelledBy": "builder",
+  "source": "https://docs.djangoproject.com/en/5.1/releases/5.1/",
+  "verdict": "wrong"
+ },
+ {
+  "id": "W5",
+  "plan": "(builder)",
+  "line": "htmx 4 drops the hx-on attribute.",
+  "heading": "Nightvote's stack: Django 5.1 and htmx 4",
+  "lead": null,
+  "kind": "claim",
+  "corpus": 4,
+  "contested": false,
+  "invented": true,
+  "labelledBy": "builder",
+  "source": "https://four.htmx.org/migration-guide-htmx-4/",
+  "verdict": "wrong"
+ },
+ {
+  "id": "W6",
+  "plan": "(builder)",
+  "line": "htmx 4 swaps 4xx and 5xx responses into the target by default.",
+  "heading": "Nightvote's stack: Django 5.1 and htmx 4",
+  "lead": null,
+  "kind": "claim",
+  "corpus": 4,
+  "contested": false,
+  "invented": true,
+  "labelledBy": "builder",
+  "source": "https://four.htmx.org/migration-guide-htmx-4/",
+  "verdict": "right"
+ },
+ {
+  "id": "W7",
+  "plan": "(builder)",
+  "line": "Does Django 5.2 support composite primary keys?",
+  "heading": "Nightvote's stack: Django 5.1 and htmx 4",
+  "lead": null,
+  "kind": "question",
+  "corpus": 4,
+  "contested": false,
+  "invented": true,
+  "labelledBy": "builder",
+  "source": "https://docs.djangoproject.com/en/5.2/releases/5.2/",
+  "expect": "Yes: Django 5.2 adds django.db.models.CompositePrimaryKey.",
+  "mustSay": [
+   [
+    "CompositePrimaryKey",
+    "composite primary key"
+   ]
+  ],
+  "mustNotSay": [
+   "does not support composite",
+   "no support for composite"
+  ]
+ },
+ {
+  "id": "W8",
+  "plan": "(builder)",
+  "line": "What does htmx 4 use to send requests instead of XMLHttpRequest?",
+  "heading": "Nightvote's stack: Django 5.1 and htmx 4",
+  "lead": null,
+  "kind": "question",
+  "corpus": 4,
+  "contested": false,
+  "invented": true,
+  "labelledBy": "builder",
+  "source": "https://four.htmx.org/migration-guide-htmx-4/",
+  "expect": "The native fetch() API; this cannot be reverted.",
+  "mustSay": [
+   [
+    "fetch"
+   ]
+  ],
+  "mustNotSay": [
+   "still uses XMLHttpRequest"
+  ]
+ },
+ {
+  "id": "W9",
+  "plan": "(builder)",
+  "line": "Is attribute inheritance on by default in htmx 4?",
+  "heading": "Nightvote's stack: Django 5.1 and htmx 4",
+  "lead": null,
+  "kind": "question",
+  "corpus": 4,
+  "contested": false,
+  "invented": true,
+  "labelledBy": "builder",
+  "source": "https://four.htmx.org/migration-guide-htmx-4/",
+  "expect": "No: inheritance is explicit; add :inherited to an attribute (htmx.config.implicitInheritance = true restores the old way).",
+  "mustSay": [
+   [
+    ":inherited",
+    "explicit",
+    "inherited modifier"
+   ]
+  ],
+  "mustNotSay": [
+   "is on by default",
+   "still implicit by default"
+  ]
+ },
+ {
+  "id": "W10",
+  "plan": "(builder)",
+  "line": "Which htmx 4 attribute replaces hx-vars?",
+  "heading": "Nightvote's stack: Django 5.1 and htmx 4",
+  "lead": null,
+  "kind": "question",
+  "corpus": 4,
+  "contested": false,
+  "invented": true,
+  "labelledBy": "builder",
+  "source": "https://four.htmx.org/migration-guide-htmx-4/",
+  "expect": "hx-vals, with the js: prefix for computed values.",
+  "mustSay": [
+   [
+    "hx-vals"
+   ]
+  ],
+  "mustNotSay": [
+   "hx-vars is still"
+  ]
  }
 ]
