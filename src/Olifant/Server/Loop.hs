@@ -46,6 +46,8 @@ module Olifant.Server.Loop
   , PassAnswer (..)
   , claimPass
   , checkSentence
+  , checkWith
+  , compareUnits
   , checkOne
   , unpricedCheck
   , unpricedWebCheck
@@ -890,7 +892,12 @@ tallied t0 (r, cost) = case r of
 -- marked escalated, with both runs' cost and seconds. No Jev: no guards, so
 -- the cascade checks with 'cascadeStrong' alone.
 checkSentence :: ServerState -> Project -> PlansConfig -> (PlansConfig -> Checker) -> Bool -> UTCTime -> FilePath -> CheckAsk -> Sentence -> IO (Either Failure CheckRecord, Double)
-checkSentence s p cfg checkerFor auto now plan ask x
+checkSentence = checkWith "check"
+
+-- | 'checkSentence' with the errand's verb named: vet's claim checks log
+-- `vet-check`, and only `check` moves the plans' estimates.
+checkWith :: Text -> ServerState -> Project -> PlansConfig -> (PlansConfig -> Checker) -> Bool -> UTCTime -> FilePath -> CheckAsk -> Sentence -> IO (Either Failure CheckRecord, Double)
+checkWith verb s p cfg checkerFor auto now plan ask x
   | not (isCascade cfg) = attempt (pcCheckModel cfg) >>= \a -> finish [a] False
   | otherwise = case rgJev (rungsFor s p False) of
       Nothing -> attempt cascadeStrong >>= \a -> finish [a] False
@@ -937,14 +944,14 @@ checkSentence s p cfg checkerFor auto now plan ask x
           record status why verdict =
             appendRecord (ssPorts s) root . AnErrand $
               ErrandRecord
-                { erId = errandId now "check" plan (snRow x) (whole >>= rrSession), erAt = now, erVerb = "check", erPlan = plan, erRow = snRow x
+                { erId = errandId now verb plan (snRow x) (whole >>= rrSession), erAt = now, erVerb = verb, erPlan = plan, erRow = snRow x
                 , erSection = snHeading x, erBranch = Nothing, erModel = checkModelIn s p cfg, erStatus = status, erWhy = why
                 , erSession = whole >>= rrSession, erSeconds = rrSeconds <$> whole, erTurns = whole >>= rrTurns, erTokens = whole >>= rrTokens
                 , erCost = whole >>= rrCost, erModels = maybe [] rrModels whole, erPromptChars = T.length (checkPrompt ask x), erGrounded = 0
                 , erBlocks = 0, erLines = 0, erDropped = 0, erUnresolved = 0, erChanged = 0, erDenials = sum (map rrDenials runs)
                 , erParent = Nothing, erAuto = auto, erMode = Just (checkModeName mode), erVerdict = verdict, erWeb = ckWeb ask, erEscalated = escalated }
       -- a priced check moves its mode's estimate (when the estimates were read)
-      forM_ (whole >>= rrCost) $ \c ->
+      forM_ (if verb == "check" then whole >>= rrCost else Nothing) $ \c ->
         atomicModifyIORef' (ssEstimates s) (\m -> (M.adjust (M.insertWith (\new old -> take 20 (new ++ old)) (estimateKey mode (ckWeb ask)) [c]) root m, ()))
       case last attempts of
         (_, Left f, _) -> do

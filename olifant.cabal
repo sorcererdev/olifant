@@ -195,6 +195,7 @@ library
     Olifant.Transcripts
     Olifant.Uncovered
     Olifant.Vet.Find
+    Olifant.Vet.Judge
     Olifant.Vet.Screen
     Olifant.Vet.Steering
     Olifant.Vet.Store
@@ -438,6 +439,8 @@ test-suite spec
     Olifant.UncoveredSpec
     Olifant.Vet.Find
     Olifant.Vet.FindSpec
+    Olifant.Vet.Judge
+    Olifant.Vet.JudgeSpec
     Olifant.Vet.Screen
     Olifant.Vet.ScreenSpec
     Olifant.Vet.Steering
