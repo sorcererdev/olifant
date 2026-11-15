@@ -195,6 +195,7 @@ library
     Olifant.Transcripts
     Olifant.Uncovered
     Olifant.Vet.Steering
+    Olifant.Vet.Store
     Olifant.Workspace
     -- olifant:end library-modules
 
@@ -435,6 +436,8 @@ test-suite spec
     Olifant.UncoveredSpec
     Olifant.Vet.Steering
     Olifant.Vet.SteeringSpec
+    Olifant.Vet.Store
+    Olifant.Vet.StoreSpec
     Olifant.Workspace
     Olifant.WorkspaceSpec
     SpecHook
