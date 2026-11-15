@@ -67,7 +67,9 @@ statusNamed t = lookup t [(statusName s, s) | s <- [minBound .. maxBound]]
 
 -- | Where a finding is: its file (relative to the root), the unit holding its
 -- first line, its lines, and that unit's fingerprint when it was found.
-data Place = Place {plFile :: FilePath, plUnit :: Maybe Text, plLines :: (Int, Int), plFingerprint :: Maybe Text}
+-- 'plUnitStart' is the unit's first line when the finding was made: the
+-- margin moves the finding with its unit.
+data Place = Place {plFile :: FilePath, plUnit :: Maybe Text, plLines :: (Int, Int), plFingerprint :: Maybe Text, plUnitStart :: Maybe Int}
   deriving stock (Eq, Show)
 
 data VetFinding = VetFinding
@@ -175,7 +177,7 @@ findingJson f =
     , "kind" .= vfKind f
     , "rule" .= vfRule f
     , "statement" .= vfStatement f
-    , "place" .= object ["file" .= plFile pl, "unit" .= plUnit pl, "lines" .= pair (plLines pl), "fingerprint" .= plFingerprint pl]
+    , "place" .= object ["file" .= plFile pl, "unit" .= plUnit pl, "lines" .= pair (plLines pl), "fingerprint" .= plFingerprint pl, "unit_start" .= plUnitStart pl]
     , "evidence" .= [object ["file" .= p, "lines" .= pair ls] | (p, ls) <- vfEvidence f]
     , "prints" .= [object ["path" .= ptPath p, "unit" .= ptUnit p, "hash" .= ptHash p] | p <- vfPrints f]
     , "keep" .= vfKeep f
@@ -194,7 +196,7 @@ findingJson f =
 
 findingP :: Value -> Parser VetFinding
 findingP = withObject "finding" $ \o -> do
-  pl <- o .: "place" >>= withObject "place" (\p -> Place <$> p .: "file" <*> p .:? "unit" <*> (p .: "lines" >>= pairP) <*> p .:? "fingerprint")
+  pl <- o .: "place" >>= withObject "place" (\p -> Place <$> p .: "file" <*> p .:? "unit" <*> (p .: "lines" >>= pairP) <*> p .:? "fingerprint" <*> p .:? "unit_start")
   ev <- o .: "evidence" >>= mapM (withObject "evidence" (\e -> (,) <$> e .: "file" <*> (e .: "lines" >>= pairP)))
   ps <- o .: "prints" >>= mapM (withObject "print" (\p -> Print <$> p .: "path" <*> p .:? "unit" <*> p .: "hash"))
   st <- o .: "status" >>= \s -> maybe (fail ("unknown status " <> T.unpack s)) pure (statusNamed s)

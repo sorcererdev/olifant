@@ -304,6 +304,12 @@ spec = describe "Olifant.Vet.Pass" $ do
     o `shouldSatisfy` \case VetDone {voSpent = x} -> x == 0.04; _ -> False
     t <- TIO.readFile (eDir e </> ".olifant/state/errands.jsonl")
     t `shouldSatisfy` T.isInfixOf "\"cost\":4.0e-2"
+  it "(I6) a deleted unit's findings are gone on the next save, even with nothing else changed" $ withVet "" edit1 $ \e -> do
+    TIO.writeFile (eFinds e) (replies [("src/vetme.py:f", findReply [conv] [])])
+    _ <- ePass e
+    TIO.writeFile (eDir e </> file) "def g(y):\n    return y * 2\n"
+    _ <- ePass e
+    statuses <$> eStore e >>= (`shouldBe` [Gone])
   it "a fingerprint that moves during the pass drops its findings" $ withVet "" edit1 $ \e -> do
     TIO.writeFile (eFinds e) (replies [("src/vetme.py:f", object ["text" .= findReply [conv] [], "delay" .= (1 :: Double)])])
     void . forkIO $ threadDelay 300000 >> TIO.writeFile (eDir e </> file) edit2

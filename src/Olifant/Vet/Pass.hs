@@ -96,15 +96,16 @@ safeUnits act = (try act :: IO (Either SomeException (Either Text [Named]))) >>=
   Right (Right ns) -> pure (Just ns)
   _ -> pure Nothing
 
--- | Each unit's fingerprint in the file as it is now (empty when it has no
--- language or its units do not read): what an in-flight find call is held to.
-unitFingerprints :: ServerState -> Project -> FilePath -> IO (M.Map Text Text)
+-- | Each unit's fingerprint and first line in the file as it is now (empty
+-- when it has no language or its units do not read): what an in-flight find
+-- call is held to, and where the margin draws a finding.
+unitFingerprints :: ServerState -> Project -> FilePath -> IO (M.Map Text (Text, Int))
 unitFingerprints s p path = case languageFor (catalogLanguages (prCatalog p)) rel of
   Nothing -> pure M.empty
   Just lang -> do
     text <- fromMaybe "" <$> readText (prWorkspace p) rel
     ns <- fromMaybe [] <$> safeUnits (unitsOf (pSyntax (ssPorts s)) lang (Just rel) text)
-    pure (M.fromList [(namedName n, fingerprint text (namedLines n)) | n <- ns])
+    pure (M.fromList [(namedName n, (fingerprint text (namedLines n), fst (namedLines n))) | n <- ns])
   where
     rel = normalisePath (makeRelative (prRoot p) path)
 
@@ -187,8 +188,17 @@ vetPassOn _token s p deps path
       -- a waiting finding is verified when the margin has room, even with nothing new to find
       let openHere = length [f | f <- vsFindings store0, plFile (vfPlace f) == rel, vfStatus f == Open, vfKind f `elem` vcKinds cfg]
           room = openHere < vcMaxShown cfg && any (\f -> plFile (vfPlace f) == rel && vfStatus f == Waiting) (vsFindings store0)
+      -- findings in units that left the file are gone, even when nothing else changed
+      let names = S.fromList (map namedName units)
+          goneIds = S.fromList [vfId f | f <- vsFindings store0, plFile (vfPlace f) == rel, maybe False (`S.notMember` names) (plUnit (vfPlace f)), vfStatus f `elem` [Open, Waiting, Withheld]]
       if null finished && not room
-        then pure (VetDone False False False 0)
+        then
+          if S.null goneIds
+            then pure (VetDone False False False 0)
+            else do
+              let swept = store0 {vsFindings = [if vfId f `S.member` goneIds then f {vfStatus = Gone} else f | f <- vsFindings store0]}
+              _ <- updateVetStore files root (\current -> (mergeInto store0 swept current, ()))
+              pure (VetDone True False False 0)
         else find st store0 lang text units (S.fromList (map namedName changed)) finished
 
     -- the screen: a code fact, or Jev's "stops early"; unfinished units leave no record

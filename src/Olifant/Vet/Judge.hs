@@ -44,7 +44,7 @@ import Olifant.Vet.Store (Place (..), Status (..), VetFinding (..), VetStore (..
 -- vetted file, else Elsewhere. FILE is the vetted file, TEXT its text now,
 -- UNITS its units, CHANGED the changed unit names.
 place :: Steering -> FilePath -> Text -> [Named] -> Set Text -> RawFinding -> (Place, Maybe Text, Status)
-place st file text units changed f = (Place (rfFile f) (namedName <$> unit) (rfLines f) fp, rule, status)
+place st file text units changed f = (Place (rfFile f) (namedName <$> unit) (rfLines f) fp (fst . namedLines <$> unit), rule, status)
   where
     (first, final) = rfLines f
     sameFile = rfFile f == file

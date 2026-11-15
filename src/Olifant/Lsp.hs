@@ -72,7 +72,7 @@ import Data.Unique (Unique, newUnique)
 import Olifant.Vet.Find (liveFinder, recordedFinder)
 import Olifant.Vet.Pass (VetDeps (..), VetOutcome (..), capNoticeDue, unitFingerprints, vetPass)
 import Olifant.Vet.Store (VetFinding (..), VetStore (..), dismiss, plLines, readVetStore, shownIn, updateVetStore)
-import Olifant.Vet.Margin (vetDiagnostics, whyText)
+import Olifant.Vet.Margin (shownLines, vetDiagnostics, whyText)
 import Olifant.Vet.Steering (noSteering, steering, steeringPath)
 import System.Directory (getHomeDirectory)
 import Olifant.Server.LoopTypes (Fact (..))
@@ -1332,7 +1332,7 @@ vetLater env lspEnv path = do
         now <- withSnapshot env $ \s -> projectFor path s >>= \case
           (s', Just (_, p)) -> (s',) <$> unitFingerprints s' p path
           (s', _) -> pure (s', M.empty)
-        let holding = [n | (n, fp) <- M.toList sent, M.lookup n now == Just fp]
+        let holding = [n | (n, fp) <- M.toList sent, fmap fst (M.lookup n now) == Just fp]
         if null holding then S.empty <$ kill else pure (S.fromList holding)
 
 -- | After the debounce (a newer edit of the file cancels it), plan what
@@ -1912,11 +1912,12 @@ vetDiagnosticsFor env path =
 vetActions :: Env -> FilePath -> Position -> IO [CodeAction]
 vetActions env path (Position l _) =
   vetContext env path >>= \case
-    Just (p, cfg, rel, Right store) ->
-      let here = [f | f <- shownIn cfg rel store, fst (plLines (vfPlace f)) - 1 == fromIntegral l]
+    Just (p, cfg, rel, Right store) -> do
+      units <- withSnapshot env (\s -> (s,) <$> unitFingerprints s p path)
+      let here = [f | (line, f) <- shownLines cfg units rel store, line - 1 == fromIntegral l]
           uri = getUri (filePathToUri path)
           act title cmd args = CodeAction title (Just CodeActionKind_Empty) Nothing Nothing Nothing Nothing (Just (Command title cmd (Just args))) Nothing
-       in pure
+      pure
             [ a
             | f <- take 1 here
             , a <-

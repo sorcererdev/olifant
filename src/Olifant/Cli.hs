@@ -603,11 +603,14 @@ runPlansCost rt cat onlyBranch since asJson transcripts by onlyPlan = do
       prices = pcPrices (catalogPlans cat)
       dir = fromMaybe (fromMaybe "~" (rtHomeDir rt) </> ".claude/projects" </> slugOf root) transcripts
       note t = rtErr rt ("plans cost: " <> t <> "\n")
-  (records, bad) <- maybe ([], 0) (first (filter (not . vetRecord)) . readRecords) <$> readText ws (recordsPath root)
+  (allRecords, bad) <- maybe ([], 0) readRecords <$> readText ws (recordsPath root)
+  -- vet's errands are not plan errands, and their claude -p sessions are not interactive spend
+  let records = filter (not . vetRecord) allRecords
+      vetSessions = S.fromList [x | AnErrand e <- allRecords, vetRecord (AnErrand e), Just x <- [erSession e]]
   when (bad > 0) $ note ("skipped " <> T.pack (show bad) <> " unreadable line" <> (if bad == 1 then "" else "s") <> " in errands.jsonl")
   present <- (== Directory) <$> inspectPath ws dir
   unless present $ note ("no Claude Code transcripts at " <> T.pack dir)
-  messages <- if present then readTranscripts (listFiles ws) (readText ws) dir else pure []
+  messages <- filter ((`S.notMember` vetSessions) . msSession) <$> if present then readTranscripts (listFiles ws) (readText ws) dir else pure []
   let mine b = maybe True (== b) onlyBranch
       ofPlan p = maybe True (== p) onlyPlan
       counted = [m | m <- countedMessages since records messages, mine (branchName (msBranch m))]

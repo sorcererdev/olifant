@@ -77,10 +77,10 @@ spec = describe "Olifant.Vet.Judge" $ do
   describe "samePairs" $
     it "takes stored findings sharing the file, the rule or a cited line" $ do
       let a = finding "a" "bug" Open 0.9
-          b = (finding "b" "bug" Open 0.9) {vfPlace = Place "src/z.py" Nothing (1, 1) Nothing, vfRule = Just "Other", vfEvidence = []}
+          b = (finding "b" "bug" Open 0.9) {vfPlace = Place "src/z.py" Nothing (1, 1) Nothing Nothing, vfRule = Just "Other", vfEvidence = []}
           c = b {vfId = "c", vfRule = Just "A rule"}
           d = b {vfId = "d", vfEvidence = [("src/b.py", (2, 5))]}
-      map vfId (samePairs emptyVetStore {vsFindings = [a, b, c, d]} (raw (12, 13)) {rfRule = Just "A rule"} (Place "src/a.py" Nothing (12, 13) Nothing)) `shouldBe` ["a", "c", "d"]
+      map vfId (samePairs emptyVetStore {vsFindings = [a, b, c, d]} (raw (12, 13)) {rfRule = Just "A rule"} (Place "src/a.py" Nothing (12, 13) Nothing Nothing)) `shouldBe` ["a", "c", "d"]
   describe "the Jev questions" $ do
     it "nitpick: the 1a wording, with the cited rule's text" $ do
       let q = nitpick st (raw (12, 13)) {rfRule = Just "A"} "code"

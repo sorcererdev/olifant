@@ -4,6 +4,7 @@
 -- the *Show why* page.
 module Olifant.Vet.Margin
   ( vetDiagnostics
+  , shownLines
   , whyText
   , vetSource
   ) where
@@ -22,15 +23,31 @@ import Olifant.Vet.Store (Place (..), VetFinding (..), VetStore, shownIn)
 vetSource :: Text
 vetSource = "olifant-vet"
 
--- | The file's shown findings ('shownIn'). UNITS are the file's unit
--- fingerprints now: a finding whose unit's fingerprint moved is stale.
-vetDiagnostics :: VetConfig -> Map Text Text -> FilePath -> VetStore -> [Diagnostic]
+-- | The file's shown findings ('shownIn'), each at its line now (1-based).
+-- UNITS are the file's units now: name to (fingerprint, first line). A
+-- finding moves with its unit; one whose unit is gone is not shown.
+shownLines :: VetConfig -> Map Text (Text, Int) -> FilePath -> VetStore -> [(Int, VetFinding)]
+shownLines cfg units file vs =
+  [ (line, f)
+  | f <- shownIn cfg file vs
+  , let pl = vfPlace f
+        first = fst (plLines pl)
+  , Just line <- [case plUnit pl of
+      Nothing -> Just first
+      Just u -> case M.lookup u units of
+        Nothing -> Nothing
+        Just (_, startNow) -> Just (maybe first (\startThen -> startNow + first - startThen) (plUnitStart pl))]
+  ]
+
+-- | The margin as pulled diagnostics: a hint on each shown finding's line,
+-- code = its kind, `-stale` when its unit's fingerprint moved.
+vetDiagnostics :: VetConfig -> Map Text (Text, Int) -> FilePath -> VetStore -> [Diagnostic]
 vetDiagnostics cfg units file vs =
   [ Diagnostic (Range (Position l 0) (Position (l + 1) 0)) (Just DiagnosticSeverity_Hint) (Just (InR code)) Nothing (Just vetSource) (vfStatement f) Nothing Nothing (Just (String (vfId f)))
-  | f <- shownIn cfg file vs
-  , let l = fromIntegral (max 0 (fst (plLines (vfPlace f)) - 1))
+  | (line, f) <- shownLines cfg units file vs
+  , let l = fromIntegral (max 0 (line - 1))
         moved = case (plUnit (vfPlace f), plFingerprint (vfPlace f)) of
-          (Just u, Just fp) -> M.lookup u units /= Just fp
+          (Just u, Just fp) -> fmap fst (M.lookup u units) /= Just fp
           _ -> False
         code = vfKind f <> (if moved then "-stale" else "")
   ]
