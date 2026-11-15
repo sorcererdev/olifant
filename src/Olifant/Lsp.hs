@@ -10,7 +10,7 @@ module Olifant.Lsp (runLsp, runLspWithHandles, serverDefinition) where
 import Data.Char (isSpace)
 import Control.Concurrent (forkIO, threadDelay)
 import Data.Word (Word64)
-import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar, readMVar, tryPutMVar, tryTakeMVar)
+import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar, readMVar, tryPutMVar, tryTakeMVar, withMVar)
 import Control.Exception (SomeAsyncException, SomeException, catch, displayException, finally, fromException, onException, throwIO, try)
 import Olifant.Language.Grammar (GrammarUnavailable (..))
 import Olifant.Process (Cancel, cancelled, eitherCancel, neverCancel, newCancel)
@@ -33,7 +33,7 @@ import System.IO (Handle, BufferMode (NoBuffering), hFlush, hPutStrLn, hSetBinar
 import Data.Aeson.KeyMap qualified as KM
 import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe, mapMaybe)
 import Olifant.Plans (Anchor (..), Kind (..), Line (..), Verdict (..), anchorText, childrenOf, excerptInfo, excerptSpans, parsePlan, stepDone, testState, withVerdict)
-import Olifant.Server.Unit (Named (..))
+import Olifant.Server.Unit (Named (..), fingerprint)
 import Olifant.Server.Cascade (checkModelIn)
 import Olifant.Server.Claims (ClaimStore, checkedKeys, claimsOf, modeFor, openSentences, sentencesOf, stepUnit)
 import Olifant.Server.Loop (PassAnswer (..), PassMode (..), Sweep (..), checkOne, checkPlan, claimPass, estimateFor, estimatesOf, sweepTargets)
@@ -69,7 +69,7 @@ import Olifant.Server.Journal qualified as Journal
 import Olifant.Transcripts (slugOf)
 import Data.Time (Day, getCurrentTimeZone, localDay, utcToLocalTime)
 import Data.Unique (Unique, newUnique)
-import Olifant.Vet.Find (liveFinder, recordedFinder)
+import Olifant.Vet.Find (FindAsk (..), FindUnit (..), liveFinder, recordedFinder)
 import Olifant.Vet.Pass (VetDeps (..), VetOutcome (..), capNoticeDue, unitFingerprints, vetPass)
 import Olifant.Vet.Store (VetFinding (..), VetStore (..), dismiss, plLines, readVetStore, shownIn, updateVetStore)
 import Olifant.Vet.Margin (shownLines, vetDiagnostics, whyText)
@@ -130,6 +130,8 @@ data Env = Env
     envVetFlight :: IORef (M.Map FilePath (Unique, M.Map T.Text T.Text, IO ()))
   , -- | the local day vet's cap message was last sent
     envVetCapDay :: IORef (Maybe Day)
+  , -- | held while a vet pass runs: one at a time, so a pass sees what the one before stored
+    envVetLock :: MVar ()
   }
 
 -- | A plan's running claim pass: its number, its mode, how to stop it (no
@@ -188,7 +190,7 @@ serverDefinition ports = do
   -- a conjure asks the document's version as the editor has it now, not as
   -- its snapshot saw it, before its edits land
   modifyMVar_ state (\s -> pure s {ssLiveDoc = Just (\path -> M.lookup path . ssDocs <$> readMVar state)})
-  env <- Env ports state <$> newJobs <*> newIORef (0, M.empty) <*> newIORef False <*> newIORef S.empty <*> newIORef M.empty <*> newIORef M.empty <*> pure neverCancel <*> newMVar () <*> newIORef M.empty <*> newIORef S.empty <*> newIORef (0, M.empty) <*> newIORef S.empty <*> newIORef M.empty <*> newIORef Nothing
+  env <- Env ports state <$> newJobs <*> newIORef (0, M.empty) <*> newIORef False <*> newIORef S.empty <*> newIORef M.empty <*> newIORef M.empty <*> pure neverCancel <*> newMVar () <*> newIORef M.empty <*> newIORef S.empty <*> newIORef (0, M.empty) <*> newIORef S.empty <*> newIORef M.empty <*> newIORef Nothing <*> newMVar ()
   pure
     ServerDefinition
       { parseConfig = \_ _ -> Right ()
@@ -1300,18 +1302,25 @@ vetLater env lspEnv path = do
     _ -> pure ()
   where
     runVet = do
-      (token, trip) <- newCancel
+      (token, _) <- newCancel
       mine <- newUnique
+      -- before waiting for the pass ahead: kill its find call when none of its units holds
       skip <- inFlight
       zone <- getCurrentTimeZone
-      outcome <- withSnapshot env {envCancel = token} $ \s ->
+      outcome <- withMVar (envVetLock env) $ \() -> withSnapshot env {envCancel = token} $ \s ->
         projectFor path s >>= \case
           (s', Just (root, p)) | Just d <- deciderFor s' p -> do
             let pcfg = catalogPlans (prCatalog p)
                 vcfg = catalogVet (prCatalog p)
-                finder = maybe (liveFinder token pcfg vcfg root) recordedFinder (scVetAnswers (ssConfig s'))
-                sending sent = atomicModifyIORef' (envVetFlight env) (\m -> (M.insert path (mine, M.fromList sent, trip) m, ()))
-            o <- vetPass token s' p (VetDeps d finder (\c -> checkerUnder s' token c root) zone skip sending) path
+                -- each find call has its own token: a kill reaches the call, never the pass's claim checks
+                finder ask = do
+                  (callToken, kill) <- newCancel
+                  let sent = M.fromList [(fuName u, fingerprint (fuText u) (1, length (T.lines (fuText u)))) | u <- faUnits ask]
+                  atomicModifyIORef' (envVetFlight env) (\m -> (M.insert path (mine, sent, kill) m, ()))
+                  r <- maybe (liveFinder (eitherCancel token callToken) pcfg vcfg root) recordedFinder (scVetAnswers (ssConfig s')) ask
+                  atomicModifyIORef' (envVetFlight env) (\m -> (M.update (\e@(u, _, _) -> if u == mine then Nothing else Just e) path m, ()))
+                  pure r
+            o <- vetPass token s' p (VetDeps d finder (\c -> checkerUnder s' token c root) zone skip (const (pure ()))) path
             waiting <- either (const 0) (sum . map S.size . M.elems . vsCapped) <$> readVetStore (pFiles (ssPorts s')) root
             pure (s', Just (o, vcDayCost vcfg, waiting))
           (s', _) -> pure (s', Nothing)

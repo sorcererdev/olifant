@@ -4643,6 +4643,23 @@ vetSpec = describe "vet on save" $ do
       fs <- liftIO (listDirectory (dir </> ".olifant/state/vet"))
       liftIO (TIO.readFile (dir </> ".olifant/state/vet" </> head [x | x <- fs, "why-" `isPrefixOf` x]))
     page `shouldSatisfy` T.isInfixOf "f adds two."
+  it "(I2) overlapping passes on one file: one finding, seen twice, not two" $
+    withVetOn (jev <> vetOn "") $ \ports dir f cfg -> do
+      let reply statement = "{\\\"findings\\\": [{\\\"kind\\\": \\\"convention\\\", \\\"file\\\": \\\"src/vetme.py\\\", \\\"lines\\\": [2, 2], \\\"statement\\\": \\\"" <> statement <> "\\\", \\\"rule\\\": \\\"A\\\", \\\"evidence\\\": [{\\\"file\\\": \\\"src/vetme.py\\\", \\\"lines\\\": [1, 2]}]}], \\\"open\\\": []}"
+          edited = "def f(x):\n    return x + 2\n\n\ndef g(y):\n    return y * 3\n"
+      TIO.writeFile f ("{\"replies\": {\"src/vetme.py:f,src/vetme.py:g\": {\"text\": \"" <> reply "f adds two." <> "\", \"cost\": 0.03, \"delay\": 2}, \"src/vetme.py:g\": {\"text\": \"" <> reply "f adds two, against rule A." <> "\", \"cost\": 0.03}}}")
+      (fs, _) <- inProcessWithConfig cfg ports dir $ do
+        d <- openDoc vetme "python"
+        save d
+        liftIO (threadDelay 1000000)
+        changeDoc d [TextDocumentContentChangeEvent (InR (TextDocumentContentChangeWholeDocument edited))]
+        liftIO (TIO.writeFile (dir </> vetme) edited)
+        save d
+        _ <- waitFor ((>= 2) <$> askedLines f)
+        liftIO (threadDelay 3000000)
+        liftIO (TIO.readFile (dir </> ".olifant/state/vet/findings.json"))
+      length (T.breakOnAll "\"statement\"" fs) `shouldBe` 1
+      fs `shouldSatisfy` T.isInfixOf "\"seen\":2"
   it "(j) hover is what it was before the finding" $
     withVetOn (jev <> vetOn "") $ \ports dir f cfg -> do
       (before, after) <- fst <$> inProcessWithConfig cfg ports dir (do

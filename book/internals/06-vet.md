@@ -38,8 +38,11 @@ ruling at the 1a checkpoint): a body of `pass` is Jev's to judge.
 carries the four things a spec replaces: the Jev `Decider`, the `Finder`, the claim `Checker`, and
 the time zone (`day_cost` is a local day).
 
-1. **Skip** (`VetSkipped why`, nothing written) when the file matches `exclude`, has no language,
-   has no units, or the store does not read.
+1. **Skip** (`VetSkipped why`, nothing written) when the file matches `exclude`, is refused by
+   `Judge.readablePath` (`.env*`, a fence, outside the root), has no language, has no units, or
+   the store does not read. The same check gates every file the pass reads for Jev's questions.
+   Any Jev question that comes back `Unsure` (Jev failed) throws `JevSilent`, and `vetPass` returns
+   `VetSkipped "Jev did not answer"` with nothing stored.
 2. **Changed units.** `changedOf` reads the file at `HEAD` (`git show HEAD:./path` through
    `Process.gitIn`) and pairs its units with today's by name through `Server/Loop.hs`
    `compareUnits`, the plans' own comparison: `Added` or `Changed` units count. No `HEAD` text
@@ -89,15 +92,21 @@ is still the one the pass read, so a dismissal made while a call was running sta
   `vet <path>` it waits `settle` seconds, and a newer save restarts the wait. The work ignores
   the job's token, so a pass that has started is not stopped by the next save. Each pass gets
   its own `Cancel`.
+- **One pass at a time.** `envVetLock` serialises passes, so each sees what the one before
+  stored. The in-flight check runs before waiting for the lock.
 - **Calls in flight.** `envVetFlight` holds, per file, the `(unit, fingerprint)` pairs the
-  running find call was sent (`VetDeps.vdOnFind` reports them) and its kill. A new pass leaves
+  running find call was sent and that call's own kill (each call gets its own `Cancel`, so a kill
+  never reaches the pass's claim checks; a claim check that does not finish leaves its finding
+  `Waiting`). A new pass leaves
   out the units whose fingerprint still holds (`vdSkip`). When none holds, it kills the old
   call. `unitFingerprints` (in `Vet/Pass.hs`) reads the file's units now.
 - **After a pass.** A pass that changed the store sends `workspace/diagnostic/refresh`. A pass
   the day cap stopped (`voDayCapped`) sends one `window/showMessage` a local day
   (`capNoticeDue`, `envVetCapDay`).
 - **The margin.** `diagnosticsOf` appends `vetDiagnosticsFor`, which is `Vet/Margin.hs`
-  `vetDiagnostics` over the store and the file's unit fingerprints. Each diagnostic carries its
+  `vetDiagnostics` over the store and the file's units now (fingerprint and first line).
+  `shownLines` moves a finding with its unit (`Place.plUnitStart`) and drops one whose unit is
+  gone; `vetActions` uses the same lines. Each diagnostic carries its
   finding id in `data`.
 - **The actions.** `vetActions` offers the four actions on a shown finding's line. The commands
   are `olifant.vetShowWhy` (`vetWhyFile` writes `whyText`, opened with `window/showDocument`)
