@@ -2,6 +2,7 @@ module Olifant.Vet.PassSpec (spec) where
 
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Monad (void)
+import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.Aeson (Value (..), encode, object, (.=))
 import Data.Aeson.Key qualified as K
 import Data.ByteString.Lazy qualified as BL
@@ -60,10 +61,13 @@ findReply fs opens =
 checkReply :: Text -> Value
 checkReply verdict = object ["cost" .= (0.01 :: Double), "text" .= ("```json\n{\"verdict\": \"" <> verdict <> "\", \"why\": \"w\", \"evidence\": [{\"path\": \"src/vetme.py\", \"line\": 1}]}\n```" :: Text)]
 
-data Env = Env {eDir :: FilePath, eAnswers :: FilePath, eFinds :: FilePath, eChecks :: FilePath, ePassOn :: FilePath -> IO VetOutcome, eWs :: Workspace IO, eStore :: IO VetStore}
+data Env = Env {eDir :: FilePath, eAnswers :: FilePath, eFinds :: FilePath, eChecks :: FilePath, ePassWith :: (VetDeps -> VetDeps) -> FilePath -> IO VetOutcome, eWs :: Workspace IO, eStore :: IO VetStore}
 
 ePass :: Env -> IO VetOutcome
 ePass e = ePassOn e (eDir e </> file)
+
+ePassOn :: Env -> FilePath -> IO VetOutcome
+ePassOn e = ePassWith e id
 
 -- | A committed fixture with vet on (Jev "configured", recorded), the file
 -- then edited; CONFIG is appended to config.toml.
@@ -81,12 +85,12 @@ withVet config edited act =
             , eAnswers = dir </> "answers.json"
             , eFinds = dir </> "finds.json"
             , eChecks = dir </> "checks.json"
-            , ePassOn = \path -> do
+            , ePassWith = \tweak path -> do
                 s0 <- newServerState ports
                 projectFor path s0 >>= \case
                   (s, Just (_, p)) -> do
-                    let deps = VetDeps (recordedDecider (dir </> "answers.json") neverCancel) (recordedFinder (dir </> "finds.json")) (const (recordedChecker (dir </> "checks.json"))) utc
-                    vetPass neverCancel s p deps path
+                    let deps = VetDeps (recordedDecider (dir </> "answers.json") neverCancel) (recordedFinder (dir </> "finds.json")) (const (recordedChecker (dir </> "checks.json"))) utc S.empty (const (pure ()))
+                    vetPass neverCancel s p (tweak deps) path
                   _ -> fail "no project"
             , eWs = pFiles ports
             , eStore = either (error . T.unpack) id <$> readVetStore (pFiles ports) dir
@@ -113,6 +117,17 @@ statuses = map vfStatus . vsFindings
 
 spec :: Spec
 spec = describe "Olifant.Vet.Pass" $ do
+  it "the cap message is due once a local day" $ do
+    capNoticeDue Nothing (fromGregorian 2026 11 15) `shouldBe` True
+    capNoticeDue (Just (fromGregorian 2026 11 15)) (fromGregorian 2026 11 15) `shouldBe` False
+    capNoticeDue (Just (fromGregorian 2026 11 14)) (fromGregorian 2026 11 15) `shouldBe` True
+  it "in-flight units are left out, and the find call is announced" $ withVet "" edit1 $ \e -> do
+    TIO.writeFile (eFinds e) (replies [("src/vetme.py:f", findReply [conv] [])])
+    sent <- newIORef []
+    _ <- ePassWith e (\d -> d {vdSkip = S.fromList ["f"]}) (eDir e </> file)
+    asked (eFinds e) >>= (`shouldBe` [])
+    _ <- ePassWith e (\d -> d {vdOnFind = \xs -> modifyIORef' sent (++ xs)}) (eDir e </> file)
+    readIORef sent >>= (`shouldBe` [("f", fingerprint edit1 (1, 2))])
   it "vets a changed unit" $ withVet "" edit1 $ \e -> do
     TIO.writeFile (eFinds e) (replies [("src/vetme.py:f", findReply [conv] [])])
     o <- ePass e

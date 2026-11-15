@@ -10,6 +10,8 @@ module Olifant.Vet.Pass
   , spentToday
   , findEstimate
   , claimEstimate
+  , capNoticeDue
+  , unitFingerprints
   ) where
 
 import Control.Applicative ((<|>))
@@ -24,7 +26,7 @@ import Data.Set (Set)
 import Data.Set qualified as S
 import Data.Text (Text)
 import Data.Text qualified as T
-import Data.Time (TimeZone, UTCTime, localDay, utcToLocalTime)
+import Data.Time (Day, TimeZone, UTCTime, localDay, utcToLocalTime)
 import Olifant.App (Ports (..), Project (..))
 import Olifant.Catalog (Catalog (..), PlansConfig (..), VetConfig (..))
 import Olifant.Decide (Answer (No, Yes), Confidence (..), Decider (..), Question (..))
@@ -59,11 +61,15 @@ data VetDeps = VetDeps
   , vdCheckerFor :: PlansConfig -> Checker
   , -- | the user's zone: `day_cost` is a local day
     vdZone :: TimeZone
+  , -- | units a find call already in flight holds (their fingerprint unmoved): left out
+    vdSkip :: Set Text
+  , -- | told each pack's (unit, fingerprint) pairs before its find call
+    vdOnFind :: [(Text, Text)] -> IO ()
   }
 
 data VetOutcome
   = VetSkipped Text
-  | VetDone {voChanged :: Bool, voCapped :: Bool, voSpent :: Double}
+  | VetDone {voChanged :: Bool, voCapped :: Bool, voDayCapped :: Bool, voSpent :: Double}
   deriving stock (Eq, Show)
 
 -- | The units of a file (text now) that differ from HEAD: added, or changed
@@ -89,6 +95,18 @@ safeUnits act = (try act :: IO (Either SomeException (Either Text [Named]))) >>=
   Right (Right ns) -> pure (Just ns)
   _ -> pure Nothing
 
+-- | Each unit's fingerprint in the file as it is now (empty when it has no
+-- language or its units do not read): what an in-flight find call is held to.
+unitFingerprints :: ServerState -> Project -> FilePath -> IO (M.Map Text Text)
+unitFingerprints s p path = case languageFor (catalogLanguages (prCatalog p)) rel of
+  Nothing -> pure M.empty
+  Just lang -> do
+    text <- fromMaybe "" <$> readText (prWorkspace p) rel
+    ns <- fromMaybe [] <$> safeUnits (unitsOf (pSyntax (ssPorts s)) lang (Just rel) text)
+    pure (M.fromList [(namedName n, fingerprint text (namedLines n)) | n <- ns])
+  where
+    rel = normalisePath (makeRelative (prRoot p) path)
+
 -- | Today's vet spend (find calls and claim checks), by the local day.
 spentToday :: TimeZone -> UTCTime -> [Record] -> Double
 spentToday zone now records =
@@ -110,6 +128,10 @@ meanOr :: Double -> Text -> [Record] -> Double
 meanOr def verb records = case take 20 (reverse [c | AnErrand e <- records, erVerb e == verb, Just c <- [erCost e]]) of
   [] -> def
   cs -> sum cs / fromIntegral (length cs)
+
+-- | The day cap's editor message is sent the first time a local day's cap stops a pass.
+capNoticeDue :: Maybe Day -> Day -> Bool
+capNoticeDue last today = last /= Just today
 
 pYes :: (Answer, [(Text, Double)]) -> Double
 pYes (a, _) = case a of
@@ -145,10 +167,10 @@ vetPass _token s p deps path
       changed <- changedOf s p lang rel text units
       let fpOf n = fingerprint text (namedLines n)
           vetted = M.findWithDefault S.empty rel (vsVetted store0)
-          todo = [n | n <- changed, fpOf n `S.notMember` vetted]
+          todo = [n | n <- changed, fpOf n `S.notMember` vetted, namedName n `S.notMember` vdSkip deps]
       finished <- filterM (screen lang text units) todo
       if null finished
-        then pure (VetDone False False 0)
+        then pure (VetDone False False False 0)
         else find st store0 lang text units (S.fromList (map namedName changed)) finished
 
     -- the screen: a code fact, or Jev's "stops early"; unfinished units leave no record
@@ -170,7 +192,8 @@ vetPass _token s p deps path
       now <- pNow ports
       let today = spentToday (vdZone deps) now records
           est = findEstimate cfg records
-          over spent e = spent + e > vcPassCost cfg || today + spent + e > vcDayCost cfg
+          over spent e = spent + e > vcPassCost cfg || overDay spent e
+          overDay spent e = today + spent + e > vcDayCost cfg
           reportedText = [fRule f <> " at " <> T.pack rel <> maybe "" (\((l, _), _) -> ":" <> T.pack (show l)) (fRange f) <> ": " <> fMessage f | f <- reported]
           findUnit n = FindUnit rel (namedName n) (namedLines n) (nonEmpty (headerOf text units n)) (cut text n)
           openOn names = [f | f <- vsFindings store0, plFile (vfPlace f) == rel, vfStatus f `elem` [Open, Waiting], maybe False (`elem` names) (plUnit (vfPlace f))]
@@ -183,6 +206,7 @@ vetPass _token s p deps path
                     then pure (spent, cappedNames ++ names, done)
                     else do
                       let ask = FindAsk pack diff (stText st) reportedText (openOn names)
+                      vdOnFind deps [(fuName u, fingerprint text (fuLines u)) | u <- pack]
                       r <- vdFinder deps ask
                       let cost = either (const 0) (fromMaybe est . rrCost) r
                           parsed = either (Left . E.rfWhy) (parseFind . rrText) r
@@ -193,6 +217,7 @@ vetPass _token s p deps path
           (packUnits (map findUnit finished))
       spentRef <- newIORef spent1
       cappedRef <- newIORef (not (null capped))
+      dayCappedRef <- newIORef (not (null capped) && overDay spent1 est)
       let raws = concatMap (frFindings . snd) answered
           resolvedIds = S.fromList [i | (_, reply) <- answered, (i, False, _) <- frOpen reply]
           codeAt t ln = citedCode t ln
@@ -238,7 +263,7 @@ vetPass _token s p deps path
               if passed >= vcMaxShown cfg
                 then pure vs
                 else do
-                  f' <- verify now records today spentRef cappedRef f
+                  f' <- verify now records today spentRef cappedRef dayCappedRef f
                   if vfStatus f' == Open && vfKind f' `elem` vcKinds cfg then modifyIORef' passedRef (+ 1) else pure ()
                   pure (replaceF f' vs)
           )
@@ -264,7 +289,8 @@ vetPass _token s p deps path
       _ <- updateVetStore files root (\current -> (mergeInto store0 vs6 current, ()))
       spent <- readIORef spentRef
       wasCapped <- readIORef cappedRef
-      pure (VetDone (vs6 /= store0) wasCapped spent)
+      dayCapped <- readIORef dayCappedRef
+      pure (VetDone (vs6 /= store0) wasCapped dayCapped spent)
 
     addNew vs st0 raw codeA nitpickOf newF _
       | st0 == Elsewhere = pure (appendF (newF Nothing Elsewhere Nothing) vs)
@@ -294,7 +320,7 @@ vetPass _token s p deps path
     -- the Rules section), the wording
     askedHash q pl = fileHash (T.intercalate "\0" [fromMaybe "" (plFingerprint pl), fromMaybe "" (lookup "project rule" (qContext q) <|> lookup "project rules" (qContext q)), T.pack (show (qShape q))])
 
-    verify now records today spentRef cappedRef f =
+    verify now records today spentRef cappedRef dayCappedRef f =
       citationsOk s p pcfg (rawOf f) >>= \case
         Left why -> pure f {vfStatus = Unsure, vfVerdict = Just why}
         Right prints
@@ -302,7 +328,10 @@ vetPass _token s p deps path
               spent <- readIORef spentRef
               let e = claimEstimate records
               if spent + e > vcPassCost cfg || today + spent + e > vcDayCost cfg
-                then modifyIORef' cappedRef (const True) >> pure f {vfPrints = prints}
+                then do
+                  modifyIORef' cappedRef (const True)
+                  modifyIORef' dayCappedRef (|| today + spent + e > vcDayCost cfg)
+                  pure f {vfPrints = prints}
                 else do
                   let t = vfStatement f
                       x = Sentence 0 0 0 (T.length t) Prose t "" Nothing Nothing
