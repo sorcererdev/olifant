@@ -18,6 +18,10 @@ spec = describe "Olifant.Vet.Screen" $ do
   it "a comment-only body is empty" $
     if not grammar then pendingWith "no python grammar" else
       unitFacts py "def f():\n    # later\n    \"\"\"Doc.\"\"\"\n" (Named "f" (1, 3) 1) `shouldBe` Facts False False True
+  it "(I7) a body that returns a string is not empty" $
+    if not grammar then pendingWith "no python grammar" else do
+      fEmpty (unitFacts py "def q(uid):\n    return f\"SELECT * FROM users WHERE id = {uid}\"\n" (Named "q" (1, 2) 1)) `shouldBe` False
+      fEmpty (unitFacts py "def q():\n    return \"x\"\n" (Named "q" (1, 2) 1)) `shouldBe` False
   it "pass is no fact at all (no placeholder list)" $
     if not grammar then pendingWith "no python grammar" else
       unitFacts py "def f():\n    pass\n" (Named "f" (1, 2) 1) `shouldBe` Facts False False False

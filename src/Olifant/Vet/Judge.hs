@@ -5,6 +5,8 @@
 -- plans' claim check for bugs and assumptions).
 module Olifant.Vet.Judge
   ( place
+  , readablePath
+  , resolveRule
   , Match (..)
   , matchStored
   , samePairs
@@ -19,7 +21,8 @@ module Olifant.Vet.Judge
   ) where
 
 import Control.Applicative ((<|>))
-import Data.List (sortOn)
+import Data.List (isPrefixOf, sortOn)
+import System.FilePath (isAbsolute, splitDirectories, takeFileName)
 import Data.Maybe (fromMaybe, isJust, listToMaybe)
 import Data.Set (Set)
 import Data.Set qualified as S
@@ -41,7 +44,7 @@ import Olifant.Vet.Store (Place (..), Status (..), VetFinding (..), VetStore (..
 -- vetted file, else Elsewhere. FILE is the vetted file, TEXT its text now,
 -- UNITS its units, CHANGED the changed unit names.
 place :: Steering -> FilePath -> Text -> [Named] -> Set Text -> RawFinding -> (Place, Maybe Text, Status)
-place st file text units changed f = (Place (rfFile f) (namedName <$> unit) (rfLines f) fp, rule, status)
+place st file text units changed f = (Place (rfFile f) (namedName <$> unit) (rfLines f) fp (fst . namedLines <$> unit), rule, status)
   where
     (first, final) = rfLines f
     sameFile = rfFile f == file
@@ -54,8 +57,30 @@ place st file text units changed f = (Place (rfFile f) (namedName <$> unit) (rfL
       | otherwise = listToMaybe (sortOn (\n -> (not (n `elem` holding), width n)) overlapping) <|> listToMaybe (sortOn width holding)
     width n = let (a, z) = namedLines n in z - a
     fp = (\n -> fingerprint text (namedLines n)) <$> unit
-    rule = rfRule f >>= \r -> if isJust (ruleText st r) then Just r else Nothing
+    rule = rfRule f >>= resolveRule st
     status = if sameFile && not (null overlapping) then Open else Elsewhere
+
+-- | A path vet may read and send on (to Jev, to the finder): relative, inside
+-- the root, not `.env*`, not under a fence (the plans' `not_evidence`, the
+-- plans directory, `.olifant`).
+readablePath :: [FilePath] -> FilePath -> Bool
+readablePath fenced p =
+  not (null parts)
+    && not (isAbsolute p)
+    && ".." `notElem` parts
+    && not (".env" `isPrefixOf` takeFileName p)
+    && not (any (\f -> take (length (splitDirectories f)) parts == splitDirectories f) fenced)
+  where
+    parts = filter (/= ".") (splitDirectories p)
+
+-- | The heading a cited rule names, matched as 1a did: ignoring case, the
+-- cited text inside the heading or the heading inside it; the first wins.
+resolveRule :: Steering -> Text -> Maybe Text
+resolveRule st cited
+  | T.null c = Nothing
+  | otherwise = listToMaybe [name | (name, _) <- stRules st, let h = T.toLower name, c `T.isInfixOf` h || h `T.isInfixOf` c]
+  where
+    c = T.toLower (T.strip cited)
 
 data Match = New | Merge | Drop
   deriving stock (Eq, Show)
@@ -153,9 +178,11 @@ citationsOk s p cfg f
       pure (if cfJudgement c == JRight then Right (cfPrints c) else Left "cited code not found")
 
 -- | The claim check's verdict as a status: right shows, wrong is refuted,
--- anything else (cannot tell, a failure) is unsure.
+-- cannot tell is unsure, a check that did not finish waits.
 claimVerdict :: Either Failure CheckRecord -> Status
 claimVerdict = \case
   Right r | cfJudgement (cjConfirmed r) == JRight -> Open
   Right r | cfJudgement (cjConfirmed r) == JWrong -> Refuted
-  _ -> Unsure
+  Right _ -> Unsure
+  -- the check did not finish (cancelled, failed): verified again later
+  Left _ -> Waiting

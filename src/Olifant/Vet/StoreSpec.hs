@@ -20,7 +20,7 @@ at0 = UTCTime (fromGregorian 2026 11 15) 0
 -- | A finding for specs: id, kind, status, keep.
 finding :: Text -> Text -> Status -> Double -> VetFinding
 finding i kind st keep =
-  VetFinding i kind (Just "A rule") "It breaks the rule." (Place "src/a.py" (Just "f") (10, 12) (Just "abc1234")) [("src/b.py", (3, 4))] [Print "src/b.py" (Just "g") "def5678"] (Just keep) Nothing (Just "right") (Just "because") st 1 "sonnet" 0.04 at0
+  VetFinding i kind (Just "A rule") "It breaks the rule." (Place "src/a.py" (Just "f") (10, 12) (Just "abc1234") (Just 10)) [("src/b.py", (3, 4))] [Print "src/b.py" (Just "g") "def5678"] (Just keep) Nothing (Just "right") (Just "because") st 1 "sonnet" 0.04 at0
 
 spec :: Spec
 spec = describe "Olifant.Vet.Store" $ do
@@ -49,6 +49,6 @@ spec = describe "Olifant.Vet.Store" $ do
     map vfId (shownIn defaultVet "src/a.py" emptyVetStore {vsFindings = opens ++ others}) `shouldBe` ["e", "c", "a"]
     shownIn defaultVet "src/other.py" emptyVetStore {vsFindings = opens} `shouldBe` []
   it "findingId is 12 hex digits and stable" $ do
-    let pl = Place "src/a.py" Nothing (1, 2) Nothing
+    let pl = Place "src/a.py" Nothing (1, 2) Nothing Nothing
     findingId at0 pl "s" `shouldBe` findingId at0 pl "s"
     length (show (findingId at0 pl "s")) `shouldBe` 14

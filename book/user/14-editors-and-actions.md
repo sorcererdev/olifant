@@ -1810,3 +1810,5 @@ too: if `rust-analyzer` shows no errors at all, the `PATH` above is the likely c
 only reports a broken file when you ask for a plan ([above](#code-that-does-not-parse-in-a-plan)).
 The diagnostics Durandal does show, on save, are the project's rules
 ([above](#rule-findings-as-diagnostics)), not compile errors.
+
+Vet, the checker on code, also runs on save in the language server; its findings, actions and signs are in [chapter 20](20-vet.md#in-the-editor).

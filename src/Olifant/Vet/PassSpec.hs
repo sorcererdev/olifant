@@ -2,6 +2,7 @@ module Olifant.Vet.PassSpec (spec) where
 
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Monad (void)
+import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.Aeson (Value (..), encode, object, (.=))
 import Data.Aeson.Key qualified as K
 import Data.ByteString.Lazy qualified as BL
@@ -22,6 +23,9 @@ import Olifant.Server.Checker (recordedChecker)
 import Olifant.Server.State (ServerState (..), newServerState, projectFor)
 import Olifant.Server.Unit (fingerprint)
 import Olifant.Vet.Pass
+import Olifant.Decide (Decider (..), Question (..))
+import Olifant.Server.Errand (RunFailure (..))
+import Olifant.Server.Errand qualified as E
 import Olifant.Vet.Find (recordedFinder)
 import Olifant.Vet.Store
 import Olifant.Workspace (Workspace)
@@ -48,6 +52,12 @@ answers kvs = TE.decodeUtf8 (BL.toStrict (encode (object ["answers" .= object [K
 replies :: [(Text, Value)] -> Text
 replies kvs = TE.decodeUtf8 (BL.toStrict (encode (object ["replies" .= object [K.fromText k .= v | (k, v) <- kvs]])))
 
+-- | A find reply with findings in other files: (file, (kind, lines, statement, rule, evidence lines)).
+findReplyIn :: [(FilePath, (Text, (Int, Int), Text, Text, (Int, Int)))] -> Value
+findReplyIn fs =
+  String . TE.decodeUtf8 . BL.toStrict . encode $
+    object ["findings" .= [object ["kind" .= k, "file" .= f, "lines" .= [a, z], "statement" .= st, "rule" .= r, "evidence" .= [object ["file" .= f, "lines" .= [ea, ez]]]] | (f, (k, (a, z), st, r, (ea, ez))) <- fs], "open" .= ([] :: [Value])]
+
 -- | A find reply with findings: (kind, lines, statement, rule, evidence lines in the file).
 findReply :: [(Text, (Int, Int), Text, Text, (Int, Int))] -> [(Text, Text)] -> Value
 findReply fs opens =
@@ -60,10 +70,13 @@ findReply fs opens =
 checkReply :: Text -> Value
 checkReply verdict = object ["cost" .= (0.01 :: Double), "text" .= ("```json\n{\"verdict\": \"" <> verdict <> "\", \"why\": \"w\", \"evidence\": [{\"path\": \"src/vetme.py\", \"line\": 1}]}\n```" :: Text)]
 
-data Env = Env {eDir :: FilePath, eAnswers :: FilePath, eFinds :: FilePath, eChecks :: FilePath, ePassOn :: FilePath -> IO VetOutcome, eWs :: Workspace IO, eStore :: IO VetStore}
+data Env = Env {eDir :: FilePath, eAnswers :: FilePath, eFinds :: FilePath, eChecks :: FilePath, ePassWith :: (VetDeps -> VetDeps) -> FilePath -> IO VetOutcome, eWs :: Workspace IO, eStore :: IO VetStore}
 
 ePass :: Env -> IO VetOutcome
 ePass e = ePassOn e (eDir e </> file)
+
+ePassOn :: Env -> FilePath -> IO VetOutcome
+ePassOn e = ePassWith e id
 
 -- | A committed fixture with vet on (Jev "configured", recorded), the file
 -- then edited; CONFIG is appended to config.toml.
@@ -81,12 +94,12 @@ withVet config edited act =
             , eAnswers = dir </> "answers.json"
             , eFinds = dir </> "finds.json"
             , eChecks = dir </> "checks.json"
-            , ePassOn = \path -> do
+            , ePassWith = \tweak path -> do
                 s0 <- newServerState ports
                 projectFor path s0 >>= \case
                   (s, Just (_, p)) -> do
-                    let deps = VetDeps (recordedDecider (dir </> "answers.json") neverCancel) (recordedFinder (dir </> "finds.json")) (const (recordedChecker (dir </> "checks.json"))) utc
-                    vetPass neverCancel s p deps path
+                    let deps = VetDeps (recordedDecider (dir </> "answers.json") neverCancel) (recordedFinder (dir </> "finds.json")) (const (recordedChecker (dir </> "checks.json"))) utc S.empty (const (pure ()))
+                    vetPass neverCancel s p (tweak deps) path
                   _ -> fail "no project"
             , eWs = pFiles ports
             , eStore = either (error . T.unpack) id <$> readVetStore (pFiles ports) dir
@@ -113,6 +126,17 @@ statuses = map vfStatus . vsFindings
 
 spec :: Spec
 spec = describe "Olifant.Vet.Pass" $ do
+  it "the cap message is due once a local day" $ do
+    capNoticeDue Nothing (fromGregorian 2026 11 15) `shouldBe` True
+    capNoticeDue (Just (fromGregorian 2026 11 15)) (fromGregorian 2026 11 15) `shouldBe` False
+    capNoticeDue (Just (fromGregorian 2026 11 14)) (fromGregorian 2026 11 15) `shouldBe` True
+  it "in-flight units are left out, and the find call is announced" $ withVet "" edit1 $ \e -> do
+    TIO.writeFile (eFinds e) (replies [("src/vetme.py:f", findReply [conv] [])])
+    sent <- newIORef []
+    _ <- ePassWith e (\d -> d {vdSkip = S.fromList ["f"]}) (eDir e </> file)
+    asked (eFinds e) >>= (`shouldBe` [])
+    _ <- ePassWith e (\d -> d {vdOnFind = \xs -> modifyIORef' sent (++ xs)}) (eDir e </> file)
+    readIORef sent >>= (`shouldBe` [("f", fingerprint edit1 (1, 2))])
   it "vets a changed unit" $ withVet "" edit1 $ \e -> do
     TIO.writeFile (eFinds e) (replies [("src/vetme.py:f", findReply [conv] [])])
     o <- ePass e
@@ -231,6 +255,61 @@ spec = describe "Olifant.Vet.Pass" $ do
     vs <- eStore e
     (length (filter (== Open) (statuses vs)), length (filter (== Waiting) (statuses vs))) `shouldBe` (3, 1)
     length <$> asked (eChecks e) >>= (`shouldBe` 3)
+  it "room in the margin: the best waiting finding is verified with no find call" $ withVet "" edit1 $ \e -> do
+    let bug n = ("bug", (2, 2), "f is wrong in way " <> n <> ".", "", (1, 2))
+    TIO.writeFile (eAnswers e) (answers [("stops-early", False), ("nitpick", False), ("same", False)])
+    TIO.writeFile (eFinds e) (replies [("src/vetme.py:f", findReply (map bug ["one", "two", "three", "four"]) [])])
+    TIO.writeFile (eChecks e) (replies [("f is wrong in way " <> n <> ".", checkReply "right") | n <- ["one", "two", "three", "four"]])
+    _ <- ePass e
+    [i] <- map vfId . filter ((== Open) . vfStatus) . vsFindings <$> eStore e >>= pure . take 1
+    _ <- updateVetStore (eWs e) (eDir e) (\vs -> (dismiss False i vs, ()))
+    _ <- ePass e
+    length <$> asked (eFinds e) >>= (`shouldBe` 1)
+    vs <- eStore e
+    (length (filter (== Open) (statuses vs)), length (filter (== Waiting) (statuses vs))) `shouldBe` (3, 0)
+  it "(C1) a finding naming .env or a fenced file never sends that file's text to Jev" $ withVet "" edit1 $ \e -> do
+    TIO.writeFile (eDir e </> ".env") "SECRET=hunter2\n"
+    createDirectoryIfMissing True (eDir e </> "docs")
+    TIO.writeFile (eDir e </> "docs/notes.txt") "FENCED=swordfish\n"
+    seen <- newIORef []
+    let capture d = d {vdDecider = (vdDecider d) {weigh = \q -> modifyIORef' seen (++ map snd (qContext q)) >> weigh (vdDecider d) q}}
+        envFinding f = ("assumption", (1, 1), "It relies on a value in " <> T.pack f <> ".", "", (1, 1))
+    TIO.writeFile (eFinds e) (replies [("src/vetme.py:f", findReplyIn [(f, envFinding f) | f <- [".env", "docs/notes.txt"]])])
+    _ <- ePassWith e capture (eDir e </> file)
+    TIO.writeFile (eDir e </> file) edit2
+    _ <- ePassWith e capture (eDir e </> file)
+    sent <- T.concat <$> readIORef seen
+    (T.isInfixOf "hunter2" sent, T.isInfixOf "swordfish" sent) `shouldBe` (False, False)
+  it "(M3) a file under the plans' fences is not vetted" $ withVet "" edit1 $ \e -> do
+    createDirectoryIfMissing True (eDir e </> "docs")
+    TIO.writeFile (eDir e </> "docs/tool.py") "def h():\n    return 1\n"
+    o <- ePassOn e (eDir e </> "docs/tool.py")
+    o `shouldSatisfy` \case VetSkipped _ -> True; _ -> False
+  it "(I1) Jev not answering: the pass records nothing, the units stay unvetted" $ withVet "" edit1 $ \e -> do
+    TIO.writeFile (eAnswers e) "{\"answers\": {}}"
+    TIO.writeFile (eFinds e) (replies [("src/vetme.py:f", findReply [conv] [])])
+    o <- ePass e
+    o `shouldSatisfy` \case VetSkipped _ -> True; _ -> False
+    doesFileExist (eDir e </> vetStorePath) >>= (`shouldBe` False)
+  it "(I1) Jev silent on the same-problem question: no new finding beside the stored one" $ withVet "" edit1 $ \e -> do
+    TIO.writeFile (eFinds e) (replies [("src/vetme.py:f", findReply [conv] [])])
+    _ <- ePass e
+    TIO.writeFile (eAnswers e) (answers [("stops-early", False), ("nitpick", False)])
+    TIO.writeFile (eFinds e) (replies [("src/vetme.py:f", findReply [("convention", (2, 2), "f adds two, which the rule forbids.", "A", (1, 2))] [])])
+    TIO.writeFile (eDir e </> file) edit2
+    _ <- ePass e
+    length . vsFindings <$> eStore e >>= (`shouldBe` 1)
+  it "(I3) a find call that fails is charged its estimate, and the day counts it" $ withVet "" edit1 $ \e -> do
+    o <- ePassWith e (\d -> d {vdFinder = \_ -> pure (Left (RunFailure E.Timeout "timed out" Nothing))}) (eDir e </> file)
+    o `shouldSatisfy` \case VetDone {voSpent = x} -> x == 0.04; _ -> False
+    t <- TIO.readFile (eDir e </> ".olifant/state/errands.jsonl")
+    t `shouldSatisfy` T.isInfixOf "\"cost\":4.0e-2"
+  it "(I6) a deleted unit's findings are gone on the next save, even with nothing else changed" $ withVet "" edit1 $ \e -> do
+    TIO.writeFile (eFinds e) (replies [("src/vetme.py:f", findReply [conv] [])])
+    _ <- ePass e
+    TIO.writeFile (eDir e </> file) "def g(y):\n    return y * 2\n"
+    _ <- ePass e
+    statuses <$> eStore e >>= (`shouldBe` [Gone])
   it "a fingerprint that moves during the pass drops its findings" $ withVet "" edit1 $ \e -> do
     TIO.writeFile (eFinds e) (replies [("src/vetme.py:f", object ["text" .= findReply [conv] [], "delay" .= (1 :: Double)])])
     void . forkIO $ threadDelay 300000 >> TIO.writeFile (eDir e </> file) edit2

@@ -21,7 +21,7 @@ ask0 =
     "--- a/src/a.py\n+++ b/src/a.py\n@@ -3 +3 @@\n-x\n+y\n"
     "## Rules\n### A\nno\n"
     ["rule r at src/a.py:4"]
-    [(finding "abc123" "bug" Open 0.9) {vfStatement = "It returns x unchanged.", vfPlace = Place "src/a.py" (Just "A.f") (3, 3) Nothing}]
+    [(finding "abc123" "bug" Open 0.9) {vfStatement = "It returns x unchanged.", vfPlace = Place "src/a.py" (Just "A.f") (3, 3) Nothing Nothing}]
 
 unit :: Int -> FindUnit
 unit n = FindUnit "a.py" (T.pack ("u" <> show n)) (1, n) Nothing ""

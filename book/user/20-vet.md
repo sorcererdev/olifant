@@ -6,7 +6,11 @@ searches, evidence, a quiet margin) applied to source files. It says nothing abo
 are halfway through. It does not nitpick. It shows a problem once, not on every save.
 
 Vet is off until a project turns it on, and it runs only when a Jev backend is configured: Jev is
-what tells a substantial finding from a nitpick, and without it the margin would be noisy.
+what tells a substantial finding from a nitpick, and without it the margin would be noisy. If Jev
+does not answer during a pass (no key, an outage, a timeout), the pass stops and records nothing;
+the units are vetted on a later save. Vet never reads or sends a `.env*` file or anything under
+the plans' fences (`[plans] not_evidence`, the plans directory, `.olifant`), and does not vet a
+file there.
 
 ## Turning it on
 
@@ -118,7 +122,8 @@ Measured on 1a's 58 cases (a small Python project): a vetted save is about $0.04
 with no changed, finished, unvetted unit costs nothing. Jev's questions cost about $0.00005 each and
 are not counted against the caps.
 
-Before each paid call vet checks `pass_cost` and `day_cost` (summed from
+A find call that times out or fails after starting is charged its estimate (and logged so), since
+it was likely paid for. Before each paid call vet checks `pass_cost` and `day_cost` (summed from
 `.olifant/state/errands.jsonl`, verbs `vet` and `vet-check`). A unit a cap stops is not marked
 vetted, so the next save with budget vets it.
 
@@ -153,5 +158,35 @@ start over: start over and dismissed findings would come back. Move it aside to 
 
 ## In the editor
 
-*(arrives with the editor part of milestone 1b: the margin sign, Show why, Show code, Dismiss
-here and Dismiss everywhere, and the message when a day's cap is reached.)*
+Vet runs in the language server (`olifant lsp`), on save. After `settle` seconds with no newer
+save of the file, one pass runs: a burst of saves is one pass. Nothing is drawn while it runs.
+When it finds something, diagnostics are refreshed, and the file's shown findings arrive as hints
+(source `olifant-vet`, code = the kind, on the finding's first line). A finding whose unit changed
+since it was vetted keeps its place with the code `<kind>-stale`, until a save vets the unit
+again. A finding moves with its unit when code above it is added or removed, and disappears when
+its unit is deleted. Passes run one at a time, so a quick second save is checked against what the
+first stored. A save that changes the units a find call is still working on stops that call. Hover and
+go-to-definition are untouched.
+
+On a finding's line the code actions are:
+
+| action | what |
+|---|---|
+| *Show why* | opens `.olifant/state/vet/why-<id>.md`: the statement, the rule quoted, the evidence, the scores |
+| *Show code* | opens the first piece of evidence |
+| *Dismiss here* | this finding, in this unit, does not come back, whatever you edit |
+| *Dismiss everywhere* | the same problem does not come back anywhere in the project |
+
+A dismissal frees a place: the best `waiting` finding of the file is verified next.
+
+The first time a local day's `day_cost` stops a pass, one message says so: `olifant vet: today's
+cap ($3.00) is reached; 4 units wait. olifant vet cost shows them.`
+
+In durandal.nvim a finding is one sign a row: `!` bug, `?` assumption, `§` convention
+(`vet = { glyphs = { … } }`; highlight `DurandalVetSign`, a stale one `DurandalPlanStale`).
+Neovim's own signs and virtual text leave vet's findings out, so each shows once. The words are
+in the diagnostic float.
+
+`olifant doctor` shows a `vet` row when vet is on: `on: Jev jev, vet.md with 13 rules`; a
+warning when no Jev backend is configured (vet does not run); an error when the store does not
+read (vet is paused).

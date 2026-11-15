@@ -1659,6 +1659,12 @@ plansCostSpec = describe "plans cost" $ do
       rowsOf out = case decodeStrict (TE.encodeUtf8 out) >>= lookupKey "rows" of
         Just (Array rs) -> toList rs
         _ -> []
+  it "(I4) a vet errand's session is neither an errand row nor interactive spend" $ do
+    let vetE = AnErrand (case errand "V1" (at 25 10) (Just "feat") Ok 0 (Just 0.04) (Just "S2") of AnErrand e -> e {erVerb = "vet"}; r -> error (show r))
+        withoutS2 = [t | t@(f, _) <- transcripts, f /= "/transcripts/S2.jsonl"]
+    (_, withVet, _, _) <- run (records [vetE] [] : transcripts) ["--transcripts", "/transcripts"]
+    (_, without, _, _) <- run (records [] [] : withoutS2) ["--transcripts", "/transcripts"]
+    withVet `shouldBe` without
   it "one row per branch with errand and session cost, errand sessions not double counted" $ do
     (code, out, err, _) <- run (records base [] : transcripts) ["--transcripts", "/transcripts"]
     code `shouldBe` ExitSuccess
@@ -1859,7 +1865,7 @@ vetCliSpec :: Spec
 vetCliSpec = describe "vet list and vet cost" $ do
   let at d = UTCTime (fromGregorian 2026 11 d) (secondsToDiffTime (12 * 3600))
       vf i st kind file line statement =
-        VetFinding i kind (Just "A rule") statement (Place file (Just "f") (line, line) Nothing) [] [] (Just 0.9) Nothing Nothing Nothing st 1 "sonnet" 0 (at 15)
+        VetFinding i kind (Just "A rule") statement (Place file (Just "f") (line, line) Nothing Nothing) [] [] (Just 0.9) Nothing Nothing Nothing st 1 "sonnet" 0 (at 15)
       store fs capped = ("/proj/.olifant/state/vet/findings.json", encodeStore emptyVetStore {vsFindings = fs, vsCapped = capped})
       vetErrand i d verb cost =
         AnErrand

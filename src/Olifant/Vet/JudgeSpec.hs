@@ -14,6 +14,7 @@ import Olifant.Plans.Sentences (Sentence (..))
 import Olifant.Server.Checker (CheckAsk (..), CheckMode (..))
 import Olifant.Server.CheckerSpec (checkerServer)
 import Olifant.Server.Errand (RunResult (..))
+import Olifant.Server.Claims (Failure (..))
 import Olifant.Server.Loop (checkWith)
 import Olifant.Server.State (ServerState (..))
 import Olifant.Server.Telemetry (ErrandRecord (..), Record (..), readRecords, recordsPath)
@@ -50,6 +51,11 @@ spec = describe "Olifant.Vet.Judge" $ do
     it "in another file it is elsewhere" $ do
       let (_, _, stt) = place st "src/a.py" text30 units (S.fromList ["f"]) (raw (12, 13)) {rfFile = "src/other.py"}
       stt `shouldBe` Elsewhere
+    it "a rule cited without its grade or in another case resolves to its heading (1a's match)" $ do
+      let st' = steering "## Rules\n### Commands go through ports (must)\nx\n"
+          (_, r1, _) = place st' "src/a.py" text30 units (S.fromList ["f"]) (raw (12, 13)) {rfRule = Just "commands go through ports"}
+          (_, r2, _) = place st' "src/a.py" text30 units (S.fromList ["f"]) (raw (12, 13)) {rfRule = Just "Rule: Commands go through ports (must), see vet.md"}
+      (r1, r2) `shouldBe` (Just "Commands go through ports (must)", Just "Commands go through ports (must)")
     it "a rule that is not a heading is removed" $ do
       let (_, r1, _) = place st "src/a.py" text30 units (S.fromList ["f"]) (raw (12, 13)) {rfRule = Just "No such rule"}
           (_, r2, _) = place st "src/a.py" text30 units (S.fromList ["f"]) (raw (12, 13)) {rfRule = Just "A"}
@@ -71,10 +77,10 @@ spec = describe "Olifant.Vet.Judge" $ do
   describe "samePairs" $
     it "takes stored findings sharing the file, the rule or a cited line" $ do
       let a = finding "a" "bug" Open 0.9
-          b = (finding "b" "bug" Open 0.9) {vfPlace = Place "src/z.py" Nothing (1, 1) Nothing, vfRule = Just "Other", vfEvidence = []}
+          b = (finding "b" "bug" Open 0.9) {vfPlace = Place "src/z.py" Nothing (1, 1) Nothing Nothing, vfRule = Just "Other", vfEvidence = []}
           c = b {vfId = "c", vfRule = Just "A rule"}
           d = b {vfId = "d", vfEvidence = [("src/b.py", (2, 5))]}
-      map vfId (samePairs emptyVetStore {vsFindings = [a, b, c, d]} (raw (12, 13)) {rfRule = Just "A rule"} (Place "src/a.py" Nothing (12, 13) Nothing)) `shouldBe` ["a", "c", "d"]
+      map vfId (samePairs emptyVetStore {vsFindings = [a, b, c, d]} (raw (12, 13)) {rfRule = Just "A rule"} (Place "src/a.py" Nothing (12, 13) Nothing Nothing)) `shouldBe` ["a", "c", "d"]
   describe "the Jev questions" $ do
     it "nitpick: the 1a wording, with the cited rule's text" $ do
       let q = nitpick st (raw (12, 13)) {rfRule = Just "A"} "code"
@@ -104,6 +110,9 @@ spec = describe "Olifant.Vet.Judge" $ do
     it "refuses .env" $ bad [(".env", (1, 1))]
     it "refuses a first line past the end of the file" $ bad [("src/a.py", (50, 60))]
     it "clamps an end line past the end of the file" $ check [("src/models.py", (25, 999))] >>= (`shouldSatisfy` either (const False) (not . null))
+  describe "claimVerdict" $
+    it "(I5) a check that failed leaves the finding waiting, to be verified again" $
+      claimVerdict (Left (Failure "cancelled" (UTCTime (fromGregorian 2026 11 15) 0))) `shouldBe` Waiting
   describe "checkWith" $
     it "logs vet-check and leaves the plans' estimates" $ do
       (s, p) <- checkerServer
