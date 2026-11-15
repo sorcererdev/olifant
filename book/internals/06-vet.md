@@ -80,6 +80,38 @@ The pass works on a copy of the store and ends with one `updateVetStore`, which 
 `mergeInto base mine current`. A finding the pass changed is taken only if its status in the store
 is still the one the pass read, so a dismissal made while a call was running stands.
 
+## In the language server
+
+`Lsp.hs` owns the editor side:
+
+- **The trigger.** The `didSave` handler calls `vetLater`. It runs only when `[vet] enabled`,
+  `deciderFor` gives a decider, and the file is not a plan. Through `Jobs.submit` with key
+  `vet <path>` it waits `settle` seconds, and a newer save restarts the wait. The work ignores
+  the job's token, so a pass that has started is not stopped by the next save. Each pass gets
+  its own `Cancel`.
+- **Calls in flight.** `envVetFlight` holds, per file, the `(unit, fingerprint)` pairs the
+  running find call was sent (`VetDeps.vdOnFind` reports them) and its kill. A new pass leaves
+  out the units whose fingerprint still holds (`vdSkip`). When none holds, it kills the old
+  call. `unitFingerprints` (in `Vet/Pass.hs`) reads the file's units now.
+- **After a pass.** A pass that changed the store sends `workspace/diagnostic/refresh`. A pass
+  the day cap stopped (`voDayCapped`) sends one `window/showMessage` a local day
+  (`capNoticeDue`, `envVetCapDay`).
+- **The margin.** `diagnosticsOf` appends `vetDiagnosticsFor`, which is `Vet/Margin.hs`
+  `vetDiagnostics` over the store and the file's unit fingerprints. Each diagnostic carries its
+  finding id in `data`.
+- **The actions.** `vetActions` offers the four actions on a shown finding's line. The commands
+  are `olifant.vetShowWhy` (`vetWhyFile` writes `whyText`, opened with `window/showDocument`)
+  and `olifant.vetDismiss` (`dismiss` through `updateVetStore`, then a refresh and `vetLater`, so
+  a waiting finding can take the freed place). *Show code* reuses `olifant.showCode`.
+  `vetContext` is the shared lookup: project, `[vet]`, the relative path, the store.
+- **Doctor.** `Doctor.hs` `vetRow` (only when on) reads the store's JSON and version itself.
+  Importing `Vet/Store.hs` there would close a cycle (Store, `Server/Checker.hs`, `App.hs`,
+  `Doctor.hs`).
+
+durandal.nvim's `lua/durandal/vet.lua` draws the sign. It wraps Neovim's `signs` and
+`virtual_text` handlers to drop `olifant-vet`, because a namespace's config cannot filter by
+source.
+
 ## The seam with plans: `checkWith`
 
 `checkSentence` is now `checkWith "check"`. The verb goes to the errand record, and only
@@ -89,6 +121,9 @@ is still the one the pass read, so a dismissal made while a call was running sta
 
 ## Testing it
 
+- `LspSpec` `vetSpec` drives a real server in-process: settle, no Jev, not enabled, a plan's save,
+  the cap message (`inProcessShowing`: lsp-test drops `window/showMessage` unless told), the
+  pulled hint, the four actions, *Dismiss here*, *Show why*, hover untouched.
 - `Vet/*Spec.hs` unit specs never call a model. `PassSpec` builds a git repository from the
   python-htmx fixture (`LspSpec.withPython`), commits, edits, and drives `vetPass` with
   `recordedDecider` (answers by question kind), `recordedFinder` (replies by `findKey`, the
@@ -113,5 +148,7 @@ is still the one the pass read, so a dismissal made while a call was running sta
   deterministic. Production runs the cascade.
 - Jev's answers move a little between wordings of the same state: vm16 kept 0.78 here against
   1a's 0.84, just under `cut`.
-- The editor side (the trigger on save, the margin, the actions) arrives with the editor part of
-  milestone 1b.
+- Only the first shown finding on a line gets actions: a second one on the same line is reached
+  after the first is dismissed.
+- `envVetFlight` and the cap day live in the server process. A restart forgets them, at worst one
+  more message and one call that is not killed.

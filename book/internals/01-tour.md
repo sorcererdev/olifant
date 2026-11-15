@@ -2460,7 +2460,8 @@ On save of a source file, `Vet/Pass.hs` `vetPass` checks the units that differ f
 unfinished screen (`Vet/Screen.hs`, Jev and neutral tree-sitter facts), one `claude -p` find
 call (`Vet/Find.hs`), then placing, matching, Jev's nitpick filter and verification
 (`Vet/Judge.hs`) before the store (`Vet/Store.hs`) is written. It shares only `checkWith` with
-plans. [Chapter 6](06-vet.md) walks through a pass.
+plans. In `Lsp.hs`, `vetLater` starts it once a save has settled, and the findings come back as
+`olifant-vet` hints with four code actions. [Chapter 6](06-vet.md) walks through a pass.
 
 ## Rough spots
 

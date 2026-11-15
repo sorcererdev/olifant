@@ -153,5 +153,33 @@ start over: start over and dismissed findings would come back. Move it aside to 
 
 ## In the editor
 
-*(arrives with the editor part of milestone 1b: the margin sign, Show why, Show code, Dismiss
-here and Dismiss everywhere, and the message when a day's cap is reached.)*
+Vet runs in the language server (`olifant lsp`), on save. After `settle` seconds with no newer
+save of the file, one pass runs: a burst of saves is one pass. Nothing is drawn while it runs.
+When it finds something, diagnostics are refreshed, and the file's shown findings arrive as hints
+(source `olifant-vet`, code = the kind, on the finding's first line). A finding whose unit changed
+since it was vetted keeps its place with the code `<kind>-stale`, until a save vets the unit
+again. A save that changes the units a find call is still working on stops that call. Hover and
+go-to-definition are untouched.
+
+On a finding's line the code actions are:
+
+| action | what |
+|---|---|
+| *Show why* | opens `.olifant/state/vet/why-<id>.md`: the statement, the rule quoted, the evidence, the scores |
+| *Show code* | opens the first piece of evidence |
+| *Dismiss here* | this finding, in this unit, does not come back, whatever you edit |
+| *Dismiss everywhere* | the same problem does not come back anywhere in the project |
+
+A dismissal frees a place: the best `waiting` finding of the file is verified next.
+
+The first time a local day's `day_cost` stops a pass, one message says so: `olifant vet: today's
+cap ($3.00) is reached; 4 units wait. olifant vet cost shows them.`
+
+In durandal.nvim a finding is one sign a row: `!` bug, `?` assumption, `§` convention
+(`vet = { glyphs = { … } }`; highlight `DurandalVetSign`, a stale one `DurandalPlanStale`).
+Neovim's own signs and virtual text leave vet's findings out, so each shows once. The words are
+in the diagnostic float.
+
+`olifant doctor` shows a `vet` row when vet is on: `on: Jev jev, vet.md with 13 rules`; a
+warning when no Jev backend is configured (vet does not run); an error when the store does not
+read (vet is paused).
