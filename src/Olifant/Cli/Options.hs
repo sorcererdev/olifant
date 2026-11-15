@@ -37,6 +37,10 @@ data Command = ListCmd Bool | ShowCmd Text [(Text, Text)] | GenCmd GenOptions | 
   | -- | `plans cost`: errands against Claude Code sessions, per branch.
     -- 'pcoTranscripts' overrides @~/.claude/projects/<slug>@.
     PlansCostCmd {pcoBranch :: Maybe Text, pcoSince :: Maybe Day, pcoJson :: Bool, pcoTranscripts :: Maybe FilePath, pcoBy :: By, pcoPlan :: Maybe FilePath, pcoChecks :: Bool}
+  | -- | `vet list`: vet's findings by status
+    VetListCmd {vlStatus :: Maybe Text, vlJson :: Bool}
+  | -- | `vet cost`: what vet spent, a day a row
+    VetCostCmd {vcoSince :: Maybe Day, vcoJson :: Bool}
   deriving stock (Eq, Show)
 
 -- | How `plans cost` groups: per plan and the landing (PR) its work reached, or per recorded branch.
@@ -124,6 +128,7 @@ parseOptions args = case execParserPure defaultPrefs parserInfo args of
             <> cmd "init" initP "Start a project from a pack's starter in an empty folder: init --pack PACK NAME [--dir DIR] [--plan]; or, in an existing repo, init --migrate PATH [--migrate PATH]… [--pack PACK]: strangle the legacy code under PATH; or init --language NAME [--yes] [--grammar URL] [--model NAME] [--plan]: write a language's file, its test toolchain and its queries from one model errand, proved by doctor"
             <> cmd "lsp" (pure LspCmd) "Run the language server over stdin/stdout (editors start it; every Olifant project in the editor's folders)"
             <> cmd "complete" completeP "Snippets for a completion menu at a position (for editors): --at FILE:LINE:COL [--content -]"
+            <> cmd "vet" vetP "The checker on code: `vet list [--status S] [--json]` lists its findings; `vet cost [--since YYYY-MM-DD] [--json]` shows what it spent a day"
             <> cmd "plans" plansP "Plan errands: `plans cost [--by plan|branch] [--plan PATH] [--branch B] [--since YYYY-MM-DD] [--json]` shows what errands cost against Claude Code sessions, per plan and the PR it landed in (or per branch); `--checks` shows what the plan checker cost and found"
             <> cmd "gen" (GenCmd <$> genP) "Run generators: GEN [--set K=V]... [+ GEN [--set K=V]...]... (applies by default; --plan previews; --steps FILE|- reads the steps as JSON)"
         )
@@ -207,6 +212,11 @@ parseOptions args = case execParserPure defaultPrefs parserInfo args of
                 )
                 (progDesc "What errands cost, against Claude Code sessions, per plan and the PR it landed in, or per branch (list prices)")
             )
+        )
+    vetP =
+      hsubparser
+        ( command "list" (info (VetListCmd <$> optional (T.pack <$> strOption (long "status" <> metavar "STATUS" <> help "Only this status (open, waiting, withheld, refuted, unsure, elsewhere, dismissed-here, dismissed-everywhere, resolved, gone)")) <*> switch (long "json" <> help "The findings as JSON")) (progDesc "Vet's findings, by status"))
+            <> command "cost" (info (VetCostCmd <$> optional (option (eitherReader dayP) (long "since" <> metavar "YYYY-MM-DD" <> help "Only days from this one on (local)")) <*> switch (long "json" <> help "The rows as JSON")) (progDesc "What vet spent, a local day a row, and the units waiting on the cap"))
         )
     byP "plan" = Right ByPlan
     byP "branch" = Right ByBranch
