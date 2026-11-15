@@ -13,6 +13,8 @@
 module Olifant.Language.TreeSitter
   ( capturesOf
   , errorLines
+  , bodyEmpty
+  , definitionsOf
   , cacheSize
   , cacheHolds
   , compiledSize
@@ -93,6 +95,7 @@ foreign import ccall unsafe "&ts_query_delete" c_queryDeleteFin :: FunPtr (Ptr T
 foreign import ccall unsafe "ots_capture_count" c_captureCount :: Ptr TSQuery -> IO Word32
 foreign import ccall unsafe "ots_prune" c_prune :: Ptr TSQuery -> Ptr Word8 -> Ptr Word8 -> IO ()
 foreign import ccall unsafe "ots_error_rows" c_errorRows :: Ptr TSNode -> Ptr Word32 -> Word32 -> IO Word32
+foreign import ccall unsafe "ots_body_empty" c_bodyEmpty :: Ptr TSNode -> Word32 -> Word32 -> IO CInt
 foreign import ccall unsafe "ots_facts" c_facts :: Ptr TSNode -> Ptr Word32 -> IO ()
 foreign import ccall unsafe "ots_exec" c_exec :: Ptr TSQuery -> Ptr TSNode -> IO (Ptr TSQueryCursor)
 foreign import ccall unsafe "ts_query_cursor_delete" c_cursorDelete :: Ptr TSQueryCursor -> IO ()
@@ -487,6 +490,25 @@ errorLines g content = unsafePerformIO $ loadGrammar g >>= \case
   where
     cap = 256
 {-# NOINLINE errorLines #-}
+
+-- | Whether the node spanning these bytes holds only comments and lone
+-- strings (vet's "empty body"); Nothing when no node spans them, or the
+-- grammar cannot load.
+bodyEmpty :: Grammar -> Text -> (Int, Int) -> Maybe Bool
+bodyEmpty g content (start, end) = unsafePerformIO $ loadGrammar g >>= \case
+  Left _ -> pure Nothing
+  Right ld -> do
+    size <- fromIntegral <$> c_nodeSize
+    let bytes = TE.encodeUtf8 content
+    BU.unsafeUseAsCStringLen bytes $ \(p, n) ->
+      bracket (c_parse (ldLanguage ld) p (fromIntegral n)) (\t -> when (t /= nullPtr) (c_treeDelete t)) $ \tree ->
+        if tree == nullPtr
+          then pure Nothing
+          else allocaBytes size $ \root -> do
+            c_root tree root
+            r <- c_bodyEmpty root (fromIntegral start) (fromIntegral end)
+            pure (case r of 1 -> Just True; 0 -> Just False; _ -> Nothing)
+{-# NOINLINE bodyEmpty #-}
 
 capturesIO :: Grammar -> [(FilePath, Text)] -> Text -> IO (Either Text (PNode, [Cap]))
 capturesIO g qs content = loadGrammar g >>= \case

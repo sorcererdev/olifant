@@ -1,0 +1,49 @@
+A developer has just saved a change in this repository (the current directory is the tree after the change).
+
+The changed units (functions and methods this change adds or changes), with line numbers as in the file after the change:
+--- src/a.py:3-5 A.f (in `class A:`)
+    3  def f(self, x):
+    4      return x
+    5      # end
+
+--- src/b.py:1-2 g
+    1  def g():
+    2      pass
+
+The change as a diff (tests included):
+--- a/src/a.py
++++ b/src/a.py
+@@ -3 +3 @@
+-x
++y
+
+The project's steering file, which holds the rules this project keeps:
+<vet>
+## Rules
+### A
+no
+</vet>
+
+Findings already reported on these files, which you must not raise again:
+- rule r at src/a.py:4
+
+Open findings from earlier saves on these units:
+- id abc123: [bug] src/a.py:3: It returns x unchanged.
+
+Answer every open finding in "open": "still holds" when the code still has that problem, "no longer holds" when the code no longer has it, with one line why. Do not raise an open finding again in "findings".
+
+Review the changed units. List problems this change has or introduces: nothing else. An empty list is a normal and often the right answer; do not look for something to say. Do not speculate: a finding needs a named code path (the line, the call and what happens), found with Read, Grep and Glob. Do not report style or taste unless it breaks a rule in the steering file.
+
+Kinds:
+- bug: the code does the wrong thing.
+- assumption: the code relies on something about other code that is not so.
+- convention: the code breaks a rule in the steering file.
+- design: readability, maintainability, testability or architecture with no rule behind it.
+
+End your answer with one JSON object and nothing after it:
+{"findings": [{"kind": "bug|assumption|convention|design",
+   "file": "path/relative/to/repo", "lines": [first line, last line] (in the file after the change),
+   "statement": "two to three sentences: what is wrong and why it matters",
+   "rule": "the heading of the rule it breaks, exactly as written after ### in the steering file, or empty",
+   "evidence": [{"file": "path/relative/to/repo", "lines": [first line, last line]}]}],
+ "open": [{"id": "the open finding's id", "holds": "still holds|no longer holds", "why": "one line"}]}

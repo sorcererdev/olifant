@@ -194,6 +194,8 @@ library
     Olifant.Toml
     Olifant.Transcripts
     Olifant.Uncovered
+    Olifant.Vet.Find
+    Olifant.Vet.Screen
     Olifant.Vet.Steering
     Olifant.Vet.Store
     Olifant.Workspace
@@ -434,6 +436,10 @@ test-suite spec
     Olifant.TranscriptsSpec
     Olifant.Uncovered
     Olifant.UncoveredSpec
+    Olifant.Vet.Find
+    Olifant.Vet.FindSpec
+    Olifant.Vet.Screen
+    Olifant.Vet.ScreenSpec
     Olifant.Vet.Steering
     Olifant.Vet.SteeringSpec
     Olifant.Vet.Store

@@ -115,3 +115,21 @@ uint32_t ots_error_rows(const TSNode *root, uint32_t *out, uint32_t cap) {
   ots_error_walk(*root, out, cap, &k);
   return k;
 }
+
+/* Vet's screen: is the node spanning bytes [start, end) a body with nothing
+ * in it but comments and lone strings (a docstring)? 1 yes, 0 no, 2 when no
+ * node spans exactly that range. Told by node type names only. */
+static int ots_quiet(TSNode c) {
+  const char *t = ts_node_type(c);
+  if (strstr(t, "comment") || strstr(t, "string")) return 1;
+  return ts_node_named_child_count(c) == 1 && strstr(ts_node_type(ts_node_named_child(c, 0)), "string") != NULL;
+}
+int ots_body_empty(const TSNode *root, uint32_t start, uint32_t end) {
+  TSNode n = ts_node_named_descendant_for_byte_range(*root, start, end);
+  if (ts_node_is_null(n) || ts_node_start_byte(n) != start || ts_node_end_byte(n) != end) return 2;
+  /* a body with one statement spans the same bytes as it: take the outermost */
+  for (TSNode p = ts_node_parent(n); !ts_node_is_null(p) && ts_node_start_byte(p) == start && ts_node_end_byte(p) == end; p = ts_node_parent(p)) n = p;
+  uint32_t k = ts_node_named_child_count(n);
+  for (uint32_t i = 0; i < k; i++) if (!ots_quiet(ts_node_named_child(n, i))) return 0;
+  return 1;
+}
