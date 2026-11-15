@@ -85,6 +85,13 @@ library
     Olifant.GitInit
     Olifant.Glob
     Olifant.Holes
+    Olifant.Inspect.Find
+    Olifant.Inspect.Judge
+    Olifant.Inspect.Margin
+    Olifant.Inspect.Pass
+    Olifant.Inspect.Screen
+    Olifant.Inspect.Steering
+    Olifant.Inspect.Store
     Olifant.Landings
     Olifant.Language
     Olifant.Language.Adapter
@@ -194,13 +201,6 @@ library
     Olifant.Toml
     Olifant.Transcripts
     Olifant.Uncovered
-    Olifant.Vet.Find
-    Olifant.Vet.Judge
-    Olifant.Vet.Margin
-    Olifant.Vet.Pass
-    Olifant.Vet.Screen
-    Olifant.Vet.Steering
-    Olifant.Vet.Store
     Olifant.Workspace
     -- olifant:end library-modules
 
@@ -277,6 +277,21 @@ test-suite spec
     Olifant.GlobSpec
     Olifant.Holes
     Olifant.HolesSpec
+    Olifant.Inspect.CorpusSpec
+    Olifant.Inspect.Find
+    Olifant.Inspect.FindSpec
+    Olifant.Inspect.Judge
+    Olifant.Inspect.JudgeSpec
+    Olifant.Inspect.Margin
+    Olifant.Inspect.MarginSpec
+    Olifant.Inspect.Pass
+    Olifant.Inspect.PassSpec
+    Olifant.Inspect.Screen
+    Olifant.Inspect.ScreenSpec
+    Olifant.Inspect.Steering
+    Olifant.Inspect.SteeringSpec
+    Olifant.Inspect.Store
+    Olifant.Inspect.StoreSpec
     Olifant.Landings
     Olifant.LandingsSpec
     Olifant.Language
@@ -439,21 +454,6 @@ test-suite spec
     Olifant.TranscriptsSpec
     Olifant.Uncovered
     Olifant.UncoveredSpec
-    Olifant.Vet.CorpusSpec
-    Olifant.Vet.Find
-    Olifant.Vet.FindSpec
-    Olifant.Vet.Judge
-    Olifant.Vet.JudgeSpec
-    Olifant.Vet.Margin
-    Olifant.Vet.MarginSpec
-    Olifant.Vet.Pass
-    Olifant.Vet.PassSpec
-    Olifant.Vet.Screen
-    Olifant.Vet.ScreenSpec
-    Olifant.Vet.Steering
-    Olifant.Vet.SteeringSpec
-    Olifant.Vet.Store
-    Olifant.Vet.StoreSpec
     Olifant.Workspace
     Olifant.WorkspaceSpec
     SpecHook

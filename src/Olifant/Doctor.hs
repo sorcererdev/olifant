@@ -20,8 +20,8 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Capabilities (Capability (..), capabilities)
 import Olifant.Evidence (Evidence (..), Proof (..))
-import Olifant.Catalog (PlansConfig (..), VetConfig (..))
-import Olifant.Vet.Steering (Steering (..), steering, steeringPath)
+import Olifant.Catalog (PlansConfig (..), InspectConfig (..))
+import Olifant.Inspect.Steering (Steering (..), steering, steeringPath)
 import Data.Aeson qualified as Aeson
 import Data.Aeson.KeyMap qualified as KM
 import Data.Text.Encoding qualified as TE
@@ -56,8 +56,8 @@ data DoctorInput = DoctorInput
     diEvidence :: [(Text, Evidence)]
   , -- | `doctor --run`: the tests row's evidence comes from a run
     diRan :: Bool
-  , -- | `[vet]`: its row (only when on), with Jev and the store
-    diVet :: VetConfig
+  , -- | `[inspect]`: its row (only when on), with Jev and the store
+    diInspect :: InspectConfig
   }
 
 -- | The outside world the doctor looks at.
@@ -86,10 +86,10 @@ doctor ports di = do
   tools <- traverse languageTools (diLanguages di)
   model <- modelCheck
   runner <- plansRunner
-  vet <- vetRow
+  inspect <- inspectRow
   grammars <- traverse (\l -> (langName l,) <$> dpGrammar ports (langGrammar l)) (diLanguages di)
   generated <- traverse (\l -> (langName l,) <$> writtenByInit l) (diLanguages di)
-  pure ([config] ++ packs ++ languages ++ broken ++ [astGrep] ++ concat tools ++ [model] ++ recognizeCheck ++ concatMap (\l -> capabilityRows grammars (fromMaybe [] (lookup (langName l) generated)) l) (diLanguages di) ++ [runner] ++ vet)
+  pure ([config] ++ packs ++ languages ++ broken ++ [astGrep] ++ concat tools ++ [model] ++ recognizeCheck ++ concatMap (\l -> capabilityRows grammars (fromMaybe [] (lookup (langName l) generated)) l) (diLanguages di) ++ [runner] ++ inspect)
   where
     -- the files init wrote for L that a rerun of init refuses on: the
     -- project's layer, when it starts with init's header, and the toolchain
@@ -171,22 +171,22 @@ doctor ports di = do
         Nothing -> do
           path <- dpPath ports
           pure (Check ("plans runner " <> runner) Bad ("`" <> runner <> "` is not on this PATH: " <> path) (Just "install Claude Code, or set [plans] runner"))
-    -- vet's row, when on: it runs only with Jev; a store that does not read pauses it
-    -- (checked here by its JSON and version: Olifant.Vet.Store sits above this module)
-    vetRow
-      | not (vcEnabled (diVet di)) = pure []
+    -- inspect's row, when on: it runs only with Jev; a store that does not read pauses it
+    -- (checked here by its JSON and version: Olifant.Inspect.Store sits above this module)
+    inspectRow
+      | not (vcEnabled (diInspect di)) = pure []
       | otherwise = do
           let at f = maybe (pure Nothing) (\r -> dpRead ports (r </> f)) (diProject di)
-          store <- at ".olifant/state/vet/findings.json"
+          store <- at ".olifant/state/inspect/findings.json"
           rules <- fmap (length . stRules . steering) <$> at steeringPath
           let unreadable = store >>= \t -> case Aeson.eitherDecodeStrict (TE.encodeUtf8 t) of
                 Left why -> Just (T.pack why)
                 Right (Aeson.Object o) | KM.lookup "version" o == Just (Aeson.Number 1) -> Nothing
                 Right _ -> Just "not a version 1 store"
           pure . pure $ case (unreadable, diRecognizeModel di) of
-            (Just why, _) -> Check "vet" Bad ("the vet store does not read (" <> why <> "): vet is paused") (Just "move .olifant/state/vet/findings.json aside")
-            (_, Nothing) -> Check "vet" Warn "on, but no Jev backend is configured: vet does not run" (Just "set [decide] model to a jev backend")
-            (_, Just name) -> Check "vet" Ok ("on: Jev " <> name <> ", " <> maybe "no vet.md (no rules)" (\n -> "vet.md with " <> T.pack (show n) <> " rule" <> (if n == 1 then "" else "s")) rules) Nothing
+            (Just why, _) -> Check "inspect" Bad ("the inspect store does not read (" <> why <> "): inspect is paused") (Just "move .olifant/state/inspect/findings.json aside")
+            (_, Nothing) -> Check "inspect" Warn "on, but no Jev backend is configured: inspect does not run" (Just "set [decide] model to a jev backend")
+            (_, Just name) -> Check "inspect" Ok ("on: Jev " <> name <> ", " <> maybe "no inspect.md (no rules)" (\n -> "inspect.md with " <> T.pack (show n) <> " rule" <> (if n == 1 then "" else "s")) rules) Nothing
     recognizeCheck = case diRecognizeModel di of
       Nothing -> []
       Just name

@@ -69,11 +69,11 @@ import Olifant.Server.Journal qualified as Journal
 import Olifant.Transcripts (slugOf)
 import Data.Time (Day, getCurrentTimeZone, localDay, utcToLocalTime)
 import Data.Unique (Unique, newUnique)
-import Olifant.Vet.Find (FindAsk (..), FindUnit (..), liveFinder, recordedFinder)
-import Olifant.Vet.Pass (VetDeps (..), VetOutcome (..), capNoticeDue, unitFingerprints, vetPass)
-import Olifant.Vet.Store (VetFinding (..), VetStore (..), dismiss, plLines, readVetStore, shownIn, updateVetStore)
-import Olifant.Vet.Margin (shownLines, vetDiagnostics, whyText)
-import Olifant.Vet.Steering (noSteering, steering, steeringPath)
+import Olifant.Inspect.Find (FindAsk (..), FindUnit (..), liveFinder, recordedFinder)
+import Olifant.Inspect.Pass (InspectDeps (..), InspectOutcome (..), capNoticeDue, unitFingerprints, inspectPass)
+import Olifant.Inspect.Store (InspectFinding (..), InspectStore (..), dismiss, plLines, readInspectStore, shownIn, updateInspectStore)
+import Olifant.Inspect.Margin (shownLines, inspectDiagnostics, whyText)
+import Olifant.Inspect.Steering (noSteering, steering, steeringPath)
 import System.Directory (getHomeDirectory)
 import Olifant.Server.LoopTypes (Fact (..))
 import Olifant.Server.Stale (staleIn)
@@ -82,7 +82,7 @@ import System.FilePath (makeRelative, takeFileName, (</>))
 import Olifant.Generation (Plan (..), ProgressEvent (Said))
 import Olifant.Output (doctorJson, fileActionsJson, listJson, planJson, showJson)
 import Olifant.App (Project (..), ShowFailure (..), doctorChecks, inMenu, listGenerators, migrationFor, showGenerator, subsOf)
-import Olifant.Catalog (Catalog (..), PlansConfig (..), VetConfig (..), catalogPackRoots, defaultPlans, describeCatalogError)
+import Olifant.Catalog (Catalog (..), PlansConfig (..), InspectConfig (..), catalogPackRoots, defaultPlans, describeCatalogError)
 import Olifant.Actions (Action (..), Completion (..), Nearby (..))
 import Olifant.Rules (Finding (..), FixOffer (..))
 import Olifant.Snippet (Snippet (..))
@@ -125,13 +125,13 @@ data Env = Env
     envPasses :: IORef (Int, M.Map FilePath RunningPass)
   , -- | the plans a *Check the plan* is running on (not passes: a save does not stop one)
     envSweeps :: IORef (S.Set FilePath)
-  , -- | each file's vet find call in flight: whose it is, the (unit, fingerprint)
+  , -- | each file's inspect find call in flight: whose it is, the (unit, fingerprint)
     -- pairs it was sent, and how to kill it
-    envVetFlight :: IORef (M.Map FilePath (Unique, M.Map T.Text T.Text, IO ()))
-  , -- | the local day vet's cap message was last sent
-    envVetCapDay :: IORef (Maybe Day)
-  , -- | held while a vet pass runs: one at a time, so a pass sees what the one before stored
-    envVetLock :: MVar ()
+    envInspectFlight :: IORef (M.Map FilePath (Unique, M.Map T.Text T.Text, IO ()))
+  , -- | the local day inspect's cap message was last sent
+    envInspectCapDay :: IORef (Maybe Day)
+  , -- | held while an inspect pass runs: one at a time, so a pass sees what the one before stored
+    envInspectLock :: MVar ()
   }
 
 -- | A plan's running claim pass: its number, its mode, how to stop it (no
@@ -200,7 +200,7 @@ serverDefinition ports = do
       , doInitialize = \lspEnv req -> configure env (req ^. L.params . L.initializationOptions) >> pure (Right lspEnv)
       , staticHandlers = \_ -> guarded env (handlers env)
       , interpretHandler = \lspEnv -> Iso (runLspT lspEnv) liftIO
-      , options = defaultOptions {optTextDocumentSync = Just sync, optServerInfo = Just (ServerInfo "olifant" Nothing), optCompletionTriggerCharacters = Just ['@', ':'], optExecuteCommandCommands = Just ["olifant.doctor", "olifant.checkSentence", "olifant.answerSentence", "olifant.checkPlan", "olifant.showWhy", "olifant.showCode", "olifant.vetShowWhy", "olifant.vetDismiss"]}
+      , options = defaultOptions {optTextDocumentSync = Just sync, optServerInfo = Just (ServerInfo "olifant" Nothing), optCompletionTriggerCharacters = Just ['@', ':'], optExecuteCommandCommands = Just ["olifant.doctor", "olifant.checkSentence", "olifant.answerSentence", "olifant.checkPlan", "olifant.showWhy", "olifant.showCode", "olifant.inspectShowWhy", "olifant.inspectDismiss"]}
       }
   where
     -- open/close and incremental changes; saves are noticed (regions)
@@ -234,10 +234,10 @@ configure env = \case
                   scCheckAnswers = case KM.lookup "check_answers" o of
                     Just (String f) -> Just (T.unpack f)
                     _ -> scCheckAnswers (ssConfig s)
-                , -- vet_answers: a file of recorded find-call replies (tests)
-                  scVetAnswers = case KM.lookup "vet_answers" o of
+                , -- inspect_answers: a file of recorded find-call replies (tests)
+                  scInspectAnswers = case KM.lookup "inspect_answers" o of
                     Just (String f) -> Just (T.unpack f)
-                    _ -> scVetAnswers (ssConfig s)
+                    _ -> scInspectAnswers (ssConfig s)
                 , scKeys = case KM.lookup "keys" o of
                     Just (Object ks) -> [(Key.toText k, v) | (k, String v) <- KM.toList ks]
                     _ -> scKeys (ssConfig s)
@@ -348,7 +348,7 @@ handlers env =
           startPass env SavePass path
           worked <- liftIO (atomicModifyIORef' (envSaving env) (\m -> (M.delete path m, M.lookup path m)))
           lspEnv <- getLspEnv
-          liftIO (vetLater env lspEnv path)
+          liftIO (inspectLater env lspEnv path)
           -- what willSaveWaitUntil worked out, else (a client without it)
           -- the refresh now, off the message loop
           void . liftIO . forkIO . runLspT lspEnv $ do
@@ -474,30 +474,30 @@ handlers env =
             void (sendRequest SMethod_WindowShowDocument (ShowDocumentParams (filePathToUri (T.unpack file)) Nothing (Just True) (Just (Range at at))) (\_ -> pure ()))
             respond (Right (InR Null))
           _ -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "olifant.showCode needs a file and a line" Nothing))
-        -- vet's Show why: the finding's page, opened
-        "olifant.vetShowWhy" -> case req ^. L.params . L.arguments of
+        -- inspect's Show why: the finding's page, opened
+        "olifant.inspectShowWhy" -> case req ^. L.params . L.arguments of
           Just [String uri, String i] | Just path <- uriToFilePath (Uri uri) ->
-            liftIO (vetWhyFile env path i) >>= \case
+            liftIO (inspectWhyFile env path i) >>= \case
               Left why -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
               Right file -> do
                 void (sendRequest SMethod_WindowShowDocument (ShowDocumentParams (filePathToUri file) Nothing (Just True) Nothing) (\_ -> pure ()))
                 respond (Right (InR Null))
-          _ -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "olifant.vetShowWhy needs a file's uri and a finding's id" Nothing))
-        -- vet's Dismiss here / everywhere; a freed place lets a waiting finding be verified
-        "olifant.vetDismiss" -> case req ^. L.params . L.arguments of
+          _ -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "olifant.inspectShowWhy needs a file's uri and a finding's id" Nothing))
+        -- inspect's Dismiss here / everywhere; a freed place lets a waiting finding be verified
+        "olifant.inspectDismiss" -> case req ^. L.params . L.arguments of
           Just [String uri, String i, String w] | Just path <- uriToFilePath (Uri uri), w `elem` ["here", "everywhere"] ->
-            liftIO (vetContext env path) >>= \case
+            liftIO (inspectContext env path) >>= \case
               Just (p, _, _, Right _) -> do
-                r <- liftIO (updateVetStore (pFiles (envPorts env)) (prRoot p) (\vs -> (dismiss (w == "everywhere") i vs, ())))
+                r <- liftIO (updateInspectStore (pFiles (envPorts env)) (prRoot p) (\vs -> (dismiss (w == "everywhere") i vs, ())))
                 case r of
                   Left why -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
                   Right () -> do
                     void (sendRequest SMethod_WorkspaceDiagnosticRefresh Nothing (\_ -> pure ()))
                     lspEnv <- getLspEnv
-                    liftIO (vetLater env lspEnv path)
+                    liftIO (inspectLater env lspEnv path)
                     respond (Right (InR Null))
-              _ -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) "vet is not on for this file" Nothing))
-          _ -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "olifant.vetDismiss needs a file's uri, a finding's id, and here or everywhere" Nothing))
+              _ -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) "inspect is not on for this file" Nothing))
+          _ -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "olifant.inspectDismiss needs a file's uri, a finding's id, and here or everywhere" Nothing))
         other -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) ("no command " <> other) Nothing))
     , notificationHandler SMethod_WorkspaceDidChangeWorkspaceFolders (\_ -> pure ())
     , notificationHandler SMethod_WorkspaceDidChangeConfiguration (\_ -> pure ())
@@ -521,7 +521,7 @@ handlers env =
         let Range (Position from _) (Position to _) = req ^. L.params . L.range
         actions <- case uriToFilePath (req ^. L.params . L.textDocument . L.uri) of
           Nothing -> pure []
-          Just path -> liftIO (concat <$> sequence [fixActions env path (fromIntegral from + 1) (fromIntegral to + 1), holeActions env path (fromIntegral from + 1), cursorActions env path (req ^. L.params . L.range . L.start), newStepAction env path (req ^. L.params . L.range . L.start), excerptAction env path (req ^. L.params . L.context . L.only) (req ^. L.params . L.range . L.start), toggleAction env path (req ^. L.params . L.context . L.only) (req ^. L.params . L.range . L.start), refingerprintAction env path (req ^. L.params . L.range . L.start), sentenceActions env path (req ^. L.params . L.range . L.start), vetActions env path (req ^. L.params . L.range . L.start)])
+          Just path -> liftIO (concat <$> sequence [fixActions env path (fromIntegral from + 1) (fromIntegral to + 1), holeActions env path (fromIntegral from + 1), cursorActions env path (req ^. L.params . L.range . L.start), newStepAction env path (req ^. L.params . L.range . L.start), excerptAction env path (req ^. L.params . L.context . L.only) (req ^. L.params . L.range . L.start), toggleAction env path (req ^. L.params . L.context . L.only) (req ^. L.params . L.range . L.start), refingerprintAction env path (req ^. L.params . L.range . L.start), sentenceActions env path (req ^. L.params . L.range . L.start), inspectActions env path (req ^. L.params . L.range . L.start)])
         respond (Right (InL (map InR actions)))
     , -- planned on its own thread: a model fill or a test run takes seconds,
       -- and the server reads on meanwhile (other requests, progress)
@@ -1286,56 +1286,56 @@ lastEditedLine changes = case reverse changes of
      in Just (fromIntegral l + 1 + T.count "\n" (partial ^. L.text))
   _ -> Nothing
 
--- | Vet on save: after `[vet] settle` (a newer save of the file restarts the
+-- | Inspect on save: after `[inspect] settle` (a newer save of the file restarts the
 -- wait), one pass over the file's changed units. A find call still in flight
 -- keeps its units while their fingerprints hold, and is killed when none
 -- does. Diagnostics are refreshed when the store changed; the first time a
--- local day's cap stops a pass, one message says so. Only with `[vet]
+-- local day's cap stops a pass, one message says so. Only with `[inspect]
 -- enabled` and a Jev decider; never a plan.
-vetLater :: Env -> LanguageContextEnv () -> FilePath -> IO ()
-vetLater env lspEnv path = do
+inspectLater :: Env -> LanguageContextEnv () -> FilePath -> IO ()
+inspectLater env lspEnv path = do
   found <- withSnapshot env $ \s -> projectFor path s >>= \(s', m) -> pure (s', m >>= \(_, p) -> p <$ deciderFor s' p)
   case found of
     Just p
-      | vcEnabled (catalogVet (prCatalog p)), not (isPlanPath p path) ->
-          void . submit (envJobs env) ("vet " <> T.pack path) (round (vcSettle (catalogVet (prCatalog p)) * 1000)) $ \_ -> runVet
+      | vcEnabled (catalogInspect (prCatalog p)), not (isPlanPath p path) ->
+          void . submit (envJobs env) ("inspect " <> T.pack path) (round (vcSettle (catalogInspect (prCatalog p)) * 1000)) $ \_ -> runInspect
     _ -> pure ()
   where
-    runVet = do
+    runInspect = do
       (token, _) <- newCancel
       mine <- newUnique
       -- before waiting for the pass ahead: kill its find call when none of its units holds
       skip <- inFlight
       zone <- getCurrentTimeZone
-      outcome <- withMVar (envVetLock env) $ \() -> withSnapshot env {envCancel = token} $ \s ->
+      outcome <- withMVar (envInspectLock env) $ \() -> withSnapshot env {envCancel = token} $ \s ->
         projectFor path s >>= \case
           (s', Just (root, p)) | Just d <- deciderFor s' p -> do
             let pcfg = catalogPlans (prCatalog p)
-                vcfg = catalogVet (prCatalog p)
+                vcfg = catalogInspect (prCatalog p)
                 -- each find call has its own token: a kill reaches the call, never the pass's claim checks
                 finder ask = do
                   (callToken, kill) <- newCancel
                   let sent = M.fromList [(fuName u, fingerprint (fuText u) (1, length (T.lines (fuText u)))) | u <- faUnits ask]
-                  atomicModifyIORef' (envVetFlight env) (\m -> (M.insert path (mine, sent, kill) m, ()))
-                  r <- maybe (liveFinder (eitherCancel token callToken) pcfg vcfg root) recordedFinder (scVetAnswers (ssConfig s')) ask
-                  atomicModifyIORef' (envVetFlight env) (\m -> (M.update (\e@(u, _, _) -> if u == mine then Nothing else Just e) path m, ()))
+                  atomicModifyIORef' (envInspectFlight env) (\m -> (M.insert path (mine, sent, kill) m, ()))
+                  r <- maybe (liveFinder (eitherCancel token callToken) pcfg vcfg root) recordedFinder (scInspectAnswers (ssConfig s')) ask
+                  atomicModifyIORef' (envInspectFlight env) (\m -> (M.update (\e@(u, _, _) -> if u == mine then Nothing else Just e) path m, ()))
                   pure r
-            o <- vetPass token s' p (VetDeps d finder (\c -> checkerUnder s' token c root) zone skip (const (pure ()))) path
-            waiting <- either (const 0) (sum . map S.size . M.elems . vsCapped) <$> readVetStore (pFiles (ssPorts s')) root
+            o <- inspectPass token s' p (InspectDeps d finder (\c -> checkerUnder s' token c root) zone skip (const (pure ()))) path
+            waiting <- either (const 0) (sum . map S.size . M.elems . vsCapped) <$> readInspectStore (pFiles (ssPorts s')) root
             pure (s', Just (o, vcDayCost vcfg, waiting))
           (s', _) -> pure (s', Nothing)
-      atomicModifyIORef' (envVetFlight env) (\m -> (M.update (\e@(u, _, _) -> if u == mine then Nothing else Just e) path m, ()))
+      atomicModifyIORef' (envInspectFlight env) (\m -> (M.update (\e@(u, _, _) -> if u == mine then Nothing else Just e) path m, ()))
       case outcome of
-        Just (VetDone {voChanged = changed, voDayCapped = dayCapped}, dayCost, waiting) -> do
+        Just (InspectDone {voChanged = changed, voDayCapped = dayCapped}, dayCost, waiting) -> do
           when changed $ runLspT lspEnv (void (sendRequest SMethod_WorkspaceDiagnosticRefresh Nothing (\_ -> pure ())))
           when dayCapped $ do
             today <- localDay . utcToLocalTime zone <$> pNow (envPorts env)
-            due <- atomicModifyIORef' (envVetCapDay env) (\lastDay -> if capNoticeDue lastDay today then (Just today, True) else (lastDay, False))
+            due <- atomicModifyIORef' (envInspectCapDay env) (\lastDay -> if capNoticeDue lastDay today then (Just today, True) else (lastDay, False))
             when due . runLspT lspEnv . sendNotification SMethod_WindowShowMessage . ShowMessageParams MessageType_Info $
-              "olifant vet: today's cap ($" <> T.pack (showFFloat (Just 2) dayCost "") <> ") is reached; " <> T.pack (show waiting) <> " unit" <> (if waiting == 1 then "" else "s") <> " wait. `olifant vet cost` shows them."
+              "olifant inspect: today's cap ($" <> T.pack (showFFloat (Just 2) dayCost "") <> ") is reached; " <> T.pack (show waiting) <> " unit" <> (if waiting == 1 then "" else "s") <> " wait. `olifant inspect cost` shows them."
         _ -> pure ()
     -- the in-flight call's units whose fingerprint still holds; none: kill it
-    inFlight = M.lookup path <$> readIORef (envVetFlight env) >>= \case
+    inFlight = M.lookup path <$> readIORef (envInspectFlight env) >>= \case
       Nothing -> pure S.empty
       Just (_, sent, kill) -> do
         now <- withSnapshot env $ \s -> projectFor path s >>= \case
@@ -1533,7 +1533,7 @@ diagnosticsOf env path = do
       atomicModifyIORef' (envPlanPrints env) (\m -> (M.insert path prints m, ()))
       pure (s', ds)
     (s', _) -> pure (s', []))
-  vet <- vetDiagnosticsFor env path
+  inspect <- inspectDiagnosticsFor env path
   let ls = T.splitOn "\n" text
       lineText n = fromMaybe "" (listToMaybe (drop (n - 1) ls))
       position (l, c) = let (l', c') = editorPosition (lineText l) (l, c) in Position (fromIntegral l') (fromIntegral c')
@@ -1544,7 +1544,7 @@ diagnosticsOf env path = do
       , Just sev <- [severityOf (fSeverity f)]
       ]
         ++ map (,Nothing) plan
-        ++ map (,Nothing) vet
+        ++ map (,Nothing) inspect
     )
   where
     severityOf = \case
@@ -1898,29 +1898,29 @@ citationPlace env p cf = case cfEvidence cf of
 
 -- | *Show why*: `.olifant/state/why/<hash of the key>.md` holding the
 -- sentence, its verdict and why, and every citation; the file's path.
--- | A source file's vet context (vet on, not a plan): its project, `[vet]`,
+-- | A source file's inspect context (inspect on, not a plan): its project, `[inspect]`,
 -- its path from the root, and the store (Left when it does not read).
-vetContext :: Env -> FilePath -> IO (Maybe (Project, VetConfig, FilePath, Either T.Text VetStore))
-vetContext env path = withSnapshot env $ \s ->
+inspectContext :: Env -> FilePath -> IO (Maybe (Project, InspectConfig, FilePath, Either T.Text InspectStore))
+inspectContext env path = withSnapshot env $ \s ->
   projectFor path s >>= \case
-    (s', Just (root, p)) | not (isPlanPath p path), vcEnabled (catalogVet (prCatalog p)) -> do
-      st <- readVetStore (pFiles (ssPorts s')) root
-      pure (s', Just (p, catalogVet (prCatalog p), normalisePath (makeRelative root path), st))
+    (s', Just (root, p)) | not (isPlanPath p path), vcEnabled (catalogInspect (prCatalog p)) -> do
+      st <- readInspectStore (pFiles (ssPorts s')) root
+      pure (s', Just (p, catalogInspect (prCatalog p), normalisePath (makeRelative root path), st))
     (s', _) -> pure (s', Nothing)
 
--- | The file's vet margin, as pulled diagnostics.
-vetDiagnosticsFor :: Env -> FilePath -> IO [Diagnostic]
-vetDiagnosticsFor env path =
-  vetContext env path >>= \case
+-- | The file's inspect margin, as pulled diagnostics.
+inspectDiagnosticsFor :: Env -> FilePath -> IO [Diagnostic]
+inspectDiagnosticsFor env path =
+  inspectContext env path >>= \case
     Just (p, cfg, rel, Right store) -> do
       units <- withSnapshot env (\s -> (s,) <$> unitFingerprints s p path)
-      pure (vetDiagnostics cfg units rel store)
+      pure (inspectDiagnostics cfg units rel store)
     _ -> pure []
 
--- | On a line holding a shown vet finding: Show why, Show code, Dismiss here, Dismiss everywhere.
-vetActions :: Env -> FilePath -> Position -> IO [CodeAction]
-vetActions env path (Position l _) =
-  vetContext env path >>= \case
+-- | On a line holding a shown inspect finding: Show why, Show code, Dismiss here, Dismiss everywhere.
+inspectActions :: Env -> FilePath -> Position -> IO [CodeAction]
+inspectActions env path (Position l _) =
+  inspectContext env path >>= \case
     Just (p, cfg, rel, Right store) -> do
       units <- withSnapshot env (\s -> (s,) <$> unitFingerprints s p path)
       let here = [f | (line, f) <- shownLines cfg units rel store, line - 1 == fromIntegral l]
@@ -1930,24 +1930,24 @@ vetActions env path (Position l _) =
             [ a
             | f <- take 1 here
             , a <-
-                [act "Show why" "olifant.vetShowWhy" [toJSON uri, toJSON (vfId f)]]
+                [act "Show why" "olifant.inspectShowWhy" [toJSON uri, toJSON (vfId f)]]
                   ++ [act "Show code" "olifant.showCode" [toJSON (prRoot p </> e), toJSON a0] | (e, (a0, _)) <- take 1 (vfEvidence f)]
-                  ++ [act "Dismiss here" "olifant.vetDismiss" [toJSON uri, toJSON (vfId f), String "here"], act "Dismiss everywhere" "olifant.vetDismiss" [toJSON uri, toJSON (vfId f), String "everywhere"]]
+                  ++ [act "Dismiss here" "olifant.inspectDismiss" [toJSON uri, toJSON (vfId f), String "here"], act "Dismiss everywhere" "olifant.inspectDismiss" [toJSON uri, toJSON (vfId f), String "everywhere"]]
             ]
     _ -> pure []
 
--- | Write a vet finding's *Show why* page (`.olifant/state/vet/why-<id>.md`).
-vetWhyFile :: Env -> FilePath -> T.Text -> IO (Either T.Text FilePath)
-vetWhyFile env path i =
-  vetContext env path >>= \case
+-- | Write an inspect finding's *Show why* page (`.olifant/state/inspect/why-<id>.md`).
+inspectWhyFile :: Env -> FilePath -> T.Text -> IO (Either T.Text FilePath)
+inspectWhyFile env path i =
+  inspectContext env path >>= \case
     Just (p, _, _, Right store) -> case [f | f <- vsFindings store, vfId f == i] of
       f : _ -> do
         st <- maybe noSteering steering <$> readText (pFiles (envPorts env)) (prRoot p </> steeringPath)
-        let file = prRoot p </> ".olifant/state/vet" </> "why-" <> T.unpack i <> ".md"
+        let file = prRoot p </> ".olifant/state/inspect" </> "why-" <> T.unpack i <> ".md"
         writeText (pFiles (envPorts env)) file (whyText st f)
         pure (Right file)
       [] -> pure (Left "no such finding")
-    _ -> pure (Left "vet is not on for this file")
+    _ -> pure (Left "inspect is not on for this file")
 
 whyFile :: Env -> FilePath -> T.Text -> IO (Either T.Text FilePath)
 whyFile env path key =

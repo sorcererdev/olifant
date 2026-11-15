@@ -23,7 +23,7 @@ import Data.Aeson qualified as Aeson
 import Data.Aeson.KeyMap qualified as AKM
 import Data.Time (UTCTime (..), fromGregorian, secondsToDiffTime)
 import Olifant.Cli
-import Olifant.Cli.Options (Command (VetListCmd), Options (..), parseOptions)
+import Olifant.Cli.Options (Command (InspectListCmd), Options (..), parseOptions)
 import Olifant.Output (planHuman, planJson)
 import Olifant.Generation (EditAction (..), HoleStatus (..), Plan (..), PlannedEdit (..), PlannedHole (..), Site (..))
 import Olifant.Holes (HoleSite (..))
@@ -35,7 +35,7 @@ import Olifant.Generator (GeneratorId (..))
 import Olifant.Language (Language (..), Syntax, noChecker, noRunner, noSyntax, noVerifier)
 import Olifant.Workspace (memoryWorkspace)
 import Olifant.Server.Errand (Status (..))
-import Olifant.Vet.Store (Place (..), Status (..), VetFinding (..), VetStore (..), emptyVetStore, encodeStore)
+import Olifant.Inspect.Store (Place (..), Status (..), InspectFinding (..), InspectStore (..), emptyInspectStore, encodeStore)
 import Olifant.Server.Telemetry (ErrandRecord (..), OutcomeRecord (..), PassRecord (..), ReconcileRecord (..), Record (..), ResolveRecord (..), recordJson)
 import System.Exit (ExitCode (..))
 import Olifant.Language.AstGrep (astGrepSyntax)
@@ -704,7 +704,7 @@ jsonAt path out = decodeStrict (TE.encodeUtf8 out) >>= go path
     go _ _ = Nothing
 
 spec :: Spec
-spec = planOutputSpec >> runCliSpec >> newCodeCheckSpec >> initMigrateSpec >> initLanguageSpec >> initShippedSpec >> anticipateCliSpec >> plansCostSpec >> vetCliSpec
+spec = planOutputSpec >> runCliSpec >> newCodeCheckSpec >> initMigrateSpec >> initLanguageSpec >> initShippedSpec >> anticipateCliSpec >> plansCostSpec >> inspectCliSpec
 
 planOutputSpec :: Spec
 planOutputSpec = describe "planHuman" $ do
@@ -1659,12 +1659,12 @@ plansCostSpec = describe "plans cost" $ do
       rowsOf out = case decodeStrict (TE.encodeUtf8 out) >>= lookupKey "rows" of
         Just (Array rs) -> toList rs
         _ -> []
-  it "(I4) a vet errand's session is neither an errand row nor interactive spend" $ do
-    let vetE = AnErrand (case errand "V1" (at 25 10) (Just "feat") Ok 0 (Just 0.04) (Just "S2") of AnErrand e -> e {erVerb = "vet"}; r -> error (show r))
+  it "(I4) an inspect errand's session is neither an errand row nor interactive spend" $ do
+    let inspectE = AnErrand (case errand "V1" (at 25 10) (Just "feat") Ok 0 (Just 0.04) (Just "S2") of AnErrand e -> e {erVerb = "inspect"}; r -> error (show r))
         withoutS2 = [t | t@(f, _) <- transcripts, f /= "/transcripts/S2.jsonl"]
-    (_, withVet, _, _) <- run (records [vetE] [] : transcripts) ["--transcripts", "/transcripts"]
+    (_, withInspect, _, _) <- run (records [inspectE] [] : transcripts) ["--transcripts", "/transcripts"]
     (_, without, _, _) <- run (records [] [] : withoutS2) ["--transcripts", "/transcripts"]
-    withVet `shouldBe` without
+    withInspect `shouldBe` without
   it "one row per branch with errand and session cost, errand sessions not double counted" $ do
     (code, out, err, _) <- run (records base [] : transcripts) ["--transcripts", "/transcripts"]
     code `shouldBe` ExitSuccess
@@ -1860,14 +1860,14 @@ plansCostSpec = describe "plans cost" $ do
     err `shouldSatisfy` ("no Claude Code transcripts at /nowhere" `T.isInfixOf`)
     T.words (T.lines out !! 1) `shouldBe` ["feat", "2", "0", "0.0", "1/2", "(0", "?)", "0.07", "0", "0.00", "0.07"]
 
--- | `olifant vet list` and `olifant vet cost`.
-vetCliSpec :: Spec
-vetCliSpec = describe "vet list and vet cost" $ do
+-- | `olifant inspect list` and `olifant inspect cost`.
+inspectCliSpec :: Spec
+inspectCliSpec = describe "inspect list and inspect cost" $ do
   let at d = UTCTime (fromGregorian 2026 11 d) (secondsToDiffTime (12 * 3600))
       vf i st kind file line statement =
-        VetFinding i kind (Just "A rule") statement (Place file (Just "f") (line, line) Nothing Nothing) [] [] (Just 0.9) Nothing Nothing Nothing st 1 "sonnet" 0 (at 15)
-      store fs capped = ("/proj/.olifant/state/vet/findings.json", encodeStore emptyVetStore {vsFindings = fs, vsCapped = capped})
-      vetErrand i d verb cost =
+        InspectFinding i kind (Just "A rule") statement (Place file (Just "f") (line, line) Nothing Nothing) [] [] (Just 0.9) Nothing Nothing Nothing st 1 "sonnet" 0 (at 15)
+      store fs capped = ("/proj/.olifant/state/inspect/findings.json", encodeStore emptyInspectStore {vsFindings = fs, vsCapped = capped})
+      inspectErrand i d verb cost =
         AnErrand
           ErrandRecord
             { erId = i, erAt = at d, erVerb = verb, erPlan = "src/a.py", erRow = 0, erSection = "f"
@@ -1878,29 +1878,29 @@ vetCliSpec = describe "vet list and vet cost" $ do
       line r = TL.toStrict (TLE.decodeUtf8 (encode (recordJson r)))
       records rs = ("/proj/.olifant/state/errands.jsonl", T.unlines (map line rs))
       run files args = runWithGit (\_ _ -> pure (Left "no git")) "" files False args
-  it "parses vet list --status open --json" $
-    fmap optCommand (parseOptions ["vet", "list", "--status", "open", "--json"]) `shouldSatisfy` \case
-      Right (VetListCmd (Just "open") True) -> True
+  it "parses inspect list --status open --json" $
+    fmap optCommand (parseOptions ["inspect", "list", "--status", "open", "--json"]) `shouldSatisfy` \case
+      Right (InspectListCmd (Just "open") True) -> True
       _ -> False
-  it "vet list prints open first" $ do
-    (code, out, _, _) <- run [store [vf "w1" Withheld "bug" "src/b.py" 9 "Second.", vf "o1" Open "convention" "src/a.py" 3 "First."] M.empty] ["vet", "list"]
+  it "inspect list prints open first" $ do
+    (code, out, _, _) <- run [store [vf "w1" Withheld "bug" "src/b.py" 9 "Second.", vf "o1" Open "convention" "src/a.py" 3 "First."] M.empty] ["inspect", "list"]
     code `shouldBe` ExitSuccess
     T.words (T.lines out !! 0) `shouldBe` ["status", "kind", "file", "line", "rule", "statement"]
     map (head . T.words) (drop 1 (T.lines out)) `shouldBe` ["open", "withheld"]
-  it "vet list --status filters" $ do
-    (_, out, _, _) <- run [store [vf "w1" Withheld "bug" "src/b.py" 9 "Second.", vf "o1" Open "convention" "src/a.py" 3 "First."] M.empty] ["vet", "list", "--status", "withheld"]
+  it "inspect list --status filters" $ do
+    (_, out, _, _) <- run [store [vf "w1" Withheld "bug" "src/b.py" 9 "Second.", vf "o1" Open "convention" "src/a.py" 3 "First."] M.empty] ["inspect", "list", "--status", "withheld"]
     map (head . T.words) (drop 1 (T.lines out)) `shouldBe` ["withheld"]
-  it "vet cost sums each day and says what waits on the cap" $ do
-    (code, out, _, _) <- run [records [vetErrand "a" 14 "vet" 0.04, vetErrand "b" 14 "vet-check" 0.01, vetErrand "c" 15 "vet" 0.03], store [] (M.fromList [("src/a.py", S.fromList ["f", "g"])])] ["vet", "cost"]
+  it "inspect cost sums each day and says what waits on the cap" $ do
+    (code, out, _, _) <- run [records [inspectErrand "a" 14 "inspect" 0.04, inspectErrand "b" 14 "inspect-check" 0.01, inspectErrand "c" 15 "inspect" 0.03], store [] (M.fromList [("src/a.py", S.fromList ["f", "g"])])] ["inspect", "cost"]
     code `shouldBe` ExitSuccess
     T.words (T.lines out !! 0) `shouldBe` ["day", "finds", "checks", "find", "$", "check", "$", "total", "$"]
     T.words (T.lines out !! 1) `shouldBe` ["2026-11-14", "1", "1", "0.04", "0.01", "0.05"]
     T.words (T.lines out !! 2) `shouldBe` ["2026-11-15", "1", "0", "0.03", "0.00", "0.03"]
     last (T.lines out) `shouldBe` "waiting on the cap: 2 units"
   it "an unreadable store is an error" $ do
-    (code, _, err, _) <- run [("/proj/.olifant/state/vet/findings.json", "{\"version\": 9}")] ["vet", "list"]
+    (code, _, err, _) <- run [("/proj/.olifant/state/inspect/findings.json", "{\"version\": 9}")] ["inspect", "list"]
     code `shouldBe` ExitFailure 1
-    err `shouldSatisfy` T.isPrefixOf "vet: "
-  it "plans cost leaves vet's errands out" $ do
-    (_, out, _, _) <- run [records [vetErrand "a" 14 "vet" 0.04, vetErrand "b" 14 "vet-check" 0.01]] ["plans", "cost", "--by", "plan", "--json"]
+    err `shouldSatisfy` T.isPrefixOf "inspect: "
+  it "plans cost leaves inspect's errands out" $ do
+    (_, out, _, _) <- run [records [inspectErrand "a" 14 "inspect" 0.04, inspectErrand "b" 14 "inspect-check" 0.01]] ["plans", "cost", "--by", "plan", "--json"]
     out `shouldNotSatisfy` T.isInfixOf "src/a.py"

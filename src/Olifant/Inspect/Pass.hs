@@ -1,12 +1,12 @@
--- | One vet pass over one saved file (design steps 1-8): the units that
--- differ from HEAD and are not vetted yet, screened; the finished ones sent
+-- | One inspect pass over one saved file (design steps 1-8): the units that
+-- differ from HEAD and are not inspected yet, screened; the finished ones sent
 -- to the find call in packs under the spend caps; each finding placed,
 -- matched against the store, filtered and verified; the store updated.
-module Olifant.Vet.Pass
-  ( VetDeps (..)
-  , VetOutcome (..)
+module Olifant.Inspect.Pass
+  ( InspectDeps (..)
+  , InspectOutcome (..)
   , changedOf
-  , vetPass
+  , inspectPass
   , spentToday
   , findEstimate
   , claimEstimate
@@ -28,7 +28,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Time (Day, TimeZone, UTCTime, localDay, utcToLocalTime)
 import Olifant.App (Ports (..), Project (..))
-import Olifant.Catalog (Catalog (..), PlansConfig (..), VetConfig (..))
+import Olifant.Catalog (Catalog (..), PlansConfig (..), InspectConfig (..))
 import Olifant.Decide (Answer (No, Yes), Confidence (..), Decider (..), Question (..))
 import Olifant.Decide qualified as D
 import Olifant.Glob (matchesGlob)
@@ -47,16 +47,16 @@ import Olifant.Server.State (ServerState (..))
 import Olifant.Server.Telemetry (ErrandRecord (..), Record (..), appendRecord, errandId, readRecords, recordsPath)
 import Olifant.Server.Unit (Named (..), fingerprint, unitsOf)
 import Olifant.Process (Cancel, gitIn)
-import Olifant.Vet.Find
-import Olifant.Vet.Judge
-import Olifant.Vet.Screen (stopsEarly, unfinished, unitFacts)
-import Olifant.Vet.Screen qualified as Screen
-import Olifant.Vet.Steering (Steering (..), noSteering, steering, steeringPath)
-import Olifant.Vet.Store
+import Olifant.Inspect.Find
+import Olifant.Inspect.Judge
+import Olifant.Inspect.Screen (stopsEarly, unfinished, unitFacts)
+import Olifant.Inspect.Screen qualified as Screen
+import Olifant.Inspect.Steering (Steering (..), noSteering, steering, steeringPath)
+import Olifant.Inspect.Store
 import Olifant.Workspace (Workspace (..), normalisePath)
 import System.FilePath (makeRelative, (</>))
 
-data VetDeps = VetDeps
+data InspectDeps = InspectDeps
   { vdDecider :: Decider IO
   , vdFinder :: Finder
   , vdCheckerFor :: PlansConfig -> Checker
@@ -68,9 +68,9 @@ data VetDeps = VetDeps
     vdOnFind :: [(Text, Text)] -> IO ()
   }
 
-data VetOutcome
-  = VetSkipped Text
-  | VetDone {voChanged :: Bool, voCapped :: Bool, voDayCapped :: Bool, voSpent :: Double}
+data InspectOutcome
+  = InspectSkipped Text
+  | InspectDone {voChanged :: Bool, voCapped :: Bool, voDayCapped :: Bool, voSpent :: Double}
   deriving stock (Eq, Show)
 
 -- | The units of a file (text now) that differ from HEAD: added, or changed
@@ -109,22 +109,22 @@ unitFingerprints s p path = case languageFor (catalogLanguages (prCatalog p)) re
   where
     rel = normalisePath (makeRelative (prRoot p) path)
 
--- | Today's vet spend (find calls and claim checks), by the local day.
+-- | Today's inspect spend (find calls and claim checks), by the local day.
 spentToday :: TimeZone -> UTCTime -> [Record] -> Double
 spentToday zone now records =
-  sum [fromMaybe 0 (erCost e) | AnErrand e <- records, erVerb e `elem` ["vet", "vet-check"], day (erAt e) == day now]
+  sum [fromMaybe 0 (erCost e) | AnErrand e <- records, erVerb e `elem` ["inspect", "inspect-check"], day (erAt e) == day now]
   where
     day = localDay . utcToLocalTime zone
 
 -- | What the next find call is likely to cost: the mean of the last 20 priced
 -- ones, else 1a's means (sonnet $0.04, haiku $0.005).
-findEstimate :: VetConfig -> [Record] -> Double
-findEstimate cfg = meanOr (if "haiku" `T.isInfixOf` vcFindModel cfg then 0.005 else 0.04) "vet"
+findEstimate :: InspectConfig -> [Record] -> Double
+findEstimate cfg = meanOr (if "haiku" `T.isInfixOf` vcFindModel cfg then 0.005 else 0.04) "inspect"
 
 -- | What a claim check is likely to cost: the mean of the last 20 priced
--- vet-checks, else the design's $0.016 (1a measured $0.008).
+-- inspect-checks, else the design's $0.016 (1a measured $0.008).
 claimEstimate :: [Record] -> Double
-claimEstimate = meanOr 0.016 "vet-check"
+claimEstimate = meanOr 0.016 "inspect-check"
 
 meanOr :: Double -> Text -> [Record] -> Double
 meanOr def verb records = case take 20 (reverse [c | AnErrand e <- records, erVerb e == verb, Just c <- [erCost e]]) of
@@ -141,33 +141,33 @@ pYes (a, _) = case a of
   No (Confidence c) -> 1 - c
   _ -> 0
 
--- | Jev gave no answer (a failure, a timeout, no key): vet does not run on a guess.
+-- | Jev gave no answer (a failure, a timeout, no key): inspect does not run on a guess.
 data JevSilent = JevSilent
   deriving stock (Show)
 
 instance Exception JevSilent
 
-vetPass :: Cancel -> ServerState -> Project -> VetDeps -> FilePath -> IO VetOutcome
-vetPass token s p deps path = handle (\JevSilent -> pure (VetSkipped "Jev did not answer")) (vetPassOn token s p deps path)
+inspectPass :: Cancel -> ServerState -> Project -> InspectDeps -> FilePath -> IO InspectOutcome
+inspectPass token s p deps path = handle (\JevSilent -> pure (InspectSkipped "Jev did not answer")) (inspectPassOn token s p deps path)
 
-vetPassOn :: Cancel -> ServerState -> Project -> VetDeps -> FilePath -> IO VetOutcome
-vetPassOn _token s p deps path
-  | any (`matchesGlob` rel) (vcExclude cfg) = pure (VetSkipped "excluded")
-  | not (readablePath fenced rel) = pure (VetSkipped "fenced")
+inspectPassOn :: Cancel -> ServerState -> Project -> InspectDeps -> FilePath -> IO InspectOutcome
+inspectPassOn _token s p deps path
+  | any (`matchesGlob` rel) (vcExclude cfg) = pure (InspectSkipped "excluded")
+  | not (readablePath fenced rel) = pure (InspectSkipped "fenced")
   | otherwise =
-      readVetStore files root >>= \case
-        Left why -> pure (VetSkipped ("the vet store does not read: " <> why))
+      readInspectStore files root >>= \case
+        Left why -> pure (InspectSkipped ("the inspect store does not read: " <> why))
         Right store0 -> case languageFor (catalogLanguages cat) rel of
-          Nothing -> pure (VetSkipped "no language")
+          Nothing -> pure (InspectSkipped "no language")
           Just lang -> do
             text <- fromMaybe "" <$> readText (prWorkspace p) rel
             safeUnits (unitsOf (pSyntax ports) lang (Just rel) text) >>= \case
               Just units@(_ : _) -> withUnits store0 lang text units
-              _ -> pure (VetSkipped "no units")
+              _ -> pure (InspectSkipped "no units")
   where
     root = prRoot p
     cat = prCatalog p
-    cfg = catalogVet cat
+    cfg = catalogInspect cat
     pcfg = catalogPlans cat
     ports = ssPorts s
     files = pFiles ports
@@ -182,8 +182,8 @@ vetPassOn _token s p deps path
       st <- maybe noSteering steering <$> readText files (root </> steeringPath)
       changed <- changedOf s p lang rel text units
       let fpOf n = fingerprint text (namedLines n)
-          vetted = M.findWithDefault S.empty rel (vsVetted store0)
-          todo = [n | n <- changed, fpOf n `S.notMember` vetted, namedName n `S.notMember` vdSkip deps]
+          inspected = M.findWithDefault S.empty rel (vsInspectted store0)
+          todo = [n | n <- changed, fpOf n `S.notMember` inspected, namedName n `S.notMember` vdSkip deps]
       finished <- filterM (screen lang text units) todo
       -- a waiting finding is verified when the margin has room, even with nothing new to find
       let openHere = length [f | f <- vsFindings store0, plFile (vfPlace f) == rel, vfStatus f == Open, vfKind f `elem` vcKinds cfg]
@@ -194,11 +194,11 @@ vetPassOn _token s p deps path
       if null finished && not room
         then
           if S.null goneIds
-            then pure (VetDone False False False 0)
+            then pure (InspectDone False False False 0)
             else do
               let swept = store0 {vsFindings = [if vfId f `S.member` goneIds then f {vfStatus = Gone} else f | f <- vsFindings store0]}
-              _ <- updateVetStore files root (\current -> (mergeInto store0 swept current, ()))
-              pure (VetDone True False False 0)
+              _ <- updateInspectStore files root (\current -> (mergeInto store0 swept current, ()))
+              pure (InspectDone True False False 0)
         else find st store0 lang text units (S.fromList (map namedName changed)) finished
 
     -- the screen: a code fact, or Jev's "stops early"; unfinished units leave no record
@@ -261,7 +261,7 @@ vetPassOn _token s p deps path
               let (pl, rule, st0) = place st rel text units changedNames raw
                   raw' = raw {rfRule = rule}
                   unitName = fromMaybe "" (plUnit pl)
-                  newF keep status askedOn = VetFinding (findingId now pl (rfStatement raw)) (rfKind raw) rule (rfStatement raw) pl (rfEvidence raw) [] keep askedOn Nothing Nothing status 1 (vcFindModel cfg) 0 now
+                  newF keep status askedOn = InspectFinding (findingId now pl (rfStatement raw)) (rfKind raw) rule (rfStatement raw) pl (rfEvidence raw) [] keep askedOn Nothing Nothing status 1 (vcFindModel cfg) 0 now
               codeA <- (`codeAt` fst (rfLines raw)) <$> textOf (rfFile raw)
               let cands = [c | c <- samePairs vs raw' pl, vfStatus c `notElem` [Resolved, Gone]]
               match <- firstM cands $ \c -> do
@@ -313,25 +313,25 @@ vetPassOn _token s p deps path
       -- units gone from the file
       let names = S.fromList (map namedName units)
           vs4 = vs3 {vsFindings = [if plFile (vfPlace f) == rel && maybe False (`S.notMember` names) (plUnit (vfPlace f)) && vfStatus f `elem` [Open, Waiting, Withheld] then f {vfStatus = Gone} else f | f <- vsFindings vs3]}
-      -- a unit whose fingerprint moved while the pass ran: its new findings drop, it stays unvetted
+      -- a unit whose fingerprint moved while the pass ran: its new findings drop, it stays uninspected
       text2 <- fromMaybe "" <$> readText (prWorkspace p) rel
       units2 <- fromMaybe [] <$> safeUnits (unitsOf (pSyntax ports) lang (Just rel) text2)
       let fpsNow = M.fromList [(namedName n, fingerprint text2 (namedLines n)) | n <- units2]
           movedNames = S.fromList [namedName n | n <- units, M.lookup (namedName n) fpsNow /= Just (fingerprint text (namedLines n))]
           oldIds = S.fromList (map vfId (vsFindings store0))
           vs5 = vs4 {vsFindings = [f | f <- vsFindings vs4, vfId f `S.member` oldIds || maybe True (`S.notMember` movedNames) (plUnit (vfPlace f))]}
-          vettedNow = S.fromList [fingerprint text (namedLines n) | (ns, _) <- answered, n <- units, namedName n `elem` ns, namedName n `S.notMember` movedNames]
-          vettedNames = S.fromList [n | (ns, _) <- answered, n <- ns]
+          inspectedNow = S.fromList [fingerprint text (namedLines n) | (ns, _) <- answered, n <- units, namedName n `elem` ns, namedName n `S.notMember` movedNames]
+          inspectedNames = S.fromList [n | (ns, _) <- answered, n <- ns]
           vs6 =
             vs5
-              { vsVetted = if S.null vettedNow then vsVetted vs5 else M.insertWith S.union rel vettedNow (vsVetted vs5)
-              , vsCapped = cleanEmpty (M.adjust (`S.difference` vettedNames) rel (if null capped then vsCapped vs5 else M.insertWith S.union rel (S.fromList capped) (vsCapped vs5)))
+              { vsInspectted = if S.null inspectedNow then vsInspectted vs5 else M.insertWith S.union rel inspectedNow (vsInspectted vs5)
+              , vsCapped = cleanEmpty (M.adjust (`S.difference` inspectedNames) rel (if null capped then vsCapped vs5 else M.insertWith S.union rel (S.fromList capped) (vsCapped vs5)))
               }
-      _ <- updateVetStore files root (\current -> (mergeInto store0 vs6 current, ()))
+      _ <- updateInspectStore files root (\current -> (mergeInto store0 vs6 current, ()))
       spent <- readIORef spentRef
       wasCapped <- readIORef cappedRef
       dayCapped <- readIORef dayCappedRef
-      pure (VetDone (vs6 /= store0) wasCapped dayCapped spent)
+      pure (InspectDone (vs6 /= store0) wasCapped dayCapped spent)
 
     addNew vs st0 raw codeA nitpickOf newF _
       | st0 == Elsewhere = pure (appendF (newF Nothing Elsewhere Nothing) vs)
@@ -376,7 +376,7 @@ vetPassOn _token s p deps path
                 else do
                   let t = vfStatement f
                       x = Sentence 0 0 0 (T.length t) Prose t "" Nothing Nothing
-                  (res, cost) <- checkWith "vet-check" s p pcfg (vdCheckerFor deps) True now rel (CheckAsk CheckClaim False []) x
+                  (res, cost) <- checkWith "inspect-check" s p pcfg (vdCheckerFor deps) True now rel (CheckAsk CheckClaim False []) x
                   modifyIORef' spentRef (+ cost)
                   let verdictWord = either (const "failed") (const (statusName (claimVerdict res))) res
                   pure f {vfPrints = prints, vfStatus = claimVerdict res, vfVerdict = Just verdictWord, vfCost = vfCost f + cost}
@@ -390,7 +390,7 @@ vetPassOn _token s p deps path
             (Right _, Right _) -> (Ok, Nothing)
        in appendRecord ports root . AnErrand $
             ErrandRecord
-              { erId = errandId now "vet" rel 0 (whole >>= rrSession), erAt = now, erVerb = "vet", erPlan = rel, erRow = 0
+              { erId = errandId now "inspect" rel 0 (whole >>= rrSession), erAt = now, erVerb = "inspect", erPlan = rel, erRow = 0
               , erSection = T.intercalate "," (map fuName pack), erBranch = Nothing, erModel = vcFindModel cfg, erStatus = status, erWhy = why
               , erSession = whole >>= rrSession, erSeconds = rrSeconds <$> whole, erTurns = whole >>= rrTurns, erTokens = whole >>= rrTokens
               , erCost = if charged > 0 then Just charged else Nothing, erModels = maybe [] rrModels whole, erPromptChars = 0, erGrounded = 0
@@ -422,17 +422,17 @@ headerOf text units n =
 nonEmpty :: Text -> Maybe Text
 nonEmpty t = if T.null t then Nothing else Just t
 
-rawOf :: VetFinding -> RawFinding
+rawOf :: InspectFinding -> RawFinding
 rawOf f = RawFinding (vfKind f) (plFile (vfPlace f)) (plLines (vfPlace f)) (vfStatement f) (vfRule f) (vfEvidence f)
 
 firstM :: [a] -> (a -> IO Bool) -> IO (Maybe a)
 firstM [] _ = pure Nothing
 firstM (x : xs) ok = ok x >>= \yes -> if yes then pure (Just x) else firstM xs ok
 
-replaceF :: VetFinding -> VetStore -> VetStore
+replaceF :: InspectFinding -> InspectStore -> InspectStore
 replaceF f vs = vs {vsFindings = [if vfId g == vfId f then f else g | g <- vsFindings vs]}
 
-appendF :: VetFinding -> VetStore -> VetStore
+appendF :: InspectFinding -> InspectStore -> InspectStore
 appendF f vs = vs {vsFindings = vsFindings vs ++ [f]}
 
 cleanEmpty :: M.Map FilePath (Set Text) -> M.Map FilePath (Set Text)
@@ -441,11 +441,11 @@ cleanEmpty = M.filter (not . S.null)
 -- | The pass's store (MINE, made from BASE) laid over the store as it is now:
 -- a finding the pass changed is taken when the user left it as the pass found
 -- it (a dismissal made meanwhile stands); new findings are added.
-mergeInto :: VetStore -> VetStore -> VetStore -> VetStore
+mergeInto :: InspectStore -> InspectStore -> InspectStore -> InspectStore
 mergeInto base mine current =
-  VetStore
+  InspectStore
     { vsFindings = [pick f | f <- vsFindings current] ++ [f | f <- vsFindings mine, vfId f `M.notMember` currentIds, vfId f `M.notMember` baseIds]
-    , vsVetted = M.unionWith S.union (vsVetted current) (vsVetted mine)
+    , vsInspectted = M.unionWith S.union (vsInspectted current) (vsInspectted mine)
     , vsCapped = vsCapped mine
     }
   where

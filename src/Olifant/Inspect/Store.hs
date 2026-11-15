@@ -1,19 +1,19 @@
--- | Vet's store, `.olifant/state/vet/findings.json`: every finding vet has
+-- | Inspect's store, `.olifant/state/inspect/findings.json`: every finding inspect has
 -- made in a project, with its scores, verdicts and the user's dismissals;
--- the unit fingerprints already vetted per file; and the units a cap left
+-- the unit fingerprints already inspected per file; and the units a cap left
 -- waiting. An unreadable store is never dropped (dismissed findings would
--- come back): vet stops for the project until it reads again.
-module Olifant.Vet.Store
+-- come back): inspect stops for the project until it reads again.
+module Olifant.Inspect.Store
   ( Status (..)
   , statusName
   , statusNamed
   , Place (..)
-  , VetFinding (..)
-  , VetStore (..)
-  , emptyVetStore
-  , vetStorePath
-  , readVetStore
-  , updateVetStore
+  , InspectFinding (..)
+  , InspectStore (..)
+  , emptyInspectStore
+  , inspectStorePath
+  , readInspectStore
+  , updateInspectStore
   , findingId
   , dismiss
   , shownIn
@@ -40,7 +40,7 @@ import Data.Text.Encoding qualified as TE
 import Data.Time (UTCTime)
 import Data.Word (Word64)
 import Numeric (showHex)
-import Olifant.Catalog (VetConfig (..))
+import Olifant.Catalog (InspectConfig (..))
 import Olifant.Server.Checker (Print (..))
 import Olifant.Workspace (Workspace (..))
 import System.FilePath ((</>))
@@ -72,7 +72,7 @@ statusNamed t = lookup t [(statusName s, s) | s <- [minBound .. maxBound]]
 data Place = Place {plFile :: FilePath, plUnit :: Maybe Text, plLines :: (Int, Int), plFingerprint :: Maybe Text, plUnitStart :: Maybe Int}
   deriving stock (Eq, Show)
 
-data VetFinding = VetFinding
+data InspectFinding = InspectFinding
   { vfId :: Text
   , vfKind :: Text
   , vfRule :: Maybe Text
@@ -95,39 +95,39 @@ data VetFinding = VetFinding
   }
   deriving stock (Eq, Show)
 
-data VetStore = VetStore
-  { vsFindings :: [VetFinding]
-  , -- | per file, the unit fingerprints already vetted
-    vsVetted :: Map FilePath (Set Text)
+data InspectStore = InspectStore
+  { vsFindings :: [InspectFinding]
+  , -- | per file, the unit fingerprints already inspected
+    vsInspectted :: Map FilePath (Set Text)
   , -- | per file, the unit names a cap left waiting
     vsCapped :: Map FilePath (Set Text)
   }
   deriving stock (Eq, Show)
 
-emptyVetStore :: VetStore
-emptyVetStore = VetStore [] M.empty M.empty
+emptyInspectStore :: InspectStore
+emptyInspectStore = InspectStore [] M.empty M.empty
 
-vetStorePath :: FilePath
-vetStorePath = ".olifant/state/vet/findings.json"
+inspectStorePath :: FilePath
+inspectStorePath = ".olifant/state/inspect/findings.json"
 
 -- | The project's store: no file is an empty store; a file that does not
--- parse, or of another version, is Left (vet stops; nothing overwrites it).
-readVetStore :: Workspace IO -> FilePath -> IO (Either Text VetStore)
-readVetStore ws root =
-  (try :: IO a -> IO (Either SomeException a)) (readText ws (root </> vetStorePath)) >>= \case
+-- parse, or of another version, is Left (inspect stops; nothing overwrites it).
+readInspectStore :: Workspace IO -> FilePath -> IO (Either Text InspectStore)
+readInspectStore ws root =
+  (try :: IO a -> IO (Either SomeException a)) (readText ws (root </> inspectStorePath)) >>= \case
     Left e -> pure (Left (T.pack (show e)))
-    Right Nothing -> pure (Right emptyVetStore)
+    Right Nothing -> pure (Right emptyInspectStore)
     Right (Just t) -> pure (decodeStore t)
 
 -- | Read, change and write the store under one lock; Left (nothing written)
 -- when it does not read.
-updateVetStore :: Workspace IO -> FilePath -> (VetStore -> (VetStore, a)) -> IO (Either Text a)
-updateVetStore ws root f = withMVar storeLock $ \() ->
-  readVetStore ws root >>= \case
+updateInspectStore :: Workspace IO -> FilePath -> (InspectStore -> (InspectStore, a)) -> IO (Either Text a)
+updateInspectStore ws root f = withMVar storeLock $ \() ->
+  readInspectStore ws root >>= \case
     Left why -> pure (Left why)
     Right vs -> do
       let (vs', a) = f vs
-          file = root </> vetStorePath
+          file = root </> inspectStorePath
       written <- (try :: IO () -> IO (Either SomeException ())) $ do
         writeText ws (file <> ".tmp") (encodeStore vs')
         renameFile ws (file <> ".tmp") file
@@ -147,30 +147,30 @@ findingId at pl statement =
    in T.pack (take 12 (replicate (16 - length hex) '0' <> hex))
 
 -- | Dismiss a finding here (False) or everywhere (True).
-dismiss :: Bool -> Text -> VetStore -> VetStore
+dismiss :: Bool -> Text -> InspectStore -> InspectStore
 dismiss everywhere i vs = vs {vsFindings = [if vfId f == i then f {vfStatus = if everywhere then DismissedEverywhere else DismissedHere} else f | f <- vsFindings vs]}
 
 -- | The margin of one file: its open findings of a shown kind, best kept first, at most max_shown.
-shownIn :: VetConfig -> FilePath -> VetStore -> [VetFinding]
+shownIn :: InspectConfig -> FilePath -> InspectStore -> [InspectFinding]
 shownIn cfg file vs =
   take (vcMaxShown cfg) (sortOn (Down . fromMaybe 0 . vfKeep) [f | f <- vsFindings vs, vfStatus f == Open, vfKind f `elem` vcKinds cfg, plFile (vfPlace f) == file])
 
-encodeStore :: VetStore -> Text
+encodeStore :: InspectStore -> Text
 encodeStore vs =
-  TE.decodeUtf8 (BL.toStrict (encode (object ["version" .= (1 :: Int), "findings" .= map findingJson (vsFindings vs), "vetted" .= fmap S.toList (vsVetted vs), "capped" .= fmap S.toList (vsCapped vs)]))) <> "\n"
+  TE.decodeUtf8 (BL.toStrict (encode (object ["version" .= (1 :: Int), "findings" .= map findingJson (vsFindings vs), "inspected" .= fmap S.toList (vsInspectted vs), "capped" .= fmap S.toList (vsCapped vs)]))) <> "\n"
 
-decodeStore :: Text -> Either Text VetStore
+decodeStore :: Text -> Either Text InspectStore
 decodeStore t = either (Left . T.pack) Right (eitherDecodeStrict (TE.encodeUtf8 t) >>= parseEither store)
   where
-    store = withObject "vet store" $ \o -> do
+    store = withObject "inspect store" $ \o -> do
       v <- o .: "version"
-      if v /= (1 :: Int) then fail ("vet store version " <> show v <> ", this olifant reads 1") else pure ()
-      VetStore
+      if v /= (1 :: Int) then fail ("inspect store version " <> show v <> ", this olifant reads 1") else pure ()
+      InspectStore
         <$> (o .: "findings" >>= mapM findingP)
-        <*> (fmap S.fromList . fromMaybe M.empty <$> o .:? "vetted")
+        <*> (fmap S.fromList . fromMaybe M.empty <$> o .:? "inspected")
         <*> (fmap S.fromList . fromMaybe M.empty <$> o .:? "capped")
 
-findingJson :: VetFinding -> Value
+findingJson :: InspectFinding -> Value
 findingJson f =
   object
     [ "id" .= vfId f
@@ -194,13 +194,13 @@ findingJson f =
     pl = vfPlace f
     pair (a, z) = [a, z]
 
-findingP :: Value -> Parser VetFinding
+findingP :: Value -> Parser InspectFinding
 findingP = withObject "finding" $ \o -> do
   pl <- o .: "place" >>= withObject "place" (\p -> Place <$> p .: "file" <*> p .:? "unit" <*> (p .: "lines" >>= pairP) <*> p .:? "fingerprint" <*> p .:? "unit_start")
   ev <- o .: "evidence" >>= mapM (withObject "evidence" (\e -> (,) <$> e .: "file" <*> (e .: "lines" >>= pairP)))
   ps <- o .: "prints" >>= mapM (withObject "print" (\p -> Print <$> p .: "path" <*> p .:? "unit" <*> p .: "hash"))
   st <- o .: "status" >>= \s -> maybe (fail ("unknown status " <> T.unpack s)) pure (statusNamed s)
-  VetFinding
+  InspectFinding
     <$> o .: "id"
     <*> o .: "kind"
     <*> o .:? "rule"

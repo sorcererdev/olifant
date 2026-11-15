@@ -98,7 +98,7 @@ void ots_abi_range(uint32_t *lo, uint32_t *hi) {
   *hi = TREE_SITTER_LANGUAGE_VERSION;
 }
 
-/* Vet's screen: the start rows of ERROR and missing nodes under a node,
+/* Inspect's screen: the start rows of ERROR and missing nodes under a node,
  * descending only into subtrees that hold an error; at most cap rows are
  * written, and the count found (which may pass cap) is returned. */
 static void ots_error_walk(TSNode n, uint32_t *out, uint32_t cap, uint32_t *k) {
@@ -116,7 +116,7 @@ uint32_t ots_error_rows(const TSNode *root, uint32_t *out, uint32_t cap) {
   return k;
 }
 
-/* Vet's screen: is the node spanning bytes [start, end) a body with nothing
+/* Inspect's screen: is the node spanning bytes [start, end) a body with nothing
  * in it but comments and lone strings (a docstring)? 1 yes, 0 no, 2 when no
  * node spans exactly that range. Told by node type names only. */
 static int ots_quiet(TSNode c) {

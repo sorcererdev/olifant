@@ -1,12 +1,12 @@
--- | What vet shows in the editor: the margin of one file as pulled
--- diagnostics (source `olifant-vet`, a hint on the finding's first line,
--- code = its kind, `-stale` when its unit changed since it was vetted), and
+-- | What inspect shows in the editor: the margin of one file as pulled
+-- diagnostics (source `olifant-inspect`, a hint on the finding's first line,
+-- code = its kind, `-stale` when its unit changed since it was inspected), and
 -- the *Show why* page.
-module Olifant.Vet.Margin
-  ( vetDiagnostics
+module Olifant.Inspect.Margin
+  ( inspectDiagnostics
   , shownLines
   , whyText
-  , vetSource
+  , inspectSource
   ) where
 
 import Data.Aeson (Value (..))
@@ -16,17 +16,17 @@ import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Language.LSP.Protocol.Types
-import Olifant.Catalog (VetConfig)
-import Olifant.Vet.Steering (Steering, ruleText)
-import Olifant.Vet.Store (Place (..), VetFinding (..), VetStore, shownIn)
+import Olifant.Catalog (InspectConfig)
+import Olifant.Inspect.Steering (Steering, ruleText)
+import Olifant.Inspect.Store (Place (..), InspectFinding (..), InspectStore, shownIn)
 
-vetSource :: Text
-vetSource = "olifant-vet"
+inspectSource :: Text
+inspectSource = "olifant-inspect"
 
 -- | The file's shown findings ('shownIn'), each at its line now (1-based).
 -- UNITS are the file's units now: name to (fingerprint, first line). A
 -- finding moves with its unit; one whose unit is gone is not shown.
-shownLines :: VetConfig -> Map Text (Text, Int) -> FilePath -> VetStore -> [(Int, VetFinding)]
+shownLines :: InspectConfig -> Map Text (Text, Int) -> FilePath -> InspectStore -> [(Int, InspectFinding)]
 shownLines cfg units file vs =
   [ (line, f)
   | f <- shownIn cfg file vs
@@ -41,9 +41,9 @@ shownLines cfg units file vs =
 
 -- | The margin as pulled diagnostics: a hint on each shown finding's line,
 -- code = its kind, `-stale` when its unit's fingerprint moved.
-vetDiagnostics :: VetConfig -> Map Text (Text, Int) -> FilePath -> VetStore -> [Diagnostic]
-vetDiagnostics cfg units file vs =
-  [ Diagnostic (Range (Position l 0) (Position (l + 1) 0)) (Just DiagnosticSeverity_Hint) (Just (InR code)) Nothing (Just vetSource) (vfStatement f) Nothing Nothing (Just (String (vfId f)))
+inspectDiagnostics :: InspectConfig -> Map Text (Text, Int) -> FilePath -> InspectStore -> [Diagnostic]
+inspectDiagnostics cfg units file vs =
+  [ Diagnostic (Range (Position l 0) (Position (l + 1) 0)) (Just DiagnosticSeverity_Hint) (Just (InR code)) Nothing (Just inspectSource) (vfStatement f) Nothing Nothing (Just (String (vfId f)))
   | (line, f) <- shownLines cfg units file vs
   , let l = fromIntegral (max 0 (line - 1))
         moved = case (plUnit (vfPlace f), plFingerprint (vfPlace f)) of
@@ -53,7 +53,7 @@ vetDiagnostics cfg units file vs =
   ]
 
 -- | The *Show why* page: the statement, the rule quoted, the evidence, the verdict.
-whyText :: Steering -> VetFinding -> Text
+whyText :: Steering -> InspectFinding -> Text
 whyText st f =
   T.unlines $
     [ "# " <> vfKind f <> " at " <> T.pack (plFile pl) <> ":" <> tshow (fst (plLines pl))
@@ -61,7 +61,7 @@ whyText st f =
     , vfStatement f
     , ""
     ]
-      ++ maybe [] (\r -> ["## The rule: " <> r, "", fromMaybe "(no longer in vet.md)" (ruleText st r), ""]) (vfRule f)
+      ++ maybe [] (\r -> ["## The rule: " <> r, "", fromMaybe "(no longer in inspect.md)" (ruleText st r), ""]) (vfRule f)
       ++ ["## Evidence", ""]
       ++ ["- " <> T.pack p <> ":" <> tshow a <> (if z /= a then "-" <> tshow z else "") | (p, (a, z)) <- vfEvidence f]
       ++ ["", "## Checked", "", "- not a nitpick: " <> maybe "-" (T.pack . show) (vfKeep f), "- claim check: " <> fromMaybe "not needed for this kind" (vfVerdict f), "- seen " <> tshow (vfSeen f) <> " time" <> (if vfSeen f == 1 then "" else "s")]

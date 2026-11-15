@@ -1,12 +1,12 @@
-module Olifant.Vet.FindSpec (spec) where
+module Olifant.Inspect.FindSpec (spec) where
 
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
 import Olifant.Server.Errand (RunResult (..))
-import Olifant.Vet.Find
-import Olifant.Vet.Store (Status (..))
-import Olifant.Vet.StoreSpec (finding)
-import Olifant.Vet.Store (Place (..), VetFinding (..))
+import Olifant.Inspect.Find
+import Olifant.Inspect.Store (Status (..))
+import Olifant.Inspect.StoreSpec (finding)
+import Olifant.Inspect.Store (Place (..), InspectFinding (..))
 import System.Directory (doesFileExist)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
@@ -27,9 +27,9 @@ unit :: Int -> FindUnit
 unit n = FindUnit "a.py" (T.pack ("u" <> show n)) (1, n) Nothing ""
 
 spec :: Spec
-spec = describe "Olifant.Vet.Find" $ do
+spec = describe "Olifant.Inspect.Find" $ do
   it "the prompt is the 1a prompt, word for word" $ do
-    golden <- TIO.readFile "src/Olifant/Vet/testdata/find-prompt.golden"
+    golden <- TIO.readFile "src/Olifant/Inspect/testdata/find-prompt.golden"
     findPrompt ask0 `shouldBe` golden
   it "parses findings after prose, and drops one with no statement" $ do
     let reply = "I looked.\n\n{\"findings\": [{\"kind\": \"bug\", \"file\": \"src/a.py\", \"lines\": [3, 4], \"statement\": \"Wrong.\", \"rule\": \"\", \"evidence\": [{\"file\": \"src/b.py\", \"lines\": [1, 2]}]}, {\"kind\": \"bug\", \"file\": \"src/a.py\", \"lines\": [3, 4]}], \"open\": [{\"id\": \"abc123\", \"holds\": \"no longer holds\", \"why\": \"fixed\"}, {\"id\": \"x\", \"holds\": \"maybe\"}]}"
@@ -44,7 +44,7 @@ spec = describe "Olifant.Vet.Find" $ do
     map length (packUnits [unit 900, unit 10]) `shouldBe` [1, 1]
   it "the key is the sorted file:name pairs" $
     findKey ask0 `shouldBe` "src/a.py:A.f,src/b.py:g"
-  it "the recorded finder replies and logs the key" $ withSystemTempDirectory "vet" $ \dir -> do
+  it "the recorded finder replies and logs the key" $ withSystemTempDirectory "inspect" $ \dir -> do
     let file = dir </> "finds.json"
     TIO.writeFile file "{\"replies\": {\"src/a.py:A.f,src/b.py:g\": {\"text\": \"{}\", \"cost\": 0.03}}}"
     r <- recordedFinder file ask0

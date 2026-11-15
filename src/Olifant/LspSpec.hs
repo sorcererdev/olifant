@@ -110,7 +110,7 @@ spec = describe "Olifant.Lsp (olifant lsp over stdio)" $ do
   plansLoopSpec
   planReadingSpec
   claimPassSpec
-  vetSpec
+  inspectSpec
   it "is the `olifant lsp` command: the built binary initialises and opens a document" $ do
     (built, out, _) <- readCreateProcessWithExitCode (proc "cabal" ["list-bin", "-v0", "olifant"]) ""
     if built /= ExitSuccess then pendingWith "cabal list-bin olifant failed" else
@@ -4543,25 +4543,25 @@ claimPassSpec = describe "plans claim pass" $ do
       (first, again) `shouldBe` (True, False)
       doesFileExist (claimsPath dir "plans/t.md") `shouldReturn` False
 
--- | Vet on save (milestone 1b, part 2): after `settle`, once a burst; only
--- with Jev and `[vet] enabled`; never a plan; the day cap's message.
-vetSpec :: Spec
-vetSpec = describe "vet on save" $ do
-  let vetme = "src/vetme.py"
-      vetText = "def f(x):\n    return x + 2\n\n\ndef g(y):\n    return y * 2\n"
+-- | Inspect on save (milestone 1b, part 2): after `settle`, once a burst; only
+-- with Jev and `[inspect] enabled`; never a plan; the day cap's message.
+inspectSpec :: Spec
+inspectSpec = describe "inspect on save" $ do
+  let inspectme = "src/inspectme.py"
+      inspectText = "def f(x):\n    return x + 2\n\n\ndef g(y):\n    return y * 2\n"
       jev = T.unlines ["", "[decide]", "model = \"jev\"", "[model.backends.jev]", "kind = \"jev\""]
-      vetOn extra = T.unlines ["[plans]", "check_model = \"sonnet\"", "[vet]", "enabled = true", "settle = 0.5"] <> extra
+      inspectOn extra = T.unlines ["[plans]", "check_model = \"sonnet\"", "[inspect]", "enabled = true", "settle = 0.5"] <> extra
       answers = "{\"answers\": {\"stops-early\": {\"choice\": false, \"confidence\": 0.9}, \"nitpick\": {\"choice\": false, \"confidence\": 0.9}, \"same\": {\"choice\": true, \"confidence\": 0.9}}}"
-      finding = "{\\\"findings\\\": [{\\\"kind\\\": \\\"convention\\\", \\\"file\\\": \\\"src/vetme.py\\\", \\\"lines\\\": [2, 2], \\\"statement\\\": \\\"f adds two.\\\", \\\"rule\\\": \\\"A\\\", \\\"evidence\\\": [{\\\"file\\\": \\\"src/vetme.py\\\", \\\"lines\\\": [1, 2]}]}], \\\"open\\\": []}"
-      finds = "{\"replies\": {\"src/vetme.py:f,src/vetme.py:g\": {\"text\": \"" <> finding <> "\", \"cost\": 0.03}}}"
-      withVetOn config act = withPython [("plans/t.md", "# T\n"), (vetme, vetText)] $ \ports dir -> do
+      finding = "{\\\"findings\\\": [{\\\"kind\\\": \\\"convention\\\", \\\"file\\\": \\\"src/inspectme.py\\\", \\\"lines\\\": [2, 2], \\\"statement\\\": \\\"f adds two.\\\", \\\"rule\\\": \\\"A\\\", \\\"evidence\\\": [{\\\"file\\\": \\\"src/inspectme.py\\\", \\\"lines\\\": [1, 2]}]}], \\\"open\\\": []}"
+      finds = "{\"replies\": {\"src/inspectme.py:f,src/inspectme.py:g\": {\"text\": \"" <> finding <> "\", \"cost\": 0.03}}}"
+      withInspectOn config act = withPython [("plans/t.md", "# T\n"), (inspectme, inspectText)] $ \ports dir -> do
         TIO.appendFile (dir </> ".olifant/config.toml") config
-        TIO.writeFile (dir </> ".olifant/vet.md") "## Rules\n### A\nNo twos.\n"
+        TIO.writeFile (dir </> ".olifant/inspect.md") "## Rules\n### A\nNo twos.\n"
         let a = dir </> "answers.json"
             f = dir </> "finds.json"
         TIO.writeFile a answers
         TIO.writeFile f finds
-        act ports dir f [("decide_answers", String (T.pack a)), ("vet_answers", String (T.pack f))]
+        act ports dir f [("decide_answers", String (T.pack a)), ("inspect_answers", String (T.pack f))]
       refreshed = (() <$ message SMethod_WorkspaceDiagnosticRefresh) <|> (anyMessage >> refreshed)
       shown = (\m -> m ^. L.params . L.message) <$> message SMethod_WindowShowMessage
       shownMessage = shown <|> (anyMessage >> shownMessage)
@@ -4569,9 +4569,9 @@ vetSpec = describe "vet on save" $ do
       askedLines f = liftIO (doesFileExist (f <> ".asked") >>= \there -> if there then length . T.lines <$> TIO.readFile (f <> ".asked") else pure 0)
       save d = sendNotification SMethod_TextDocumentDidSave (DidSaveTextDocumentParams d Nothing)
   it "(a) a burst of saves is one pass, after settle, then a refresh" $
-    withVetOn (jev <> vetOn "") $ \ports dir f cfg -> do
+    withInspectOn (jev <> inspectOn "") $ \ports dir f cfg -> do
       (n, _) <- inProcessWithConfig cfg ports dir $ do
-        d <- openDoc vetme "python"
+        d <- openDoc inspectme "python"
         save d >> liftIO (threadDelay 100000) >> save d >> liftIO (threadDelay 100000) >> save d
         _ <- waitFor (doesFileExist (f <> ".asked"))
         refreshed
@@ -4579,23 +4579,23 @@ vetSpec = describe "vet on save" $ do
         askedLines f
       n `shouldBe` 1
   it "(b) no Jev configured: no pass" $
-    withVetOn (vetOn "") $ \ports dir f cfg -> do
+    withInspectOn (inspectOn "") $ \ports dir f cfg -> do
       (n, _) <- inProcessWithConfig cfg ports dir $ do
-        d <- openDoc vetme "python"
+        d <- openDoc inspectme "python"
         save d
         liftIO (threadDelay 1500000)
         askedLines f
       n `shouldBe` 0
-  it "(c) vet not enabled: no pass" $
-    withVetOn (jev <> "[vet]\nenabled = false\nsettle = 0.5\n") $ \ports dir f cfg -> do
+  it "(c) inspect not enabled: no pass" $
+    withInspectOn (jev <> "[inspect]\nenabled = false\nsettle = 0.5\n") $ \ports dir f cfg -> do
       (n, _) <- inProcessWithConfig cfg ports dir $ do
-        d <- openDoc vetme "python"
+        d <- openDoc inspectme "python"
         save d
         liftIO (threadDelay 1500000)
         askedLines f
       n `shouldBe` 0
-  it "(d) a plan's save is not vetted" $
-    withVetOn (jev <> vetOn "") $ \ports dir f cfg -> do
+  it "(d) a plan's save is not inspected" $
+    withInspectOn (jev <> inspectOn "") $ \ports dir f cfg -> do
       (n, _) <- inProcessWithConfig cfg ports dir $ do
         d <- openDoc "plans/t.md" "markdown"
         save d
@@ -4603,67 +4603,67 @@ vetSpec = describe "vet on save" $ do
         askedLines f
       n `shouldBe` 0
   it "(e) the day cap says so in a message" $
-    withVetOn (jev <> vetOn "day_cost = 0.001\n") $ \ports dir _ cfg -> do
+    withInspectOn (jev <> inspectOn "day_cost = 0.001\n") $ \ports dir _ cfg -> do
       (m, _) <- inProcessShowing cfg ports dir $ do
-        d <- openDoc vetme "python"
+        d <- openDoc inspectme "python"
         save d
         shownMessage
-      m `shouldSatisfy` T.isPrefixOf "olifant vet: today's cap ($0.00) is reached; 2 units wait"
-  let vetted act = withVetOn (jev <> vetOn "") $ \ports dir f cfg -> fst <$> inProcessWithConfig cfg ports dir (do
-        d <- openDoc vetme "python"
+      m `shouldSatisfy` T.isPrefixOf "olifant inspect: today's cap ($0.00) is reached; 2 units wait"
+  let inspected act = withInspectOn (jev <> inspectOn "") $ \ports dir f cfg -> fst <$> inProcessWithConfig cfg ports dir (do
+        d <- openDoc inspectme "python"
         save d
         _ <- waitFor (doesFileExist (f <> ".asked"))
         refreshed
         act dir d)
-      vetDiags d = filter (\x -> x ^. L.source == Just "olifant-vet") <$> pullDiagnostics d
+      inspectDiags d = filter (\x -> x ^. L.source == Just "olifant-inspect") <$> pullDiagnostics d
       titlesAt d l = do
         as <- getCodeActions d (Range (Position l 0) (Position l 0))
         pure [a ^. L.title | InR a <- as, a ^. L.title `elem` ["Show why", "Show code", "Dismiss here", "Dismiss everywhere"]]
       actionAt d l t = do
         as <- getCodeActions d (Range (Position l 0) (Position l 0))
         pure (head [a | InR a <- as, a ^. L.title == t])
-  it "(f) the finding is pulled as an olifant-vet hint on its first line" $ do
-    ds <- vetted (\_ d -> vetDiags d)
+  it "(f) the finding is pulled as an olifant-inspect hint on its first line" $ do
+    ds <- inspected (\_ d -> inspectDiags d)
     map (\x -> (x ^. L.range . L.start . L.line, x ^. L.code, x ^. L.severity)) ds `shouldBe` [(1, Just (InR "convention"), Just DiagnosticSeverity_Hint)]
   it "(g) the four actions on the finding's line, none elsewhere" $ do
-    (here, there) <- vetted (\_ d -> (,) <$> titlesAt d 1 <*> titlesAt d 4)
+    (here, there) <- inspected (\_ d -> (,) <$> titlesAt d 1 <*> titlesAt d 4)
     (here, there) `shouldBe` (["Show why", "Show code", "Dismiss here", "Dismiss everywhere"], [])
   it "(h) Dismiss here: no diagnostic, and the store says dismissed-here" $ do
-    (ds, store) <- vetted $ \dir d -> do
+    (ds, store) <- inspected $ \dir d -> do
       actionAt d 1 "Dismiss here" >>= executeCodeAction
       _ <- refreshed
-      (,) <$> vetDiags d <*> liftIO (TIO.readFile (dir </> ".olifant/state/vet/findings.json"))
+      (,) <$> inspectDiags d <*> liftIO (TIO.readFile (dir </> ".olifant/state/inspect/findings.json"))
     ds `shouldBe` []
     store `shouldSatisfy` T.isInfixOf "\"dismissed-here\""
   it "(i) Show why writes the why page, with the statement" $ do
-    page <- vetted $ \dir d -> do
+    page <- inspected $ \dir d -> do
       actionAt d 1 "Show why" >>= executeCodeAction
-      let whyPages = filter ("why-" `isPrefixOf`) <$> listDirectory (dir </> ".olifant/state/vet")
+      let whyPages = filter ("why-" `isPrefixOf`) <$> listDirectory (dir </> ".olifant/state/inspect")
       _ <- waitFor (not . null <$> whyPages)
-      fs <- liftIO (listDirectory (dir </> ".olifant/state/vet"))
-      liftIO (TIO.readFile (dir </> ".olifant/state/vet" </> head [x | x <- fs, "why-" `isPrefixOf` x]))
+      fs <- liftIO (listDirectory (dir </> ".olifant/state/inspect"))
+      liftIO (TIO.readFile (dir </> ".olifant/state/inspect" </> head [x | x <- fs, "why-" `isPrefixOf` x]))
     page `shouldSatisfy` T.isInfixOf "f adds two."
   it "(I2) overlapping passes on one file: one finding, seen twice, not two" $
-    withVetOn (jev <> vetOn "") $ \ports dir f cfg -> do
-      let reply statement = "{\\\"findings\\\": [{\\\"kind\\\": \\\"convention\\\", \\\"file\\\": \\\"src/vetme.py\\\", \\\"lines\\\": [2, 2], \\\"statement\\\": \\\"" <> statement <> "\\\", \\\"rule\\\": \\\"A\\\", \\\"evidence\\\": [{\\\"file\\\": \\\"src/vetme.py\\\", \\\"lines\\\": [1, 2]}]}], \\\"open\\\": []}"
+    withInspectOn (jev <> inspectOn "") $ \ports dir f cfg -> do
+      let reply statement = "{\\\"findings\\\": [{\\\"kind\\\": \\\"convention\\\", \\\"file\\\": \\\"src/inspectme.py\\\", \\\"lines\\\": [2, 2], \\\"statement\\\": \\\"" <> statement <> "\\\", \\\"rule\\\": \\\"A\\\", \\\"evidence\\\": [{\\\"file\\\": \\\"src/inspectme.py\\\", \\\"lines\\\": [1, 2]}]}], \\\"open\\\": []}"
           edited = "def f(x):\n    return x + 2\n\n\ndef g(y):\n    return y * 3\n"
-      TIO.writeFile f ("{\"replies\": {\"src/vetme.py:f,src/vetme.py:g\": {\"text\": \"" <> reply "f adds two." <> "\", \"cost\": 0.03, \"delay\": 2}, \"src/vetme.py:g\": {\"text\": \"" <> reply "f adds two, against rule A." <> "\", \"cost\": 0.03}}}")
+      TIO.writeFile f ("{\"replies\": {\"src/inspectme.py:f,src/inspectme.py:g\": {\"text\": \"" <> reply "f adds two." <> "\", \"cost\": 0.03, \"delay\": 2}, \"src/inspectme.py:g\": {\"text\": \"" <> reply "f adds two, against rule A." <> "\", \"cost\": 0.03}}}")
       (fs, _) <- inProcessWithConfig cfg ports dir $ do
-        d <- openDoc vetme "python"
+        d <- openDoc inspectme "python"
         save d
         liftIO (threadDelay 1000000)
         changeDoc d [TextDocumentContentChangeEvent (InR (TextDocumentContentChangeWholeDocument edited))]
-        liftIO (TIO.writeFile (dir </> vetme) edited)
+        liftIO (TIO.writeFile (dir </> inspectme) edited)
         save d
         _ <- waitFor ((>= 2) <$> askedLines f)
         liftIO (threadDelay 3000000)
-        liftIO (TIO.readFile (dir </> ".olifant/state/vet/findings.json"))
+        liftIO (TIO.readFile (dir </> ".olifant/state/inspect/findings.json"))
       length (T.breakOnAll "\"statement\"" fs) `shouldBe` 1
       fs `shouldSatisfy` T.isInfixOf "\"seen\":2"
   it "(j) hover is what it was before the finding" $
-    withVetOn (jev <> vetOn "") $ \ports dir f cfg -> do
+    withInspectOn (jev <> inspectOn "") $ \ports dir f cfg -> do
       (before, after) <- fst <$> inProcessWithConfig cfg ports dir (do
-        d <- openDoc vetme "python"
+        d <- openDoc inspectme "python"
         h0 <- getHover d (Position 1 5)
         save d
         _ <- waitFor (doesFileExist (f <> ".asked"))

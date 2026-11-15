@@ -95,24 +95,24 @@ spec = describe "catalog" $ do
       case r of
         Left (ConfigInvalid _ e) -> e `shouldSatisfy` T.isInfixOf "conjure"
         _ -> expectationFailure "expected ConfigInvalid naming conjure"
-  describe "[vet]" $ do
-    let badVet toml word = openWith [("/proj/.olifant/config.toml", toml)] >>= \case
+  describe "[inspect]" $ do
+    let badInspect toml word = openWith [("/proj/.olifant/config.toml", toml)] >>= \case
           Left (ConfigInvalid _ e) -> e `shouldSatisfy` T.isInfixOf word
           _ -> expectationFailure ("expected ConfigInvalid naming " <> T.unpack word)
-    it "vet defaults" $
+    it "inspect defaults" $
       withCatalog [("/proj/.olifant/config.toml", "")] $ \_ cat -> do
-        catalogVet cat `shouldBe` defaultVet
-        catalogVet cat `shouldBe` VetConfig False ["bug", "assumption", "convention"] "sonnet" 0.79 3 2 0.25 3.00 []
-    it "vet reads every key" $
-      withCatalog [("/proj/.olifant/config.toml", "[vet]\nenabled = true\nkinds = [\"bug\", \"design\"]\nfind_model = \"haiku\"\ncut = 0.5\nmax_shown = 5\nsettle = 1.5\npass_cost = 0.1\nday_cost = 1\nexclude = [\"gen/**\"]\n")] $ \_ cat ->
-        catalogVet cat `shouldBe` VetConfig True ["bug", "design"] "haiku" 0.5 5 1.5 0.1 1 ["gen/**"]
-    it "vet refuses an unknown key" $ badVet "[vet]\ncutt = 0.5\n" "cut"
-    it "vet refuses a bad kind" $ badVet "[vet]\nkinds = [\"style\"]\n" "kinds"
-    it "vet range checks" $ do
-      badVet "[vet]\ncut = 1.5\n" "cut"
-      badVet "[vet]\nmax_shown = 0\n" "max_shown"
-      badVet "[vet]\nday_cost = -1\n" "day_cost"
-      badVet "[vet]\nsettle = -1\n" "settle"
+        catalogInspect cat `shouldBe` defaultInspect
+        catalogInspect cat `shouldBe` InspectConfig False ["bug", "assumption", "convention"] "sonnet" 0.79 3 2 0.25 3.00 []
+    it "inspect reads every key" $
+      withCatalog [("/proj/.olifant/config.toml", "[inspect]\nenabled = true\nkinds = [\"bug\", \"design\"]\nfind_model = \"haiku\"\ncut = 0.5\nmax_shown = 5\nsettle = 1.5\npass_cost = 0.1\nday_cost = 1\nexclude = [\"gen/**\"]\n")] $ \_ cat ->
+        catalogInspect cat `shouldBe` InspectConfig True ["bug", "design"] "haiku" 0.5 5 1.5 0.1 1 ["gen/**"]
+    it "inspect refuses an unknown key" $ badInspect "[inspect]\ncutt = 0.5\n" "cut"
+    it "inspect refuses a bad kind" $ badInspect "[inspect]\nkinds = [\"style\"]\n" "kinds"
+    it "inspect range checks" $ do
+      badInspect "[inspect]\ncut = 1.5\n" "cut"
+      badInspect "[inspect]\nmax_shown = 0\n" "max_shown"
+      badInspect "[inspect]\nday_cost = -1\n" "day_cost"
+      badInspect "[inspect]\nsettle = -1\n" "settle"
 
   describe "[plans] (plans, stage 1)" $ do
     it "defaults when absent" $

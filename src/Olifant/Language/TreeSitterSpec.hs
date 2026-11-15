@@ -253,7 +253,7 @@ captureSpec = describe "tree-sitter captures" $ do
     either (\e -> "bad.scm" `T.isInfixOf` e && "byte" `T.isInfixOf` e) (const False) r `shouldBe` True
 
 errorSpec :: Spec
-errorSpec = describe "errorLines (vet's screen)" $ do
+errorSpec = describe "errorLines (inspect's screen)" $ do
   it "finds the line of a parse error" $
     errorLines (shipped "python") "def f(:\n    return 1\n" `shouldSatisfy` elem 1
   it "is empty for a clean file" $

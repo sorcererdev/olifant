@@ -1,4 +1,4 @@
-module Olifant.Vet.JudgeSpec (spec) where
+module Olifant.Inspect.JudgeSpec (spec) where
 
 import Data.IORef (readIORef, writeIORef)
 import Data.Map.Strict qualified as M
@@ -19,11 +19,11 @@ import Olifant.Server.Loop (checkWith)
 import Olifant.Server.State (ServerState (..))
 import Olifant.Server.Telemetry (ErrandRecord (..), Record (..), readRecords, recordsPath)
 import Olifant.Server.Unit (Named (..))
-import Olifant.Vet.Find (RawFinding (..))
-import Olifant.Vet.Judge
-import Olifant.Vet.Steering (steering)
-import Olifant.Vet.Store
-import Olifant.Vet.StoreSpec (finding)
+import Olifant.Inspect.Find (RawFinding (..))
+import Olifant.Inspect.Judge
+import Olifant.Inspect.Steering (steering)
+import Olifant.Inspect.Store
+import Olifant.Inspect.StoreSpec (finding)
 import Olifant.Workspace (Workspace (..))
 import Test.Hspec
 
@@ -34,7 +34,7 @@ text30 :: T.Text
 text30 = T.unlines ["line " <> T.pack (show i) | i <- [1 :: Int .. 30]]
 
 spec :: Spec
-spec = describe "Olifant.Vet.Judge" $ do
+spec = describe "Olifant.Inspect.Judge" $ do
   let st = steering "## Rules\n### A\nNo sqlite outside adapters.\n### B\nTime comes from the clock.\n"
       units = [Named "f" (10, 20) 10, Named "g" (30, 40) 30]
   describe "place" $ do
@@ -54,7 +54,7 @@ spec = describe "Olifant.Vet.Judge" $ do
     it "a rule cited without its grade or in another case resolves to its heading (1a's match)" $ do
       let st' = steering "## Rules\n### Commands go through ports (must)\nx\n"
           (_, r1, _) = place st' "src/a.py" text30 units (S.fromList ["f"]) (raw (12, 13)) {rfRule = Just "commands go through ports"}
-          (_, r2, _) = place st' "src/a.py" text30 units (S.fromList ["f"]) (raw (12, 13)) {rfRule = Just "Rule: Commands go through ports (must), see vet.md"}
+          (_, r2, _) = place st' "src/a.py" text30 units (S.fromList ["f"]) (raw (12, 13)) {rfRule = Just "Rule: Commands go through ports (must), see inspect.md"}
       (r1, r2) `shouldBe` (Just "Commands go through ports (must)", Just "Commands go through ports (must)")
     it "a rule that is not a heading is removed" $ do
       let (_, r1, _) = place st "src/a.py" text30 units (S.fromList ["f"]) (raw (12, 13)) {rfRule = Just "No such rule"}
@@ -80,7 +80,7 @@ spec = describe "Olifant.Vet.Judge" $ do
           b = (finding "b" "bug" Open 0.9) {vfPlace = Place "src/z.py" Nothing (1, 1) Nothing Nothing, vfRule = Just "Other", vfEvidence = []}
           c = b {vfId = "c", vfRule = Just "A rule"}
           d = b {vfId = "d", vfEvidence = [("src/b.py", (2, 5))]}
-      map vfId (samePairs emptyVetStore {vsFindings = [a, b, c, d]} (raw (12, 13)) {rfRule = Just "A rule"} (Place "src/a.py" Nothing (12, 13) Nothing Nothing)) `shouldBe` ["a", "c", "d"]
+      map vfId (samePairs emptyInspectStore {vsFindings = [a, b, c, d]} (raw (12, 13)) {rfRule = Just "A rule"} (Place "src/a.py" Nothing (12, 13) Nothing Nothing)) `shouldBe` ["a", "c", "d"]
   describe "the Jev questions" $ do
     it "nitpick: the 1a wording, with the cited rule's text" $ do
       let q = nitpick st (raw (12, 13)) {rfRule = Just "A"} "code"
@@ -90,7 +90,7 @@ spec = describe "Olifant.Vet.Judge" $ do
       lookup "place" (qContext q) `shouldBe` Just "src/a.py:12"
     it "nitpick: with no rule, the whole Rules section" $
       lookup "project rules" (qContext (nitpick st (raw (12, 13)) "code")) `shouldBe` Just "## Rules\n### A\nNo sqlite outside adapters.\n### B\nTime comes from the clock."
-    it "nitpick: vet.md's sections replace the criteria" $ do
+    it "nitpick: inspect.md's sections replace the criteria" $ do
       let q = nitpick (steering "## A nitpick is\nonly typos\n## Worth saying is\nanything\n") (raw (12, 13)) "code"
       qShape q `shouldBe` Noul (Just ("only typos", "anything"))
     it "same problem: the 1a state" $ do
@@ -114,7 +114,7 @@ spec = describe "Olifant.Vet.Judge" $ do
     it "(I5) a check that failed leaves the finding waiting, to be verified again" $
       claimVerdict (Left (Failure "cancelled" (UTCTime (fromGregorian 2026 11 15) 0))) `shouldBe` Waiting
   describe "checkWith" $
-    it "logs vet-check and leaves the plans' estimates" $ do
+    it "logs inspect-check and leaves the plans' estimates" $ do
       (s, p) <- checkerServer
       let root = prRoot p
           cfg = (catalogPlans (prCatalog p)) {pcCheckModel = "sonnet"}
@@ -122,7 +122,7 @@ spec = describe "Olifant.Vet.Judge" $ do
           checker _ _ _ = pure (Right (RunResult reply 1 (Just 0.02) Nothing Nothing Nothing [] 0 []))
           x = Sentence 0 0 0 10 Prose "It breaks." "" Nothing Nothing
       writeIORef (ssEstimates s) (M.fromList [(root, M.empty)])
-      _ <- checkWith "vet-check" s p cfg checker True (UTCTime (fromGregorian 2026 11 15) 0) "src/a.py" (CheckAsk CheckClaim False []) x
+      _ <- checkWith "inspect-check" s p cfg checker True (UTCTime (fromGregorian 2026 11 15) 0) "src/a.py" (CheckAsk CheckClaim False []) x
       readIORef (ssEstimates s) >>= (`shouldBe` M.fromList [(root, M.empty)])
       recs <- maybe [] (fst . readRecords) <$> readText (pFiles (ssPorts s)) (recordsPath root)
-      [erVerb e | AnErrand e <- recs] `shouldBe` ["vet-check"]
+      [erVerb e | AnErrand e <- recs] `shouldBe` ["inspect-check"]

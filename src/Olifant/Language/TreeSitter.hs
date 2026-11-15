@@ -469,7 +469,7 @@ capturesOf g qs content = unsafePerformIO $ do
 {-# NOINLINE capturesOf #-}
 
 -- | The 1-based lines that hold a tree-sitter ERROR node or a missing node
--- (vet's screen reads them as "this code does not parse yet"). Empty when the
+-- (inspect's screen reads them as "this code does not parse yet"). Empty when the
 -- text parses cleanly, or when the grammar cannot load. Pure, as
 -- 'capturesOf' is.
 errorLines :: Grammar -> Text -> [Int]
@@ -492,7 +492,7 @@ errorLines g content = unsafePerformIO $ loadGrammar g >>= \case
 {-# NOINLINE errorLines #-}
 
 -- | Whether the node spanning these bytes holds only comments and lone
--- strings (vet's "empty body"); Nothing when no node spans them, or the
+-- strings (inspect's "empty body"); Nothing when no node spans them, or the
 -- grammar cannot load.
 bodyEmpty :: Grammar -> Text -> (Int, Int) -> Maybe Bool
 bodyEmpty g content (start, end) = unsafePerformIO $ loadGrammar g >>= \case
