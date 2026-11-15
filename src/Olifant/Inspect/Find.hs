@@ -36,7 +36,9 @@ import Olifant.Server.Checker (readReplies, recordLock, resultOf)
 import Olifant.Server.Errand (RunFailure (..), RunResult, Status (..), Verb (..), runClaude)
 import Olifant.Inspect.Store (Place (..), InspectFinding (..))
 
-data FindUnit = FindUnit {fuFile :: FilePath, fuName :: Text, fuLines :: (Int, Int), fuHeader :: Maybe Text, fuText :: Text}
+-- | A unit to inspect; 'fuInProgress' when Jev thinks it stops before doing
+-- its job: still inspected, for what is written, not for what is missing.
+data FindUnit = FindUnit {fuFile :: FilePath, fuName :: Text, fuLines :: (Int, Int), fuHeader :: Maybe Text, fuText :: Text, fuInProgress :: Bool}
   deriving stock (Eq, Show)
 
 data FindAsk = FindAsk {faUnits :: [FindUnit], faDiff :: Text, faSteering :: Text, faReported :: [Text], faOpen :: [InspectFinding]}
@@ -73,6 +75,7 @@ findPrompt a =
     , "\n"
     , if null (faOpen a) then "" else "\n" <> openAsk
     , "\n"
+    , if any fuInProgress (faUnits a) then "Units marked (in progress) are still being written: report only rule breaks and bugs in the code that is there, never that something is missing or not done yet.\n" else ""
     , "Review the changed units. List problems this change has or introduces: nothing else. An empty list is a normal and often the right answer; do not look for something to say. Do not speculate: a finding needs a named code path (the line, the call and what happens), found with Read, Grep and Glob. Do not report style or taste unless it breaks a rule in the steering file.\n\n"
     , "Kinds:\n"
     , "- bug: the code does the wrong thing.\n"
@@ -93,7 +96,7 @@ findPrompt a =
     numbered u =
       let (start, end) = fuLines u
           rows = zipWith (\i l -> T.justifyRight 5 ' ' (tshow (start + i)) <> "  " <> l) [0 :: Int ..] (T.lines (fuText u))
-          headLine = T.pack (fuFile u) <> ":" <> tshow start <> "-" <> tshow end <> " " <> fuName u <> maybe "" (\h -> " (in `" <> h <> "`)") (nonEmpty (fuHeader u))
+          headLine = T.pack (fuFile u) <> ":" <> tshow start <> "-" <> tshow end <> " " <> fuName u <> maybe "" (\h -> " (in `" <> h <> "`)") (nonEmpty (fuHeader u)) <> (if fuInProgress u then " (in progress)" else "")
        in T.intercalate "\n" (("--- " <> headLine) : rows)
     nonEmpty = (>>= \h -> if T.null h then Nothing else Just h)
 

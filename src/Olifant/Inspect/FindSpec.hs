@@ -15,8 +15,8 @@ import Test.Hspec
 ask0 :: FindAsk
 ask0 =
   FindAsk
-    [ FindUnit "src/a.py" "A.f" (3, 5) (Just "class A:") "def f(self, x):\n    return x\n    # end"
-    , FindUnit "src/b.py" "g" (1, 2) Nothing "def g():\n    pass"
+    [ FindUnit "src/a.py" "A.f" (3, 5) (Just "class A:") "def f(self, x):\n    return x\n    # end" False
+    , FindUnit "src/b.py" "g" (1, 2) Nothing "def g():\n    pass" False
     ]
     "--- a/src/a.py\n+++ b/src/a.py\n@@ -3 +3 @@\n-x\n+y\n"
     "## Rules\n### A\nno\n"
@@ -24,13 +24,18 @@ ask0 =
     [(finding "abc123" "bug" Open 0.9) {vfStatement = "It returns x unchanged.", vfPlace = Place "src/a.py" (Just "A.f") (3, 3) Nothing Nothing}]
 
 unit :: Int -> FindUnit
-unit n = FindUnit "a.py" (T.pack ("u" <> show n)) (1, n) Nothing ""
+unit n = FindUnit "a.py" (T.pack ("u" <> show n)) (1, n) Nothing "" False
 
 spec :: Spec
 spec = describe "Olifant.Inspect.Find" $ do
   it "the prompt is the 1a prompt, word for word" $ do
     golden <- TIO.readFile "src/Olifant/Inspect/testdata/find-prompt.golden"
     findPrompt ask0 `shouldBe` golden
+  it "an in-progress unit is marked, and the finder told to leave what is missing alone" $ do
+    let p = findPrompt ask0 {faUnits = [(head (faUnits ask0)) {fuInProgress = True}]}
+    p `shouldSatisfy` T.isInfixOf "--- src/a.py:3-5 A.f (in `class A:`) (in progress)"
+    p `shouldSatisfy` T.isInfixOf "Units marked (in progress) are still being written: report only rule breaks and bugs in the code that is there, never that something is missing or not done yet."
+    findPrompt ask0 `shouldNotSatisfy` T.isInfixOf "in progress"
   it "parses findings after prose, and drops one with no statement" $ do
     let reply = "I looked.\n\n{\"findings\": [{\"kind\": \"bug\", \"file\": \"src/a.py\", \"lines\": [3, 4], \"statement\": \"Wrong.\", \"rule\": \"\", \"evidence\": [{\"file\": \"src/b.py\", \"lines\": [1, 2]}]}, {\"kind\": \"bug\", \"file\": \"src/a.py\", \"lines\": [3, 4]}], \"open\": [{\"id\": \"abc123\", \"holds\": \"no longer holds\", \"why\": \"fixed\"}, {\"id\": \"x\", \"holds\": \"maybe\"}]}"
     parseFind reply `shouldBe` Right (FindReply [RawFinding "bug" "src/a.py" (3, 4) "Wrong." Nothing [("src/b.py", (1, 2))]] [("abc123", False, "fixed")])

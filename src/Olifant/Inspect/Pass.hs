@@ -21,7 +21,7 @@ import Control.Monad (filterM, foldM, unless, when)
 import Data.IORef (atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (sortOn)
 import Data.Map.Strict qualified as M
-import Data.Maybe (fromMaybe, isJust, listToMaybe)
+import Data.Maybe (catMaybes, fromMaybe, isJust, listToMaybe)
 import Data.Ord (Down (..))
 import Data.Set (Set)
 import Data.Set qualified as S
@@ -187,7 +187,7 @@ inspectPassOn _token s p deps path
       let fpOf n = fingerprint text (namedLines n)
           inspected = M.findWithDefault S.empty rel (vsInspected store0)
           todo = [n | n <- changed, fpOf n `S.notMember` inspected, namedName n `S.notMember` vdSkip deps]
-      finished <- filterM (screen lang text units) todo
+      finished <- catMaybes <$> mapM (screen lang text units) todo
       -- a waiting finding is verified when the margin has room, even with nothing new to find
       let openHere = length [f | f <- vsFindings store0, plFile (vfPlace f) == rel, vfStatus f == Open, vfKind f `elem` vcKinds cfg]
           room = openHere < vcMaxShown cfg && any (\f -> plFile (vfPlace f) == rel && vfStatus f == Waiting) (vsFindings store0)
@@ -204,15 +204,17 @@ inspectPassOn _token s p deps path
               pure (InspectDone True False False 0)
         else find st store0 lang text units (S.fromList (map namedName changed)) finished
 
-    -- the screen: a code fact, or Jev's "stops early"; unfinished units leave no record
+    -- the screen: a code fact (a parse error, TODO or FIXME, an empty body) skips
+    -- a unit with no record; one Jev thinks stops early is inspected, marked in
+    -- progress (the user's ruling: review what is written, not what is missing)
     screen lang text units n = do
       let facts = unitFacts lang text n
           Screen.Facts e t m = facts
       if e || t || m
-        then pure False
+        then pure Nothing
         else do
           a <- weighed (stopsEarly (langName lang) rel (cut text n) (headerOf text units n) facts)
-          pure (not (unfinished facts (pYes a)))
+          pure (Just (n, unfinished facts (pYes a)))
 
     find st store0 lang text units changedNames finished = do
       (_, reported) <- findingsFor path s
@@ -226,7 +228,7 @@ inspectPassOn _token s p deps path
           over spent e = spent + e > vcPassCost cfg || overDay spent e
           overDay spent e = today + spent + e > vcDayCost cfg
           reportedText = [fRule f <> " at " <> T.pack rel <> maybe "" (\((l, _), _) -> ":" <> T.pack (show l)) (fRange f) <> ": " <> fMessage f | f <- reported]
-          findUnit n = FindUnit rel (namedName n) (namedLines n) (nonEmpty (headerOf text units n)) (cut text n)
+          findUnit (n, inProgress) = FindUnit rel (namedName n) (namedLines n) (nonEmpty (headerOf text units n)) (cut text n) inProgress
           openOn names = [f | f <- vsFindings store0, plFile (vfPlace f) == rel, vfStatus f `elem` [Open, Waiting], maybe False (`elem` names) (plUnit (vfPlace f))]
       -- the find calls, one a pack, while the caps allow
       (spent1, capped, answered) <-

@@ -26,7 +26,7 @@ import Olifant.Inspect.Pass
 import Olifant.Decide (Decider (..), Question (..))
 import Olifant.Server.Errand (RunFailure (..))
 import Olifant.Server.Errand qualified as E
-import Olifant.Inspect.Find (recordedFinder)
+import Olifant.Inspect.Find (FindAsk (..), FindUnit (..), recordedFinder)
 import Olifant.Inspect.Store
 import Olifant.Workspace (Workspace)
 import System.Directory (createDirectoryIfMissing, doesFileExist, removeDirectoryRecursive)
@@ -165,8 +165,14 @@ spec = describe "Olifant.Inspect.Pass" $ do
     [o1, o2] `shouldSatisfy` all (\case InspectSkipped _ -> True; _ -> False)
     doesFileExist (eFinds e <> ".asked") >>= (`shouldBe` False)
     doesFileExist (eDir e </> inspectStorePath) >>= (`shouldBe` False)
-  it "an unfinished unit is silent" $ withInspect "" edit1 $ \e -> do
-    TIO.writeFile (eAnswers e) (answers [("stops-early", True)])
+  it "a unit Jev thinks stops early is still inspected, marked in progress (user ruling)" $ withInspect "" edit1 $ \e -> do
+    TIO.writeFile (eAnswers e) (answers [("stops-early", True), ("nitpick", False), ("same", True)])
+    TIO.writeFile (eFinds e) (replies [("src/inspectme.py:f", findReply [conv] [])])
+    sent <- newIORef []
+    _ <- ePassWith e (\d -> d {vdFinder = \a -> modifyIORef' sent (++ map fuInProgress (faUnits a)) >> vdFinder d a}) (eDir e </> file)
+    readIORef sent >>= (`shouldBe` [True])
+    statuses <$> eStore e >>= (`shouldBe` [Open])
+  it "a unit with a TODO is silent" $ withInspect "" (T.replace "return x + 2" "return x + 2  # TODO: clamp" edit1) $ \e -> do
     _ <- ePass e
     asked (eFinds e) >>= (`shouldBe` [])
     vsInspected <$> eStore e >>= (`shouldBe` M.empty)
