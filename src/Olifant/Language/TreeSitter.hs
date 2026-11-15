@@ -12,6 +12,9 @@
 -- queries, text), so 'capturesOf' wraps its IO in 'unsafePerformIO'.
 module Olifant.Language.TreeSitter
   ( capturesOf
+  , errorLines
+  , bodyEmpty
+  , definitionsOf
   , cacheSize
   , cacheHolds
   , compiledSize
@@ -53,6 +56,7 @@ import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Word (Word16, Word32, Word8)
 import Data.Bits ((.&.))
+import Data.Containers.ListUtils (nubOrd)
 import Foreign.C.String (CString, newCStringLen, peekCString, peekCStringLen)
 import Foreign.C.Types (CInt (..), CSize (..))
 import Foreign.Marshal.Alloc (allocaBytes)
@@ -90,6 +94,8 @@ foreign import ccall unsafe "ts_query_delete" c_queryDelete :: Ptr TSQuery -> IO
 foreign import ccall unsafe "&ts_query_delete" c_queryDeleteFin :: FunPtr (Ptr TSQuery -> IO ())
 foreign import ccall unsafe "ots_capture_count" c_captureCount :: Ptr TSQuery -> IO Word32
 foreign import ccall unsafe "ots_prune" c_prune :: Ptr TSQuery -> Ptr Word8 -> Ptr Word8 -> IO ()
+foreign import ccall unsafe "ots_error_rows" c_errorRows :: Ptr TSNode -> Ptr Word32 -> Word32 -> IO Word32
+foreign import ccall unsafe "ots_body_empty" c_bodyEmpty :: Ptr TSNode -> Word32 -> Word32 -> IO CInt
 foreign import ccall unsafe "ots_facts" c_facts :: Ptr TSNode -> Ptr Word32 -> IO ()
 foreign import ccall unsafe "ots_exec" c_exec :: Ptr TSQuery -> Ptr TSNode -> IO (Ptr TSQueryCursor)
 foreign import ccall unsafe "ts_query_cursor_delete" c_cursorDelete :: Ptr TSQueryCursor -> IO ()
@@ -461,6 +467,48 @@ capturesOf g qs content = unsafePerformIO $ do
   where
     lookupBy p = fmap snd . listToMaybe . filter (p . fst)
 {-# NOINLINE capturesOf #-}
+
+-- | The 1-based lines that hold a tree-sitter ERROR node or a missing node
+-- (vet's screen reads them as "this code does not parse yet"). Empty when the
+-- text parses cleanly, or when the grammar cannot load. Pure, as
+-- 'capturesOf' is.
+errorLines :: Grammar -> Text -> [Int]
+errorLines g content = unsafePerformIO $ loadGrammar g >>= \case
+  Left _ -> pure []
+  Right ld -> do
+    size <- fromIntegral <$> c_nodeSize
+    let bytes = TE.encodeUtf8 content
+    BU.unsafeUseAsCStringLen bytes $ \(p, n) ->
+      bracket (c_parse (ldLanguage ld) p (fromIntegral n)) (\t -> when (t /= nullPtr) (c_treeDelete t)) $ \tree ->
+        if tree == nullPtr
+          then pure []
+          else allocaBytes size $ \root -> allocaArray cap $ \out -> do
+            c_root tree root
+            k <- fromIntegral <$> c_errorRows root out (fromIntegral cap)
+            rows <- peekArray (min k cap) out
+            pure (nubOrd (map ((+ 1) . fromIntegral) rows))
+  where
+    cap = 256
+{-# NOINLINE errorLines #-}
+
+-- | Whether the node spanning these bytes holds only comments and lone
+-- strings (vet's "empty body"); Nothing when no node spans them, or the
+-- grammar cannot load.
+bodyEmpty :: Grammar -> Text -> (Int, Int) -> Maybe Bool
+bodyEmpty g content (start, end) = unsafePerformIO $ loadGrammar g >>= \case
+  Left _ -> pure Nothing
+  Right ld -> do
+    size <- fromIntegral <$> c_nodeSize
+    let bytes = TE.encodeUtf8 content
+    BU.unsafeUseAsCStringLen bytes $ \(p, n) ->
+      bracket (c_parse (ldLanguage ld) p (fromIntegral n)) (\t -> when (t /= nullPtr) (c_treeDelete t)) $ \tree ->
+        if tree == nullPtr
+          then pure Nothing
+          else allocaBytes size $ \root -> do
+            c_root tree root
+            r <- c_bodyEmpty root (fromIntegral start) (fromIntegral end)
+            pure (case r of 1 -> Just True; 0 -> Just False; _ -> Nothing)
+{-# NOINLINE bodyEmpty #-}
 
 capturesIO :: Grammar -> [(FilePath, Text)] -> Text -> IO (Either Text (PNode, [Cap]))
 capturesIO g qs content = loadGrammar g >>= \case

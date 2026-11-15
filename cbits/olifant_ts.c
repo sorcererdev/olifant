@@ -97,3 +97,39 @@ void ots_abi_range(uint32_t *lo, uint32_t *hi) {
   *lo = TREE_SITTER_MIN_COMPATIBLE_LANGUAGE_VERSION;
   *hi = TREE_SITTER_LANGUAGE_VERSION;
 }
+
+/* Vet's screen: the start rows of ERROR and missing nodes under a node,
+ * descending only into subtrees that hold an error; at most cap rows are
+ * written, and the count found (which may pass cap) is returned. */
+static void ots_error_walk(TSNode n, uint32_t *out, uint32_t cap, uint32_t *k) {
+  if (ts_node_is_missing(n) || (ts_node_is_named(n) && strcmp(ts_node_type(n), "ERROR") == 0)) {
+    if (*k < cap) out[*k] = ts_node_start_point(n).row;
+    (*k)++;
+  }
+  if (!ts_node_has_error(n)) return;
+  uint32_t c = ts_node_child_count(n);
+  for (uint32_t i = 0; i < c; i++) ots_error_walk(ts_node_child(n, i), out, cap, k);
+}
+uint32_t ots_error_rows(const TSNode *root, uint32_t *out, uint32_t cap) {
+  uint32_t k = 0;
+  ots_error_walk(*root, out, cap, &k);
+  return k;
+}
+
+/* Vet's screen: is the node spanning bytes [start, end) a body with nothing
+ * in it but comments and lone strings (a docstring)? 1 yes, 0 no, 2 when no
+ * node spans exactly that range. Told by node type names only. */
+static int ots_quiet(TSNode c) {
+  const char *t = ts_node_type(c);
+  if (strstr(t, "comment") || strstr(t, "string")) return 1;
+  return ts_node_named_child_count(c) == 1 && strstr(ts_node_type(ts_node_named_child(c, 0)), "string") != NULL;
+}
+int ots_body_empty(const TSNode *root, uint32_t start, uint32_t end) {
+  TSNode n = ts_node_named_descendant_for_byte_range(*root, start, end);
+  if (ts_node_is_null(n) || ts_node_start_byte(n) != start || ts_node_end_byte(n) != end) return 2;
+  /* a body with one statement spans the same bytes as it: take the outermost */
+  for (TSNode p = ts_node_parent(n); !ts_node_is_null(p) && ts_node_start_byte(p) == start && ts_node_end_byte(p) == end; p = ts_node_parent(p)) n = p;
+  uint32_t k = ts_node_named_child_count(n);
+  for (uint32_t i = 0; i < k; i++) if (!ots_quiet(ts_node_named_child(n, i))) return 0;
+  return 1;
+}

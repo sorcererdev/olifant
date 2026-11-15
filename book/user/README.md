@@ -19,3 +19,4 @@
 17. [Strangling a legacy codebase: `init --migrate`, `only = "new"`, extract and switches, retiring, the report, decisions](17-strangling-a-legacy-codebase.md)
 18. [TDD in the editor: test, stub, conjure, mutate, the step log, `[test]`](18-tdd-in-the-editor.md)
 19. [Plans: markdown that states what you believe and do, answers beside it, `validate`, `do`, `[plans]`](19-plans.md)
+20. [Vet: the checker on code: on save, changed units, the find call, `[vet]`, `.olifant/vet.md`, `vet list`, `vet cost`](20-vet.md)

@@ -2454,6 +2454,14 @@ as an editor calls it. `ServerSpec` tests the state functions directly. durandal
 suite runs against a fake server with canned answers (`tests/fake-lsp`), and its e2e suites
 against the real one.
 
+### Vet: the checker on code
+
+On save of a source file, `Vet/Pass.hs` `vetPass` checks the units that differ from `HEAD`: an
+unfinished screen (`Vet/Screen.hs`, Jev and neutral tree-sitter facts), one `claude -p` find
+call (`Vet/Find.hs`), then placing, matching, Jev's nitpick filter and verification
+(`Vet/Judge.hs`) before the store (`Vet/Store.hs`) is written. It shares only `checkWith` with
+plans. [Chapter 6](06-vet.md) walks through a pass.
+
 ## Rough spots
 
 This section is where things worth knowing about, but not urgent, go when you work near

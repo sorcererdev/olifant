@@ -34,6 +34,9 @@ module Olifant.Server.Checker
   , recordedCheckerAs
   , recordedAsked
   , replayChecker
+  , readReplies
+  , resultOf
+  , recordLock
   , checkerUnder
   ) where
 

@@ -221,6 +221,10 @@ configure env = \case
                   scCheckAnswers = case KM.lookup "check_answers" o of
                     Just (String f) -> Just (T.unpack f)
                     _ -> scCheckAnswers (ssConfig s)
+                , -- vet_answers: a file of recorded find-call replies (tests)
+                  scVetAnswers = case KM.lookup "vet_answers" o of
+                    Just (String f) -> Just (T.unpack f)
+                    _ -> scVetAnswers (ssConfig s)
                 , scKeys = case KM.lookup "keys" o of
                     Just (Object ks) -> [(Key.toText k, v) | (k, String v) <- KM.toList ks]
                     _ -> scKeys (ssConfig s)

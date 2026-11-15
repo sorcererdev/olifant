@@ -1,0 +1,32 @@
+{
+ "replies": {
+  "The check `input.party >= table.seats` refuses a party that exactly fills the table (party 4 on a 4-seat table), and `create_booking` allows that case with `>`. A guest can book a full table but cannot change an existing booking to one, and the tests don't cover the boundary.": {
+   "cost": 0.008,
+   "text": "```json\n{\"verdict\": \"right\", \"why\": \"1a's claim check\", \"evidence\": [{\"path\": \"src/bistro/booking/commands/create_booking.py\", \"line\": 53}]}\n```"
+  },
+  "The conflict loop calls booking_at with input.slot (the first week) on every iteration instead of the loop variable slot. A taken slot in a later week is never detected, so the command saves overlapping bookings, which breaks the all-or-nothing promise. The existing test only passes because it pre-books the first week.": {
+   "cost": 0.008,
+   "text": "```json\n{\"verdict\": \"right\", \"why\": \"1a's claim check\", \"evidence\": [{\"path\": \"src/bistro/booking/commands/create_weekly_booking__test.py\", \"line\": 43}]}\n```"
+  },
+  "The guest check also requires `b.table_id == input.table_id`, so it only catches a repeat booking at the same table. A guest with a booking at t1 can still book t2 the same day, which contradicts the rule and the message 'already has a booking on <day>'.": {
+   "cost": 0.008,
+   "text": "```json\n{\"verdict\": \"right\", \"why\": \"1a's claim check\", \"evidence\": [{\"path\": \"src/bistro/booking/commands/create_booking__test.py\", \"line\": 45}]}\n```"
+  },
+  "The party-size check looks up `booking.table_id`, which is the booking's current table, and compares the party to that table's seats. After the swap the booking sits on `other.table_id`, so the check should use that table. A party of 4 moving from a 4-seat table to a 2-seat table passes, and a party that does fit the new table can be refused.": {
+   "cost": 0.008,
+   "text": "```json\n{\"verdict\": \"right\", \"why\": \"1a's claim check\", \"evidence\": [{\"path\": \"src/bistro/booking/commands/swap_tables.py\", \"line\": 52}]}\n```"
+  },
+  "`OPENING < input.slot.start` uses a strict comparison, so a booking at exactly 17:00 is refused as outside opening hours. The error message says bookings are taken from 17:00, and the upper bound is inclusive, so the lower bound is off by one. Guests cannot book the first slot of the evening.": {
+   "cost": 0.008,
+   "text": "```json\n{\"verdict\": \"right\", \"why\": \"1a's claim check\", \"evidence\": [{\"path\": \"src/bistro/booking/commands/create_booking.py\", \"line\": 13}, {\"path\": \"src/bistro/booking/commands/create_booking__test.py\", \"line\": 58}]}\n```"
+  },
+  "booked_tables is built from booking ids (b.id) but is then compared with table ids (t.id), so no table is ever treated as booked. empty_tables always equals the total number of tables, and the summary page shows the wrong number. It should use b.table_id.": {
+   "cost": 0.008,
+   "text": "```json\n{\"verdict\": \"right\", \"why\": \"1a's claim check\", \"evidence\": [{\"path\": \"src/bistro/booking/queries/get_day_summary__test.py\", \"line\": 12}]}\n```"
+  },
+  "save and _select now use a `phone` column, but the schema only adds it through `create table if not exists`. An existing bistro.sqlite3 (the default path in main.py) keeps its old bookings table without `phone`, so inserts and selects raise OperationalError. No migration or `alter table` handles this.": {
+   "cost": 0.008,
+   "text": "```json\n{\"verdict\": \"right\", \"why\": \"1a's claim check\", \"evidence\": [{\"path\": \"src/bistro/booking/ports/booking_repository/sqlite_booking_repository.py\", \"line\": 11}, {\"path\": \"src/bistro/main.py\", \"line\": 18}]}\n```"
+  }
+ }
+}

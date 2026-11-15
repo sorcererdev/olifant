@@ -42,7 +42,8 @@ import Olifant.Template qualified as Tm
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
-import Data.Time (Day, UTCTime (..), defaultTimeLocale, formatTime)
+import Data.Time (Day, UTCTime (..), defaultTimeLocale, formatTime, getCurrentTimeZone, localDay, utcToLocalTime)
+import Olifant.Vet.Store (Place (..), VetFinding (..), VetStore (..), readVetStore, statusName)
 import Olifant.Anchor (Located (..), RenderedAnchor (..), describeMisses, insertLines, parsePhrase, resolveLayers)
 import Olifant.Region (RegionDef, RegionDefWith (..), RegionProblem (..), applyRegion, fenceLines, wholeHeader)
 import Olifant.App
@@ -580,6 +581,8 @@ runCommand rt cwd fmt cat = \case
             Right gens -> runStepsWith [] (any isSnippet gens0) rt cwd fmt cat g [] (zipWith (\gen s -> Step gen (M.fromList (specSets s))) gens ss)
   PlansCostCmd onlyBranch since asJson _ _ onlyPlan True -> runChecksCost rt onlyBranch since asJson onlyPlan
   PlansCostCmd onlyBranch since asJson transcripts by onlyPlan False -> runPlansCost rt cat onlyBranch since asJson transcripts by onlyPlan
+  VetListCmd only asJson -> runVetList rt only asJson
+  VetCostCmd since asJson -> runVetCost rt since asJson
   FixCmd rule file (line, _) n given g ->
     fixSteps (portsOf rt) (projectOf rt cat) rule (projectPath rt cwd file) line n given >>= \case
       Left (FixNotFound why) -> failWith rt fmt 3 "finding_not_found" why (Just "run `olifant check --file` to see the findings") []
@@ -600,7 +603,7 @@ runPlansCost rt cat onlyBranch since asJson transcripts by onlyPlan = do
       prices = pcPrices (catalogPlans cat)
       dir = fromMaybe (fromMaybe "~" (rtHomeDir rt) </> ".claude/projects" </> slugOf root) transcripts
       note t = rtErr rt ("plans cost: " <> t <> "\n")
-  (records, bad) <- maybe ([], 0) readRecords <$> readText ws (recordsPath root)
+  (records, bad) <- maybe ([], 0) (first (filter (not . vetRecord)) . readRecords) <$> readText ws (recordsPath root)
   when (bad > 0) $ note ("skipped " <> T.pack (show bad) <> " unreadable line" <> (if bad == 1 then "" else "s") <> " in errands.jsonl")
   present <- (== Directory) <$> inspectPath ws dir
   unless present $ note ("no Claude Code transcripts at " <> T.pack dir)
@@ -1616,3 +1619,49 @@ runAnticipate rt path line overlayFile answers = do
       rtOut rt (encodeJson (object ["none" .= (why :: Text)]) <> "\n")
       pure (if code == 0 then ExitSuccess else ExitFailure code)
     tshow = T.pack . show
+
+-- | vet's errands (its find calls and claim checks): `vet cost` counts them, `plans cost` does not.
+vetRecord :: Record -> Bool
+vetRecord = \case
+  AnErrand e -> erVerb e `elem` ["vet", "vet-check"]
+  _ -> False
+
+-- | `olifant vet list`: the findings, open first, as a table or JSON.
+runVetList :: Runtime -> Maybe Text -> Bool -> IO ExitCode
+runVetList rt only asJson =
+  readVetStore (rtRoot rt) (rtProjectDir rt) >>= \case
+    Left why -> rtErr rt ("vet: " <> why <> "\n") >> pure (ExitFailure 1)
+    Right vs -> do
+      let fs = sortOn vfStatus [f | f <- vsFindings vs, maybe True (== statusName (vfStatus f)) only]
+          place f = vfPlace f
+      if asJson
+        then rtOut rt (encodeJson (object ["findings" .= [object ["id" .= vfId f, "status" .= statusName (vfStatus f), "kind" .= vfKind f, "file" .= plFile (place f), "line" .= fst (plLines (place f)), "rule" .= vfRule f, "statement" .= vfStatement f, "keep" .= vfKeep f, "verdict" .= vfVerdict f, "seen" .= vfSeen f] | f <- fs]]) <> "\n")
+        else rtOut rt (plainTable ["status", "kind", "file", "line", "rule", "statement"] [[statusName (vfStatus f), vfKind f, T.pack (plFile (place f)), T.pack (show (fst (plLines (place f)))), fromMaybe "-" (vfRule f), cutTo 80 (vfStatement f)] | f <- fs])
+      pure ExitSuccess
+  where
+    cutTo n t = if T.length t > n then T.take (n - 1) t <> "…" else t
+
+-- | `olifant vet cost`: find calls and claim checks, a local day a row, and the units the cap left waiting.
+runVetCost :: Runtime -> Maybe Day -> Bool -> IO ExitCode
+runVetCost rt since asJson = do
+  zone <- getCurrentTimeZone
+  (records, _) <- maybe ([], 0) readRecords <$> readText (rtRoot rt) (recordsPath (rtProjectDir rt))
+  waiting <- either (const 0) (sum . map S.size . M.elems . vsCapped) <$> readVetStore (rtRoot rt) (rtProjectDir rt)
+  let dayOf = localDay . utcToLocalTime zone
+      es = [e | AnErrand e <- records, erVerb e `elem` ["vet", "vet-check"], maybe True (<= dayOf (erAt e)) since]
+      days = nub (sort (map (dayOf . erAt) es))
+      cost = sum . map (fromMaybe 0 . erCost)
+      row d = let xs = [e | e <- es, dayOf (erAt e) == d]; finds = [e | e <- xs, erVerb e == "vet"]; checks = [e | e <- xs, erVerb e == "vet-check"] in (d, length finds, length checks, cost finds, cost checks)
+      rows = map row days
+      money x = T.pack (showFFloat (Just 2) x "")
+  if asJson
+    then rtOut rt (encodeJson (object ["days" .= [object ["day" .= show d, "finds" .= f, "checks" .= c, "find_cost" .= fc, "check_cost" .= cc, "total_cost" .= (fc + cc)] | (d, f, c, fc, cc) <- rows], "waiting_units" .= waiting]) <> "\n")
+    else rtOut rt (plainTable ["day", "finds", "checks", "find $", "check $", "total $"] [[T.pack (show d), T.pack (show f), T.pack (show c), money fc, money cc, money (fc + cc)] | (d, f, c, fc, cc) <- rows] <> "waiting on the cap: " <> T.pack (show waiting) <> " unit" <> (if waiting == 1 then "" else "s") <> "\n")
+  pure ExitSuccess
+
+-- | Columns padded to their widest cell, two spaces apart.
+plainTable :: [Text] -> [[Text]] -> Text
+plainTable header rows = T.unlines (map line (header : rows))
+  where
+    widths = foldr (zipWith max . map T.length) (map (const 0) header) (header : rows)
+    line cs = T.stripEnd (T.intercalate "  " (zipWith (\w c -> T.justifyLeft w ' ' c) widths cs))
