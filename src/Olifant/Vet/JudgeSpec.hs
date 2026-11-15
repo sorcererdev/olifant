@@ -41,6 +41,9 @@ spec = describe "Olifant.Vet.Judge" $ do
       let (pl, _, stt) = place st "src/a.py" text30 units (S.fromList ["f"]) (raw (12, 13))
       (plUnit pl, stt) `shouldBe` (Just "f", Open)
       plFingerprint pl `shouldSatisfy` (/= Nothing)
+    it "a range that starts before a changed unit and overlaps it is open in that unit (1a's rule)" $ do
+      let (pl, _, stt) = place st "src/a.py" text30 units (S.fromList ["f"]) (raw (3, 15))
+      (plUnit pl, stt) `shouldBe` (Just "f", Open)
     it "outside any changed unit it is elsewhere" $ do
       let (_, _, stt) = place st "src/a.py" text30 units (S.fromList ["f"]) (raw (32, 33))
       stt `shouldBe` Elsewhere

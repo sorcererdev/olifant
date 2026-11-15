@@ -18,6 +18,7 @@ module Olifant.Vet.Judge
   , claimVerdict
   ) where
 
+import Control.Applicative ((<|>))
 import Data.List (sortOn)
 import Data.Maybe (fromMaybe, isJust, listToMaybe)
 import Data.Set (Set)
@@ -42,15 +43,19 @@ import Olifant.Vet.Store (Place (..), Status (..), VetFinding (..), VetStore (..
 place :: Steering -> FilePath -> Text -> [Named] -> Set Text -> RawFinding -> (Place, Maybe Text, Status)
 place st file text units changed f = (Place (rfFile f) (namedName <$> unit) (rfLines f) fp, rule, status)
   where
-    first = fst (rfLines f)
+    (first, final) = rfLines f
     sameFile = rfFile f == file
+    -- 1a's rule: in a changed unit when the range overlaps one (the innermost
+    -- holding the first line first); else the unit holding the first line
+    overlapping = [n | n <- units, namedName n `S.member` changed, let (a, z) = namedLines n, a <= final, first <= z]
+    holding = [n | n <- units, let (a, z) = namedLines n, a <= first, first <= z]
     unit
-      | sameFile = listToMaybe (sortOn width [n | n <- units, let (a, z) = namedLines n, a <= first, first <= z])
-      | otherwise = Nothing
+      | not sameFile = Nothing
+      | otherwise = listToMaybe (sortOn (\n -> (not (n `elem` holding), width n)) overlapping) <|> listToMaybe (sortOn width holding)
     width n = let (a, z) = namedLines n in z - a
     fp = (\n -> fingerprint text (namedLines n)) <$> unit
     rule = rfRule f >>= \r -> if isJust (ruleText st r) then Just r else Nothing
-    status = if maybe False ((`S.member` changed) . namedName) unit then Open else Elsewhere
+    status = if sameFile && not (null overlapping) then Open else Elsewhere
 
 data Match = New | Merge | Drop
   deriving stock (Eq, Show)

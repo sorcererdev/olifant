@@ -438,6 +438,7 @@ test-suite spec
     Olifant.TranscriptsSpec
     Olifant.Uncovered
     Olifant.UncoveredSpec
+    Olifant.Vet.CorpusSpec
     Olifant.Vet.Find
     Olifant.Vet.FindSpec
     Olifant.Vet.Judge
