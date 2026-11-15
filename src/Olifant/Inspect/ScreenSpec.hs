@@ -1,15 +1,15 @@
-module Olifant.Vet.ScreenSpec (spec) where
+module Olifant.Inspect.ScreenSpec (spec) where
 
 import Data.Maybe (isJust)
 import Olifant.Decide (Question (..))
 import Olifant.Language (shippedLanguageNow)
 import Olifant.Language.TreeSitter (loadableGrammar)
 import Olifant.Server.Unit (Named (..))
-import Olifant.Vet.Screen
+import Olifant.Inspect.Screen
 import Test.Hspec
 
 spec :: Spec
-spec = describe "Olifant.Vet.Screen" $ do
+spec = describe "Olifant.Inspect.Screen" $ do
   let py = shippedLanguageNow "python"
       grammar = isJust (loadableGrammar py)
   it "a docstring-only body is empty" $

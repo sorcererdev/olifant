@@ -1,9 +1,9 @@
-"""Vet 1b: the replay gate's data, from the 1a pipeline run on sonnet (not product code).
+"""Inspect 1b: the replay gate's data, from the 1a pipeline run on sonnet (not product code).
 
-Writes three files into src/Olifant/Vet/testdata/:
-  vet-corpus-finds.json   {case: {file: reply text}}   1a's one find call a case, split by the finding's file
-  vet-corpus-checks.json  {"replies": {sentence key: {"text", "cost"}}}   1a's claim verdicts, as checker replies
-  vet-corpus-labels.json  {case: {"set", "hits": [statement], "patch", "changed": [file]}}   1a's judged hits
+Writes three files into src/Olifant/Inspect/testdata/:
+  inspect-corpus-finds.json   {case: {file: reply text}}   1a's one find call a case, split by the finding's file
+  inspect-corpus-checks.json  {"replies": {sentence key: {"text", "cost"}}}   1a's claim verdicts, as checker replies
+  inspect-corpus-labels.json  {case: {"set", "hits": [statement], "patch", "changed": [file]}}   1a's judged hits
                           (judge + hand overrides), and the case's patch and changed Python files
 
 Usage (from the olifant checkout):
@@ -32,10 +32,10 @@ def main(exp):
         hits = [f["statement"] for f, m in zip(shown, marks) if m.get("hit")]
         case = tomllib.load(open(os.path.join(exp, "..", "code-checker-conventions-2026-11-14", "cases", cid + ".toml"), "rb"))
         labels[cid] = {"set": r["set"], "hits": hits, "patch": case["patch"], "changed": [f for f in case["changed_files"] if f.endswith(".py")]}
-    out = "src/Olifant/Vet/testdata"
-    json.dump(finds, open(os.path.join(out, "vet-corpus-finds.json"), "w"), indent=1, sort_keys=True)
-    json.dump({"replies": replies}, open(os.path.join(out, "vet-corpus-checks.json"), "w"), indent=1, sort_keys=True)
-    json.dump(labels, open(os.path.join(out, "vet-corpus-labels.json"), "w"), indent=1, sort_keys=True)
+    out = "src/Olifant/Inspect/testdata"
+    json.dump(finds, open(os.path.join(out, "inspect-corpus-finds.json"), "w"), indent=1, sort_keys=True)
+    json.dump({"replies": replies}, open(os.path.join(out, "inspect-corpus-checks.json"), "w"), indent=1, sort_keys=True)
+    json.dump(labels, open(os.path.join(out, "inspect-corpus-labels.json"), "w"), indent=1, sort_keys=True)
     print(len(finds), "cases;", sum(len(v) for v in finds.values()), "file replies;", len(replies), "claim replies;",
           sum(len(v["hits"]) for v in labels.values()), "hits")
 

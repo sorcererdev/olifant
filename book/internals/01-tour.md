@@ -2454,14 +2454,14 @@ as an editor calls it. `ServerSpec` tests the state functions directly. durandal
 suite runs against a fake server with canned answers (`tests/fake-lsp`), and its e2e suites
 against the real one.
 
-### Vet: the checker on code
+### Inspect: the checker on code
 
-On save of a source file, `Vet/Pass.hs` `vetPass` checks the units that differ from `HEAD`: an
-unfinished screen (`Vet/Screen.hs`, Jev and neutral tree-sitter facts), one `claude -p` find
-call (`Vet/Find.hs`), then placing, matching, Jev's nitpick filter and verification
-(`Vet/Judge.hs`) before the store (`Vet/Store.hs`) is written. It shares only `checkWith` with
-plans. In `Lsp.hs`, `vetLater` starts it once a save has settled, and the findings come back as
-`olifant-vet` hints with four code actions. [Chapter 6](06-vet.md) walks through a pass.
+On save of a source file, `Inspect/Pass.hs` `inspectPass` checks the units that differ from `HEAD`: an
+unfinished screen (`Inspect/Screen.hs`, Jev and neutral tree-sitter facts), one `claude -p` find
+call (`Inspect/Find.hs`), then placing, matching, Jev's nitpick filter and verification
+(`Inspect/Judge.hs`) before the store (`Inspect/Store.hs`) is written. It shares only `checkWith` with
+plans. In `Lsp.hs`, `inspectLater` starts it once a save has settled, and the findings come back as
+`olifant-inspect` hints with four code actions. [Chapter 6](06-inspect.md) walks through a pass.
 
 ## Rough spots
 

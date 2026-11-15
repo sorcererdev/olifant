@@ -16,9 +16,9 @@ module Olifant.Catalog
   , catalogConjureWire
   , catalogPlans
   , PlansConfig (..)
-  , VetConfig (..)
-  , defaultVet
-  , catalogVet
+  , InspectConfig (..)
+  , defaultInspect
+  , catalogInspect
   , Recheck (..)
   , defaultPlans
   , Price (..)
@@ -148,14 +148,14 @@ data Catalog = Catalog
     -- packs', the project's) sets a `grammar`: they cannot load, and
     -- `init --language` gives them one (elm without the elm pack)
     catalogNoGrammar :: [Text]
-  , -- | `[vet]`: the checker on code (book chapter 20)
-    catalogVet :: VetConfig
+  , -- | `[inspect]`: the checker on code (book chapter 20)
+    catalogInspect :: InspectConfig
   }
 
--- | `[vet]`: on or off, the kinds the margin shows, the finder's model, the
+-- | `[inspect]`: on or off, the kinds the margin shows, the finder's model, the
 -- nitpick cut (kept when 1 - P(nitpick) reaches it), findings shown a file,
 -- seconds to wait after the last save, and the spend caps a save and a day.
-data VetConfig = VetConfig
+data InspectConfig = InspectConfig
   { vcEnabled :: Bool
   , vcKinds :: [Text]
   , vcFindModel :: Text
@@ -168,8 +168,8 @@ data VetConfig = VetConfig
   }
   deriving stock (Eq, Show)
 
-defaultVet :: VetConfig
-defaultVet = VetConfig False ["bug", "assumption", "convention"] "sonnet" 0.79 3 2 0.25 3.00 []
+defaultInspect :: InspectConfig
+defaultInspect = InspectConfig False ["bug", "assumption", "convention"] "sonnet" 0.79 3 2 0.25 3.00 []
 
 -- | `[plans]`: the plans directory, the runner command, its model, a timeout
 -- in seconds, extra `--allowedTools` entries for `do`, the price table
@@ -346,15 +346,15 @@ openProjectCatalogWith loadP root paths = do
       migrate <- readText root projectConfig <&> \case
         Nothing -> Right Nothing
         Just src -> first (ConfigInvalid projectConfig) (Toml.parseToml src >>= migrateIn)
-      vet <- readText root projectConfig <&> \case
-        Nothing -> Right defaultVet
-        Just src -> first (ConfigInvalid projectConfig) (Toml.parseToml src >>= vetIn)
-      pure $ case (,,,,,,,,,) <$> userModel <*> projectModel <*> rulesConfig <*> name <*> recognize <*> migrate <*> decide <*> conjure <*> plans <*> vet of
+      inspect <- readText root projectConfig <&> \case
+        Nothing -> Right defaultInspect
+        Just src -> first (ConfigInvalid projectConfig) (Toml.parseToml src >>= inspectIn)
+      pure $ case (,,,,,,,,,) <$> userModel <*> projectModel <*> rulesConfig <*> name <*> recognize <*> migrate <*> decide <*> conjure <*> plans <*> inspect of
         Left err -> Left err
-        Right (userM, projectM, rc, named, rec', mig, dec, conj, plns, vetCfg) ->
+        Right (userM, projectM, rc, named, rec', mig, dec, conj, plns, inspectCfg) ->
           let model = fromMaybe defaultModelConfig (maybe userM Just projectM)
               plansCfg = fromMaybe defaultPlans plns
-           in either (Left . ConfigInvalid projectConfig) Right (plansLadderIn model plansCfg >> decideBackendIn model dec) >> fmap (\c -> checkFixes (addRules ownRules (addRegions own c {catalogProject = Just project, catalogModel = model, catalogRulesConfig = rc, catalogName = named, catalogRecognize = rec', catalogMigrate = mig, catalogDecideModel = maybe (recModel rec') Just dec, catalogConjureWire = conj, catalogPlans = plansCfg, catalogVet = vetCfg}))) result
+           in either (Left . ConfigInvalid projectConfig) Right (plansLadderIn model plansCfg >> decideBackendIn model dec) >> fmap (\c -> checkFixes (addRules ownRules (addRegions own c {catalogProject = Just project, catalogModel = model, catalogRulesConfig = rc, catalogName = named, catalogRecognize = rec', catalogMigrate = mig, catalogDecideModel = maybe (recModel rec') Just dec, catalogConjureWire = conj, catalogPlans = plansCfg, catalogInspect = inspectCfg}))) result
   where
     recognizeIn top =
       Toml.optional "recognize" Toml.table top >>= \case
@@ -380,12 +380,12 @@ openProjectCatalogWith loadP root paths = do
       Just n | n `notElem` map fst (mcBackends model) ->
         Left ("[decide] model = \"" <> n <> "\" names no backend (backends: " <> (let bs = sort (map fst (mcBackends model)) in if null bs then "none" else T.intercalate ", " bs) <> "). It takes a backend's name; pin the version in that backend's model key.")
       _ -> Right ()
-    vetIn top =
-      Toml.optional "vet" Toml.table top >>= \case
-        Nothing -> Right defaultVet
-        Just t -> Toml.inKey "vet" $ do
+    inspectIn top =
+      Toml.optional "inspect" Toml.table top >>= \case
+        Nothing -> Right defaultInspect
+        Just t -> Toml.inKey "inspect" $ do
           Toml.onlyKeys ["enabled", "kinds", "find_model", "cut", "max_shown", "settle", "pass_cost", "day_cost", "exclude"] t
-          let d = defaultVet
+          let d = defaultInspect
               num k f = fromMaybe (f d) <$> Toml.optional k Toml.number t
               atLeast0 k v = if v < 0 then Left ("`" <> k <> "` must be at least 0") else Right v
           kinds <- fromMaybe (vcKinds d) <$> Toml.optional "kinds" (Toml.list Toml.text) t
@@ -399,7 +399,7 @@ openProjectCatalogWith loadP root paths = do
           settle <- num "settle" vcSettle >>= atLeast0 "settle"
           passCost <- num "pass_cost" vcPassCost >>= atLeast0 "pass_cost"
           dayCost <- num "day_cost" vcDayCost >>= atLeast0 "day_cost"
-          VetConfig
+          InspectConfig
             <$> (fromMaybe (vcEnabled d) <$> Toml.optional "enabled" Toml.bool t)
             <*> pure kinds
             <*> (fromMaybe (vcFindModel d) <$> Toml.optional "find_model" Toml.text t)
@@ -545,7 +545,7 @@ openAt root loadP olifantDir packs = do
   unused <- maybe (pure []) (unusedQueries root [grName (langGrammar l) | l <- rooted, grSource (langGrammar l) /= Nothing]) olifantDir
   let langs = map fst queried
       broken = lefts layers ++ lefts toolchains ++ either pure (const []) configured ++ concatMap snd queried ++ unused
-      base = Catalog Nothing (sortOn entryId (rights loaded)) (sortOn (\(gid, _, _) -> gid) (lefts loaded)) (map fst packs) langs (broken ++ brokenLangs) [] [] defaultModelConfig [] [] (RulesConfig [] []) [m | Just (Right m) <- map lpModel fromPacks] [b | Just (Left b) <- map lpModel fromPacks] (map snd packs) Nothing (RecognizeConfig True Nothing) Nothing Nothing Nothing defaultPlans (listToMaybe [st | Just (Right st) <- map lpStrangler fromPacks]) noGrammar defaultVet
+      base = Catalog Nothing (sortOn entryId (rights loaded)) (sortOn (\(gid, _, _) -> gid) (lefts loaded)) (map fst packs) langs (broken ++ brokenLangs) [] [] defaultModelConfig [] [] (RulesConfig [] []) [m | Just (Right m) <- map lpModel fromPacks] [b | Just (Left b) <- map lpModel fromPacks] (map snd packs) Nothing (RecognizeConfig True Nothing) Nothing Nothing Nothing defaultPlans (listToMaybe [st | Just (Right st) <- map lpStrangler fromPacks]) noGrammar defaultInspect
       noGrammar =
         [ n
         | (n, _) <- shippedLanguages

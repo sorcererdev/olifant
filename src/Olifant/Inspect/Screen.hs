@@ -1,8 +1,8 @@
--- | Vet's screen: is a changed unit obviously unfinished? Neutral code facts
+-- | Inspect's screen: is a changed unit obviously unfinished? Neutral code facts
 -- (a parse error, a TODO or FIXME word, an empty body) and Jev's
 -- "stops early". No language holds a placeholder list (ruling at the 1a
 -- checkpoint): a body of `pass` is Jev's to judge.
-module Olifant.Vet.Screen
+module Olifant.Inspect.Screen
   ( Facts (..)
   , unitFacts
   , stopsEarly

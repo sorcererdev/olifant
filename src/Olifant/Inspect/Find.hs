@@ -1,8 +1,8 @@
--- | Vet's find call: one `claude -p` over a pack of changed, finished units,
+-- | Inspect's find call: one `claude -p` over a pack of changed, finished units,
 -- with the project's steering file, the rule findings already reported and
 -- the open findings to answer ("still holds" or "no longer holds"). The
 -- prompt is 1a's (`find/prompt.py`), word for word.
-module Olifant.Vet.Find
+module Olifant.Inspect.Find
   ( FindUnit (..)
   , FindAsk (..)
   , RawFinding (..)
@@ -30,16 +30,16 @@ import Data.Scientific (toBoundedInteger, toRealFloat)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
-import Olifant.Catalog (PlansConfig (..), VetConfig (..))
+import Olifant.Catalog (PlansConfig (..), InspectConfig (..))
 import Olifant.Process (Cancel)
 import Olifant.Server.Checker (readReplies, recordLock, resultOf)
 import Olifant.Server.Errand (RunFailure (..), RunResult, Status (..), Verb (..), runClaude)
-import Olifant.Vet.Store (Place (..), VetFinding (..))
+import Olifant.Inspect.Store (Place (..), InspectFinding (..))
 
 data FindUnit = FindUnit {fuFile :: FilePath, fuName :: Text, fuLines :: (Int, Int), fuHeader :: Maybe Text, fuText :: Text}
   deriving stock (Eq, Show)
 
-data FindAsk = FindAsk {faUnits :: [FindUnit], faDiff :: Text, faSteering :: Text, faReported :: [Text], faOpen :: [VetFinding]}
+data FindAsk = FindAsk {faUnits :: [FindUnit], faDiff :: Text, faSteering :: Text, faReported :: [Text], faOpen :: [InspectFinding]}
   deriving stock (Eq, Show)
 
 data RawFinding = RawFinding {rfKind :: Text, rfFile :: FilePath, rfLines :: (Int, Int), rfStatement :: Text, rfRule :: Maybe Text, rfEvidence :: [(FilePath, (Int, Int))]}
@@ -64,9 +64,9 @@ findPrompt a =
     , if null (faUnits a) then "(none)" else T.intercalate "\n\n" (map numbered (faUnits a))
     , "\n\nThe change as a diff (tests included):\n"
     , T.stripEnd (faDiff a)
-    , "\n\nThe project's steering file, which holds the rules this project keeps:\n<vet>\n"
+    , "\n\nThe project's steering file, which holds the rules this project keeps:\n<inspect>\n"
     , T.stripEnd (faSteering a)
-    , "\n</vet>\n\nFindings already reported on these files, which you must not raise again:\n"
+    , "\n</inspect>\n\nFindings already reported on these files, which you must not raise again:\n"
     , if null (faReported a) then "none" else T.intercalate "\n" ["- " <> r | r <- faReported a]
     , "\n\nOpen findings from earlier saves on these units:\n"
     , if null (faOpen a) then "none" else T.intercalate "\n" (map openLine (faOpen a))
@@ -172,7 +172,7 @@ findKey a = T.intercalate "," (sort [T.pack (fuFile u) <> ":" <> fuName u | u <-
 
 type Finder = FindAsk -> IO (Either RunFailure RunResult)
 
-liveFinder :: Cancel -> PlansConfig -> VetConfig -> FilePath -> Finder
+liveFinder :: Cancel -> PlansConfig -> InspectConfig -> FilePath -> Finder
 liveFinder token cfg v root a =
   runClaude token cfg {pcCheckModel = vcFindModel v, pcTimeout = findTimeout} Check [] Nothing root (findPrompt a)
 

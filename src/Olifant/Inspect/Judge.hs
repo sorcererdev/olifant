@@ -1,9 +1,9 @@
--- | Vet's judging steps after the find call: place a finding (in a changed
+-- | Inspect's judging steps after the find call: place a finding (in a changed
 -- unit, or elsewhere), match it against the store (Jev's same-problem
 -- question picks the stored finding; the design's step-4 table says what a
 -- match does), Jev's nitpick filter, and verify (citations exist, then the
 -- plans' claim check for bugs and assumptions).
-module Olifant.Vet.Judge
+module Olifant.Inspect.Judge
   ( place
   , readablePath
   , resolveRule
@@ -35,13 +35,13 @@ import Olifant.Server.Checker (CheckReply (..), Citation (..), Confirmed (..), J
 import Olifant.Server.Claims (CheckRecord (..), Failure)
 import Olifant.Server.State (ServerState)
 import Olifant.Server.Unit (Named (..), fingerprint)
-import Olifant.Vet.Find (RawFinding (..))
-import Olifant.Vet.Steering (Steering (..), ruleText, rulesSection)
-import Olifant.Vet.Store (Place (..), Status (..), VetFinding (..), VetStore (..))
+import Olifant.Inspect.Find (RawFinding (..))
+import Olifant.Inspect.Steering (Steering (..), ruleText, rulesSection)
+import Olifant.Inspect.Store (Place (..), Status (..), InspectFinding (..), InspectStore (..))
 
--- | Where a new finding is, its rule (dropped when not a heading in vet.md),
+-- | Where a new finding is, its rule (dropped when not a heading in inspect.md),
 -- and its first status: Open (provisional) inside a changed unit of the
--- vetted file, else Elsewhere. FILE is the vetted file, TEXT its text now,
+-- inspected file, else Elsewhere. FILE is the inspected file, TEXT its text now,
 -- UNITS its units, CHANGED the changed unit names.
 place :: Steering -> FilePath -> Text -> [Named] -> Set Text -> RawFinding -> (Place, Maybe Text, Status)
 place st file text units changed f = (Place (rfFile f) (namedName <$> unit) (rfLines f) fp (fst . namedLines <$> unit), rule, status)
@@ -60,7 +60,7 @@ place st file text units changed f = (Place (rfFile f) (namedName <$> unit) (rfL
     rule = rfRule f >>= resolveRule st
     status = if sameFile && not (null overlapping) then Open else Elsewhere
 
--- | A path vet may read and send on (to Jev, to the finder): relative, inside
+-- | A path inspect may read and send on (to Jev, to the finder): relative, inside
 -- the root, not `.env*`, not under a fence (the plans' `not_evidence`, the
 -- plans directory, `.olifant`).
 readablePath :: [FilePath] -> FilePath -> Bool
@@ -87,7 +87,7 @@ data Match = New | Merge | Drop
 
 -- | What a new finding does when Jev says it is the same problem as a
 -- stored one (the design's step-4 table); UNIT is the new finding's unit name.
-matchStored :: VetFinding -> VetFinding -> Text -> Match
+matchStored :: InspectFinding -> InspectFinding -> Text -> Match
 matchStored _ stored unit = case vfStatus stored of
   Open -> Merge
   Waiting -> Merge
@@ -102,7 +102,7 @@ matchStored _ stored unit = case vfStatus stored of
 
 -- | The stored findings worth asking Jev about: same file, same rule, or a
 -- cited line in common.
-samePairs :: VetStore -> RawFinding -> Place -> [VetFinding]
+samePairs :: InspectStore -> RawFinding -> Place -> [InspectFinding]
 samePairs vs f pl = filter near (vsFindings vs)
   where
     near g =
@@ -129,7 +129,7 @@ sameProblem a b codeA codeB =
     }
 
 -- | Jev's nitpick question (1a's wording), with the cited rule's text, or
--- the whole Rules section when the finding cites none; vet.md's two
+-- the whole Rules section when the finding cites none; inspect.md's two
 -- sections replace the criteria.
 nitpick :: Steering -> RawFinding -> Text -> Question
 nitpick st f code =

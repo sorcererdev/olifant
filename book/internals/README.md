@@ -7,7 +7,7 @@ How Olifant works, so you can change it. Chapters 1 to 6 are written; the rest a
 3. [Plans: the loop between a markdown file and the tree](03-plans.md): the parser, anchors and fingerprints, errands (`validate`, `do`), the claim pass (claims, steps, answers, web), the reconcile (facts and readings, Jev and the ladder), the `do` review, the journal, telemetry
 4. [Steered conjure](04-conjure.md): one conjure end to end, rounds, Jev's question and the policy before it, the model ladder, pause and resume, the wire and the port method, the `[conjure]` shapes and the floor on Haskell and Rust, `ConjureNeutralSpec`
 5. [How a language is described](05-languages.md): language, toolchain and pack files layered shipped, pack, project; which engine code reads each key; doctor's capability table; the no-language-branches rule and `NeutralSpec`
-6. [Vet: the checker on code](06-vet.md): the `Olifant.Vet.*` modules, one pass end to end (`changedOf`, the screen, `packUnits` and the caps, `place`, `matchStored`, the nitpick filter, `citationsOk`, `checkWith`), the store and `mergeInto`, the seam with plans, the replay gate
+6. [Inspect: the checker on code](06-inspect.md): the `Olifant.Inspect.*` modules, one pass end to end (`changedOf`, the screen, `packUnits` and the caps, `place`, `matchStored`, the nitpick filter, `citationsOk`, `checkWith`), the store and `mergeInto`, the seam with plans, the replay gate
 7. The template engine: `{= … =}`, filters, exemplars (planned)
 8. From generator to plan: `Compose` and `Planner` (planned)
 9. Anchors: phrases, resolution, and the ast-grep adapter (planned)

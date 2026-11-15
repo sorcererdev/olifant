@@ -1,14 +1,14 @@
-module Olifant.Vet.SteeringSpec (spec) where
+module Olifant.Inspect.SteeringSpec (spec) where
 
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
-import Olifant.Vet.Steering
+import Olifant.Inspect.Steering
 import Test.Hspec
 
 spec :: Spec
-spec = describe "Olifant.Vet.Steering" $ do
+spec = describe "Olifant.Inspect.Steering" $ do
   it "reads the 1a file" $ do
-    st <- steering <$> TIO.readFile "src/Olifant/Vet/testdata/bistro-vet.md"
+    st <- steering <$> TIO.readFile "src/Olifant/Inspect/testdata/bistro-inspect.md"
     length (stRules st) `shouldBe` 13
     fst <$> take 1 (stRules st) `shouldBe` ["Commands and queries go through ports (must)"]
     stNitpick st `shouldBe` Nothing
@@ -31,4 +31,4 @@ spec = describe "Olifant.Vet.Steering" $ do
     stNitpick st `shouldBe` Just "only typos"
     stWorth st `shouldBe` Just "anything that breaks"
   it "noSteering is empty" $
-    (stText noSteering, stRules noSteering, steeringPath) `shouldBe` ("", [], ".olifant/vet.md")
+    (stText noSteering, stRules noSteering, steeringPath) `shouldBe` ("", [], ".olifant/inspect.md")

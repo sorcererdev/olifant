@@ -894,8 +894,8 @@ tallied t0 (r, cost) = case r of
 checkSentence :: ServerState -> Project -> PlansConfig -> (PlansConfig -> Checker) -> Bool -> UTCTime -> FilePath -> CheckAsk -> Sentence -> IO (Either Failure CheckRecord, Double)
 checkSentence = checkWith "check"
 
--- | 'checkSentence' with the errand's verb named: vet's claim checks log
--- `vet-check`, and only `check` moves the plans' estimates.
+-- | 'checkSentence' with the errand's verb named: inspect's claim checks log
+-- `inspect-check`, and only `check` moves the plans' estimates.
 checkWith :: Text -> ServerState -> Project -> PlansConfig -> (PlansConfig -> Checker) -> Bool -> UTCTime -> FilePath -> CheckAsk -> Sentence -> IO (Either Failure CheckRecord, Double)
 checkWith verb s p cfg checkerFor auto now plan ask x
   | not (isCascade cfg) = attempt (pcCheckModel cfg) >>= \a -> finish [a] False

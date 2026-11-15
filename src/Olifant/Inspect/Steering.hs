@@ -1,8 +1,8 @@
--- | `.olifant/vet.md`, the steering file a project writes for vet: all of it
+-- | `.olifant/inspect.md`, the steering file a project writes for inspect: all of it
 -- goes to the finder; each heading under `## Rules` is a rule a finding can
 -- cite (its text is what Jev reads for that finding); `## A nitpick is` and
 -- `## Worth saying is` replace the two sides of Jev's nitpick question.
-module Olifant.Vet.Steering
+module Olifant.Inspect.Steering
   ( Steering (..)
   , steering
   , noSteering
@@ -25,7 +25,7 @@ data Steering = Steering
   deriving stock (Eq, Show)
 
 steeringPath :: FilePath
-steeringPath = ".olifant/vet.md"
+steeringPath = ".olifant/inspect.md"
 
 noSteering :: Steering
 noSteering = Steering "" [] Nothing Nothing

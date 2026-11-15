@@ -18,11 +18,11 @@ The change as a diff (tests included):
 +y
 
 The project's steering file, which holds the rules this project keeps:
-<vet>
+<inspect>
 ## Rules
 ### A
 no
-</vet>
+</inspect>
 
 Findings already reported on these files, which you must not raise again:
 - rule r at src/a.py:4
