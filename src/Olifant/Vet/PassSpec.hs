@@ -23,6 +23,9 @@ import Olifant.Server.Checker (recordedChecker)
 import Olifant.Server.State (ServerState (..), newServerState, projectFor)
 import Olifant.Server.Unit (fingerprint)
 import Olifant.Vet.Pass
+import Olifant.Decide (Decider (..), Question (..))
+import Olifant.Server.Errand (RunFailure (..))
+import Olifant.Server.Errand qualified as E
 import Olifant.Vet.Find (recordedFinder)
 import Olifant.Vet.Store
 import Olifant.Workspace (Workspace)
@@ -48,6 +51,12 @@ answers kvs = TE.decodeUtf8 (BL.toStrict (encode (object ["answers" .= object [K
 -- | Recorded replies by key.
 replies :: [(Text, Value)] -> Text
 replies kvs = TE.decodeUtf8 (BL.toStrict (encode (object ["replies" .= object [K.fromText k .= v | (k, v) <- kvs]])))
+
+-- | A find reply with findings in other files: (file, (kind, lines, statement, rule, evidence lines)).
+findReplyIn :: [(FilePath, (Text, (Int, Int), Text, Text, (Int, Int)))] -> Value
+findReplyIn fs =
+  String . TE.decodeUtf8 . BL.toStrict . encode $
+    object ["findings" .= [object ["kind" .= k, "file" .= f, "lines" .= [a, z], "statement" .= st, "rule" .= r, "evidence" .= [object ["file" .= f, "lines" .= [ea, ez]]]] | (f, (k, (a, z), st, r, (ea, ez))) <- fs], "open" .= ([] :: [Value])]
 
 -- | A find reply with findings: (kind, lines, statement, rule, evidence lines in the file).
 findReply :: [(Text, (Int, Int), Text, Text, (Int, Int))] -> [(Text, Text)] -> Value
@@ -258,6 +267,43 @@ spec = describe "Olifant.Vet.Pass" $ do
     length <$> asked (eFinds e) >>= (`shouldBe` 1)
     vs <- eStore e
     (length (filter (== Open) (statuses vs)), length (filter (== Waiting) (statuses vs))) `shouldBe` (3, 0)
+  it "(C1) a finding naming .env or a fenced file never sends that file's text to Jev" $ withVet "" edit1 $ \e -> do
+    TIO.writeFile (eDir e </> ".env") "SECRET=hunter2\n"
+    createDirectoryIfMissing True (eDir e </> "docs")
+    TIO.writeFile (eDir e </> "docs/notes.txt") "FENCED=swordfish\n"
+    seen <- newIORef []
+    let capture d = d {vdDecider = (vdDecider d) {weigh = \q -> modifyIORef' seen (++ map snd (qContext q)) >> weigh (vdDecider d) q}}
+        envFinding f = ("assumption", (1, 1), "It relies on a value in " <> T.pack f <> ".", "", (1, 1))
+    TIO.writeFile (eFinds e) (replies [("src/vetme.py:f", findReplyIn [(f, envFinding f) | f <- [".env", "docs/notes.txt"]])])
+    _ <- ePassWith e capture (eDir e </> file)
+    TIO.writeFile (eDir e </> file) edit2
+    _ <- ePassWith e capture (eDir e </> file)
+    sent <- T.concat <$> readIORef seen
+    (T.isInfixOf "hunter2" sent, T.isInfixOf "swordfish" sent) `shouldBe` (False, False)
+  it "(M3) a file under the plans' fences is not vetted" $ withVet "" edit1 $ \e -> do
+    createDirectoryIfMissing True (eDir e </> "docs")
+    TIO.writeFile (eDir e </> "docs/tool.py") "def h():\n    return 1\n"
+    o <- ePassOn e (eDir e </> "docs/tool.py")
+    o `shouldSatisfy` \case VetSkipped _ -> True; _ -> False
+  it "(I1) Jev not answering: the pass records nothing, the units stay unvetted" $ withVet "" edit1 $ \e -> do
+    TIO.writeFile (eAnswers e) "{\"answers\": {}}"
+    TIO.writeFile (eFinds e) (replies [("src/vetme.py:f", findReply [conv] [])])
+    o <- ePass e
+    o `shouldSatisfy` \case VetSkipped _ -> True; _ -> False
+    doesFileExist (eDir e </> vetStorePath) >>= (`shouldBe` False)
+  it "(I1) Jev silent on the same-problem question: no new finding beside the stored one" $ withVet "" edit1 $ \e -> do
+    TIO.writeFile (eFinds e) (replies [("src/vetme.py:f", findReply [conv] [])])
+    _ <- ePass e
+    TIO.writeFile (eAnswers e) (answers [("stops-early", False), ("nitpick", False)])
+    TIO.writeFile (eFinds e) (replies [("src/vetme.py:f", findReply [("convention", (2, 2), "f adds two, which the rule forbids.", "A", (1, 2))] [])])
+    TIO.writeFile (eDir e </> file) edit2
+    _ <- ePass e
+    length . vsFindings <$> eStore e >>= (`shouldBe` 1)
+  it "(I3) a find call that fails is charged its estimate, and the day counts it" $ withVet "" edit1 $ \e -> do
+    o <- ePassWith e (\d -> d {vdFinder = \_ -> pure (Left (RunFailure E.Timeout "timed out" Nothing))}) (eDir e </> file)
+    o `shouldSatisfy` \case VetDone {voSpent = x} -> x == 0.04; _ -> False
+    t <- TIO.readFile (eDir e </> ".olifant/state/errands.jsonl")
+    t `shouldSatisfy` T.isInfixOf "\"cost\":4.0e-2"
   it "a fingerprint that moves during the pass drops its findings" $ withVet "" edit1 $ \e -> do
     TIO.writeFile (eFinds e) (replies [("src/vetme.py:f", object ["text" .= findReply [conv] [], "delay" .= (1 :: Double)])])
     void . forkIO $ threadDelay 300000 >> TIO.writeFile (eDir e </> file) edit2

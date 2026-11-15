@@ -122,7 +122,9 @@ uint32_t ots_error_rows(const TSNode *root, uint32_t *out, uint32_t cap) {
 static int ots_quiet(TSNode c) {
   const char *t = ts_node_type(c);
   if (strstr(t, "comment") || strstr(t, "string")) return 1;
-  return ts_node_named_child_count(c) == 1 && strstr(ts_node_type(ts_node_named_child(c, 0)), "string") != NULL;
+  /* a lone string as an expression (a docstring), not a return or a yield of one */
+  return strstr(t, "expression") && !strstr(t, "return") && !strstr(t, "yield") &&
+         ts_node_named_child_count(c) == 1 && strstr(ts_node_type(ts_node_named_child(c, 0)), "string") != NULL;
 }
 int ots_body_empty(const TSNode *root, uint32_t start, uint32_t end) {
   TSNode n = ts_node_named_descendant_for_byte_range(*root, start, end);

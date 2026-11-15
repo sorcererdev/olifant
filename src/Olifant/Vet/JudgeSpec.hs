@@ -14,6 +14,7 @@ import Olifant.Plans.Sentences (Sentence (..))
 import Olifant.Server.Checker (CheckAsk (..), CheckMode (..))
 import Olifant.Server.CheckerSpec (checkerServer)
 import Olifant.Server.Errand (RunResult (..))
+import Olifant.Server.Claims (Failure (..))
 import Olifant.Server.Loop (checkWith)
 import Olifant.Server.State (ServerState (..))
 import Olifant.Server.Telemetry (ErrandRecord (..), Record (..), readRecords, recordsPath)
@@ -109,6 +110,9 @@ spec = describe "Olifant.Vet.Judge" $ do
     it "refuses .env" $ bad [(".env", (1, 1))]
     it "refuses a first line past the end of the file" $ bad [("src/a.py", (50, 60))]
     it "clamps an end line past the end of the file" $ check [("src/models.py", (25, 999))] >>= (`shouldSatisfy` either (const False) (not . null))
+  describe "claimVerdict" $
+    it "(I5) a check that failed leaves the finding waiting, to be verified again" $
+      claimVerdict (Left (Failure "cancelled" (UTCTime (fromGregorian 2026 11 15) 0))) `shouldBe` Waiting
   describe "checkWith" $
     it "logs vet-check and leaves the plans' estimates" $ do
       (s, p) <- checkerServer

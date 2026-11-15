@@ -15,12 +15,12 @@ module Olifant.Vet.Pass
   ) where
 
 import Control.Applicative ((<|>))
-import Control.Exception (SomeException, try)
+import Control.Exception (Exception, SomeException, handle, throwIO, try)
 import Control.Monad (filterM, foldM)
 import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.List (sortOn)
 import Data.Map.Strict qualified as M
-import Data.Maybe (fromMaybe, listToMaybe)
+import Data.Maybe (fromMaybe, isJust, listToMaybe)
 import Data.Ord (Down (..))
 import Data.Set (Set)
 import Data.Set qualified as S
@@ -30,13 +30,14 @@ import Data.Time (Day, TimeZone, UTCTime, localDay, utcToLocalTime)
 import Olifant.App (Ports (..), Project (..))
 import Olifant.Catalog (Catalog (..), PlansConfig (..), VetConfig (..))
 import Olifant.Decide (Answer (No, Yes), Confidence (..), Decider (..), Question (..))
+import Olifant.Decide qualified as D
 import Olifant.Glob (matchesGlob)
 import Olifant.Language (Language (..))
 import Olifant.Language.Adapter (languageFor)
 import Olifant.Plans (Kind (..))
 import Olifant.Plans.Sentences (Sentence (..))
 import Olifant.Rules (Finding (..))
-import Olifant.Server.Checker (CheckAsk (..), CheckMode (..), Checker, fileHash)
+import Olifant.Server.Checker (CheckAsk (..), CheckMode (..), Checker, fences, fileHash)
 import Olifant.Server.Errand (RunResult (..), Status (..))
 import Olifant.Server.Errand qualified as E
 import Olifant.Server.Fixes (findingsFor)
@@ -139,9 +140,19 @@ pYes (a, _) = case a of
   No (Confidence c) -> 1 - c
   _ -> 0
 
+-- | Jev gave no answer (a failure, a timeout, no key): vet does not run on a guess.
+data JevSilent = JevSilent
+  deriving stock (Show)
+
+instance Exception JevSilent
+
 vetPass :: Cancel -> ServerState -> Project -> VetDeps -> FilePath -> IO VetOutcome
-vetPass _token s p deps path
+vetPass token s p deps path = handle (\JevSilent -> pure (VetSkipped "Jev did not answer")) (vetPassOn token s p deps path)
+
+vetPassOn :: Cancel -> ServerState -> Project -> VetDeps -> FilePath -> IO VetOutcome
+vetPassOn _token s p deps path
   | any (`matchesGlob` rel) (vcExclude cfg) = pure (VetSkipped "excluded")
+  | not (readablePath fenced rel) = pure (VetSkipped "fenced")
   | otherwise =
       readVetStore files root >>= \case
         Left why -> pure (VetSkipped ("the vet store does not read: " <> why))
@@ -160,7 +171,11 @@ vetPass _token s p deps path
     ports = ssPorts s
     files = pFiles ports
     rel = normalisePath (makeRelative root path)
-    d = vdDecider deps
+    fenced = fences pcfg
+    -- every Jev question of the pass: no answer stops the pass, with no record
+    weighed q = weigh (vdDecider deps) q >>= \case
+      (D.Unsure, _) -> throwIO JevSilent
+      a -> pure a
 
     withUnits store0 lang text units = do
       st <- maybe noSteering steering <$> readText files (root </> steeringPath)
@@ -183,7 +198,7 @@ vetPass _token s p deps path
       if e || t || m
         then pure False
         else do
-          a <- weigh d (stopsEarly (langName lang) rel (cut text n) (headerOf text units n) facts)
+          a <- weighed (stopsEarly (langName lang) rel (cut text n) (headerOf text units n) facts)
           pure (not (unfinished facts (pYes a)))
 
     find st store0 lang text units changedNames finished = do
@@ -211,9 +226,13 @@ vetPass _token s p deps path
                       let ask = FindAsk pack diff (stText st) reportedText (openOn names)
                       vdOnFind deps [(fuName u, fingerprint text (fuLines u)) | u <- pack]
                       r <- vdFinder deps ask
-                      let cost = either (const 0) (fromMaybe est . rrCost) r
+                      -- an unpriced answer, a timeout or a failed session is charged its estimate
+                      let cost = case r of
+                            Right rr -> fromMaybe est (rrCost rr)
+                            Left fl | E.rfStatus fl == E.Timeout || isJust (E.rfSession fl) -> est
+                            Left _ -> 0
                           parsed = either (Left . E.rfWhy) (parseFind . rrText) r
-                      logFind now pack r parsed
+                      logFind now pack r parsed cost
                       pure (spent + cost, cappedNames, done ++ either (const []) (\reply -> [(names, reply)]) parsed)
           )
           (0, [], [])
@@ -237,11 +256,11 @@ vetPass _token s p deps path
               let cands = [c | c <- samePairs vs raw' pl, vfStatus c `notElem` [Resolved, Gone]]
               match <- firstM cands $ \c -> do
                 codeB <- (`codeAt` fst (plLines (vfPlace c))) <$> textOf (plFile (vfPlace c))
-                a <- weigh d (sameProblem (findingText (rfKind raw) (rfFile raw) (fst (rfLines raw)) rule (rfStatement raw)) (findingText (vfKind c) (plFile (vfPlace c)) (fst (plLines (vfPlace c))) (vfRule c) (vfStatement c)) codeA codeB)
+                a <- weighed (sameProblem (findingText (rfKind raw) (rfFile raw) (fst (rfLines raw)) rule (rfStatement raw)) (findingText (vfKind c) (plFile (vfPlace c)) (fst (plLines (vfPlace c))) (vfRule c) (vfStatement c)) codeA codeB)
                 pure (pYes a >= sameCut)
               let nitpickOf r code = do
                     let q = nitpick st r code
-                    a <- weigh d q
+                    a <- weighed q
                     pure (keepOf a, askedHash q pl)
               case match of
                 Just c -> case matchStored (newF Nothing Open Nothing) c unitName of
@@ -321,7 +340,7 @@ vetPass _token s p deps path
         if Just h == vfAskedOn c
           then pure c
           else do
-            keep <- keepOf <$> weigh d q
+            keep <- keepOf <$> weighed q
             pure c {vfKeep = Just keep, vfAskedOn = Just h, vfStatus = if keep >= vcCut cfg then Waiting else Withheld}
       status | status `elem` [Refuted, Unsure] -> do
         prints <- citationsOk s p pcfg (rawOf c)
@@ -353,7 +372,7 @@ vetPass _token s p deps path
                   pure f {vfPrints = prints, vfStatus = claimVerdict res, vfVerdict = Just verdictWord, vfCost = vfCost f + cost}
           | otherwise -> pure f {vfPrints = prints, vfStatus = Open}
 
-    logFind now pack r parsed =
+    logFind now pack r parsed charged =
       let whole = either (const Nothing) Just r
           (status, why) = case (r, parsed) of
             (Left fl, _) -> (E.rfStatus fl, Just (E.rfWhy fl))
@@ -364,13 +383,13 @@ vetPass _token s p deps path
               { erId = errandId now "vet" rel 0 (whole >>= rrSession), erAt = now, erVerb = "vet", erPlan = rel, erRow = 0
               , erSection = T.intercalate "," (map fuName pack), erBranch = Nothing, erModel = vcFindModel cfg, erStatus = status, erWhy = why
               , erSession = whole >>= rrSession, erSeconds = rrSeconds <$> whole, erTurns = whole >>= rrTurns, erTokens = whole >>= rrTokens
-              , erCost = whole >>= rrCost, erModels = maybe [] rrModels whole, erPromptChars = 0, erGrounded = 0
+              , erCost = if charged > 0 then Just charged else Nothing, erModels = maybe [] rrModels whole, erPromptChars = 0, erGrounded = 0
               , erBlocks = 0, erLines = 0, erDropped = 0, erUnresolved = 0, erChanged = 0, erDenials = maybe 0 rrDenials whole
               , erParent = Nothing, erAuto = True, erMode = Just "find", erVerdict = either (const Nothing) (Just . T.pack . show . length . frFindings) parsed, erWeb = False, erEscalated = False }
 
     memoText = do
       ref <- newIORef M.empty
-      pure $ \f -> do
+      pure $ \f -> if not (readablePath fenced f) then pure "" else do
         m <- readIORef ref
         case M.lookup f m of
           Just t -> pure t
