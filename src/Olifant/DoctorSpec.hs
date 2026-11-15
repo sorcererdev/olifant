@@ -9,7 +9,7 @@ import Olifant.Doctor
 import Olifant.Evidence (Evidence (..), Proof (..))
 import Olifant.Language (Grammar (..), Language (..), parseLanguage, shippedLanguage)
 import Olifant.Language.Grammar (GrammarFailure (..), GrammarInfo (..))
-import Olifant.Catalog (PlansConfig (..), defaultPlans)
+import Olifant.Catalog (PlansConfig (..), VetConfig (..), defaultPlans, defaultVet)
 import Olifant.Model (Backend (..), ModelConfig (..), defaultModelConfig)
 import Test.Hspec
 
@@ -22,7 +22,7 @@ local :: ModelConfig
 local = defaultModelConfig {mcDefault = Just "local", mcBackends = [("local", OpenAICompatible "http://localhost:11434/v1" "qwen3-coder:30b")]}
 
 input :: ModelConfig -> DoctorInput
-input m = DoctorInput (Just "/proj") ["rust-htmx"] [rust] [] [] m Nothing defaultPlans [] False
+input m = DoctorInput (Just "/proj") ["rust-htmx"] [rust] [] [] m Nothing defaultPlans [] False defaultVet
 
 -- | The checks but the capability rows (`<lang>: …`) and the plans runner's.
 core :: [Check] -> [Check]
@@ -78,13 +78,13 @@ spec = describe "olifant doctor (spec §4.7)" $ do
     statusOf "model" (runIdentity (doctor (ports ["ast-grep", "cargo"] (Left "must not be called") ["MY_KEY"]) (input claude))) `shouldBe` Just Ok
   it "(c) a check run through `env VAR=… uv …` checks uv, with how to install it (Review Focus 3)" $ do
     let Right python = parseLanguage "python" "/p" (T.unlines ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-python\", rev = \"293fdc02038ee2bf0e2e206711b69c90ac0d413f\" }", "[check]", "preset = \"pyright\""])
-        cs = runIdentity (doctor (ports ["ast-grep", "env"] (Right ()) []) (DoctorInput (Just "/proj") ["python-htmx"] [python] [] [] local Nothing defaultPlans [] False))
+        cs = runIdentity (doctor (ports ["ast-grep", "env"] (Right ()) []) (DoctorInput (Just "/proj") ["python-htmx"] [python] [] [] local Nothing defaultPlans [] False defaultVet))
         [c] = [c' | c' <- cs, checkName c' == "check tool uv (python)"]
     checkStatus c `shouldBe` Bad
     checkFix c `shouldSatisfy` maybe False ("brew install uv" `T.isInfixOf`)
   it "(f) a language with [test] gets a test runner line: the program found, and where its tests live" $ do
     let Right python = parseLanguage "python" "/p" (T.unlines ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-python\", rev = \"293fdc02038ee2bf0e2e206711b69c90ac0d413f\" }", "[test]", "preset = \"pytest\"", "tests_for = \"{= dir =}/{= stem =}__test.py\""])
-        run exes = runIdentity (doctor (ports exes (Right ()) []) (DoctorInput (Just "/proj") ["python-htmx"] [python] [] [] local Nothing defaultPlans [] False))
+        run exes = runIdentity (doctor (ports exes (Right ()) []) (DoctorInput (Just "/proj") ["python-htmx"] [python] [] [] local Nothing defaultPlans [] False defaultVet))
         [ok] = [c | c <- run ["ast-grep", "uv"], checkName c == "test runner uv (python)"]
         [bad] = [c | c <- run ["ast-grep"], checkName c == "test runner uv (python)"]
     checkStatus ok `shouldBe` Ok
@@ -95,7 +95,7 @@ spec = describe "olifant doctor (spec §4.7)" $ do
   it "(f2) the test runner row names the command candidate chosen, and why" $ do
     let Right python = parseLanguage "python" "/p" (T.unlines ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-python\", rev = \"293fdc02038ee2bf0e2e206711b69c90ac0d413f\" }", "[test]", "preset = \"pytest\"", "tests_for = \"{= dir =}/{= stem =}__test.py\""])
         withFiles fs = (ports ["ast-grep", "pytest", "/proj/.venv/bin/pytest"] (Right ()) []) {dpRead = \f -> Identity (if f `elem` fs then Just "" else Nothing)}
-        rows fs = [(checkName c, checkStatus c, checkDetail c) | c <- runIdentity (doctor (withFiles fs) (DoctorInput (Just "/proj") [] [python] [] [] local Nothing defaultPlans [] False)), "test runner" `T.isPrefixOf` checkName c]
+        rows fs = [(checkName c, checkStatus c, checkDetail c) | c <- runIdentity (doctor (withFiles fs) (DoctorInput (Just "/proj") [] [python] [] [] local Nothing defaultPlans [] False defaultVet)), "test runner" `T.isPrefixOf` checkName c]
     case rows ["/proj/.venv/bin/pytest"] of
       [(name, st, detail)] -> do
         (name, st) `shouldBe` ("test runner .venv/bin/pytest (python)", Ok)
@@ -109,13 +109,13 @@ spec = describe "olifant doctor (spec §4.7)" $ do
   it "the hspec runner row says which it found" $ do
     hs <- shippedLanguage "haskell" []
     let withCabal t = (ports ["ast-grep", "cabal", "env"] (Right ()) []) {dpRead = \f -> Identity (if f == "/proj/p.cabal" then Just t else Nothing), dpList = \_ -> Identity ["p.cabal"]}
-        row t = [checkDetail c | c <- runIdentity (doctor (withCabal t) (DoctorInput (Just "/proj") [] [hs] [] [] local Nothing defaultPlans [] False)), "test runner" `T.isPrefixOf` checkName c]
+        row t = [checkDetail c | c <- runIdentity (doctor (withCabal t) (DoctorInput (Just "/proj") [] [hs] [] [] local Nothing defaultPlans [] False defaultVet)), "test runner" `T.isPrefixOf` checkName c]
     row "build-depends: hspec-junit-formatter" `shouldSatisfy` any (T.isInfixOf "hspec-junit-formatter found in p.cabal; format junit-xml")
     row "build-depends: hspec" `shouldSatisfy` any (T.isInfixOf "no hspec-junit-formatter in *.cabal or package.yaml")
   it "(f3) the check tool row names the [check] command candidate chosen, {= root =}/ dropped" $ do
     let Right python = parseLanguage "python" "/p" (T.unlines ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-python\", rev = \"293fdc02038ee2bf0e2e206711b69c90ac0d413f\" }", "[check]", "format = \"sarif\"", "command = [{ when = [\".venv/bin/ruff\"], command = [\"{= root =}/.venv/bin/ruff\", \"check\"] }, { command = [\"ruff\", \"check\"] }]"])
         withFiles fs = (ports ["ast-grep", "ruff", "/proj/.venv/bin/ruff"] (Right ()) []) {dpRead = \f -> Identity (if f `elem` fs then Just "" else Nothing)}
-        rows fs = [(checkName c, checkStatus c, checkDetail c) | c <- runIdentity (doctor (withFiles fs) (DoctorInput (Just "/proj") [] [python] [] [] local Nothing defaultPlans [] False)), "check tool" `T.isPrefixOf` checkName c]
+        rows fs = [(checkName c, checkStatus c, checkDetail c) | c <- runIdentity (doctor (withFiles fs) (DoctorInput (Just "/proj") [] [python] [] [] local Nothing defaultPlans [] False defaultVet)), "check tool" `T.isPrefixOf` checkName c]
     case rows ["/proj/.venv/bin/ruff"] of
       [(name, st, detail)] -> do
         (name, st) `shouldBe` ("check tool .venv/bin/ruff (python)", Ok)
@@ -126,9 +126,23 @@ spec = describe "olifant doctor (spec §4.7)" $ do
       other -> expectationFailure (show other)
   it "(g) a language without [test] gets no test runner line" $
     [checkName c | c <- runIdentity (doctor (ports ["ast-grep", "cargo"] (Right ()) []) (input local)), "test runner" `T.isPrefixOf` checkName c] `shouldBe` []
+  describe "the vet row" $ do
+    let jevModel = local {mcBackends = mcBackends local ++ [("jev", Jev "jev-1.14.0" "JEV_API_KEY")]}
+        vetOn = defaultVet {vcEnabled = True}
+        withVetFiles fs = (ports ["ast-grep"] (Right ()) []) {dpRead = \f -> pure (lookup f fs)}
+        vetRow fs decide vcfg = [(checkStatus c, checkDetail c, checkFix c) | c <- runIdentity (doctor (withVetFiles fs) (DoctorInput (Just "/proj") [] [] [] [] jevModel decide defaultPlans [] False vcfg)), checkName c == "vet"]
+    it "disabled: no row" $ vetRow [] (Just "jev") defaultVet `shouldBe` []
+    it "on with Jev and a vet.md: ok, its rules counted" $
+      vetRow [("/proj/.olifant/vet.md", "## Rules\n### A\nx\n### B\ny\n")] (Just "jev") vetOn `shouldBe` [(Ok, "on: Jev jev, vet.md with 2 rules", Nothing)]
+    it "on with Jev and no vet.md: ok, no rules" $
+      vetRow [] (Just "jev") vetOn `shouldBe` [(Ok, "on: Jev jev, no vet.md (no rules)", Nothing)]
+    it "on without Jev: a warning, vet does not run" $
+      vetRow [] Nothing vetOn `shouldBe` [(Warn, "on, but no Jev backend is configured: vet does not run", Just "set [decide] model to a jev backend")]
+    it "a store that does not read: bad, vet is paused" $
+      map (\(st, d, _) -> (st, "vet is paused" `T.isSuffixOf` d)) (vetRow [("/proj/.olifant/state/vet/findings.json", "{\"version\": 9}")] (Just "jev") vetOn) `shouldBe` [(Bad, True)]
   it "reports a broken language adapter or generator as an error" $ do
     let broken = DoctorInput (Just "/proj") ["p"] [] [("p/languages/x.toml", "bad grammar")] [("p/gen", "unknown key")]
-        cs = runIdentity (doctor (ports ["ast-grep"] (Right ()) []) (broken local Nothing defaultPlans [] False))
+        cs = runIdentity (doctor (ports ["ast-grep"] (Right ()) []) (broken local Nothing defaultPlans [] False defaultVet))
     statusOf "language p/languages/x.toml" cs `shouldBe` Just Bad
     statusOf "generator p/gen" cs `shouldBe` Just Bad
   it "(e) checks that the recognition model ([recognize] model) is a configured backend" $ do
@@ -137,7 +151,7 @@ spec = describe "olifant doctor (spec §4.7)" $ do
     statusOf "recognize model" (run "local") `shouldBe` Just Ok
     statusOf "recognize model" (runIdentity (doctor (ports ["ast-grep", "cargo"] (Right ()) []) (input local))) `shouldBe` Nothing
   it "outside a project: config is an error" $
-    statusOf "config" (runIdentity (doctor (ports ["ast-grep"] (Right ()) []) (DoctorInput Nothing [] [] [] [] local Nothing defaultPlans [] False))) `shouldBe` Just Bad
+    statusOf "config" (runIdentity (doctor (ports ["ast-grep"] (Right ()) []) (DoctorInput Nothing [] [] [] [] local Nothing defaultPlans [] False defaultVet))) `shouldBe` Just Bad
   it "the plans runner: ok when found, with its timeout and do tools; an error with the fix when not" $ do
     let plans = defaultPlans {pcTimeout = 900, pcDoTools = ["Bash(cabal test*)"]}
         run exes = runIdentity (doctor (ports exes (Right ()) []) ((input local) {diPlans = plans}))

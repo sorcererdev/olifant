@@ -252,6 +252,7 @@ doctorChecks ports project run = do
       (catalogPlans cat)
       evidence
       run
+      (catalogVet cat)
   where
     cat = prCatalog project
 
