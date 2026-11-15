@@ -5,6 +5,7 @@
 -- plans' claim check for bugs and assumptions).
 module Olifant.Vet.Judge
   ( place
+  , resolveRule
   , Match (..)
   , matchStored
   , samePairs
@@ -54,8 +55,17 @@ place st file text units changed f = (Place (rfFile f) (namedName <$> unit) (rfL
       | otherwise = listToMaybe (sortOn (\n -> (not (n `elem` holding), width n)) overlapping) <|> listToMaybe (sortOn width holding)
     width n = let (a, z) = namedLines n in z - a
     fp = (\n -> fingerprint text (namedLines n)) <$> unit
-    rule = rfRule f >>= \r -> if isJust (ruleText st r) then Just r else Nothing
+    rule = rfRule f >>= resolveRule st
     status = if sameFile && not (null overlapping) then Open else Elsewhere
+
+-- | The heading a cited rule names, matched as 1a did: ignoring case, the
+-- cited text inside the heading or the heading inside it; the first wins.
+resolveRule :: Steering -> Text -> Maybe Text
+resolveRule st cited
+  | T.null c = Nothing
+  | otherwise = listToMaybe [name | (name, _) <- stRules st, let h = T.toLower name, c `T.isInfixOf` h || h `T.isInfixOf` c]
+  where
+    c = T.toLower (T.strip cited)
 
 data Match = New | Merge | Drop
   deriving stock (Eq, Show)

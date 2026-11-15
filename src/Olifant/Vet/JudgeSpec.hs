@@ -50,6 +50,11 @@ spec = describe "Olifant.Vet.Judge" $ do
     it "in another file it is elsewhere" $ do
       let (_, _, stt) = place st "src/a.py" text30 units (S.fromList ["f"]) (raw (12, 13)) {rfFile = "src/other.py"}
       stt `shouldBe` Elsewhere
+    it "a rule cited without its grade or in another case resolves to its heading (1a's match)" $ do
+      let st' = steering "## Rules\n### Commands go through ports (must)\nx\n"
+          (_, r1, _) = place st' "src/a.py" text30 units (S.fromList ["f"]) (raw (12, 13)) {rfRule = Just "commands go through ports"}
+          (_, r2, _) = place st' "src/a.py" text30 units (S.fromList ["f"]) (raw (12, 13)) {rfRule = Just "Rule: Commands go through ports (must), see vet.md"}
+      (r1, r2) `shouldBe` (Just "Commands go through ports (must)", Just "Commands go through ports (must)")
     it "a rule that is not a heading is removed" $ do
       let (_, r1, _) = place st "src/a.py" text30 units (S.fromList ["f"]) (raw (12, 13)) {rfRule = Just "No such rule"}
           (_, r2, _) = place st "src/a.py" text30 units (S.fromList ["f"]) (raw (12, 13)) {rfRule = Just "A"}
