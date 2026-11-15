@@ -34,7 +34,7 @@ import System.Exit (ExitCode (..))
 import System.Process (callProcess, proc, readCreateProcessWithExitCode)
 import Data.Text.IO qualified as TIO
 import Control.Monad.IO.Class (liftIO)
-import Data.List (isInfixOf, isSuffixOf, sort, sortOn)
+import Data.List (isInfixOf, isPrefixOf, isSuffixOf, sort, sortOn)
 import Data.Ord (Down (..))
 import Data.Time (UTCTime (..), diffUTCTime, fromGregorian, getCurrentTime)
 import Olifant.Server.Fixes qualified as Fx
@@ -4609,3 +4609,48 @@ vetSpec = describe "vet on save" $ do
         save d
         shownMessage
       m `shouldSatisfy` T.isPrefixOf "olifant vet: today's cap ($0.00) is reached; 2 units wait"
+  let vetted act = withVetOn (jev <> vetOn "") $ \ports dir f cfg -> fst <$> inProcessWithConfig cfg ports dir (do
+        d <- openDoc vetme "python"
+        save d
+        _ <- waitFor (doesFileExist (f <> ".asked"))
+        refreshed
+        act dir d)
+      vetDiags d = filter (\x -> x ^. L.source == Just "olifant-vet") <$> pullDiagnostics d
+      titlesAt d l = do
+        as <- getCodeActions d (Range (Position l 0) (Position l 0))
+        pure [a ^. L.title | InR a <- as, a ^. L.title `elem` ["Show why", "Show code", "Dismiss here", "Dismiss everywhere"]]
+      actionAt d l t = do
+        as <- getCodeActions d (Range (Position l 0) (Position l 0))
+        pure (head [a | InR a <- as, a ^. L.title == t])
+  it "(f) the finding is pulled as an olifant-vet hint on its first line" $ do
+    ds <- vetted (\_ d -> vetDiags d)
+    map (\x -> (x ^. L.range . L.start . L.line, x ^. L.code, x ^. L.severity)) ds `shouldBe` [(1, Just (InR "convention"), Just DiagnosticSeverity_Hint)]
+  it "(g) the four actions on the finding's line, none elsewhere" $ do
+    (here, there) <- vetted (\_ d -> (,) <$> titlesAt d 1 <*> titlesAt d 4)
+    (here, there) `shouldBe` (["Show why", "Show code", "Dismiss here", "Dismiss everywhere"], [])
+  it "(h) Dismiss here: no diagnostic, and the store says dismissed-here" $ do
+    (ds, store) <- vetted $ \dir d -> do
+      actionAt d 1 "Dismiss here" >>= executeCodeAction
+      _ <- refreshed
+      (,) <$> vetDiags d <*> liftIO (TIO.readFile (dir </> ".olifant/state/vet/findings.json"))
+    ds `shouldBe` []
+    store `shouldSatisfy` T.isInfixOf "\"dismissed-here\""
+  it "(i) Show why writes the why page, with the statement" $ do
+    page <- vetted $ \dir d -> do
+      actionAt d 1 "Show why" >>= executeCodeAction
+      let whyPages = filter ("why-" `isPrefixOf`) <$> listDirectory (dir </> ".olifant/state/vet")
+      _ <- waitFor (not . null <$> whyPages)
+      fs <- liftIO (listDirectory (dir </> ".olifant/state/vet"))
+      liftIO (TIO.readFile (dir </> ".olifant/state/vet" </> head [x | x <- fs, "why-" `isPrefixOf` x]))
+    page `shouldSatisfy` T.isInfixOf "f adds two."
+  it "(j) hover is what it was before the finding" $
+    withVetOn (jev <> vetOn "") $ \ports dir f cfg -> do
+      (before, after) <- fst <$> inProcessWithConfig cfg ports dir (do
+        d <- openDoc vetme "python"
+        h0 <- getHover d (Position 1 5)
+        save d
+        _ <- waitFor (doesFileExist (f <> ".asked"))
+        refreshed
+        h1 <- getHover d (Position 1 5)
+        pure (h0, h1))
+      after `shouldBe` before

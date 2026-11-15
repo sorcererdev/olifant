@@ -169,7 +169,10 @@ vetPass _token s p deps path
           vetted = M.findWithDefault S.empty rel (vsVetted store0)
           todo = [n | n <- changed, fpOf n `S.notMember` vetted, namedName n `S.notMember` vdSkip deps]
       finished <- filterM (screen lang text units) todo
-      if null finished
+      -- a waiting finding is verified when the margin has room, even with nothing new to find
+      let openHere = length [f | f <- vsFindings store0, plFile (vfPlace f) == rel, vfStatus f == Open, vfKind f `elem` vcKinds cfg]
+          room = openHere < vcMaxShown cfg && any (\f -> plFile (vfPlace f) == rel && vfStatus f == Waiting) (vsFindings store0)
+      if null finished && not room
         then pure (VetDone False False False 0)
         else find st store0 lang text units (S.fromList (map namedName changed)) finished
 
@@ -255,16 +258,25 @@ vetPass _token s p deps path
       let vs2 = vs1 {vsFindings = [if vfId f `S.member` resolvedIds && vfStatus f `elem` [Open, Waiting] then f {vfStatus = Resolved} else f | f <- vsFindings vs1]}
       -- verify: best kept first, until max_shown of this pass's have passed
       let waiting = sortOn (Down . fromMaybe 0 . vfKeep) [f | f <- vsFindings vs2, plFile (vfPlace f) == rel, vfStatus f == Waiting]
-      passedRef <- newIORef (0 :: Int)
+      -- this pass's new findings may take up to max_shown places; an older
+      -- waiting one is verified only while the margin has room
+      let oldIds0 = S.fromList [vfId f | f <- vsFindings store0, vfStatus f == Waiting]
+          openBefore = length [f | f <- vsFindings vs2, plFile (vfPlace f) == rel, vfStatus f == Open, vfKind f `elem` vcKinds cfg]
+      newPassedRef <- newIORef (0 :: Int)
+      openRef <- newIORef openBefore
       vs3 <-
         foldM
           ( \vs f -> do
-              passed <- readIORef passedRef
-              if passed >= vcMaxShown cfg
+              newPassed <- readIORef newPassedRef
+              openNow <- readIORef openRef
+              let isNew = vfId f `S.notMember` oldIds0
+              if (isNew && newPassed >= vcMaxShown cfg) || (not isNew && openNow >= vcMaxShown cfg)
                 then pure vs
                 else do
                   f' <- verify now records today spentRef cappedRef dayCappedRef f
-                  if vfStatus f' == Open && vfKind f' `elem` vcKinds cfg then modifyIORef' passedRef (+ 1) else pure ()
+                  if vfStatus f' == Open && vfKind f' `elem` vcKinds cfg
+                    then modifyIORef' openRef (+ 1) >> (if isNew then modifyIORef' newPassedRef (+ 1) else pure ())
+                    else pure ()
                   pure (replaceF f' vs)
           )
           vs2

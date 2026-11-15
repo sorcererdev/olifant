@@ -71,7 +71,9 @@ import Data.Time (Day, getCurrentTimeZone, localDay, utcToLocalTime)
 import Data.Unique (Unique, newUnique)
 import Olifant.Vet.Find (liveFinder, recordedFinder)
 import Olifant.Vet.Pass (VetDeps (..), VetOutcome (..), capNoticeDue, unitFingerprints, vetPass)
-import Olifant.Vet.Store (VetStore (..), readVetStore)
+import Olifant.Vet.Store (VetFinding (..), VetStore (..), dismiss, plLines, readVetStore, shownIn, updateVetStore)
+import Olifant.Vet.Margin (vetDiagnostics, whyText)
+import Olifant.Vet.Steering (noSteering, steering, steeringPath)
 import System.Directory (getHomeDirectory)
 import Olifant.Server.LoopTypes (Fact (..))
 import Olifant.Server.Stale (staleIn)
@@ -196,7 +198,7 @@ serverDefinition ports = do
       , doInitialize = \lspEnv req -> configure env (req ^. L.params . L.initializationOptions) >> pure (Right lspEnv)
       , staticHandlers = \_ -> guarded env (handlers env)
       , interpretHandler = \lspEnv -> Iso (runLspT lspEnv) liftIO
-      , options = defaultOptions {optTextDocumentSync = Just sync, optServerInfo = Just (ServerInfo "olifant" Nothing), optCompletionTriggerCharacters = Just ['@', ':'], optExecuteCommandCommands = Just ["olifant.doctor", "olifant.checkSentence", "olifant.answerSentence", "olifant.checkPlan", "olifant.showWhy", "olifant.showCode"]}
+      , options = defaultOptions {optTextDocumentSync = Just sync, optServerInfo = Just (ServerInfo "olifant" Nothing), optCompletionTriggerCharacters = Just ['@', ':'], optExecuteCommandCommands = Just ["olifant.doctor", "olifant.checkSentence", "olifant.answerSentence", "olifant.checkPlan", "olifant.showWhy", "olifant.showCode", "olifant.vetShowWhy", "olifant.vetDismiss"]}
       }
   where
     -- open/close and incremental changes; saves are noticed (regions)
@@ -470,6 +472,30 @@ handlers env =
             void (sendRequest SMethod_WindowShowDocument (ShowDocumentParams (filePathToUri (T.unpack file)) Nothing (Just True) (Just (Range at at))) (\_ -> pure ()))
             respond (Right (InR Null))
           _ -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "olifant.showCode needs a file and a line" Nothing))
+        -- vet's Show why: the finding's page, opened
+        "olifant.vetShowWhy" -> case req ^. L.params . L.arguments of
+          Just [String uri, String i] | Just path <- uriToFilePath (Uri uri) ->
+            liftIO (vetWhyFile env path i) >>= \case
+              Left why -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
+              Right file -> do
+                void (sendRequest SMethod_WindowShowDocument (ShowDocumentParams (filePathToUri file) Nothing (Just True) Nothing) (\_ -> pure ()))
+                respond (Right (InR Null))
+          _ -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "olifant.vetShowWhy needs a file's uri and a finding's id" Nothing))
+        -- vet's Dismiss here / everywhere; a freed place lets a waiting finding be verified
+        "olifant.vetDismiss" -> case req ^. L.params . L.arguments of
+          Just [String uri, String i, String w] | Just path <- uriToFilePath (Uri uri), w `elem` ["here", "everywhere"] ->
+            liftIO (vetContext env path) >>= \case
+              Just (p, _, _, Right _) -> do
+                r <- liftIO (updateVetStore (pFiles (envPorts env)) (prRoot p) (\vs -> (dismiss (w == "everywhere") i vs, ())))
+                case r of
+                  Left why -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
+                  Right () -> do
+                    void (sendRequest SMethod_WorkspaceDiagnosticRefresh Nothing (\_ -> pure ()))
+                    lspEnv <- getLspEnv
+                    liftIO (vetLater env lspEnv path)
+                    respond (Right (InR Null))
+              _ -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) "vet is not on for this file" Nothing))
+          _ -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "olifant.vetDismiss needs a file's uri, a finding's id, and here or everywhere" Nothing))
         other -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) ("no command " <> other) Nothing))
     , notificationHandler SMethod_WorkspaceDidChangeWorkspaceFolders (\_ -> pure ())
     , notificationHandler SMethod_WorkspaceDidChangeConfiguration (\_ -> pure ())
@@ -493,7 +519,7 @@ handlers env =
         let Range (Position from _) (Position to _) = req ^. L.params . L.range
         actions <- case uriToFilePath (req ^. L.params . L.textDocument . L.uri) of
           Nothing -> pure []
-          Just path -> liftIO (concat <$> sequence [fixActions env path (fromIntegral from + 1) (fromIntegral to + 1), holeActions env path (fromIntegral from + 1), cursorActions env path (req ^. L.params . L.range . L.start), newStepAction env path (req ^. L.params . L.range . L.start), excerptAction env path (req ^. L.params . L.context . L.only) (req ^. L.params . L.range . L.start), toggleAction env path (req ^. L.params . L.context . L.only) (req ^. L.params . L.range . L.start), refingerprintAction env path (req ^. L.params . L.range . L.start), sentenceActions env path (req ^. L.params . L.range . L.start)])
+          Just path -> liftIO (concat <$> sequence [fixActions env path (fromIntegral from + 1) (fromIntegral to + 1), holeActions env path (fromIntegral from + 1), cursorActions env path (req ^. L.params . L.range . L.start), newStepAction env path (req ^. L.params . L.range . L.start), excerptAction env path (req ^. L.params . L.context . L.only) (req ^. L.params . L.range . L.start), toggleAction env path (req ^. L.params . L.context . L.only) (req ^. L.params . L.range . L.start), refingerprintAction env path (req ^. L.params . L.range . L.start), sentenceActions env path (req ^. L.params . L.range . L.start), vetActions env path (req ^. L.params . L.range . L.start)])
         respond (Right (InL (map InR actions)))
     , -- planned on its own thread: a model fill or a test run takes seconds,
       -- and the server reads on meanwhile (other requests, progress)
@@ -1498,6 +1524,7 @@ diagnosticsOf env path = do
       atomicModifyIORef' (envPlanPrints env) (\m -> (M.insert path prints m, ()))
       pure (s', ds)
     (s', _) -> pure (s', []))
+  vet <- vetDiagnosticsFor env path
   let ls = T.splitOn "\n" text
       lineText n = fromMaybe "" (listToMaybe (drop (n - 1) ls))
       position (l, c) = let (l', c') = editorPosition (lineText l) (l, c) in Position (fromIntegral l') (fromIntegral c')
@@ -1508,6 +1535,7 @@ diagnosticsOf env path = do
       , Just sev <- [severityOf (fSeverity f)]
       ]
         ++ map (,Nothing) plan
+        ++ map (,Nothing) vet
     )
   where
     severityOf = \case
@@ -1861,6 +1889,56 @@ citationPlace env p cf = case cfEvidence cf of
 
 -- | *Show why*: `.olifant/state/why/<hash of the key>.md` holding the
 -- sentence, its verdict and why, and every citation; the file's path.
+-- | A source file's vet context (vet on, not a plan): its project, `[vet]`,
+-- its path from the root, and the store (Left when it does not read).
+vetContext :: Env -> FilePath -> IO (Maybe (Project, VetConfig, FilePath, Either T.Text VetStore))
+vetContext env path = withSnapshot env $ \s ->
+  projectFor path s >>= \case
+    (s', Just (root, p)) | not (isPlanPath p path), vcEnabled (catalogVet (prCatalog p)) -> do
+      st <- readVetStore (pFiles (ssPorts s')) root
+      pure (s', Just (p, catalogVet (prCatalog p), normalisePath (makeRelative root path), st))
+    (s', _) -> pure (s', Nothing)
+
+-- | The file's vet margin, as pulled diagnostics.
+vetDiagnosticsFor :: Env -> FilePath -> IO [Diagnostic]
+vetDiagnosticsFor env path =
+  vetContext env path >>= \case
+    Just (p, cfg, rel, Right store) -> do
+      units <- withSnapshot env (\s -> (s,) <$> unitFingerprints s p path)
+      pure (vetDiagnostics cfg units rel store)
+    _ -> pure []
+
+-- | On a line holding a shown vet finding: Show why, Show code, Dismiss here, Dismiss everywhere.
+vetActions :: Env -> FilePath -> Position -> IO [CodeAction]
+vetActions env path (Position l _) =
+  vetContext env path >>= \case
+    Just (p, cfg, rel, Right store) ->
+      let here = [f | f <- shownIn cfg rel store, fst (plLines (vfPlace f)) - 1 == fromIntegral l]
+          uri = getUri (filePathToUri path)
+          act title cmd args = CodeAction title (Just CodeActionKind_Empty) Nothing Nothing Nothing Nothing (Just (Command title cmd (Just args))) Nothing
+       in pure
+            [ a
+            | f <- take 1 here
+            , a <-
+                [act "Show why" "olifant.vetShowWhy" [toJSON uri, toJSON (vfId f)]]
+                  ++ [act "Show code" "olifant.showCode" [toJSON (prRoot p </> e), toJSON a0] | (e, (a0, _)) <- take 1 (vfEvidence f)]
+                  ++ [act "Dismiss here" "olifant.vetDismiss" [toJSON uri, toJSON (vfId f), String "here"], act "Dismiss everywhere" "olifant.vetDismiss" [toJSON uri, toJSON (vfId f), String "everywhere"]]
+            ]
+    _ -> pure []
+
+-- | Write a vet finding's *Show why* page (`.olifant/state/vet/why-<id>.md`).
+vetWhyFile :: Env -> FilePath -> T.Text -> IO (Either T.Text FilePath)
+vetWhyFile env path i =
+  vetContext env path >>= \case
+    Just (p, _, _, Right store) -> case [f | f <- vsFindings store, vfId f == i] of
+      f : _ -> do
+        st <- maybe noSteering steering <$> readText (pFiles (envPorts env)) (prRoot p </> steeringPath)
+        let file = prRoot p </> ".olifant/state/vet" </> "why-" <> T.unpack i <> ".md"
+        writeText (pFiles (envPorts env)) file (whyText st f)
+        pure (Right file)
+      [] -> pure (Left "no such finding")
+    _ -> pure (Left "vet is not on for this file")
+
 whyFile :: Env -> FilePath -> T.Text -> IO (Either T.Text FilePath)
 whyFile env path key =
   planContext env path >>= \case

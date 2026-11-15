@@ -246,6 +246,18 @@ spec = describe "Olifant.Vet.Pass" $ do
     vs <- eStore e
     (length (filter (== Open) (statuses vs)), length (filter (== Waiting) (statuses vs))) `shouldBe` (3, 1)
     length <$> asked (eChecks e) >>= (`shouldBe` 3)
+  it "room in the margin: the best waiting finding is verified with no find call" $ withVet "" edit1 $ \e -> do
+    let bug n = ("bug", (2, 2), "f is wrong in way " <> n <> ".", "", (1, 2))
+    TIO.writeFile (eAnswers e) (answers [("stops-early", False), ("nitpick", False), ("same", False)])
+    TIO.writeFile (eFinds e) (replies [("src/vetme.py:f", findReply (map bug ["one", "two", "three", "four"]) [])])
+    TIO.writeFile (eChecks e) (replies [("f is wrong in way " <> n <> ".", checkReply "right") | n <- ["one", "two", "three", "four"]])
+    _ <- ePass e
+    [i] <- map vfId . filter ((== Open) . vfStatus) . vsFindings <$> eStore e >>= pure . take 1
+    _ <- updateVetStore (eWs e) (eDir e) (\vs -> (dismiss False i vs, ()))
+    _ <- ePass e
+    length <$> asked (eFinds e) >>= (`shouldBe` 1)
+    vs <- eStore e
+    (length (filter (== Open) (statuses vs)), length (filter (== Waiting) (statuses vs))) `shouldBe` (3, 0)
   it "a fingerprint that moves during the pass drops its findings" $ withVet "" edit1 $ \e -> do
     TIO.writeFile (eFinds e) (replies [("src/vetme.py:f", object ["text" .= findReply [conv] [], "delay" .= (1 :: Double)])])
     void . forkIO $ threadDelay 300000 >> TIO.writeFile (eDir e </> file) edit2

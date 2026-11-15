@@ -196,6 +196,7 @@ library
     Olifant.Uncovered
     Olifant.Vet.Find
     Olifant.Vet.Judge
+    Olifant.Vet.Margin
     Olifant.Vet.Pass
     Olifant.Vet.Screen
     Olifant.Vet.Steering
@@ -443,6 +444,8 @@ test-suite spec
     Olifant.Vet.FindSpec
     Olifant.Vet.Judge
     Olifant.Vet.JudgeSpec
+    Olifant.Vet.Margin
+    Olifant.Vet.MarginSpec
     Olifant.Vet.Pass
     Olifant.Vet.PassSpec
     Olifant.Vet.Screen
