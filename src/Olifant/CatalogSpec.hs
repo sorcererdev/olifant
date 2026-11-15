@@ -102,7 +102,7 @@ spec = describe "catalog" $ do
     it "inspect defaults" $
       withCatalog [("/proj/.olifant/config.toml", "")] $ \_ cat -> do
         catalogInspect cat `shouldBe` defaultInspect
-        catalogInspect cat `shouldBe` InspectConfig False ["bug", "assumption", "convention"] "sonnet" 0.79 3 2 0.25 3.00 []
+        catalogInspect cat `shouldBe` InspectConfig False ["bug", "assumption", "convention"] "sonnet" 0.7 3 2 0.25 3.00 []
     it "inspect reads every key" $
       withCatalog [("/proj/.olifant/config.toml", "[inspect]\nenabled = true\nkinds = [\"bug\", \"design\"]\nfind_model = \"haiku\"\ncut = 0.5\nmax_shown = 5\nsettle = 1.5\npass_cost = 0.1\nday_cost = 1\nexclude = [\"gen/**\"]\n")] $ \_ cat ->
         catalogInspect cat `shouldBe` InspectConfig True ["bug", "design"] "haiku" 0.5 5 1.5 0.1 1 ["gen/**"]

@@ -74,7 +74,7 @@ holds. A finding whose unit is deleted is `gone`.
 | `enabled` | `false` | inspect runs on save in this project |
 | `kinds` | `["bug", "assumption", "convention"]` | kinds the margin shows (`design` is recorded, listed, not shown) |
 | `find_model` | `"sonnet"` | the find call's model (haiku missed a planted bug in 1a's measurements) |
-| `cut` | `0.79` | kept when 1 − P(nitpick) is at least this |
+| `cut` | `0.7` | kept when 1 − P(nitpick) is at least this (0.79 until 2026-11-15: a must-rule break at 0.78 was withheld in the demo) |
 | `max_shown` | `3` | findings shown a file |
 | `settle` | `2` | seconds after the last save before a pass starts |
 | `pass_cost` | `0.25` | dollars a save may spend |

@@ -169,7 +169,7 @@ data InspectConfig = InspectConfig
   deriving stock (Eq, Show)
 
 defaultInspect :: InspectConfig
-defaultInspect = InspectConfig False ["bug", "assumption", "convention"] "sonnet" 0.79 3 2 0.25 3.00 []
+defaultInspect = InspectConfig False ["bug", "assumption", "convention"] "sonnet" 0.7 3 2 0.25 3.00 []
 
 -- | `[plans]`: the plans directory, the runner command, its model, a timeout
 -- in seconds, extra `--allowedTools` entries for `do`, the price table

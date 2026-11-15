@@ -155,15 +155,15 @@ source.
   what is missing (`recordMissing`); `OLIFANT_RECORD_CHECKS=1` asks sonnet for a claim 1a never
   checked; `OLIFANT_INSPECT_CASES=vm02,b01` looks at a few cases. The data comes from
   `experiments/vet-1b-2026-11/finds.py`. Bars: at least 16/18 must-rule violations and 6/8 bugs
-  shown, at most 0.5 findings shown per rule-following twin and per near miss. At 1b: 17/18,
-  6/8, 0.00 and 0.125.
+  shown, at most 0.5 findings shown per rule-following twin and per near miss. At 1b (cut 0.79): 17/18, 6/8, 0.00 and 0.125; at cut 0.7, 18/18 with the rest unchanged.
 
 ## Rough spots
 
 - The gate's claim checks run with `check_model = "sonnet"` and no Jev guards, so replay stays
   deterministic. Production runs the cascade.
 - Jev's answers move a little between wordings of the same state: vm16 kept 0.78 here against
-  1a's 0.84, just under `cut`.
+  1a's 0.84. The default `cut` is 0.7 since the demo trial (a must-rule break at 0.78 was
+  withheld at 0.79); on the 1a cases 0.7 shows 18/18 with the same noise.
 - Only the first shown finding on a line gets actions: a second one on the same line is reached
   after the first is dismissed.
 - `envInspectFlight` and the cap day live in the server process. A restart forgets them, at worst one
