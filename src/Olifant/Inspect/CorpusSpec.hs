@@ -96,7 +96,7 @@ gate exp' = do
     forM_ (cChanged c) $ \f ->
       projectFor (tree </> f) s0 >>= \case
         (s, Just (_, p)) -> do
-          _ <- inspectPass neverCancel s p (InspectDeps decider finder checkerFor utc mempty (const (pure ()))) (tree </> f)
+          _ <- inspectPass neverCancel s p (InspectDeps decider finder checkerFor utc mempty (const (pure ())) (pure ())) (tree </> f)
           vs <- either (fail . T.unpack) pure =<< readInspectStore (pFiles ports) tree
           let cfg = catalogInspect (prCatalog p)
           when (only /= Nothing) $ forM_ (vsFindings vs) $ \g -> putStrLn (T.unpack cid <> " " <> f <> " " <> show (vfStatus g, vfKind g, vfKeep g, vfVerdict g, plUnit (vfPlace g), plLines (vfPlace g)) <> " " <> T.unpack (T.take 90 (vfStatement g)))

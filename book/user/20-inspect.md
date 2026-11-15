@@ -36,8 +36,10 @@ no project rules: it still finds bugs and wrong assumptions, but it cannot find 
    file counts, and so does every unit in a repository with no commit. A unit inspect already looked
    at, as it is now, is not looked at again. After a commit nothing is changed.
 2. **Finished?** A unit that does not parse, holds a `TODO` or `FIXME`, or has an empty body
-   (only comments or a docstring) is skipped silently. So is one Jev judges to stop before doing
-   what its name promises. It is screened again on the next save.
+   (only comments or a docstring) is skipped silently, and screened again on the next save. One
+   Jev judges to stop before doing what its name promises is still inspected, marked *in
+   progress*: the find call reports rule breaks and bugs in the code that is written, never that
+   something is missing yet.
 3. **Find.** One `claude -p` call (`find_model`, read-only tools, the plans' fences:
    `[plans] not_evidence`, the plans directory, `.olifant`) reads the changed units, their diff,
    your `inspect.md`, the rule findings `olifant check` already reports, and the findings still open
@@ -160,7 +162,10 @@ start over: start over and dismissed findings would come back. Move it aside to 
 
 Inspect runs in the language server (`olifant lsp`), on save. After `settle` seconds with no newer
 save of the file, one pass runs: a burst of saves is one pass. Nothing is drawn while it runs.
-When it finds something, diagnostics are refreshed, and the file's shown findings arrive as hints
+Findings that need no claim check (a broken rule) show as soon as they pass the filter, usually
+10 to 20 seconds after the save; a bug or an assumption follows when its claim check finishes
+(the checks run side by side). When it finds something, diagnostics are refreshed, and the file's
+shown findings arrive as hints
 (source `olifant-inspect`, code = the kind, on the finding's first line). A finding whose unit changed
 since it was inspected keeps its place with the code `<kind>-stale`, until a save inspects the unit
 again. A finding moves with its unit when code above it is added or removed, and disappears when

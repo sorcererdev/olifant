@@ -15,12 +15,13 @@ module Olifant.Inspect.Pass
   ) where
 
 import Control.Applicative ((<|>))
+import Control.Concurrent.Async (mapConcurrently)
 import Control.Exception (Exception, SomeException, handle, throwIO, try)
-import Control.Monad (filterM, foldM)
-import Data.IORef (modifyIORef', newIORef, readIORef)
+import Control.Monad (filterM, foldM, unless, when)
+import Data.IORef (atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (sortOn)
 import Data.Map.Strict qualified as M
-import Data.Maybe (fromMaybe, isJust, listToMaybe)
+import Data.Maybe (catMaybes, fromMaybe, isJust, listToMaybe)
 import Data.Ord (Down (..))
 import Data.Set (Set)
 import Data.Set qualified as S
@@ -66,6 +67,8 @@ data InspectDeps = InspectDeps
     vdSkip :: Set Text
   , -- | told each pack's (unit, fingerprint) pairs before its find call
     vdOnFind :: [(Text, Text)] -> IO ()
+  , -- | told when the pass has stored findings before its claim checks finish (the editor refreshes)
+    vdProgress :: IO ()
   }
 
 data InspectOutcome
@@ -182,9 +185,9 @@ inspectPassOn _token s p deps path
       st <- maybe noSteering steering <$> readText files (root </> steeringPath)
       changed <- changedOf s p lang rel text units
       let fpOf n = fingerprint text (namedLines n)
-          inspected = M.findWithDefault S.empty rel (vsInspectted store0)
+          inspected = M.findWithDefault S.empty rel (vsInspected store0)
           todo = [n | n <- changed, fpOf n `S.notMember` inspected, namedName n `S.notMember` vdSkip deps]
-      finished <- filterM (screen lang text units) todo
+      finished <- catMaybes <$> mapM (screen lang text units) todo
       -- a waiting finding is verified when the margin has room, even with nothing new to find
       let openHere = length [f | f <- vsFindings store0, plFile (vfPlace f) == rel, vfStatus f == Open, vfKind f `elem` vcKinds cfg]
           room = openHere < vcMaxShown cfg && any (\f -> plFile (vfPlace f) == rel && vfStatus f == Waiting) (vsFindings store0)
@@ -201,15 +204,17 @@ inspectPassOn _token s p deps path
               pure (InspectDone True False False 0)
         else find st store0 lang text units (S.fromList (map namedName changed)) finished
 
-    -- the screen: a code fact, or Jev's "stops early"; unfinished units leave no record
+    -- the screen: a code fact (a parse error, TODO or FIXME, an empty body) skips
+    -- a unit with no record; one Jev thinks stops early is inspected, marked in
+    -- progress (the user's ruling: review what is written, not what is missing)
     screen lang text units n = do
       let facts = unitFacts lang text n
           Screen.Facts e t m = facts
       if e || t || m
-        then pure False
+        then pure Nothing
         else do
           a <- weighed (stopsEarly (langName lang) rel (cut text n) (headerOf text units n) facts)
-          pure (not (unfinished facts (pYes a)))
+          pure (Just (n, unfinished facts (pYes a)))
 
     find st store0 lang text units changedNames finished = do
       (_, reported) <- findingsFor path s
@@ -223,7 +228,7 @@ inspectPassOn _token s p deps path
           over spent e = spent + e > vcPassCost cfg || overDay spent e
           overDay spent e = today + spent + e > vcDayCost cfg
           reportedText = [fRule f <> " at " <> T.pack rel <> maybe "" (\((l, _), _) -> ":" <> T.pack (show l)) (fRange f) <> ": " <> fMessage f | f <- reported]
-          findUnit n = FindUnit rel (namedName n) (namedLines n) (nonEmpty (headerOf text units n)) (cut text n)
+          findUnit (n, inProgress) = FindUnit rel (namedName n) (namedLines n) (nonEmpty (headerOf text units n)) (cut text n) inProgress
           openOn names = [f | f <- vsFindings store0, plFile (vfPlace f) == rel, vfStatus f `elem` [Open, Waiting], maybe False (`elem` names) (plUnit (vfPlace f))]
       -- the find calls, one a pack, while the caps allow
       (spent1, capped, answered) <-
@@ -283,51 +288,101 @@ inspectPassOn _token s p deps path
           )
           store0
           raws
+      -- the store is written as the pass goes: each write lays the pass's version
+      -- over the store as it is now, against the version the pass last wrote
+      baseRef <- newIORef store0
+      let writeStore vsW = do
+            base <- readIORef baseRef
+            _ <- updateInspectStore files root (\current -> (mergeInto base vsW current, ()))
+            writeIORef baseRef vsW
+          movedNow = do
+            text2 <- fromMaybe "" <$> readText (prWorkspace p) rel
+            units2 <- fromMaybe [] <$> safeUnits (unitsOf (pSyntax ports) lang (Just rel) text2)
+            let fpsNow = M.fromList [(namedName n, fingerprint text2 (namedLines n)) | n <- units2]
+            pure (S.fromList [namedName n | n <- units, M.lookup (namedName n) fpsNow /= Just (fingerprint text (namedLines n))])
+          oldIds = S.fromList (map vfId (vsFindings store0))
+          dropMoved moved vsD = vsD {vsFindings = [f | f <- vsFindings vsD, vfId f `S.member` oldIds || maybe True (`S.notMember` moved) (plUnit (vfPlace f))]}
       -- resolved by the find call's answer
       let vs2 = vs1 {vsFindings = [if vfId f `S.member` resolvedIds && vfStatus f `elem` [Open, Waiting] then f {vfStatus = Resolved} else f | f <- vsFindings vs1]}
-      -- verify: best kept first, until max_shown of this pass's have passed
-      let waiting = sortOn (Down . fromMaybe 0 . vfKeep) [f | f <- vsFindings vs2, plFile (vfPlace f) == rel, vfStatus f == Waiting]
-      -- this pass's new findings may take up to max_shown places; an older
-      -- waiting one is verified only while the margin has room
+      -- verify, best kept first, in rounds: a finding with no claim check passes at
+      -- once and is stored (the editor shows it); the round's claim checks run side
+      -- by side. The pass's new findings may take up to max_shown places; an older
+      -- waiting one only while the margin has room. A check that fails frees its
+      -- place for the next round.
       let oldIds0 = S.fromList [vfId f | f <- vsFindings store0, vfStatus f == Waiting]
           openBefore = length [f | f <- vsFindings vs2, plFile (vfPlace f) == rel, vfStatus f == Open, vfKind f `elem` vcKinds cfg]
-      newPassedRef <- newIORef (0 :: Int)
-      openRef <- newIORef openBefore
-      vs3 <-
-        foldM
-          ( \vs f -> do
-              newPassed <- readIORef newPassedRef
-              openNow <- readIORef openRef
-              let isNew = vfId f `S.notMember` oldIds0
-              if (isNew && newPassed >= vcMaxShown cfg) || (not isNew && openNow >= vcMaxShown cfg)
-                then pure vs
-                else do
-                  f' <- verify now records today spentRef cappedRef dayCappedRef f
-                  if vfStatus f' == Open && vfKind f' `elem` vcKinds cfg
-                    then modifyIORef' openRef (+ 1) >> (if isNew then modifyIORef' newPassedRef (+ 1) else pure ())
-                    else pure ()
-                  pure (replaceF f' vs)
-          )
-          vs2
-          waiting
+          shown f = vfKind f `elem` vcKinds cfg
+          needsClaim f = vfKind f `elem` ["bug", "assumption"]
+          waiting = sortOn (Down . fromMaybe 0 . vfKeep) [f | f <- vsFindings vs2, plFile (vfPlace f) == rel, vfStatus f == Waiting]
+          rounds vs _ _ [] = pure vs
+          rounds vs openNow newPassed cands = do
+            -- the round: candidates that would fit if all passed
+            let fits (o, n, picked) f
+                  | isNew && n >= vcMaxShown cfg = (o, n, picked)
+                  | not isNew && o >= vcMaxShown cfg = (o, n, picked)
+                  | otherwise = (o + c, n + (if isNew then c else 0), picked ++ [f])
+                  where
+                    isNew = vfId f `S.notMember` oldIds0
+                    c = if shown f then 1 else 0
+                (_, _, batch) = foldl fits (openNow, newPassed, []) cands
+                rest = [f | f <- cands, vfId f `notElem` map vfId batch]
+            if null batch
+              then pure vs
+              else do
+                cited <- mapM (\f -> (f,) <$> citationsOk s p pcfg (rawOf f)) batch
+                -- claim checks are reserved within the caps before any starts
+                spent0 <- readIORef spentRef
+                let e = claimEstimate records
+                    reserve (r, ok) (f, Right _) | needsClaim f =
+                      if spent0 + r + e > vcPassCost cfg || today + spent0 + r + e > vcDayCost cfg then (r, ok) else (r + e, ok ++ [vfId f])
+                    reserve acc _ = acc
+                    (_, toCheck) = foldl reserve (0, []) cited
+                    settled = flip map cited $ \case
+                      (f, Left why) -> f {vfStatus = Unsure, vfVerdict = Just why}
+                      (f, Right prints)
+                        | needsClaim f -> f {vfPrints = prints}
+                        | otherwise -> f {vfPrints = prints, vfStatus = Open}
+                when (length toCheck < length [() | (f, Right _) <- cited, needsClaim f]) $ do
+                  modifyIORef' cappedRef (const True)
+                  modifyIORef' dayCappedRef (|| today + spent0 + e > vcDayCost cfg)
+                let vsA = foldr replaceF vs settled
+                -- shown now, before the checks: what passed without one
+                unless (null toCheck) $ do
+                  moved <- movedNow
+                  writeStore (dropMoved moved vsA)
+                  vdProgress deps
+                checked <- mapConcurrently (\f -> if vfId f `elem` toCheck then claimOf f else pure f) settled
+                let vsB = foldr replaceF vsA checked
+                    passedNow = [f | f <- checked, vfStatus f == Open, shown f]
+                    newNow = length [f | f <- passedNow, vfId f `S.notMember` oldIds0]
+                    unchecked = [f | f <- checked, vfStatus f == Waiting, vfId f `notElem` toCheck, needsClaim f]
+                -- a check that failed frees its place; a capped one stops the rounds
+                if null unchecked then rounds vsB (openNow + length passedNow) (newPassed + newNow) rest else pure vsB
+          claimOf f = do
+            let t = vfStatement f
+                x = Sentence 0 0 0 (T.length t) Prose t "" Nothing Nothing
+            r <- try (checkWith "inspect-check" s p pcfg (vdCheckerFor deps) True now rel (CheckAsk CheckClaim False []) x)
+            case r of
+              Left (_ :: SomeException) -> pure f
+              Right (res, cost) -> do
+                atomicModifyIORef' spentRef (\x0 -> (x0 + cost, ()))
+                let verdictWord = either (const "failed") (const (statusName (claimVerdict res))) res
+                pure f {vfStatus = claimVerdict res, vfVerdict = Just verdictWord, vfCost = vfCost f + cost}
+      vs3 <- rounds vs2 openBefore (0 :: Int) waiting
       -- units gone from the file
       let names = S.fromList (map namedName units)
           vs4 = vs3 {vsFindings = [if plFile (vfPlace f) == rel && maybe False (`S.notMember` names) (plUnit (vfPlace f)) && vfStatus f `elem` [Open, Waiting, Withheld] then f {vfStatus = Gone} else f | f <- vsFindings vs3]}
       -- a unit whose fingerprint moved while the pass ran: its new findings drop, it stays uninspected
-      text2 <- fromMaybe "" <$> readText (prWorkspace p) rel
-      units2 <- fromMaybe [] <$> safeUnits (unitsOf (pSyntax ports) lang (Just rel) text2)
-      let fpsNow = M.fromList [(namedName n, fingerprint text2 (namedLines n)) | n <- units2]
-          movedNames = S.fromList [namedName n | n <- units, M.lookup (namedName n) fpsNow /= Just (fingerprint text (namedLines n))]
-          oldIds = S.fromList (map vfId (vsFindings store0))
-          vs5 = vs4 {vsFindings = [f | f <- vsFindings vs4, vfId f `S.member` oldIds || maybe True (`S.notMember` movedNames) (plUnit (vfPlace f))]}
+      movedNames <- movedNow
+      let vs5 = dropMoved movedNames vs4
           inspectedNow = S.fromList [fingerprint text (namedLines n) | (ns, _) <- answered, n <- units, namedName n `elem` ns, namedName n `S.notMember` movedNames]
           inspectedNames = S.fromList [n | (ns, _) <- answered, n <- ns]
           vs6 =
             vs5
-              { vsInspectted = if S.null inspectedNow then vsInspectted vs5 else M.insertWith S.union rel inspectedNow (vsInspectted vs5)
+              { vsInspected = if S.null inspectedNow then vsInspected vs5 else M.insertWith S.union rel inspectedNow (vsInspected vs5)
               , vsCapped = cleanEmpty (M.adjust (`S.difference` inspectedNames) rel (if null capped then vsCapped vs5 else M.insertWith S.union rel (S.fromList capped) (vsCapped vs5)))
               }
-      _ <- updateInspectStore files root (\current -> (mergeInto store0 vs6 current, ()))
+      writeStore vs6
       spent <- readIORef spentRef
       wasCapped <- readIORef cappedRef
       dayCapped <- readIORef dayCappedRef
@@ -360,27 +415,6 @@ inspectPassOn _token s p deps path
     -- what the nitpick question was asked on: the unit, the rule's text (or
     -- the Rules section), the wording
     askedHash q pl = fileHash (T.intercalate "\0" [fromMaybe "" (plFingerprint pl), fromMaybe "" (lookup "project rule" (qContext q) <|> lookup "project rules" (qContext q)), T.pack (show (qShape q))])
-
-    verify now records today spentRef cappedRef dayCappedRef f =
-      citationsOk s p pcfg (rawOf f) >>= \case
-        Left why -> pure f {vfStatus = Unsure, vfVerdict = Just why}
-        Right prints
-          | vfKind f `elem` ["bug", "assumption"] -> do
-              spent <- readIORef spentRef
-              let e = claimEstimate records
-              if spent + e > vcPassCost cfg || today + spent + e > vcDayCost cfg
-                then do
-                  modifyIORef' cappedRef (const True)
-                  modifyIORef' dayCappedRef (|| today + spent + e > vcDayCost cfg)
-                  pure f {vfPrints = prints}
-                else do
-                  let t = vfStatement f
-                      x = Sentence 0 0 0 (T.length t) Prose t "" Nothing Nothing
-                  (res, cost) <- checkWith "inspect-check" s p pcfg (vdCheckerFor deps) True now rel (CheckAsk CheckClaim False []) x
-                  modifyIORef' spentRef (+ cost)
-                  let verdictWord = either (const "failed") (const (statusName (claimVerdict res))) res
-                  pure f {vfPrints = prints, vfStatus = claimVerdict res, vfVerdict = Just verdictWord, vfCost = vfCost f + cost}
-          | otherwise -> pure f {vfPrints = prints, vfStatus = Open}
 
     logFind now pack r parsed charged =
       let whole = either (const Nothing) Just r
@@ -440,12 +474,13 @@ cleanEmpty = M.filter (not . S.null)
 
 -- | The pass's store (MINE, made from BASE) laid over the store as it is now:
 -- a finding the pass changed is taken when the user left it as the pass found
--- it (a dismissal made meanwhile stands); new findings are added.
+-- it (a dismissal made meanwhile stands); new findings are added; one the
+-- pass had written and since dropped goes.
 mergeInto :: InspectStore -> InspectStore -> InspectStore -> InspectStore
 mergeInto base mine current =
   InspectStore
-    { vsFindings = [pick f | f <- vsFindings current] ++ [f | f <- vsFindings mine, vfId f `M.notMember` currentIds, vfId f `M.notMember` baseIds]
-    , vsInspectted = M.unionWith S.union (vsInspectted current) (vsInspectted mine)
+    { vsFindings = [pick f | f <- vsFindings current, not (vfId f `M.member` baseIds && vfId f `M.notMember` mineIds)] ++ [f | f <- vsFindings mine, vfId f `M.notMember` currentIds, vfId f `M.notMember` baseIds]
+    , vsInspected = M.unionWith S.union (vsInspected current) (vsInspected mine)
     , vsCapped = vsCapped mine
     }
   where

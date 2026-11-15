@@ -47,10 +47,12 @@ the time zone (`day_cost` is a local day).
    `Process.gitIn`) and pairs its units with today's by name through `Server/Loop.hs`
    `compareUnits`, the plans' own comparison: `Added` or `Changed` units count. No `HEAD` text
    (untracked, no commit) means every unit. Units whose fingerprint is already in
-   `vsInspectted` are dropped.
-3. **Screen.** A code fact skips the unit without asking Jev. Otherwise one `weigh` of
-   `stopsEarly` (its state: language, file, the unit's text, the enclosing unit's def line, the
-   facts), unfinished at P ≥ 0.80. An unfinished unit leaves no record.
+   `vsInspected` are dropped.
+3. **Screen.** A code fact skips the unit without asking Jev, and leaves no record. Otherwise one
+   `weigh` of `stopsEarly` (its state: language, file, the unit's text, the enclosing unit's def
+   line, the facts); at P ≥ 0.80 the unit is still sent, as `FindUnit.fuInProgress` (the user's
+   ruling, after the demo trial: a stub's written code can break a rule). `findPrompt` marks it
+   `(in progress)` and adds one sentence: report what is written, never what is missing.
 4. **Find.** `packUnits` cuts the finished units into calls of at most 600 lines. Before each
    call the estimate (`findEstimate`: the mean of the last 20 priced `inspect` errands, else $0.04 or
    $0.005 for haiku) is checked against `pass_cost` and `day_cost`. A pack that does not fit,
@@ -69,7 +71,12 @@ the time zone (`day_cost` is a local day).
 7. **Filter.** `nitpick` (1a's wording; `inspect.md`'s two sections replace the criteria) gives
    `vfKeep = 1 − P(nitpick)`. Below `cut` is `Withheld`. Otherwise the finding is `Waiting` to be
    verified. Elsewhere findings skip Jev.
-8. **Verify,** best keep first, until `max_shown` of this pass's findings of a shown kind are
+8. **Verify,** best keep first, in rounds: each round takes the candidates that would fill the
+   free places if all passed. A finding with no claim check passes at once, and when the round has
+   claim checks to run the store is written (`writeStore`, after `movedNow`/`dropMoved`) and
+   `vdProgress` called, so the editor shows it before the checks finish. The round's checks run
+   side by side (`mapConcurrently`), each reserved within the caps first; a check that fails frees
+   its place for the next round. Until `max_shown` of this pass's findings of a shown kind are
    `Open`. `citationsOk` sends each evidence range's first line through `Server/Checker.hs`
    `confirm` (fences, `.env*`, symlinks, the line inside the file), which is the clamp ruling: the
    end line is never checked. A `bug` or `assumption` then goes through `checkWith "inspect-check"`
@@ -77,10 +84,10 @@ the time zone (`day_cost` is a local day).
    caps (`claimEstimate`, else $0.016).
 9. **Close.** Ids the find call says no longer hold become `Resolved`. Findings in units that left
    the file become `Gone`. The file is read again: a unit whose fingerprint moved while the pass
-   ran loses its new findings and is not marked inspected. Then `vsInspectted` and `vsCapped` are updated.
+   ran loses its new findings and is not marked inspected. Then `vsInspected` and `vsCapped` are updated.
 
-The pass works on a copy of the store and ends with one `updateInspectStore`, which applies
-`mergeInto base mine current`. A finding the pass changed is taken only if its status in the store
+The pass works on a copy of the store and writes it as it goes: each `writeStore` applies
+`mergeInto base mine current`, with `base` the version the pass last wrote (`store0` at first). A finding the pass changed is taken only if its status in the store
 is still the one the pass read, so a dismissal made while a call was running stands.
 
 ## In the language server
