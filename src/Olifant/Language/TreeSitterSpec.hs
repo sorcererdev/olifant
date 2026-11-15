@@ -21,7 +21,7 @@ import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
 import Olifant.Language.Captures (Cap (..), PNode (..), anchorFromCaptures)
 import Olifant.Language.Syntax (Match (..))
-import Olifant.Language.TreeSitter (cacheHolds, cacheSize, compiledSize, capturesOf, definitionKinds, definitionLines, loadableGrammar, queriesFor)
+import Olifant.Language.TreeSitter (errorLines, cacheHolds, cacheSize, compiledSize, capturesOf, definitionKinds, definitionLines, loadableGrammar, queriesFor)
 import Olifant.Language.Adapter (Grammar (..), GrammarSource (..))
 import Olifant.Language.Grammar (GrammarUnavailable (..))
 import Control.Exception (try)
@@ -48,7 +48,7 @@ defs caps =
     names = M.fromList [(capMatch n, n) | n <- caps, capName n == "name"]
 
 spec :: Spec
-spec = captureSpec >> cacheSpec >> benchSpec
+spec = captureSpec >> cacheSpec >> benchSpec >> errorSpec
 
 -- | The line of the struct named @n@'s definition.
 structLine :: Text -> Text -> [Int]
@@ -251,3 +251,12 @@ captureSpec = describe "tree-sitter captures" $ do
     let r = capturesOf (shipped "rust") [("bad.scm", "(no_such_node) @x")] "fn f() {}\n"
     r `shouldSatisfy` isLeft
     either (\e -> "bad.scm" `T.isInfixOf` e && "byte" `T.isInfixOf` e) (const False) r `shouldBe` True
+
+errorSpec :: Spec
+errorSpec = describe "errorLines (vet's screen)" $ do
+  it "finds the line of a parse error" $
+    errorLines (shipped "python") "def f(:\n    return 1\n" `shouldSatisfy` elem 1
+  it "is empty for a clean file" $
+    errorLines (shipped "python") "def f():\n    return 1\n\n\ndef g(x):\n    return x\n" `shouldBe` []
+  it "finds a missing node's line" $
+    errorLines (shipped "python") "def f():\n    return 1\n\nx = (1,\n" `shouldSatisfy` (not . null)

@@ -97,3 +97,21 @@ void ots_abi_range(uint32_t *lo, uint32_t *hi) {
   *lo = TREE_SITTER_MIN_COMPATIBLE_LANGUAGE_VERSION;
   *hi = TREE_SITTER_LANGUAGE_VERSION;
 }
+
+/* Vet's screen: the start rows of ERROR and missing nodes under a node,
+ * descending only into subtrees that hold an error; at most cap rows are
+ * written, and the count found (which may pass cap) is returned. */
+static void ots_error_walk(TSNode n, uint32_t *out, uint32_t cap, uint32_t *k) {
+  if (ts_node_is_missing(n) || (ts_node_is_named(n) && strcmp(ts_node_type(n), "ERROR") == 0)) {
+    if (*k < cap) out[*k] = ts_node_start_point(n).row;
+    (*k)++;
+  }
+  if (!ts_node_has_error(n)) return;
+  uint32_t c = ts_node_child_count(n);
+  for (uint32_t i = 0; i < c; i++) ots_error_walk(ts_node_child(n, i), out, cap, k);
+}
+uint32_t ots_error_rows(const TSNode *root, uint32_t *out, uint32_t cap) {
+  uint32_t k = 0;
+  ots_error_walk(*root, out, cap, &k);
+  return k;
+}
