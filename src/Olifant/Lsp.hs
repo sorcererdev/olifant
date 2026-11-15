@@ -1312,6 +1312,8 @@ inspectLater env lspEnv path = do
           (s', Just (root, p)) | Just d <- deciderFor s' p -> do
             let pcfg = catalogPlans (prCatalog p)
                 vcfg = catalogInspect (prCatalog p)
+                -- findings stored before the claim checks finish: the editor pulls them now
+                refreshNow = runLspT lspEnv (void (sendRequest SMethod_WorkspaceDiagnosticRefresh Nothing (\_ -> pure ())))
                 -- each find call has its own token: a kill reaches the call, never the pass's claim checks
                 finder ask = do
                   (callToken, kill) <- newCancel
@@ -1320,7 +1322,7 @@ inspectLater env lspEnv path = do
                   r <- maybe (liveFinder (eitherCancel token callToken) pcfg vcfg root) recordedFinder (scInspectAnswers (ssConfig s')) ask
                   atomicModifyIORef' (envInspectFlight env) (\m -> (M.update (\e@(u, _, _) -> if u == mine then Nothing else Just e) path m, ()))
                   pure r
-            o <- inspectPass token s' p (InspectDeps d finder (\c -> checkerUnder s' token c root) zone skip (const (pure ()))) path
+            o <- inspectPass token s' p (InspectDeps d finder (\c -> checkerUnder s' token c root) zone skip (const (pure ())) refreshNow) path
             waiting <- either (const 0) (sum . map S.size . M.elems . vsCapped) <$> readInspectStore (pFiles (ssPorts s')) root
             pure (s', Just (o, vcDayCost vcfg, waiting))
           (s', _) -> pure (s', Nothing)

@@ -12,7 +12,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Text.IO qualified as TIO
-import Data.Time (UTCTime (..), addUTCTime, fromGregorian, utc)
+import Data.Time (UTCTime (..), addUTCTime, diffUTCTime, fromGregorian, getCurrentTime, utc)
 import Data.Time.Format.ISO8601 (iso8601Show)
 import Olifant.App (Ports (..), Project (..))
 import Olifant.Catalog (Catalog (..))
@@ -98,7 +98,7 @@ withInspect config edited act =
                 s0 <- newServerState ports
                 projectFor path s0 >>= \case
                   (s, Just (_, p)) -> do
-                    let deps = InspectDeps (recordedDecider (dir </> "answers.json") neverCancel) (recordedFinder (dir </> "finds.json")) (const (recordedChecker (dir </> "checks.json"))) utc S.empty (const (pure ()))
+                    let deps = InspectDeps (recordedDecider (dir </> "answers.json") neverCancel) (recordedFinder (dir </> "finds.json")) (const (recordedChecker (dir </> "checks.json"))) utc S.empty (const (pure ())) (pure ())
                     inspectPass neverCancel s p (tweak deps) path
                   _ -> fail "no project"
             , eWs = pFiles ports
@@ -144,7 +144,7 @@ spec = describe "Olifant.Inspect.Pass" $ do
     vs <- eStore e
     statuses vs `shouldBe` [Open]
     map (null . vfPrints) (vsFindings vs) `shouldBe` [False]
-    M.lookup file (vsInspectted vs) `shouldBe` Just (S.fromList [fingerprint edit1 (1, 2)])
+    M.lookup file (vsInspected vs) `shouldBe` Just (S.fromList [fingerprint edit1 (1, 2)])
   it "an unchanged unit is not inspected" $ withInspect "" edit1 $ \e -> do
     _ <- ePass e
     asked (eFinds e) >>= (`shouldBe` ["src/inspectme.py:f"])
@@ -169,7 +169,7 @@ spec = describe "Olifant.Inspect.Pass" $ do
     TIO.writeFile (eAnswers e) (answers [("stops-early", True)])
     _ <- ePass e
     asked (eFinds e) >>= (`shouldBe` [])
-    vsInspectted <$> eStore e >>= (`shouldBe` M.empty)
+    vsInspected <$> eStore e >>= (`shouldBe` M.empty)
   it "a nitpick is withheld" $ withInspect "" edit1 $ \e -> do
     TIO.writeFile (eAnswers e) (answers [("stops-early", False), ("nitpick", True)])
     TIO.writeFile (eFinds e) (replies [("src/inspectme.py:f", findReply [conv] [])])
@@ -310,6 +310,26 @@ spec = describe "Olifant.Inspect.Pass" $ do
     TIO.writeFile (eDir e </> file) "def g(y):\n    return y * 2\n"
     _ <- ePass e
     statuses <$> eStore e >>= (`shouldBe` [Gone])
+  it "(fast) a rule break is stored before the claim checks finish" $ withInspect "" edit1 $ \e -> do
+    TIO.writeFile (eAnswers e) (answers [("stops-early", False), ("nitpick", False), ("same", False)])
+    TIO.writeFile (eFinds e) (replies [("src/inspectme.py:f", findReply [conv, ("bug", (2, 2), "f is off by one.", "", (1, 2))] [])])
+    TIO.writeFile (eChecks e) (replies [("f is off by one.", object ["text" .= ("```json\n{\"verdict\": \"right\", \"why\": \"w\", \"evidence\": [{\"path\": \"src/inspectme.py\", \"line\": 1}]}\n```" :: Text), "cost" .= (0.01 :: Double), "delay" .= (0.5 :: Double)])])
+    seen <- newIORef []
+    _ <- ePassWith e (\d -> d {vdProgress = eStore e >>= \vs -> modifyIORef' seen (++ [[(vfKind f, vfStatus f) | f <- vsFindings vs]])}) (eDir e </> file)
+    snaps <- readIORef seen
+    take 1 snaps `shouldBe` [[("convention", Open), ("bug", Waiting)]]
+    statuses <$> eStore e >>= (`shouldBe` [Open, Open])
+  it "(fast) claim checks run at the same time" $ withInspect "" edit1 $ \e -> do
+    let bug n = ("bug", (2, 2), "f is wrong in way " <> n <> ".", "", (1, 2))
+        slow = object ["text" .= ("```json\n{\"verdict\": \"right\", \"why\": \"w\", \"evidence\": [{\"path\": \"src/inspectme.py\", \"line\": 1}]}\n```" :: Text), "cost" .= (0.01 :: Double), "delay" .= (1 :: Double)]
+    TIO.writeFile (eAnswers e) (answers [("stops-early", False), ("nitpick", False), ("same", False)])
+    TIO.writeFile (eFinds e) (replies [("src/inspectme.py:f", findReply (map bug ["one", "two", "three"]) [])])
+    TIO.writeFile (eChecks e) (replies [("f is wrong in way " <> n <> ".", slow) | n <- ["one", "two", "three"]])
+    t0 <- getCurrentTime
+    _ <- ePass e
+    t1 <- getCurrentTime
+    statuses <$> eStore e >>= (`shouldBe` [Open, Open, Open])
+    realToFrac (diffUTCTime t1 t0) `shouldSatisfy` (< (2.5 :: Double))
   it "a fingerprint that moves during the pass drops its findings" $ withInspect "" edit1 $ \e -> do
     TIO.writeFile (eFinds e) (replies [("src/inspectme.py:f", object ["text" .= findReply [conv] [], "delay" .= (1 :: Double)])])
     -- the edit lands while the find call is out: after it was asked, before its reply
@@ -318,4 +338,4 @@ spec = describe "Olifant.Inspect.Pass" $ do
     _ <- ePass e
     vs <- eStore e
     statuses vs `shouldBe` []
-    vsInspectted vs `shouldBe` M.empty
+    vsInspected vs `shouldBe` M.empty

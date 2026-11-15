@@ -98,7 +98,7 @@ data InspectFinding = InspectFinding
 data InspectStore = InspectStore
   { vsFindings :: [InspectFinding]
   , -- | per file, the unit fingerprints already inspected
-    vsInspectted :: Map FilePath (Set Text)
+    vsInspected :: Map FilePath (Set Text)
   , -- | per file, the unit names a cap left waiting
     vsCapped :: Map FilePath (Set Text)
   }
@@ -157,7 +157,7 @@ shownIn cfg file vs =
 
 encodeStore :: InspectStore -> Text
 encodeStore vs =
-  TE.decodeUtf8 (BL.toStrict (encode (object ["version" .= (1 :: Int), "findings" .= map findingJson (vsFindings vs), "inspected" .= fmap S.toList (vsInspectted vs), "capped" .= fmap S.toList (vsCapped vs)]))) <> "\n"
+  TE.decodeUtf8 (BL.toStrict (encode (object ["version" .= (1 :: Int), "findings" .= map findingJson (vsFindings vs), "inspected" .= fmap S.toList (vsInspected vs), "capped" .= fmap S.toList (vsCapped vs)]))) <> "\n"
 
 decodeStore :: Text -> Either Text InspectStore
 decodeStore t = either (Left . T.pack) Right (eitherDecodeStrict (TE.encodeUtf8 t) >>= parseEither store)
