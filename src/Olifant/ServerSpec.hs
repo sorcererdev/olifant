@@ -23,6 +23,10 @@ import Olifant.Language (Failure (..), Match (..), Rewrite (..), Runner (..), Sy
 import System.Directory (canonicalizePath, doesDirectoryExist, doesFileExist, listDirectory)
 import System.Directory qualified as Dir
 import Olifant.Server.Conjure qualified as Conjure
+import Olifant.Server.ConjureStep qualified as CS
+import Olifant.Server.Step (TestDelta (..), stepSystem)
+import Olifant.Server.Edits (FileEdit (..))
+import Olifant.Model (ChatReply (..))
 import Olifant.Server.ConjureNext (OfferRow (..), PausedConjure (..), RoundView (..), Title (..), offerText, pruned)
 import Olifant.Generation.Steer (noSeed)
 import System.FilePath (makeRelative, (</>))
@@ -166,8 +170,143 @@ spec = describe "Olifant.Server (projects across roots, open documents, jobs)" $
   stubSpecs
   unitSpecs
   conjureSpecs
+  stepSpecs
   steeredSpecs
   mutateSpecs
+
+-- | `olifant/conjure` as one step (design 2026-11-16): the writer answers
+-- whole files once; the step is shown, then accepted, rejected or taken again
+-- by the harder writer.
+stepSpecs :: Spec
+stepSpecs = describe "a conjure is one step (olifant/conjure)" $ do
+  let writer asked replies = Just $ \name system user -> do
+        modifyIORef' asked (++ [(name, system, user)])
+        pure (replies name)
+      reply t = Right (ChatReply t (Just 0.001) 1.5)
+      moduleWith body = T.replace "raise NotImplementedError(\"later\")" body stubbed
+      fileBlock rel t = "<file path=\"" <> T.pack rel <> "\">\n" <> t <> "</file>"
+      filled = "<goal>fill handle so it closes a table</goal>\n" <> fileBlock moduleRel written
+      serving replies extra = do
+        asked <- newIORef []
+        (s0, _) <- blocksOnSyntax unitSyntax (Right . redOnStub . M.findWithDefault "" moduleRel) extra
+        let s = (openDoc (root </> moduleRel) 1 stubbed s0) {St.ssTestWriter = writer asked replies}
+        pure (s, asked)
+      step s line = snd <$> CS.conjureAt (const (pure ())) (root </> moduleRel) line Nothing s
+      answer s token choice = snd <$> CS.answerStep (const (pure ())) (root </> moduleRel) token choice s
+      shown = \case
+        Right (CS.StepShown sh) -> sh
+        other -> error ("not shown: " <> show other)
+      records s = maybe [] T.lines <$> readText (pFiles (ssPorts s)) (root </> ".olifant/state/conjure-steps.jsonl")
+      stepsLog s = maybe [] T.lines <$> readText (pFiles (ssPorts s)) (root </> ".olifant/state/steps.log")
+      held s = M.size . snd <$> readIORef (St.ssShown s)
+  it "on a red test: the writer is asked once with the situation; the step is shown with its goal, one edit and the test now passing" $ do
+    (s, asked) <- serving (const (reply filled)) []
+    sh <- shown <$> step s 6
+    calls <- readIORef asked
+    length calls `shouldBe` 1
+    let [(_, system, user)] = calls
+    system `shouldBe` stepSystem
+    mapM_ (\k -> user `shouldSatisfy` T.isInfixOf k) ["`handle`", "def test_closes_a_table", "Tests before the step:"]
+    CS.shGoal sh `shouldBe` Just "fill handle so it closes a table"
+    map (\e -> (fePath e, feVersion e)) (CS.shEdits sh) `shouldBe` [(root </> moduleRel, Just 1)]
+    tdPassing (CS.shDelta sh) `shouldBe` [testId]
+    held s `shouldReturn` 1
+  it "a module with no test file is no refusal: the writer is told where its tests go and may create the file" $ do
+    let other = "src/shop/open_table.py"
+        otherTest = "src/shop/open_table__test.py"
+    (s, asked) <- serving (const (reply ("<goal>write its first test</goal>\n" <> fileBlock otherTest "def test_opens() -> None:\n    assert True\n"))) [(other, "def open_table() -> int:\n    return 1\n")]
+    sh <- shown <$> snd <$> CS.conjureAt (const (pure ())) (root </> other) 2 Nothing s
+    [(_, _, user)] <- readIORef asked
+    user `shouldSatisfy` T.isInfixOf ("There is no test file for this module yet (its tests would go in " <> T.pack otherTest <> ")")
+    map (\e -> (fePath e, feCreate e)) (CS.shEdits sh) `shouldBe` [(root </> otherTest, True)]
+  it "a step that leaves the test red is still shown, with the test still red" $ do
+    (s, _) <- serving (const (reply ("<goal>name the seats</goal>\n" <> fileBlock moduleRel (moduleWith "seats = seats\n        raise NotImplementedError(\"later\")")))) []
+    sh <- shown <$> step s 6
+    tdStillRed (CS.shDelta sh) `shouldBe` [testId]
+  it "a path outside the project is dropped and said, never an edit" $ do
+    (s, _) <- serving (const (reply (filled <> "\n" <> fileBlock "../evil.py" "x = 1\n"))) []
+    sh <- shown <$> step s 6
+    CS.shDropped sh `shouldBe` ["../evil.py"]
+    map fePath (CS.shEdits sh) `shouldBe` [root </> moduleRel]
+  it "nothing to do: said, and nothing kept" $ do
+    (s, _) <- serving (const (reply "<goal>nothing</goal>")) []
+    r <- step s 6
+    case r of
+      Right (CS.StepNothing _) -> pure ()
+      other -> expectationFailure (show other)
+    held s `shouldReturn` 0
+  it "the editor's unsaved text is what the step is diffed against, at its version" $ do
+    (s0, _) <- serving (const (reply filled)) []
+    let unsaved = T.replace "self.closed = 0" "self.closed = 0  # mine" stubbed
+        s = openDoc (root </> moduleRel) 3 unsaved s0
+    sh <- shown <$> step s 6
+    map feVersion (CS.shEdits sh) `shouldBe` [Just 3]
+  it "the writer failing is one sentence, and nothing is kept" $ do
+    (s, _) <- serving (const (Left "claude is not installed")) []
+    step s 6 `shouldReturn` Left "claude is not installed"
+    held s `shouldReturn` 0
+  it "no model and no writer: the no-model sentence" $ do
+    (s0, _) <- serving (const (reply filled)) []
+    r <- step s0 {St.ssTestWriter = Nothing} 6
+    r `shouldSatisfy` either ("no model" `T.isInfixOf`) (const False)
+  describe "the person's answer" $ do
+    it "accept lands the step's edits, records it and says it in the step log" $ do
+      (s, _) <- serving (const (reply filled)) []
+      sh <- shown <$> step s 6
+      r <- answer s (CS.shToken sh) CS.StepAccept
+      case r of
+        Right (CS.StepLanded l) -> CS.lsEdits l `shouldBe` CS.shEdits sh
+        other -> expectationFailure (show other)
+      recs <- records s
+      length recs `shouldBe` 1
+      head recs `shouldSatisfy` T.isInfixOf "\"choice\":\"accepted\""
+      logs <- stepsLog s
+      logs `shouldSatisfy` any ("conjure step" `T.isInfixOf`)
+      held s `shouldReturn` 0
+    it "reject lands nothing and records it" $ do
+      (s, _) <- serving (const (reply filled)) []
+      sh <- shown <$> step s 6
+      r <- answer s (CS.shToken sh) CS.StepReject
+      r `shouldSatisfy` either (const False) (\case CS.StepRejected -> True; _ -> False)
+      recs <- records s
+      head recs `shouldSatisfy` T.isInfixOf "\"choice\":\"rejected\""
+    it "harder asks the harder writer over the same situation; the first is recorded as replaced" $ do
+      (s0, asked) <- serving (const (reply filled)) [(".olifant/config.toml", "[packs]\npython-htmx = { path = \"/pack\" }\n[model]\ndefault = \"haiku\"\n[model.backends.haiku]\nkind = \"claude\"\nmodel = \"claude-haiku-5-5\"\n[model.backends.sonnet]\nkind = \"claude\"\nmodel = \"claude-sonnet-5-5\"\n[conjure]\nharder = \"sonnet\"\n")]
+      let s = s0
+      sh <- shown <$> step s 6
+      CS.shHarder sh `shouldBe` True
+      sh2 <- shown <$> answer s (CS.shToken sh) CS.StepHarder
+      calls <- readIORef asked
+      map (\(n, _, _) -> n) calls `shouldBe` ["haiku", "sonnet"]
+      let [(_, _, u1), (_, _, u2)] = calls
+      u2 `shouldBe` u1
+      CS.shToken sh2 `shouldNotBe` CS.shToken sh
+      recs <- records s
+      head recs `shouldSatisfy` T.isInfixOf "\"choice\":\"replaced\""
+    it "no harder writer configured: the step says so and harder is refused" $ do
+      (s, _) <- serving (const (reply filled)) []
+      sh <- shown <$> step s 6
+      CS.shHarder sh `shouldBe` False
+      answer s (CS.shToken sh) CS.StepHarder `shouldReturn` Left "no harder writer: name one with [conjure] harder"
+    it "a token answers once" $ do
+      (s, _) <- serving (const (reply filled)) []
+      sh <- shown <$> step s 6
+      _ <- answer s (CS.shToken sh) CS.StepReject
+      answer s (CS.shToken sh) CS.StepAccept `shouldReturn` Left CS.stepGone
+    it "a new conjure in the file drops the step shown there, recorded as dropped" $ do
+      (s, _) <- serving (const (reply filled)) []
+      sh <- shown <$> step s 6
+      _ <- step s 6
+      answer s (CS.shToken sh) CS.StepAccept `shouldReturn` Left CS.stepGone
+      recs <- records s
+      head recs `shouldSatisfy` T.isInfixOf "\"choice\":\"dropped\""
+    it "the file moved on before accept: nothing lands, said, and the step is dropped" $ do
+      (s, _) <- serving (const (reply filled)) []
+      sh <- shown <$> step s 6
+      let s' = openDoc (root </> moduleRel) 2 (stubbed <> "\n# more\n") s
+      r <- answer s' (CS.shToken sh) CS.StepAccept
+      r `shouldSatisfy` either ("changed" `T.isInfixOf`) (const False)
+      held s `shouldReturn` 0
 
 -- | `olifant/stub`: a new test's stub for the unit at a line.
 stubSpecs :: Spec

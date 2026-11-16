@@ -87,10 +87,23 @@ spec = describe "catalog" $ do
         Left (ConfigInvalid _ e) -> e `shouldBe` "[decide] model = \"jev-1.14.0\" names no backend (backends: jev, local). It takes a backend's name; pin the version in that backend's model key."
         _ -> expectationFailure "expected ConfigInvalid for a [decide] model naming no backend"
       withCatalog [("/proj/.olifant/config.toml", "[decide]\nmodel = \"jev\"\n" <> backends)] $ \_ cat -> catalogDecideModel cat `shouldBe` Just "jev"
-  describe "[conjure] (conjure, second pass)" $
+  describe "[conjure] (conjure, second pass)" $ do
     it "reads [conjure] wire and refuses other keys" $ do
       withCatalog [("/proj/.olifant/config.toml", "[conjure]\nwire = \"wire\"\n")] $ \_ cat -> catalogConjureWire cat `shouldBe` Just "wire"
       withCatalog [("/proj/.olifant/config.toml", "")] $ \_ cat -> catalogConjureWire cat `shouldBe` Nothing
+    it "reads [conjure] writer and harder, each naming a backend that answers prompts" $ do
+      let model = "[model.backends.haiku]\nkind = \"claude\"\nmodel = \"claude-haiku-5-5\"\n[model.backends.sonnet]\nkind = \"claude\"\nmodel = \"claude-sonnet-5-5\"\n"
+      withCatalog [("/proj/.olifant/config.toml", model <> "[conjure]\nwriter = \"haiku\"\nharder = \"sonnet\"\n")] $ \_ cat ->
+        (catalogConjureWriter cat, catalogConjureHarder cat) `shouldBe` (Just "haiku", Just "sonnet")
+    it "refuses a [conjure] writer that names no backend, or a jev one" $ do
+      r <- openWith [("/proj/.olifant/config.toml", "[conjure]\nwriter = \"gpt\"\n")]
+      case r of
+        Left (ConfigInvalid _ e) -> e `shouldSatisfy` T.isInfixOf "[conjure] writer = \"gpt\" names no backend"
+        _ -> expectationFailure "expected ConfigInvalid"
+      j <- openWith [("/proj/.olifant/config.toml", "[model.backends.jev]\nkind = \"jev\"\n[conjure]\nharder = \"jev\"\n")]
+      case j of
+        Left (ConfigInvalid _ e) -> e `shouldSatisfy` T.isInfixOf "answers decisions, not prompts"
+        _ -> expectationFailure "expected ConfigInvalid"
       r <- openWith [("/proj/.olifant/config.toml", "[conjure]\nwire = \"wire\"\nother = 1\n")]
       case r of
         Left (ConfigInvalid _ e) -> e `shouldSatisfy` T.isInfixOf "conjure"

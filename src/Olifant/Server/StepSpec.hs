@@ -4,7 +4,7 @@ module Olifant.Server.StepSpec (spec) where
 
 import Data.Text qualified as T
 import Olifant.Language (Failure (..), TestRun (..))
-import Olifant.Server.Conjure (sessionDiff)
+import Olifant.Server.ConjureStep (sessionDiff)
 import Olifant.Server.Step
 import System.Directory (createDirectoryIfMissing)
 import System.FilePath ((</>))

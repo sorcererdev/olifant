@@ -47,9 +47,10 @@ import Data.Time (defaultTimeLocale, formatTime)
 import Olifant.App (Ports (..), Project (..), nearestProject, openProjectWith)
 import Olifant.Fill (ModelFiller)
 import Olifant.Catalog (Catalog (..), PackCache, catalogIgnores, catalogPackRoots, describeCatalogError, newPackCache)
-import Olifant.Model (Backend (..), ModelConfig (..))
+import Olifant.Model (Backend (..), ChatReply, ModelConfig (..))
 import Olifant.Process (Cancel, neverCancel)
 import Olifant.Server.ConjureNext (PausedConjure)
+import Olifant.Server.Step (StepHeld)
 import Olifant.Server.LoopTypes (ReconcileAnswer)
 import Olifant.Generator (Generator)
 import Olifant.Recognize (Index, Shingle)
@@ -150,6 +151,12 @@ data ServerState = ServerState
     -- (its JSON name), newest first; read from `errands.jsonl` once, then
     -- kept as checks are made. A root absent has not been read yet
     ssEstimates :: IORef (Map FilePath (Map Text [Double]))
+  , -- | conjure steps shown and not yet answered, by token (`step-N`), and
+    -- the last N given: an IORef, so a step outlives its request's snapshot
+    ssShown :: IORef (Int, Map Text StepHeld)
+  , -- | a writer that answers a step instead of any model (tests): the
+    -- writer's name, the system text, the situation
+    ssTestWriter :: Maybe (Text -> Text -> Text -> IO (Either Text ChatReply))
   }
 
 newServerState :: Ports -> IO ServerState
@@ -164,7 +171,8 @@ newServerState ports = do
   checking <- newIORef M.empty
   cited <- newIORef (0, M.empty)
   estimates <- newIORef M.empty
-  pure (ServerState ports M.empty M.empty cache defaultServerConfig M.empty 0 0 M.empty M.empty neverCancel M.empty M.empty M.empty M.empty bases decisions onDecided Nothing Nothing paused M.empty units claims checking cited estimates)
+  shownSteps <- newIORef (0, M.empty)
+  pure (ServerState ports M.empty M.empty cache defaultServerConfig M.empty 0 0 M.empty M.empty neverCancel M.empty M.empty M.empty M.empty bases decisions onDecided Nothing Nothing paused M.empty units claims checking cited estimates shownSteps Nothing)
 
 -- | A file's base text, from the cache while no file changed since.
 cachedBase :: ServerState -> FilePath -> Text -> FilePath -> IO (Either Text (Text, Maybe Text))

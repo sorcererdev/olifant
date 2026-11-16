@@ -11,6 +11,7 @@ module Olifant.Server.Step
   ( Situation (..)
   , StepReply (..)
   , TestDelta (..)
+  , StepHeld (..)
   , stepSystem
   , situationText
   , readStep
@@ -21,6 +22,7 @@ module Olifant.Server.Step
   ) where
 
 import Data.List (isPrefixOf)
+import Data.Map.Strict (Map)
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -54,6 +56,29 @@ data StepReply = StepReply {srGoal :: Maybe Text, srFiles :: [(FilePath, Text)],
 -- | How the tests moved: newly passing, newly failing, failing before and
 -- after, and whether there was no after-run at all.
 data TestDelta = TestDelta {tdPassing :: [Text], tdFailing :: [Text], tdStillRed :: [Text], tdNoTests :: Bool}
+  deriving stock (Eq, Show)
+
+-- | A step shown and not yet answered: where (root, the unit's file, its
+-- unit), who wrote it, its goal, the situation it was asked (a harder writer
+-- is asked the same), and what it writes: each file's new text (absolute
+-- paths), the editor's version and text when read (Nothing: not open; a new
+-- file's text is Nothing), with the facts the review shows.
+data StepHeld = StepHeld
+  { hdRoot :: FilePath
+  , hdFile :: FilePath
+  , hdUnit :: Text
+  , hdWriter :: Text
+  , hdGoal :: Text
+  , hdSituation :: Text
+  , hdWrites :: Map FilePath Text
+  , hdVersions :: Map FilePath (Maybe Int)
+  , hdBases :: Map FilePath (Maybe Text)
+  , hdDelta :: TestDelta
+  , hdParses :: [(FilePath, Bool)]
+  , hdLines :: Int
+  , hdCost :: Maybe Double
+  , hdSeconds :: Double
+  }
   deriving stock (Eq, Show)
 
 stepSystem :: Text
