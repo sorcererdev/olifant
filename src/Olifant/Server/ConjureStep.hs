@@ -21,7 +21,7 @@ module Olifant.Server.ConjureStep
   ) where
 
 import Control.Exception (SomeException, try)
-import Control.Monad (forM, forM_, void)
+import Control.Monad (forM, forM_, void, when)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.Except (ExceptT (..), runExceptT, throwE)
 import Data.Aeson (Value (..), encode, object, (.=))
@@ -223,12 +223,14 @@ answerStep progress path token choice s0 =
                   Right (writer, ask) -> do
                     progress (Said ("conjuring again with " <> writer))
                     before <- if isJust (siteTestText site) then either (const Nothing) Just <$> runOver s (prWorkspace (siteProject site)) (siteLang site) [T.pack (siteTestRel site)] else pure Nothing
-                    taken <- takeShown s token
-                    if not taken
-                      then pure (Left stepGone)
-                      else do
-                        record s hd "replaced"
-                        takeStep s site (hdFile hd) (hdUnit hd) writer ask (hdSituation hd) before
+                    -- the step shown stays until the harder one is there: a failed or
+                    -- empty answer leaves it to answer
+                    takeStep s site (hdFile hd) (hdUnit hd) writer ask (hdSituation hd) before >>= \case
+                      Right shown@(StepShown _) -> do
+                        taken <- takeShown s token
+                        when taken (record s hd "replaced")
+                        pure (Right shown)
+                      other -> pure other
           StepReject -> do
             taken <- takeShown s token
             if taken then record s hd "rejected" >> pure (Right StepRejected) else pure (Left stepGone)
@@ -362,10 +364,10 @@ sessionDiff root exts =
       timed <- mapM (\(p, d) -> (\t -> (t, (p, d))) . either (const Nothing) Just <$> (try (getModificationTime (root </> p)) :: IO (Either SomeException UTCTime))) files
       untracked <-
         runBytes "git" ["-C", root, "ls-files", "--others", "--exclude-standard"] Nothing "" <&> \case
-          Right (ExitSuccess, o, _) -> [l | l <- T.lines (TE.decodeUtf8Lenient o), any (`T.isSuffixOf` l) exts]
+          Right (ExitSuccess, o, _) -> map T.unpack (T.lines (TE.decodeUtf8Lenient o))
           _ -> []
       let diffs = sessionFilter exts 300 (map snd (sortOn (Down . fst) timed))
-      pure (diffs <> (if null untracked then "" else "New files, not yet in git: " <> T.intercalate ", " untracked <> "\n"))
+      pure (diffs <> untrackedLine exts untracked)
     _ -> pure ""
   where
     perFile t = case T.splitOn "diff --git a/" t of

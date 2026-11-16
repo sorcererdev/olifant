@@ -55,7 +55,7 @@ as `dropped`).
 imported files come from `importedContext`. The session block is `sessionDiff`:
 `git diff HEAD` per file, most recently modified first, kept to the language's extensions
 (from `langFiles`) without `book/`, `.olifant/`, lockfiles and binary diffs, cut at 300 lines,
-then the untracked files by name. Not a git repository gives an empty block. `situationText`
+then the untracked files by name (`untrackedLine`: the language's, at most 20). Not a git repository gives an empty block. `situationText`
 words it all. The language and the test file's path come from the language and the site, so no
 language is named in the engine (`ConjureNeutralSpec` holds `ConjureStep.hs` and `Step.hs` to
 that).
@@ -89,8 +89,8 @@ the token, so a token answers once (`stepGone` after).
   stands, and the step is recorded as `dropped`.
 - **reject**: nothing lands.
 - **harder**: refused without `[conjure] harder`. Otherwise the same situation text goes to the
-  harder writer; the first step is recorded as `replaced` and the new one is shown under a new
-  token.
+  harder writer. Only when it answers a step is the first one taken and recorded as `replaced`,
+  and the new one shown under a new token; a failure or nothing to do leaves the first to answer.
 
 **7. The record** (`record`). Every final choice appends one JSON line to
 `.olifant/state/conjure-steps.jsonl`: time, file, unit, writer, goal, files, lines changed, the

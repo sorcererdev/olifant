@@ -19,6 +19,7 @@ module Olifant.Server.Step
   , testDelta
   , stepLogLine
   , sessionFilter
+  , untrackedLine
   ) where
 
 import Data.List (isPrefixOf)
@@ -196,6 +197,16 @@ sessionFilter exts cap diffs
         && not (any (`isPrefixOf` p) ["book/", ".olifant/"])
         && not (".lock" `T.isSuffixOf` T.pack p || "-lock." `T.isInfixOf` T.pack p)
         && not (any ("Binary files " `T.isPrefixOf`) (T.lines d))
+
+-- | The session block's new files: those with the language's extensions, not under the
+-- book or @.olifant@, at most 20 named and a count of the rest. Empty when there are none.
+untrackedLine :: [Text] -> [FilePath] -> Text
+untrackedLine exts paths
+  | null kept = ""
+  | otherwise = "New files, not yet in git: " <> T.intercalate ", " (map T.pack (take 20 kept)) <> more <> "\n"
+  where
+    kept = [p | p <- paths, any (`T.isSuffixOf` T.pack p) exts, not (any (`isPrefixOf` p) ["book/", ".olifant/"])]
+    more = if length kept > 20 then " … (" <> tshow (length kept - 20) <> " more)" else ""
 
 tshow :: Show a => a -> Text
 tshow = T.pack . show

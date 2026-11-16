@@ -271,6 +271,13 @@ stepSpecs = describe "a conjure is one step (olifant/conjure)" $ do
       CS.shToken sh2 `shouldNotBe` CS.shToken sh
       recs <- records s
       head recs `shouldSatisfy` T.isInfixOf "\"choice\":\"replaced\""
+    it "the harder writer failing keeps the step shown: said, and it can still be accepted" $ do
+      (s, _) <- serving (\n -> if n == "sonnet" then Left "timed out after 120 s" else reply filled) [(".olifant/config.toml", "[packs]\npython-htmx = { path = \"/pack\" }\n[model]\ndefault = \"haiku\"\n[model.backends.haiku]\nkind = \"claude\"\nmodel = \"claude-haiku-5-5\"\n[model.backends.sonnet]\nkind = \"claude\"\nmodel = \"claude-sonnet-5-5\"\n[conjure]\nharder = \"sonnet\"\n")]
+      sh <- shown <$> step s 6
+      answer s (CS.shToken sh) CS.StepHarder `shouldReturn` Left "timed out after 120 s"
+      records s `shouldReturn` []
+      r <- answer s (CS.shToken sh) CS.StepAccept
+      r `shouldSatisfy` either (const False) (\case CS.StepLanded _ -> True; _ -> False)
     it "no harder writer configured: the step says so and harder is refused" $ do
       (s, _) <- serving (const (reply filled)) []
       sh <- shown <$> step s 6

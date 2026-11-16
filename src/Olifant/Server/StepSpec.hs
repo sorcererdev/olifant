@@ -91,6 +91,10 @@ spec = describe "Olifant.Server.Step (a conjure is one step)" $ do
       let t = sessionFilter [".py"] 300 [diffOf "src/a.py" 999]
       length (T.lines t) `shouldBe` 301
       last (T.lines t) `shouldBe` "… (700 more lines)"
+    it "new files: the language's only, without the book or .olifant, at most 20 named" $ do
+      untrackedLine [".py"] ["src/n.py", "book/x.py", ".olifant/y.py", "notes.md"] `shouldBe` "New files, not yet in git: src/n.py\n"
+      untrackedLine [".py"] [] `shouldBe` ""
+      untrackedLine [".py"] ["v/f" <> show i <> ".py" | i <- [1 .. 500 :: Int]] `shouldSatisfy` T.isSuffixOf "… (480 more)\n"
     it "drops binary diffs" $
       sessionFilter [".py"] 300 [("src/a.py", "diff --git a/src/a.py b/src/a.py\nBinary files a/src/a.py and b/src/a.py differ\n")] `shouldBe` ""
     it "not a git repository: nothing" $ withSystemTempDirectory "olifant-session" $ \dir ->

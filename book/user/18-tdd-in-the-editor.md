@@ -131,9 +131,9 @@ or unable to run before), or no tests. Its keys:
 |---|---|
 | `a` | accept: the step lands, one undo step per file, and your hands are back |
 | `r` | reject: nothing lands |
-| `h` | harder: the same step again from the harder writer (`[conjure] harder`), replacing the one shown; there is no `h` without it |
+| `h` | harder: the same step again from the harder writer (`[conjure] harder`), replacing the one shown; if it fails or has nothing to do, the step shown stays; there is no `h` without it |
 | `d` | details: the prompt and the raw reply |
-| `q` | leave it: the step stays; `<leader>mc` on the same unit reopens it |
+| `q` | leave it: the step stays; `<leader>mc` on the lines it changes reopens it while the buffer is unchanged (durandal.nvim keeps it; after an edit, `<leader>mc` asks for a new step) |
 
 After accept nothing else is offered: edit, then press `<leader>mc` again for the next step.
 Undo is the editor's (one step per file) and git's. A step whose file changed while it was
