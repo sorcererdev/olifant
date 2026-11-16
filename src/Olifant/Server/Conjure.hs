@@ -16,6 +16,7 @@ module Olifant.Server.Conjure
   , conjureAt
   , testConjure
   , resumeConjure
+  , sessionDiff
   ) where
 
 import Control.Applicative ((<|>))
@@ -51,7 +52,12 @@ import Olifant.Language (AddMethod (..), CheckDef (..), CheckReport (..), Checke
 import Olifant.Glob (matchesGlob)
 import Text.Regex.TDFA (AllTextSubmatches (..), Regex, makeRegexM, matchM, matchTest)
 import Olifant.Model (Backend (..), ModelConfig (..), Rung (..))
-import Olifant.Process (cancelled)
+import Olifant.Process (cancelled, runBytes)
+import Olifant.Server.Step (sessionFilter)
+import System.Directory (getModificationTime)
+import Data.Time (UTCTime)
+import System.Exit (ExitCode (..))
+import Data.Text.Encoding qualified as TE
 import Olifant.Server.Actions (fillerFor, rungFiller)
 import Olifant.Server.ConjureNext (undefinedLabelIn, Cause (..), Decided (..), DiagnosisFacts (..), Next (..), Offer (..), OfferFacts (..), OfferRow (..), PausedAnswer (..), Title (..), addsReason, knownNote, offerRow, fixMoves, paramPort, reconjureWhy, roundWords, testFix, fixWords, methodWords, pausedJson, methodSnippet, refusedSentence, shortName, testEntries, trigger, withoutKnown, PausedConjure (..), Policy (..), PolicyFacts (..), Proposal (..), RoundContext (..), RoundRecord (..), RoundView, Standing (..), causeWords, conjureNextQuestion, diagnosis, involved, isRepeat, isTrade, nextFrom, offersAt, pausedLifetime, policy, pruned, roundRecord, ConjureStep (..), StepKind (..), fixAgain, proposalStep, LatestFailure (..), rootFirst, roundSummary, roundView, spent, suspectFirst, undefinedNamesIn, undefinedIn, withHint)
 import Olifant.Server.ConjureScan (Fake (..), Port (..), advisedIn, blankAt, conjurePortQuestion, ctorParamsIn, derivePortIn, deriveParam, fakeCalls, fakeIn, callLines, methodText, readSignature, signatureTemplate, snippetLine, missingMemberIn, portCandidates, portEnd, portFrom, portsIn, servicePaths, siblingsOf, takesPortIn)
@@ -1557,3 +1563,24 @@ fill judged progress rounds s project rel text template verify context filler st
             _ -> do
               when (null offered) (throwE ("the model gave no conjure: " <> why))
               pure (Written (Just why) landing (maybe [] (`undefinedNamesIn` why) (langOf rel)))
+
+-- | What the person has been doing: the project's uncommitted changes
+-- (`git diff HEAD`) per file, most recently changed first, and the untracked
+-- files by name, through 'sessionFilter' at 300 lines. Not a git repository,
+-- or git failing: nothing.
+sessionDiff :: FilePath -> [Text] -> IO Text
+sessionDiff root exts =
+  runBytes "git" ["-C", root, "diff", "HEAD", "--no-color", "--no-ext-diff"] Nothing "" >>= \case
+    Right (ExitSuccess, out, _) -> do
+      let files = perFile (TE.decodeUtf8Lenient out)
+      timed <- mapM (\(p, d) -> (\t -> (t, (p, d))) <$> (either (const Nothing) Just <$> (try (getModificationTime (root </> p)) :: IO (Either SomeException UTCTime)))) files
+      untracked <- runBytes "git" ["-C", root, "ls-files", "--others", "--exclude-standard"] Nothing "" <&> \case
+        Right (ExitSuccess, o, _) -> [T.unpack l | l <- T.lines (TE.decodeUtf8Lenient o), any (`T.isSuffixOf` l) exts]
+        _ -> []
+      let diffs = sessionFilter exts 300 (map snd (sortOn (Down . fst) timed))
+      pure (diffs <> (if null untracked then "" else "New files, not yet in git: " <> T.intercalate ", " (map T.pack untracked) <> "\n"))
+    _ -> pure ""
+  where
+    perFile t = case T.splitOn "diff --git a/" t of
+      (_ : chunks) -> [(T.unpack (fst (T.breakOn " b/" c)), "diff --git a/" <> c) | c <- chunks]
+      _ -> []

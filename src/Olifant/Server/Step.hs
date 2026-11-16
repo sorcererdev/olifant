@@ -17,6 +17,7 @@ module Olifant.Server.Step
   , keptPath
   , testDelta
   , stepLogLine
+  , sessionFilter
   ) where
 
 import Data.List (isPrefixOf)
@@ -155,6 +156,21 @@ stepLogLine writer goal files d choice =
     tests
       | tdNoTests d = "no tests"
       | otherwise = T.intercalate ", " (["+" <> tshow (length (tdPassing d)) <> " tests"] ++ ["-" <> tshow (length (tdFailing d)) <> " failing" | not (null (tdFailing d))])
+
+-- | The session block: per-file diffs (most recently changed first) kept to
+-- the language's extensions, without the book, @.olifant@, lockfiles and
+-- binary diffs, cut at @cap@ lines with a last line saying what was left out.
+sessionFilter :: [Text] -> Int -> [(FilePath, Text)] -> Text
+sessionFilter exts cap diffs
+  | length ls <= cap = T.unlines ls
+  | otherwise = T.unlines (take cap ls ++ ["… (" <> tshow (length ls - cap) <> " more lines)"])
+  where
+    ls = concatMap (T.lines . snd) (filter kept diffs)
+    kept (p, d) =
+      any (`T.isSuffixOf` T.pack p) exts
+        && not (any (`isPrefixOf` p) ["book/", ".olifant/"])
+        && not (".lock" `T.isSuffixOf` T.pack p || "-lock." `T.isInfixOf` T.pack p)
+        && not (any ("Binary files " `T.isPrefixOf`) (T.lines d))
 
 tshow :: Show a => a -> Text
 tshow = T.pack . show

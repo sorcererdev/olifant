@@ -4,7 +4,12 @@ module Olifant.Server.StepSpec (spec) where
 
 import Data.Text qualified as T
 import Olifant.Language (Failure (..), TestRun (..))
+import Olifant.Server.Conjure (sessionDiff)
 import Olifant.Server.Step
+import System.Directory (createDirectoryIfMissing)
+import System.FilePath ((</>))
+import System.IO.Temp (withSystemTempDirectory)
+import System.Process (callProcess)
 import Test.Hspec
 
 situation :: Situation
@@ -72,5 +77,29 @@ spec = describe "Olifant.Server.Step (a conjure is one step)" $ do
     it "writer, goal, files, tests and the choice" $
       stepLogLine "claude-haiku-5-5" "fill the body" 2 (TestDelta ["a", "b", "c"] [] [] False) "accepted"
         `shouldBe` "conjure step claude-haiku-5-5 · fill the body · 2 files · +3 tests · accepted"
+  describe "what the person has been doing" $ do
+    let diffOf p n = (p, T.unlines (("diff --git a/" <> T.pack p <> " b/" <> T.pack p) : ["+line " <> T.pack (show i) | i <- [1 .. n :: Int]]))
+    it "keeps the language's files and drops the book, .olifant and lockfiles" $ do
+      let t = sessionFilter [".py"] 300 [diffOf "src/a.py" 2, diffOf "poetry.lock" 2, diffOf "book/x.md" 2, diffOf ".olifant/x.py" 2, diffOf "uv.lock" 1]
+      t `shouldSatisfy` T.isInfixOf "src/a.py"
+      mapM_ (\k -> t `shouldNotSatisfy` T.isInfixOf k) ["poetry.lock", "book/x.md", ".olifant/x.py", "uv.lock"]
+    it "cuts a long diff at the cap and says how much is left out" $ do
+      let t = sessionFilter [".py"] 300 [diffOf "src/a.py" 999]
+      length (T.lines t) `shouldBe` 301
+      last (T.lines t) `shouldBe` "… (700 more lines)"
+    it "drops binary diffs" $
+      sessionFilter [".py"] 300 [("src/a.py", "diff --git a/src/a.py b/src/a.py\nBinary files a/src/a.py and b/src/a.py differ\n")] `shouldBe` ""
+    it "not a git repository: nothing" $ withSystemTempDirectory "olifant-session" $ \dir ->
+      sessionDiff dir [".py"] `shouldReturn` ""
+    it "a repository with an edited file: its diff" $ withSystemTempDirectory "olifant-session" $ \dir -> do
+      createDirectoryIfMissing True (dir </> "src")
+      writeFile (dir </> "src/a.py") "x = 1\n"
+      let git args = callProcess "git" (["-C", dir, "-c", "user.email=t@t", "-c", "user.name=t"] ++ args)
+      git ["init", "-q"] >> git ["add", "."] >> git ["commit", "-q", "-m", "one"]
+      writeFile (dir </> "src/a.py") "x = 2\n"
+      writeFile (dir </> "src/new.py") "y = 1\n"
+      t <- sessionDiff dir [".py"]
+      t `shouldSatisfy` T.isInfixOf "+x = 2"
+      t `shouldSatisfy` T.isInfixOf "src/new.py"
   where
     f = Failure Nothing "x" ""
