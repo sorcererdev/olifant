@@ -176,7 +176,7 @@ with `after` and `above`, or `testUnitProvider`) is read by `Language/TestUnits.
 `Server/Order.hs` and `FillPhase` (the split of a test's two holes); `name`
 (`testNaming`) by `Server/Stub.hs`; `[test.stub]` (`testStub`, `StubDef`) by `Stub.stubWith`;
 `[test.failure]` (`FailureDef`) by `Language.Test.failureLineWith`/`gotExpectedWith`;
-`undefined` (`testUndefined`) by `ConjureNext.undefinedIn`.
+`undefined` (`testUndefined`) only by doctor's "test messages" row (`Capabilities.hs`) since conjure became one step.
 
 Every reader of test units goes through one door, `TestUnits.testUnitsOf :: Language -> Text
 -> [TestUnit]` (with `testUnitsReport`, which keeps a provider's failure for doctor; `testAtIn`
@@ -238,8 +238,8 @@ tool's report, in `Language/{Elm,Ghc,Pyright,Rustc,Generic}.hs`, and `supportsMi
 list of formats that can also say which `case` lacks which constructor, which is what
 `complete` and `uncovered` need. `convert` runs a command that turns any tool's output into
 olifant-json (`convertReport`, `Check.hs`). `undefined` and `missing_member` are the check's
-words for a name or a member that is missing (`ConjureNext.undefinedIn`,
-`ConjureScan.missingMemberIn`). `checkProgram` names the program doctor looks for.
+words for a name or a member that is missing (doctor's "messages" row,
+`ConjureScan.missingMemberIn`; the conjure step reads neither). `checkProgram` names the program doctor looks for.
 A check knows its folder on disk as a test run does: `CheckDef.checkDir`, set by
 `withProviderRoot` and narrowed to the package by `runCheckIn`. `runIn` makes it absolute,
 picks the command with `Adapter.chooseCheckCommand` (the same `chooseCommand` over
@@ -258,9 +258,9 @@ runs, caps (`capMutants 20`) and orders them. Only `python.toml` has any (17 ope
 ### `[conjure]`
 
 `langConjure` (`ConjureDef`: `service`, `port` with its `add` and `adapters`, `fake`,
-`constructor`, `advice`) belongs to the pack and is read only by conjure, in `Server/Conjure.hs` and `Server/ConjureScan.hs`: [chapter 4](04-conjure.md#the-conjure-shapes-and-the-floor)
-has the table of which field feeds which function. A language without it conjures at the
-floor. `[types]` is retired (an unknown-key error that says so, `onlyKeysWith` in
+`constructor`, `advice`) belongs to the pack. Since conjure became one step it is read only by
+`Server/ConjureScan.hs` and `Server/Sibling.hs` for doctor's rows (`Evidence.hs`,
+`Capabilities.hs`); [chapter 4](04-conjure.md#rough-spots) says what is open about it. `[types]` is retired (an unknown-key error that says so, `onlyKeysWith` in
 `parseLanguage`), and so is `[conjure.fake] stub`: the model writes a missing method's
 signature, read through the `add` generator's line. A name's declared type is the language's, not the pack's: `[unit] annotation`
 (`langUnitAnnotation`, beside `langUnitNames`; it was `[types] annotation`), an expression over

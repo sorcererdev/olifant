@@ -1421,19 +1421,18 @@ says which file was copied and which the model wrote.
 
 ### Conjure's shapes: `[conjure]`
 
-A pack tells conjure how its architecture looks, in its own
-`languages/<name>.toml`. Conjure uses these shapes to find the ports a test's
-fake stands for, to wire a missing port, and to add a method to a port. Without
-`[conjure]`, conjure works at the floor: it writes a test's body or a
-function's from the test and the unit, and never asks about ports. Haskell
-and Rust ship at the floor: on a hspec `it` or a `#[test] fn` whose body is
-its stub (`stub_lines`), conjure fills that body (the language's
-`[holes.block]`). On a test, the unit conjured is the `[test] unit` at the
-cursor (hspec's `it`, which no `[unit]` kind is); its body is the lines
-indented deeper than its first, so Rust's closing brace stays out of it. This
-`[conjure]` is a language table in a pack. It is not the `[conjure] wire` key
-of a project's `.olifant/config.toml`, which names the generator that wires a
-port.
+**Since November 2026 the editor's `conjure` does not read these shapes.** A conjure is one
+step a writer model takes over the module, its test file, its imports and your uncommitted
+changes ([chapter 18](18-tdd-in-the-editor.md#conjuring)); it may write a port and its
+adapters itself. `olifant doctor` still reports the shapes and the sibling tests it would find
+with them (the "conjure shapes", "sibling tests" and "signature" rows), and its wording there
+still speaks of the old loop. Whether the shapes come back as facts in a step's situation, or
+are retired, is open. What follows describes the tables as packs declare them.
+
+A pack tells olifant how its architecture looks, in its own `languages/<name>.toml`: where a
+service's ports are, how a test binds a fake, how a constructor takes its ports. This
+`[conjure]` is a language table in a pack. It is not the `[conjure]` table of a project's
+`.olifant/config.toml`, which names the models a conjure's step uses (`writer`, `harder`).
 
 Shapes are line expressions, like `[test] unit`. A block is the lines after
 its start that are blank or indented deeper.

@@ -192,7 +192,7 @@ From the bottom up:
 | **Output** | What Olifant says, as JSON and text: plans, lists, `show`, file actions, doctor, errors. The CLI prints it; the language server sends the same JSON | `Output.hs`: `planJson`, `planHuman`, `listJson`, `showJson`, `fileActionsJson`, `doctorJson`, `errorJson`, … | Actions, Anchor, Catalog, Cursor, Doctor, Generation, Generator, Holes, Language, Snippet, Template |
 | **Recognize** | Convention recognition: which generator hand-written code is, how sure, with which inputs — by place (output paths, inverted) and shape (token-shape shingles weighted by rarity), banded; the unsure band asks the decider's `recognize` choice | `Recognize.hs` over `Recognize/{Shape,Weights,Paths,Index,Inputs,Types,Ask}`: `recognizeIn`, `Recognition`, `Band`, `buildIndex`, `Convention`, `Index`, `pathPattern`, `invertPath`, `shapes`, `shingles`, `weightsOf`, `containment`, `inputsFor`, `unsure`, `recognizeQuestion`, `consult` | Decide, Generator, Glob, Naming, Template |
 | **Preview** | The generate picker's form and placeholders: each input's value and where it came from (you, the file's folders, the cursor, a lone choice, a default, a `+ New` step), checked as `olifant gen` checks it; marks a missing name is planned with, and their renderings back to `⟨name⟩` | `Preview.hs` over `Preview/{Fields,Marks}`: `Field`, `Source`, `fieldsFor`, `markValue`, `unmark` | Generator, Naming |
-| **Server** | The language server's state and answers, with no LSP types: open documents (overlays), projects per root, caches, debounced jobs, and each feature as a function of the state | `Server.hs` over `Server/{State,Jobs,Edits,Actions,Fixes,Hints,Completion,Suggest,Holes,Regions,Model,Recognize,Anticipate,Preview,Site,Unit,Tests,Stub,Sibling,Conjure,Mutate,Order}`: `ServerState`, `projectFor`, `memo`, `editsOfPlan`, `findingsFor`, `actionsFor`, `suggestionFor`, `regionEdits`, `holesFor`, `modelFor`, `recognitionFor`, `suggestOrRecognize`, `previewFor`, `stepsPlanWith`, `submit`, the editor's TDD commands `testsRun`, `stubAt`, `conjureAt`, `mutateAt` (with `unitAt`, `orderSurvivors`), … | Actions, Anchor, App, Catalog, Cursor, Decide, Fill, Generation, Generator, Holes, Language, Migration, Model, Mutate, Naming, Newness, Preview, Process, ProjectModel, Recognize, Rules, Snippet, Template, TestName, Workspace |
+| **Server** | The language server's state and answers, with no LSP types: open documents (overlays), projects per root, caches, debounced jobs, and each feature as a function of the state | `Server.hs` over `Server/{State,Jobs,Edits,Actions,Fixes,Hints,Completion,Suggest,Holes,Regions,Model,Recognize,Anticipate,Preview,Site,Unit,Tests,Stub,Sibling,Step,ConjureStep,Mutate,Order}`: `ServerState`, `projectFor`, `memo`, `editsOfPlan`, `findingsFor`, `actionsFor`, `suggestionFor`, `regionEdits`, `holesFor`, `modelFor`, `recognitionFor`, `suggestOrRecognize`, `previewFor`, `stepsPlanWith`, `submit`, the editor's TDD commands `testsRun`, `stubAt`, `conjureAt`, `mutateAt` (with `unitAt`, `orderSurvivors`), … | Actions, Anchor, App, Catalog, Cursor, Decide, Fill, Generation, Generator, Holes, Language, Migration, Model, Mutate, Naming, Newness, Preview, Process, ProjectModel, Recognize, Rules, Snippet, Template, TestName, Workspace |
 | **Lsp** | `olifant lsp`: the adapter between the protocol (the `lsp` library) and `Server` — handlers, positions, `WorkspaceEdit`s, progress, background work | `Lsp.hs`: `runLsp`, `runLspWithHandles` (specs), `serverDefinition` | Actions, App, Catalog, Generation, Output, Rules, Server, Snippet, Workspace |
 | **Cli** | The command line: parse arguments, call the use cases, print JSON or text, pick the exit code | `Cli.hs`: `Runtime`, `DoctorPorts` (re-exported for `Main`), `runCli`. Internal: `Cli/Options` (argument parsing) | almost everything, `Lsp` for `olifant lsp` |
 | **GeneratorTesting** | Running a pack's test cases against its fixture (the seed of `olifant test`), replaying recorded fills, placing a snippet case's cursor | `GeneratorTesting.hs`: `discoverCases`, `runCase`, `preparePack`, `parseCaseInputs`, `parseCaseCursor`, `atCaseCursor` | Anchor, Catalog, Cursor, Fill, Generation, Generator, Language, Query, Toml, Uncovered, Workspace |
@@ -1428,8 +1428,8 @@ any of this, layout is repaired: `applyFills` places `dedented` lines (common in
 dropped), and a candidate failing to compile whose first line sits less deep than the rest
 (and opens no block) is tried `reindented`, kept when, with only it placed, its file then
 compiles, or, the original carrying a syntax-class finding (`syntaxError`), has fewer
-findings or loses that one; it is announced as `Reindented` (a conjure
-writes that text). `Snippet.snippetOf` places a
+findings or loses that one; it is announced as `Reindented` (the
+file gets that text). `Snippet.snippetOf` places a
 model fill the same way (shared `Holes.dedented`, continuation lines at the marker line's
 indent), so the editor's snippet matches the written file. `gen --fills FILE` makes the
 filler `replayFiller` over `parseFills` (both in `Olifant.Fill`, shared with the case
@@ -2387,12 +2387,12 @@ does not parse joins `catalogBrokenRules`) and parsed by `Migration.parseStrangl
 - **Fix data names its generator** (`Lsp`, a fix's `data.generator`), so the editor fills a
   fix's inputs in the generate picker and resolves the fix with them.
 
-### TDD in the editor (`Server/{Site,Unit,Tests,Stub,Conjure,Mutate,Order}`)
+### TDD in the editor (`Server/{Site,Unit,Tests,Stub,Step,ConjureStep,Mutate,Order}`)
 
 The editor's four TDD commands ([user book, chapter 18](../user/18-tdd-in-the-editor.md)) are
 requests: each reads the editor's text, answers, and appends one line to the step log. Stub,
-tests and mutate keep nothing between calls; a steered conjure keeps its pauses
-(`ssPaused`), which [chapter 4](04-conjure.md) covers. None of them names a language: what a
+tests and mutate keep nothing between calls; a conjure keeps the step it shows until it is
+answered (`ssShown`), which [chapter 4](04-conjure.md) covers. None of them names a language: what a
 definition, a test, an import or a stub looks like comes from the language file
 ([chapter 5](05-languages.md)).
 
@@ -2414,14 +2414,12 @@ definition, a test, an import or a stub looks like comes from the language file
   given a survivor, the test is named from the mutant (`stubNameFor`, between
   `testAffixesIn`'s text) and carries it as a comment. A test goes where `at` says (hspec's `end of do in spec`, Rust's `end of mod
   tests`).
-- **`Server/Conjure`**'s `conjureAt` first builds the conjure language (`Server/Sibling`'s
-  `conjureLanguage`: the fakes and constructor a sibling test teaches, over the declared ones),
-  then runs the test file (the before-run), makes the unit's body
-  (or the selection, or a test's body) a `block` hole and plans it with `planWith` under
-  `ConjureStance`, verified by `VerifyTests` on a function or `VerifyRedAt` on a test. The
-  conjure lands whatever the after-run says, unless the document moved on while the model wrote
-  (`ssLiveDoc`). With `[decide] model` and a `[model] ladder` it is steered, and can pause and
-  resume: [chapter 4](04-conjure.md).
+- **`Server/ConjureStep`**'s `conjureAt` takes one step: the facts at the cursor (the unit, the
+  before-run, `importedContext`, the uncommitted changes from `sessionDiff`) worded by
+  `Server/Step`'s `situationText`, one call to the writer (`[conjure] writer`, else `[model]
+  default`), the answer read by `readStep`, each file checked (`keptPath`, parsed with
+  `errorLines`, the tests run over it) and kept under a token until `answerStep` hears accept,
+  reject or harder: [chapter 4](04-conjure.md).
 - **`Server/Mutate`**'s `mutateAt` runs the test file once unmutated (its passing tests are the
   judges, its wall time sets each mutant's timeout, `judgeTimeout`), mutates the unit's lines
   with the language's `[[mutate]]` operators (`operatorsOf`, `mutantsOf`), caps them at 20
@@ -2584,7 +2582,7 @@ The conventions brought these:
 - [Chapter 2](02-haskell-for-this-codebase.md) covers the Haskell in the excerpts above,
   with Rust comparisons.
 - [Chapter 3](03-plans.md): the plans loop (anchors, errands, reconcile, reviews, journal).
-- [Chapter 4](04-conjure.md): steered conjure (rounds, Jev, the model ladder, pause and resume).
+- [Chapter 4](04-conjure.md): conjure as one step (the situation, the writer, the check, the review's answers).
 - [Chapter 5](05-languages.md): how a language is described (layers, keys, doctor's
   capabilities, the no-branches rule).
 - To change a unit, start with its `XSpec.hs`: it's the unit's documentation by example,
