@@ -103,13 +103,16 @@ The JSON lines are the corpus for refining the prompt and the writer choice from
 ```
 request  olifant/conjure {textDocument, position, selection?, resume?: {token, choice: accept|reject|harder}}
 answer   {"shown": {token, file, unit, writer, goal, edits, dropped, parses: [{file, ok}],
-                    tests: {passing, failing, stillRed, noTests}, after, cost, seconds, harder}}
+                    tests: {passing, failing, stillRed, noTests}, after, cost, seconds, harder,
+                    diffs: [{file, diff}], situation, reply}}
        | {"nothing": goal}
        | {"landed": {file, edits}}
        | {"rejected": true}
 ```
 
-`edits` is a workspace edit (`acceptedEdit`); `after` is `testsJson` of the after-run, or null.
+`edits` is a workspace edit (`acceptedEdit`); `after` is `testsJson` of the after-run, or null;
+`diffs` each touched file's `unifiedDiff` (the review draws them); `situation` and `reply` the
+text the writer read and its raw answer (the review's `d`).
 Any other choice is `InvalidParams` naming the three.
 
 ## Testing it

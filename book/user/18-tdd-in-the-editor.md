@@ -174,7 +174,7 @@ real use.
 On the wire this is `olifant/conjure` with `{textDocument, position, selection?}` (the
 selection's `start` and `end` lines, 0-based, inclusive), under `$/progress` `conjuring`. It
 answers `{shown: {token, file, unit, writer, goal, edits, dropped, parses, tests: {passing,
-failing, stillRed, noTests}, after, cost, seconds, harder}}` (`edits` a workspace edit over
+failing, stillRed, noTests}, after, cost, seconds, harder, diffs, situation, reply}}` (`edits` a workspace edit over
 every file the step writes; `after` the after-run as `olifant/tests/run` answers it), or
 `{nothing: goal}`. The answer is the same request with `resume: {token, choice}`, `choice` one
 of `accept` (answers `{landed: {file, edits}}`), `reject` (`{rejected: true}`) or `harder` (a

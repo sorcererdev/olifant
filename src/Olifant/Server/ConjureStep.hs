@@ -71,6 +71,10 @@ data ShownStep = ShownStep
   , shCost :: Maybe Double
   , shSeconds :: Double
   , shHarder :: Bool
+  , shDiffs :: [(FilePath, Text)]
+  -- ^ each touched file's unified diff, by its path in the project
+  , shSituation :: Text
+  , shReply :: Text
   }
   deriving stock (Eq, Show)
 
@@ -200,6 +204,9 @@ takeStep s site file unit writer ask situation before =
           , shCost = crCost reply
           , shSeconds = crSeconds reply
           , shHarder = isJust (catalogConjureHarder cat)
+          , shDiffs = [(k, d) | (k, _, t, _, b) <- read', let d = unifiedDiff k (fromMaybe "" b) t, not (T.null d)]
+          , shSituation = situation
+          , shReply = crText reply
           }
 
 -- | The person's answer to the step under TOKEN: accept lands it (unless a
@@ -396,6 +403,9 @@ stepJson edits = \case
             , "cost" .= shCost sh
             , "seconds" .= shSeconds sh
             , "harder" .= shHarder sh
+            , "diffs" .= [object ["file" .= f, "diff" .= d] | (f, d) <- shDiffs sh]
+            , "situation" .= shSituation sh
+            , "reply" .= shReply sh
             ]
       ]
     where
