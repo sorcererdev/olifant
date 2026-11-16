@@ -165,17 +165,14 @@ spec = describe "Olifant.Inspect.Pass" $ do
     [o1, o2] `shouldSatisfy` all (\case InspectSkipped _ -> True; _ -> False)
     doesFileExist (eFinds e <> ".asked") >>= (`shouldBe` False)
     doesFileExist (eDir e </> inspectStorePath) >>= (`shouldBe` False)
-  it "a unit Jev thinks stops early is still inspected, marked in progress (user ruling)" $ withInspect "" edit1 $ \e -> do
-    TIO.writeFile (eAnswers e) (answers [("stops-early", True), ("nitpick", False), ("same", True)])
+  it "no unfinished screen: Jev is not asked, every changed unit is inspected (user ruling, for now)" $ withInspect "" edit1 $ \e -> do
     TIO.writeFile (eFinds e) (replies [("src/inspectme.py:f", findReply [conv] [])])
-    sent <- newIORef []
-    _ <- ePassWith e (\d -> d {vdFinder = \a -> modifyIORef' sent (++ map fuInProgress (faUnits a)) >> vdFinder d a}) (eDir e </> file)
-    readIORef sent >>= (`shouldBe` [True])
-    statuses <$> eStore e >>= (`shouldBe` [Open])
-  it "a unit with a TODO is silent" $ withInspect "" (T.replace "return x + 2" "return x + 2  # TODO: clamp" edit1) $ \e -> do
     _ <- ePass e
-    asked (eFinds e) >>= (`shouldBe` [])
-    vsInspected <$> eStore e >>= (`shouldBe` M.empty)
+    asked (eFinds e) >>= (`shouldBe` ["src/inspectme.py:f"])
+    filter (== "stops-early") <$> asked (eAnswers e) >>= (`shouldBe` [])
+  it "a unit with a TODO, or one that does not parse, is inspected too" $ withInspect "" (T.replace "return x + 2" "return (x + 2  # TODO: clamp" edit1) $ \e -> do
+    _ <- ePass e
+    asked (eFinds e) >>= (`shouldBe` ["src/inspectme.py:f"])
   it "a nitpick is withheld" $ withInspect "" edit1 $ \e -> do
     TIO.writeFile (eAnswers e) (answers [("stops-early", False), ("nitpick", True)])
     TIO.writeFile (eFinds e) (replies [("src/inspectme.py:f", findReply [conv] [])])

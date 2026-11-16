@@ -35,11 +35,10 @@ no project rules: it still finds bugs and wrong assumptions, but it cannot find 
    `HEAD`, by fingerprint, so a formatter's reflow is not a change. Every unit of an untracked
    file counts, and so does every unit in a repository with no commit. A unit inspect already looked
    at, as it is now, is not looked at again. After a commit nothing is changed.
-2. **Finished?** A unit that does not parse, holds a `TODO` or `FIXME`, or has an empty body
-   (only comments or a docstring) is skipped silently, and screened again on the next save. One
-   Jev judges to stop before doing what its name promises is still inspected, marked *in
-   progress*: the find call reports rule breaks and bugs in the code that is written, never that
-   something is missing yet.
+2. **No unfinished screen, for now** (user ruling, 2026-11-15). Every changed unit is inspected,
+   half-written ones included, and Jev's nitpick filter decides what is shown. (Milestone 1
+   skipped code that did not parse, held a `TODO` or `FIXME`, had an empty body, or that Jev judged
+   to stop early; that hid real rule breaks in stubs. `Inspect/Screen.hs` keeps the screen, unused.)
 3. **Find.** One `claude -p` call (`find_model`, read-only tools, the plans' fences:
    `[plans] not_evidence`, the plans directory, `.olifant`) reads the changed units, their diff,
    your `inspect.md`, the rule findings `olifant check` already reports, and the findings still open
