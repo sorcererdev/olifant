@@ -47,9 +47,9 @@ import Data.Time (defaultTimeLocale, formatTime)
 import Olifant.App (Ports (..), Project (..), nearestProject, openProjectWith)
 import Olifant.Fill (ModelFiller)
 import Olifant.Catalog (Catalog (..), PackCache, catalogIgnores, catalogPackRoots, describeCatalogError, newPackCache)
-import Olifant.Model (Backend (..), ModelConfig (..))
+import Olifant.Model (Backend (..), ChatReply, ModelConfig (..))
 import Olifant.Process (Cancel, neverCancel)
-import Olifant.Server.ConjureNext (PausedConjure)
+import Olifant.Server.Step (StepHeld)
 import Olifant.Server.LoopTypes (ReconcileAnswer)
 import Olifant.Generator (Generator)
 import Olifant.Recognize (Index, Shingle)
@@ -68,10 +68,10 @@ import System.FilePath (splitDirectories, takeDirectory, (</>))
 -- from instead of calling their backends (tests).
 -- @scKeys@: the editor's keys by name (`plan_review`: "<leader>mpr"), which
 -- the lenses that offer them name.
-data ServerConfig = ServerConfig {scDebounceMs :: Int, scModel :: Maybe Text, scFills :: Maybe FilePath, scDecideAnswers :: Maybe FilePath, scTestScript :: Maybe FilePath, scKeys :: [(Text, Text)], scChatAnswers :: Maybe FilePath, scCheckAnswers :: Maybe FilePath, scInspectAnswers :: Maybe FilePath}
+data ServerConfig = ServerConfig {scDebounceMs :: Int, scModel :: Maybe Text, scFills :: Maybe FilePath, scDecideAnswers :: Maybe FilePath, scTestScript :: Maybe FilePath, scKeys :: [(Text, Text)], scChatAnswers :: Maybe FilePath, scCheckAnswers :: Maybe FilePath, scInspectAnswers :: Maybe FilePath, scStepReplies :: Maybe FilePath}
 
 defaultServerConfig :: ServerConfig
-defaultServerConfig = ServerConfig 300 Nothing Nothing Nothing Nothing [] Nothing Nothing Nothing
+defaultServerConfig = ServerConfig 300 Nothing Nothing Nothing Nothing [] Nothing Nothing Nothing Nothing
 
 -- | A cited file as it is now: its 'Olifant.Server.Checker.fileHash'
 -- (Nothing: the file is gone) and each unit's fingerprint by name.
@@ -126,9 +126,6 @@ data ServerState = ServerState
     ssLiveDoc :: Maybe (FilePath -> IO (Maybe (Int, Text)))
   , -- | a filler that answers instead of any model (tests)
     ssTestFiller :: Maybe (ModelFiller IO)
-  , -- | paused conjures by token (`conjure-N`), and the last N given: an
-    -- IORef, so a pause outlives the snapshot of the request that made it
-    ssPaused :: IORef (Int, Map Text PausedConjure)
   , -- | per plan: the last reconcile's situation (its key) and its answer
     ssReconciled :: Map FilePath (Text, ReconcileAnswer)
   , -- | per (language, path): the units found in a text, kept while the file's
@@ -150,6 +147,12 @@ data ServerState = ServerState
     -- (its JSON name), newest first; read from `errands.jsonl` once, then
     -- kept as checks are made. A root absent has not been read yet
     ssEstimates :: IORef (Map FilePath (Map Text [Double]))
+  , -- | conjure steps shown and not yet answered, by token (`step-N`), and
+    -- the last N given: an IORef, so a step outlives its request's snapshot
+    ssShown :: IORef (Int, Map Text StepHeld)
+  , -- | a writer that answers a step instead of any model (tests): the
+    -- writer's name, the system text, the situation
+    ssTestWriter :: Maybe (Text -> Text -> Text -> IO (Either Text ChatReply))
   }
 
 newServerState :: Ports -> IO ServerState
@@ -158,13 +161,13 @@ newServerState ports = do
   bases <- newIORef M.empty
   decisions <- newIORef (M.empty, S.empty)
   onDecided <- newIORef (pure ())
-  paused <- newIORef (0, M.empty)
   units <- newIORef M.empty
   claims <- newIORef M.empty
   checking <- newIORef M.empty
   cited <- newIORef (0, M.empty)
   estimates <- newIORef M.empty
-  pure (ServerState ports M.empty M.empty cache defaultServerConfig M.empty 0 0 M.empty M.empty neverCancel M.empty M.empty M.empty M.empty bases decisions onDecided Nothing Nothing paused M.empty units claims checking cited estimates)
+  shownSteps <- newIORef (0, M.empty)
+  pure (ServerState ports M.empty M.empty cache defaultServerConfig M.empty 0 0 M.empty M.empty neverCancel M.empty M.empty M.empty M.empty bases decisions onDecided Nothing Nothing M.empty units claims checking cited estimates shownSteps Nothing)
 
 -- | A file's base text, from the cache while no file changed since.
 cachedBase :: ServerState -> FilePath -> Text -> FilePath -> IO (Either Text (Text, Maybe Text))

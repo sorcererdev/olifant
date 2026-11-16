@@ -34,6 +34,7 @@ import Data.Aeson.KeyMap qualified as KM
 import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe, mapMaybe)
 import Olifant.Plans (Anchor (..), Kind (..), Line (..), Verdict (..), anchorText, childrenOf, excerptInfo, excerptSpans, parsePlan, stepDone, testState, withVerdict)
 import Olifant.Server.Unit (Named (..), fingerprint)
+import Olifant.Server.ConjureStep qualified as Step
 import Olifant.Server.Cascade (checkModelIn)
 import Olifant.Server.Claims (ClaimStore, checkedKeys, claimsOf, modeFor, openSentences, sentencesOf, stepUnit)
 import Olifant.Server.Loop (PassAnswer (..), PassMode (..), Sweep (..), checkOne, checkPlan, claimPass, estimateFor, estimatesOf, sweepTargets)
@@ -220,6 +221,8 @@ configure env = \case
                 { scDebounceMs = maybe (scDebounceMs (ssConfig s)) id (KM.lookup "debounce_ms" o >>= \case Number n -> toBoundedInteger n; _ -> Nothing)
                 , scModel = case KM.lookup "model" o of Just (String m) -> Just m; _ -> scModel (ssConfig s)
                 , scFills = case KM.lookup "fills" o of Just (String f) -> Just (T.unpack f); _ -> scFills (ssConfig s)
+                , -- step_replies: a file whose text every conjure writer answers (tests)
+                  scStepReplies = case KM.lookup "step_replies" o of Just (String f) -> Just (T.unpack f); _ -> scStepReplies (ssConfig s)
                 , -- recognize_answers: an alias of decide_answers (one answers file)
                   scDecideAnswers = case (KM.lookup "decide_answers" o, KM.lookup "recognize_answers" o) of
                     (Just (String f), _) -> Just (T.unpack f)
@@ -1062,17 +1065,16 @@ handlers env =
                     , Just z' <- toBoundedInteger z ->
                         Just (a' + 1, z' + 1)
                   _ -> Nothing
-                invalid = respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "olifant/conjure resume needs a token and a choice (continue, climb, stop, reconjure, accept, reject or wire)" Nothing))
-            case resumeOf (req ^. L.params) of
-              Left _ -> invalid
+            case Step.stepResumeOf (req ^. L.params) of
+              Left why -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) why Nothing))
               Right resumed -> do
-                conjured' <- planProgress "conjuring" (\progress -> withSnapshot job (maybe (conjureAt progress path (line + 1) selection) (resumeConjure progress path) resumed))
+                conjured' <- planProgress "conjuring" (\progress -> withSnapshot job (maybe (Step.conjureAt progress path (line + 1) selection) (\(token, choice) -> Step.answerStep progress path token choice) resumed))
                 -- a conjure the editor cancelled is no result
                 stopped <- liftIO (cancelled (envCancel job))
                 case conjured' of
                   _ | stopped -> respond (Left (TResponseError (InL LSPErrorCodes_RequestCancelled) "cancelled" Nothing))
                   Left why -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
-                  Right outcome -> respond (Right (conjureJson outcome))
+                  Right outcome -> respond (Right (Step.stepJson (toJSON . acceptedEdit) outcome))
           _ -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "olifant/conjure needs a textDocument and a position" Nothing))
     , requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/debugState")) $ \req respond ->
         liftIO (readIORef (envDebug env)) >>= \case
@@ -1194,50 +1196,6 @@ outcomeParams params = do
   String outcome <- KM.lookup "outcome" o
   guard (not (T.null eid) && block >= 0 && outcome `elem` ["accepted", "rejected"])
   pure (path, eid, block, outcome)
-
--- | A conjure request's `resume` (token, choice, optional hint, arg and land;
--- an empty hint is none; `land` a boolean, false when absent; `wire` needs an
--- `arg` of the form `param: Port`): Nothing when it has none, an error when
--- it is not whole.
-resumeOf :: Value -> Either T.Text (Maybe Resume)
-resumeOf = \case
-  Object o | Just r <- KM.lookup "resume" o -> case r of
-    Object ro
-      | Just (String tok) <- KM.lookup "token" ro
-      , not (T.null tok)
-      , Just (String c) <- KM.lookup "choice" ro
-      , Just choice <- lookup c [("continue", ResumeContinue), ("climb", ResumeClimb), ("stop", ResumeStop), ("reconjure", ResumeReconjure), ("accept", ResumeAccept), ("reject", ResumeReject), ("wire", ResumeWire), ("port", ResumePort)]
-      , Just arg <- case KM.lookup "arg" ro of
-          Nothing -> Just Nothing
-          Just Aeson.Null -> Just Nothing
-          Just (String a) -> Just (Just a)
-          _ -> Nothing
-      , Just land <- case KM.lookup "land" ro of
-          Nothing -> Just False
-          Just Aeson.Null -> Just False
-          Just (Bool b) -> Just b
-          _ -> Nothing
-      , choice /= ResumeWire || maybe False (\a -> length (filter (not . T.null . T.strip) (T.splitOn ":" a)) == 2) arg ->
-          Right (Just (Resume tok choice (case KM.lookup "hint" ro of Just (String h) | not (T.null h) -> Just h; _ -> Nothing) arg land))
-    _ -> Left "bad resume"
-  _ -> Right Nothing
-
--- | What `olifant/conjure` answers: a landed conjure, or a paused one.
-conjureJson :: ConjureOutcome -> Value
-conjureJson = \case
-  Landed a ->
-    object
-      [ "file" .= daFile a
-      , "unit" .= daUnit a
-      , "edits" .= (if null (daEdits a) then Aeson.Null else toJSON (acceptedEdit (daEdits a)))
-      , "summary" .= daSummary a
-      , "green" .= daGreen a
-      , "tests" .= testsJson (daTests a)
-      , "rounds" .= daRounds a
-      , "rungs" .= daRungs a
-      , "stopped" .= daStopped a
-      ]
-  Paused p -> object ["paused" .= pausedJson p]
 
 -- | A request's `line` (0-based), if it has one.
 lineOf :: Value -> Maybe Int

@@ -1,14 +1,15 @@
 {-# OPTIONS_GHC -Wno-incomplete-uni-patterns #-}
 
-module Olifant.Server.ConjureScanSpec (spec) where
+module Olifant.Server.ConjureScanSpec (spec, cancelTestText, pyHtmx) where
 
 import Control.Monad (forM_)
 import Data.Maybe (fromJust)
+import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Decide
-import Olifant.Language (Advice (..), ConjureDef (..), CtorShape (..), Language (..), PortShape (..), shippedLanguageNow)
+import Olifant.Language (Advice (..), ConjureDef (..), CtorShape (..), FakeShape (..), Language (..), PortShape (..), shippedLanguage, shippedLanguageNow)
 import Olifant.Language.TestUnits (testSourceIn)
-import Olifant.Server.ConjureNextSpec (cancelTestText, pyHtmx)
+import System.IO.Unsafe (unsafePerformIO)
 import Olifant.Server.ConjureScan
 import Test.Hspec
 
@@ -132,3 +133,49 @@ spec = describe "ConjureScan (Olifant.Server.ConjureScan)" $ do
         ct = CtorShape [] "" "pub fn new\\(" ("^([[:alnum:]_]+)" <> T.replace "{= name =}" "" ann)
     forM_ ["Arc<dyn BookingRepository>", "Box<dyn BookingRepository>", "&dyn BookingRepository", "BookingRepository"] $ \ty ->
       ctorParams ct ("pub fn new(bookings: " <> ty <> ") -> Self {\n") `shouldBe` [("bookings", "BookingRepository")]
+
+-- | A cancel-booking test file (the bistro demo's shape).
+cancelTestText :: Text
+cancelTestText =
+  T.unlines
+    [ "from unittest.mock import Mock"
+    , ""
+    , "from bistro.booking.commands.cancel_booking import ("
+    , "    CancelBooking,"
+    , "    CancelBookingInput,"
+    , "    NotFound,"
+    , ")"
+    , "from bistro.shared.result import Ok"
+    , ""
+    , ""
+    , "def command() -> CancelBooking:"
+    , "    return CancelBooking()"
+    , ""
+    , ""
+    , "def test_cancel_booking_succeeds() -> None:"
+    , "    cancel_booking = command()"
+    , "    result = cancel_booking.handle(CancelBookingInput(id=\"1\"))"
+    , "    assert result == Ok(None)"
+    , ""
+    , ""
+    , "def test_cancel_booking_not_found() -> None:"
+    , "    repository = Mock()"
+    , "    repository.find_by_id = lambda id: None"
+    , "    cancel_booking = command()"
+    , "    result = cancel_booking.handle(CancelBookingInput(id=\"1\"))"
+    , "    assert isinstance(result, NotFound)"
+    , ""
+    ]
+
+-- | Python as the python-htmx pack has it (its `[conjure]` shapes over the
+-- shipped language), read once for the pure fixtures here. The pack no longer
+-- declares `[conjure.fake]` and `[conjure.constructor]` (a conjure learns them
+-- from a sibling test): these pure specs run with the shapes it had, as the
+-- conjure language carries them once read.
+pyHtmx :: Language
+pyHtmx = withShapes (unsafePerformIO (shippedLanguage "python" [("pack python-htmx", "packs/python-htmx")]))
+  where
+    withShapes l = l {langConjure = (\cj -> cj {cjFake = Just declaredFake, cjConstructor = Just declaredCtor}) <$> langConjure l}
+    declaredFake = FakeShape "^[[:space:]]+([[:alnum:]_]+)[[:space:]]*=[[:space:]]*([[:alnum:]_]+)\\(" ["Mock", "MagicMock"] ["Fake", "InMemory", "Stub"] (Just "{= param =}={= var =}")
+    declaredCtor = CtorShape ["commands/**/*.py", "queries/**/*.py"] "^class ([[:alnum:]_]+)" "def __init__\\(" "^([[:alnum:]_]+)[[:space:]]*:[[:space:]]*([^=]*[^=[:space:]])"
+{-# NOINLINE pyHtmx #-}

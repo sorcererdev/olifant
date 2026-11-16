@@ -153,9 +153,8 @@ library
     Olifant.Server.Claims
     Olifant.Server.Completion
     Olifant.Server.Confine
-    Olifant.Server.Conjure
-    Olifant.Server.ConjureNext
     Olifant.Server.ConjureScan
+    Olifant.Server.ConjureStep
     Olifant.Server.Edits
     Olifant.Server.Errand
     Olifant.Server.Excerpt
@@ -181,6 +180,7 @@ library
     Olifant.Server.Site
     Olifant.Server.Stale
     Olifant.Server.State
+    Olifant.Server.Step
     Olifant.Server.Stub
     Olifant.Server.Suggest
     Olifant.Server.Telemetry
@@ -385,11 +385,9 @@ test-suite spec
     Olifant.Server.ClaimsSpec
     Olifant.Server.Completion
     Olifant.Server.Confine
-    Olifant.Server.Conjure
-    Olifant.Server.ConjureNext
-    Olifant.Server.ConjureNextSpec
     Olifant.Server.ConjureScan
     Olifant.Server.ConjureScanSpec
+    Olifant.Server.ConjureStep
     Olifant.Server.Edits
     Olifant.Server.EditsSpec
     Olifant.Server.Errand
@@ -426,6 +424,8 @@ test-suite spec
     Olifant.Server.Stale
     Olifant.Server.StaleSpec
     Olifant.Server.State
+    Olifant.Server.Step
+    Olifant.Server.StepSpec
     Olifant.Server.Stub
     Olifant.Server.Suggest
     Olifant.Server.Telemetry

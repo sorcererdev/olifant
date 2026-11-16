@@ -77,15 +77,12 @@ module Olifant.Server
   , stubAt
   , Unit (..)
   , unitAt
-  , ConjureAnswer (..)
-  , PausedAnswer (..)
-  , pausedJson
-  , Proposal (..)
-  , ConjureOutcome (..)
-  , ResumeChoice (..)
-  , Resume (..)
+  , ShownStep (..)
+  , LandedStep (..)
+  , StepOutcome (..)
+  , StepChoice (..)
   , conjureAt
-  , resumeConjure
+  , answerStep
   , MutateAnswer (..)
   , waiveAt
   , mutateAt
@@ -135,7 +132,7 @@ import Olifant.Server.Preview (PickStep (..), Preview (..), previewFor, stepsPla
 import Olifant.Server.State
 import Olifant.Server.Stub (StubAnswer (..), stubAt)
 import Olifant.Server.Unit (Named (..), Unit (..), unitAround, unitAt)
-import Olifant.Server.Conjure (ConjureAnswer (..), ConjureOutcome (..), PausedAnswer (..), Proposal (..), pausedJson, Resume (..), ResumeChoice (..), conjureAt, resumeConjure)
+import Olifant.Server.ConjureStep (LandedStep (..), ShownStep (..), StepChoice (..), StepOutcome (..), answerStep, conjureAt)
 import Olifant.Server.Mutate (MutateAnswer (..), mutateAt)
 import Olifant.Server.Waive (waiveAt)
 import Olifant.Server.Tests (TestsAnswer (..), TestsFile (..), testsFile, testsFileJson, testsJson, testsRun, TestsScope (..))

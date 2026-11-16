@@ -7,9 +7,13 @@ import Data.ByteString.Lazy qualified as BL
 import Data.Map.Strict qualified as M
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
-import Olifant.Fill (FillHole (..), FillRequest (..), Stance (..))
+import Olifant.Fill (FillHole (..), FillRequest (..), Filler (..), Stance (..))
 import Olifant.Model
 import Olifant.Toml (parseToml)
+import Olifant.Process (neverCancel)
+import System.Directory (getPermissions, setOwnerExecutable, setPermissions)
+import System.FilePath ((</>))
+import System.IO.Temp (withSystemTempDirectory)
 import Test.Hspec
 
 request :: FillRequest
@@ -94,29 +98,53 @@ spec = describe "Olifant.Model (spec §6.4)" $ do
   it "says what was wrong with a reply that is not the agreed JSON" $ do
     decodeFills (OpenAICompatible "u" "m") "{\"choices\":[{\"message\":{\"content\":\"Sure! Here is the code.\"}}]}" `shouldSatisfy` either ("not the JSON" `T.isInfixOf`) (const False)
     decodeFills (OpenAICompatible "u" "m") "{\"error\":{\"message\":\"model not found\"}}" `shouldSatisfy` either ("model not found" `T.isInfixOf`) (const False)
+  describe "a claude backend (claude -p, the subscription path)" $ do
+    let parse ls = parseModelConfig (either (error . T.unpack) id (parseToml (T.unlines ls)))
+        fakeRunner out k = withSystemTempDirectory "olifant-claude" $ \dir -> do
+          let path = dir </> "claude"
+          writeFile path ("#!/bin/sh\ncat > /dev/null\nprintf '%s' '" <> out <> "'\n")
+          getPermissions path >>= setPermissions path . setOwnerExecutable True
+          k (T.pack path)
+    it "reads kind = \"claude\" with its model; the runner defaults to claude" $
+      fmap mcBackends (parse ["[model.backends.haiku]", "kind = \"claude\"", "model = \"claude-haiku-5-5\""])
+        `shouldBe` Right [("haiku", Claude "claude-haiku-5-5" "claude")]
+    it "refuses a stray key under a claude backend" $
+      parse ["[model.backends.haiku]", "kind = \"claude\"", "model = \"m\"", "url = \"http://x\""] `shouldSatisfy` either ("url" `T.isInfixOf`) (const False)
+    it "passes claude -p the flags that keep CLAUDE.md, tools, settings and sessions out" $
+      claudeArgs "claude-haiku-5-5" "S"
+        `shouldBe` ["-p", "--output-format", "json", "--model", "claude-haiku-5-5", "--permission-prompts", "none", "--system-prompt", "S", "--tools", "", "--no-session-persistence", "--setting-sources", ""]
+    it "a runner that is not installed: one sentence" $
+      askBackendReply neverCancel 5 (Claude "m" "/nonexistent/claude") "s" "u" `shouldReturn` Left "claude is not installed"
+    it "reads the reply's text, cost and seconds" $ fakeRunner "{\"result\":\"hi\",\"total_cost_usd\":0.001,\"duration_ms\":1200}" $ \runner ->
+      askBackendReply neverCancel 5 (Claude "m" runner) "s" "u" `shouldReturn` Right (ChatReply "hi" (Just 0.001) 1.2)
+    it "an error reply is the runner's words" $ fakeRunner "{\"is_error\":true,\"result\":\"Not logged in\"}" $ \runner ->
+      askBackendReply neverCancel 5 (Claude "m" runner) "s" "u" `shouldReturn` Left "the model said: Not logged in"
+    it "fills holes from the reply's text, as the other kinds do" $ fakeRunner "{\"result\":\"<fill name=\\\"status\\\">200</fill>\"}" $ \runner ->
+      runFill (curlFiller 5 (Claude "m" runner)) request `shouldReturn` Right (M.fromList [("status", "200")])
   describe "the ladder (steered conjures)" $ do
     let backends = ["[model.backends.local]", "kind = \"openai-compatible\"", "url = \"http://localhost:11434/v1\"", "model = \"q\""]
         claude extra = ["[model.backends.claude]", "kind = \"anthropic\"", "model = \"c\""] <> extra
         parse ls = parseModelConfig (either (error . T.unpack) id (parseToml (T.unlines ls)))
         failsWith needle ls = parse ls `shouldSatisfy` either (needle `T.isInfixOf`) (const False)
-    it "(a) reads the ladder in its order, with rounds, budget and each rung's escalate" $ do
-      let Right c = parse (["[model]", "default = \"local\"", "ladder = [\"local\", \"claude\"]", "rounds = 4", "budget = 90"] <> backends <> claude ["escalate = \"auto\""])
+    it "(a) reads the ladder in its order, with budget and each rung's escalate (plans read them)" $ do
+      let Right c = parse (["[model]", "default = \"local\"", "ladder = [\"local\", \"claude\"]", "budget = 90"] <> backends <> claude ["escalate = \"auto\""])
       mcLadder c `shouldBe` [Rung "local" EscalateAsk, Rung "claude" EscalateAuto]
       mcEscalate c `shouldBe` [("claude", EscalateAuto), ("local", EscalateAsk)]
-      (mcRounds c, mcBudget c) `shouldBe` (4, 90)
-    it "(b) defaults: the default backend is the ladder, 6 rounds, 180 seconds" $ do
+      mcBudget c `shouldBe` 90
+    it "(b) defaults: the default backend is the ladder, 180 seconds" $ do
       let Right c = parse (["[model]", "default = \"local\""] <> backends)
-      (mcLadder c, mcRounds c, mcBudget c) `shouldBe` ([Rung "local" EscalateAsk], 6, 180)
+      (mcLadder c, mcBudget c) `shouldBe` ([Rung "local" EscalateAsk], 180)
       fmap mcLadder (parse ["[model]"]) `shouldBe` Right []
       parseModelConfig M.empty `shouldBe` Right defaultModelConfig
+    it "`rounds` is refused: a conjure is one step, its writer is [conjure] writer" $
+      failsWith "[conjure] writer" (["[model]", "rounds = 4"] <> backends)
     it "(c) refuses a ladder name with no backend" $
       failsWith "no such backend `gpt`" (["[model]", "ladder = [\"local\", \"gpt\"]"] <> backends)
     it "(d) refuses a jev backend in the ladder" $
       failsWith "answers decisions, not prompts" (["[model]", "ladder = [\"local\", \"jev\"]", "[model.backends.jev]", "kind = \"jev\""] <> backends)
     it "(e) refuses a bad escalate value" $
       failsWith "must be never, ask or auto" (backends <> ["escalate = \"sometimes\""])
-    it "(f) refuses rounds or budget below 1" $ do
-      failsWith "`rounds` must be at least 1" ["[model]", "rounds = 0"]
+    it "(f) refuses a budget below 1" $
       failsWith "`budget` must be at least 1" ["[model]", "budget = 0"]
     it "(g) escalate is an unknown key on a jev backend" $
       failsWith "escalate" ["[model.backends.jev]", "kind = \"jev\"", "escalate = \"auto\""]

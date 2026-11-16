@@ -79,12 +79,14 @@ runnerArgs cfg verb testTools resume =
     Check
       | web ->
           [ "--strict-mcp-config"
+          , "--setting-sources", ""
           , "--tools", T.unpack (T.intercalate "," ("WebSearch" : ["WebFetch" | any ("WebFetch" `T.isPrefixOf`) testTools]))
           , "--allowedTools", T.unpack (T.intercalate "," testTools)
           , "--settings", denying fileTools
           , "--append-system-prompt", T.unpack webPrompt ]
       | otherwise ->
           [ "--strict-mcp-config"
+          , "--setting-sources", ""
           , "--tools", "Read,Grep,Glob"
           , "--allowedTools", "Read,Grep,Glob"
           -- Read deny rules fence Grep and Glob too (measured 2026-11-08, fence-check/README.md)

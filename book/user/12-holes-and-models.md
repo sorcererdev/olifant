@@ -287,7 +287,7 @@ and opens no block (it does not end with `:` or an open bracket, a trailing comm
 is read with the rest brought up to it when that compiles, or, when the fill as written has
 a syntax error, when that leaves fewer findings or no syntax error (each judged with only
 that fill in place, so another hole's errors in the file do not count).
-A conjure read that way may still fail on a type error: that error is then the reason, and
+A fill read that way may still fail on a type error: that error is then the reason, and
 the text written is the one read level. `--progress` reports the rescue as
 `{"event":"reindent","hole":…,"fill":…}`. Measured on `handle-body`: every
 failed qwen3-coder:30b attempt was one of these two layouts, and the model repeated it on
@@ -310,8 +310,8 @@ a `def` or `class` the file already defines, at its own top level, is not placed
 import or a new helper is code): the attempt fails with "the model answered with more than the
 hole: a whole file", and the retry says *answer with the lines that replace the marker only:
 no `def` line, no imports, no other tests*. `--progress` reports
-`{"event":"cut","hole":…,"dropped":…,"fill":…}` and `{"event":"whole_file","hole":…}`; a
-conjure's step log has `fill olifant cut to the hole (N lines dropped)`.
+`{"event":"cut","hole":…,"dropped":…,"fill":…}` and `{"event":"whole_file","hole":…}`; the
+step log has `fill olifant cut to the hole (N lines dropped)`.
 
 **Verify: a fill must pass a command.** A model hole may name a command its fill must pass,
 usually its tests:
@@ -348,22 +348,12 @@ binding the name, or none, leave it to the model's retry. `--progress` reports i
 `{"event":"auto_import","hole":…,"import":…}`. It needs the compiler support to read the
 name from a message (`supportUndefined`; pyright's does, the others don't yet).
 
-### Conjures: the editor's holes
+### Conjures are not holes
 
-The editor's `conjure` ([chapter 18](18-tdd-in-the-editor.md#conjuring)) conjures through the same
-fill phase: a conjure is a model hole made on demand, of kind `block` over a unit's body or a
-test's, so it is parsed, checked, auto-imported and retried as any hole is. Two things differ.
-
-- **The stance.** A conjure's request asks for *the least code that makes this test pass and no
-  more: do not generalise beyond what the tests ask*. A constant is a good conjure for one test;
-  the next test asks for more. A body on screen that is no stub (another `conjure`) goes with the
-  request as *the body on screen, rejected by the person*.
-- **The verifier is the unit's tests.** A body is verified by its test file (every test there
-  must pass). A test's body is verified the other way: the test must fail *at its assertion*, or
-  pass (an error in the setup is a failed attempt). Each failure goes back to the model as the
-  reason, as a `verify` command's output does; when the retries run out (or, with a decision
-  model, when the person stops a paused conjure) the last attempt lands anyway, and the
-  notification says what its tests said.
+The editor's `conjure` ([chapter 18](18-tdd-in-the-editor.md#conjuring)) does not go through
+the fill phase. It is one call to `[conjure] writer` (else `[model] default`) that answers whole
+files for a small step, shown for review before anything lands. It uses this chapter's
+backends and `timeout`, and nothing else here: no stances, no retries, no cuts to a hole.
 
 ### Retries with the reason
 
@@ -444,9 +434,8 @@ project's is used, as a whole:
 default = "local"        # the backend gen uses when you don't pass --model
 retries = 2              # extra rounds for failing holes (default 2)
 timeout = 120            # seconds each model call may take (default 120)
-ladder  = ["local", "claude"]   # models a steered conjure climbs, local first (default: just `default`)
-rounds  = 6              # rounds a conjure may run (default 6)
-budget  = 180            # seconds a conjure may run (default 180)
+ladder  = ["local", "claude"]   # backends a plan's reconcile climbs, local first (default: just `default`)
+budget  = 180            # seconds a plan's reconcile may run (default 180)
 
 [model.backends.local]
 kind  = "openai-compatible"
@@ -458,17 +447,22 @@ kind        = "anthropic"
 model       = "claude-haiku-4-5-20251001"
 api_key_env = "ANTHROPIC_API_KEY"      # the default; the key is read from this variable
 escalate    = "ask"                    # never, ask (default) or auto: may Jev climb to this rung?
+
+[model.backends.haiku]
+kind  = "claude"                       # through `claude -p`: a Claude Code subscription, no key
+model = "claude-haiku-5-5"
 ```
 
-There are three kinds of backend:
+There are four kinds of backend:
 
 | `kind` | keys | calls |
 |---|---|---|
 | `openai-compatible` | `url`, `model` | `POST {url}/chat/completions` with the system and user messages and `"temperature": 0` (no JSON mode, [below](#why-tagged-blocks)) |
 | `anthropic` | `model`, `api_key_env` (default `ANTHROPIC_API_KEY`) | `POST https://api.anthropic.com/v1/messages` with `max_tokens` 4096. The key is read from the environment when `gen` runs. It is never stored in config and never printed. curl gets it from a private temporary header file, not from its command line |
+| `claude` | `model` (e.g. `claude-haiku-5-5`), `runner` (default `claude`) | runs `claude -p --output-format json --model MODEL --permission-prompts none --system-prompt … --tools "" --no-session-persistence --setting-sources ""` with the question on stdin, `CLAUDECODE` unset and `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1`, so no CLAUDE.md, hooks, plugins or tools ride along. This is the kind for a Claude Code subscription: no API key, the usage counts against the subscription. The reply's `total_cost_usd` is the call's cost. `timeout` applies as for curl. "claude is not installed" when the runner is not on your `PATH` |
 | `jev` | `model` (default `jev-1.14.0`, pinned: `jev-latest` can change calibration under you), `api_key_env` (default `JEV_API_KEY`) | `POST https://api.typesafe.ai/v1/systemone` with typed questions, all of one decision batch in one call. It answers decisions only, never holes: `[decide] model` names this backend (`model = "jev"`), and the version goes in this backend's `model` key. A `[decide] model` that names no backend refuses the config. The key is handled as for `anthropic`. A 429 or 529 is retried twice (after 0.5 s, then 2 s); each call writes `decide jev N tokens M ms model <the model that answered>` to the step log |
 
-All are called with `curl`, which must be on your `PATH` ("curl is not installed"
+All but `claude` are called with `curl`, which must be on your `PATH` ("curl is not installed"
 otherwise). Each call may take `timeout` seconds (`curl --max-time`). A call that runs out
 of time is a failed attempt. Raise `timeout` for a slow model, or for the first request
 after a local server starts and has to load the model.
@@ -491,18 +485,18 @@ Choosing a backend for one run:
 Like `--plan`, `--model` and `--no-fill` apply to the whole run, wherever they appear in a
 `+` chain.
 
-### The ladder (conjures with a decision model)
+### The ladder and `escalate` (plans)
 
-The ladder and the budget apply only to the editor's `conjure`, and only with `[decide] model`
-set. Without it, `retries` rules as before. `ladder` lists backends, local first; `rounds` and
-`budget` cap how long a conjure runs. Each `openai-compatible` or `anthropic` backend takes
-`escalate`, which says what happens when Jev wants to climb to it:
+`ladder`, `budget` and each backend's `escalate` are read by plans: a reconcile climbs
+`[plans] ladder`, else `[model] ladder`, under `[plans] budget`, else `[model] budget`
+([chapter 19](19-plans.md)). Each `openai-compatible`, `anthropic` or `claude` backend takes
+`escalate`:
 
 | `escalate` | meaning |
 |---|---|
-| `never` | the rung is listed, but Jev may not climb to it (you still can) |
-| `ask` (default) | Jev's wish to climb pauses the conjure and asks you |
-| `auto` | Jev climbs |
+| `never` | the rung is listed, but nothing climbs to it on its own |
+| `ask` (default) | only a reconcile you start (`<leader>mpc`) climbs to it |
+| `auto` | an automatic reconcile climbs to it too |
 
 A `jev` backend cannot be a rung: it answers decisions, not prompts. The default `ask` keeps
 code from leaving your machine unless the config says it may.
@@ -513,8 +507,8 @@ and checks with `[plans] check_model` under its own caps ([chapter 19](19-plans.
 verdict, and sonnet only on doubt ([chapter 19](19-plans.md#the-cascade)); it does not use
 `[model] ladder` either.
 
-`[conjure] wire = "<generator id>"` names the generator a steered conjure may run itself when Jev
-says a class lacks a port ([chapter 18](18-tdd-in-the-editor.md)); it is unset by default.
+`[model] rounds` is refused: a conjure is one step now, and `[conjure] writer` names its model
+([chapter 18](18-tdd-in-the-editor.md#conjuring)). So is `[conjure] wire`.
 
 ### What is sent to the model
 
