@@ -53,8 +53,9 @@ data Situation = Situation
 data StepReply = StepReply {srGoal :: Maybe Text, srFiles :: [(FilePath, Text)], srNothing :: Bool}
   deriving stock (Eq, Show)
 
--- | How the tests moved: newly passing, newly failing, failing before and
--- after, and whether there was no after-run at all.
+-- | How the tests moved: newly passing, newly failing (passing before: a
+-- regression), still red (failing after and not passing before: failing, new,
+-- or not able to run before), and whether there was no after-run at all.
 data TestDelta = TestDelta {tdPassing :: [Text], tdFailing :: [Text], tdStillRed :: [Text], tdNoTests :: Bool}
   deriving stock (Eq, Show)
 
@@ -167,12 +168,11 @@ testDelta :: Maybe TestRun -> Maybe TestRun -> TestDelta
 testDelta _ Nothing = TestDelta [] [] [] True
 testDelta before (Just after) = TestDelta newlyPassing newlyFailing stillRed False
   where
-    failedBefore = maybe [] (map fst . trFailed) before
     passedBefore = maybe [] trPassed before
     failedAfter = map fst (trFailed after)
     newlyPassing = [t | t <- trPassed after, t `notElem` passedBefore]
-    newlyFailing = [t | t <- failedAfter, t `notElem` failedBefore]
-    stillRed = [t | t <- failedAfter, t `elem` failedBefore]
+    newlyFailing = [t | t <- failedAfter, t `elem` passedBefore]
+    stillRed = [t | t <- failedAfter, t `notElem` passedBefore]
 
 stepLogLine :: Text -> Text -> Int -> TestDelta -> Text -> Text
 stepLogLine writer goal files d choice =

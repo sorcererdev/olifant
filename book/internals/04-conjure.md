@@ -73,7 +73,9 @@ through prose or a markdown fence around them. `<goal>nothing</goal>` with no fi
 document (its version and text) when open, else the workspace's text, else nothing (a new
 file). Each file is parsed with its language's grammar (`errorLines`). The test file runs again
 over the step's files (`runOver` with `overlayMany`) when it exists or the step wrote it;
-`testDelta` compares the runs.
+`testDelta` compares the runs. Newly failing means it passed before (a regression); a test
+failing after that did not pass before (red already, new, or the file could not run because of
+a syntax error) is still red.
 
 **5. Shown.** The step is kept as a `StepHeld` in `ssShown` under `step-N` and answered as
 `StepShown`. `editsOf` turns its writes into `FileEdit`s: a create for a new file, else

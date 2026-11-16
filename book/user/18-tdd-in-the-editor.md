@@ -123,8 +123,9 @@ that does not parse yet, is still a step: the review says so and you decide.
 
 **The review.** The step does not touch your files until you accept it. The review window shows
 the goal, which model wrote it, the diff of every file it touches (a new test file included),
-whether each file parses, and how the tests moved: newly passing, newly failing, still red, or
-no tests. Its keys:
+whether each file parses, and how the tests moved: newly passing, newly failing (they passed
+before the step: a regression), still red (failing, and not passing before: already red, new,
+or unable to run before), or no tests. Its keys:
 
 | key | what it does |
 |---|---|

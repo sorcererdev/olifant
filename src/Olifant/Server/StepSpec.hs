@@ -64,9 +64,13 @@ spec = describe "Olifant.Server.Step (a conjure is one step)" $ do
     it "related files" $
       situationText situation {siRelated = [("src/y.py", "Y = 1\n")]} `shouldSatisfy` T.isInfixOf "Related file src/y.py:"
   describe "testDelta" $ do
-    it "newly passing, newly failing and still red" $
-      testDelta (Just (TestRun ["t3"] [("t1", f), ("t4", f)] Nothing)) (Just (TestRun ["t1", "t3"] [("t2", f), ("t4", f)] Nothing))
+    it "newly passing, newly failing (passed before) and still red" $
+      testDelta (Just (TestRun ["t2", "t3"] [("t1", f), ("t4", f)] Nothing)) (Just (TestRun ["t1", "t3"] [("t2", f), ("t4", f)] Nothing))
         `shouldBe` TestDelta ["t1"] ["t2"] ["t4"] False
+    it "tests that could not run before and fail after are still red, not a regression" $
+      testDelta (Just (TestRun [] [] (Just "SyntaxError"))) (Just (TestRun [] [("t1", f)] Nothing)) `shouldBe` TestDelta [] [] ["t1"] False
+    it "a new test that fails is still red, not newly failing" $
+      testDelta (Just (TestRun ["t1"] [] Nothing)) (Just (TestRun ["t1"] [("t2", f)] Nothing)) `shouldBe` TestDelta [] [] ["t2"] False
     it "a test that passed before and fails after is newly failing" $
       tdFailing (testDelta (Just (TestRun ["t1"] [] Nothing)) (Just (TestRun [] [("t1", f)] Nothing))) `shouldBe` ["t1"]
     it "no after-run: no tests" $
