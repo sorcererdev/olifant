@@ -23,6 +23,9 @@ module Olifant.Model
   , curlFiller
   , curlFillerWith
   , askBackend
+  , askBackendReply
+  , ChatReply (..)
+  , claudeArgs
   , sendJev
   , probeBackend
   ) where
@@ -58,6 +61,14 @@ data Backend
   = OpenAICompatible {beUrl :: Text, beModel :: Text}
   | Anthropic {beModel :: Text, beKeyEnv :: Text}
   | Jev {beModel :: Text, beKeyEnv :: Text}
+  | -- | Claude through `claude -p` (a Claude Code subscription: no API key);
+    -- 'beRunner' is the command, `claude` unless the config says otherwise.
+    Claude {beModel :: Text, beRunner :: Text}
+  deriving stock (Eq, Show)
+
+-- | A model's answer to one question: its text, what it cost (only a
+-- @claude@ backend says) and how long it took.
+data ChatReply = ChatReply {crText :: Text, crCost :: Maybe Double, crSeconds :: Double}
   deriving stock (Eq, Show)
 
 -- | Whether Jev may climb to a rung: never, only by asking the person, or on its own.
@@ -89,7 +100,7 @@ defaultModelConfig :: ModelConfig
 defaultModelConfig = ModelConfig Nothing 2 120 [] [] 6 180 []
 
 backendKinds :: [Text]
-backendKinds = ["openai-compatible", "anthropic", "jev"]
+backendKinds = ["openai-compatible", "anthropic", "claude", "jev"]
 
 backendModel :: Backend -> Text
 backendModel = beModel
@@ -132,6 +143,7 @@ parseModelConfig top =
       required "kind" text t >>= \case
         "openai-compatible" -> onlyKeys ["kind", "url", "model", "escalate"] t >> (,) <$> (OpenAICompatible <$> required "url" text t <*> required "model" text t) <*> escalate t
         "anthropic" -> onlyKeys ["kind", "model", "api_key_env", "escalate"] t >> (,) <$> (Anthropic <$> required "model" text t <*> (fromMaybe "ANTHROPIC_API_KEY" <$> optional "api_key_env" text t)) <*> escalate t
+        "claude" -> onlyKeys ["kind", "model", "runner", "escalate"] t >> (,) <$> (Claude <$> required "model" text t <*> (fromMaybe "claude" <$> optional "runner" text t)) <*> escalate t
         "jev" -> onlyKeys ["kind", "model", "api_key_env"] t >> (\b -> (b, EscalateAsk)) <$> (Jev . fromMaybe "jev-1.14.0" <$> optional "model" text t <*> (fromMaybe "JEV_API_KEY" <$> optional "api_key_env" text t))
         other -> Left ("unknown backend kind `" <> other <> "` (kinds: " <> T.intercalate ", " backendKinds <> ")")
 
@@ -231,6 +243,8 @@ chatBody b system user = case b of
       , "temperature" .= (0 :: Int)
       ]
   Jev {} -> object []
+  -- read back by 'sendChat', which hands them to the runner
+  Claude {} -> object ["system" .= system, "user" .= user]
   Anthropic model _ ->
     object
       [ "model" .= model
@@ -252,6 +266,9 @@ replyText b raw = do
       , Just (Object m) <- KM.lookup "message" c
       , Just (String t) <- KM.lookup "content" m ->
           Right t
+    (Claude {}, Object o)
+      | KM.lookup "is_error" o == Just (Bool True) -> Left ("the model said: " <> maybe "the runner reported an error" (T.take 120 . asText) (KM.lookup "result" o))
+      | Just (String t) <- KM.lookup "result" o -> Right t
     (Anthropic {}, Object o)
       | Just (Array cs) <- KM.lookup "content" o
       , (Object c : _) <- toList cs
@@ -260,6 +277,9 @@ replyText b raw = do
     _ -> Left "the model's reply has no message"
   pure (T.strip (dropThinking content))
   where
+    asText = \case
+      String t -> t
+      v -> T.pack (show v)
     dropThinking t = case T.breakOn "</think>" t of
       (_, "") -> t
       (_, rest) -> T.drop (T.length "</think>") rest
@@ -323,12 +343,53 @@ curlFillerWith token timeout b = Filler $ \req -> post (requestBody b req) (deco
 -- | Ask a backend once: a system prompt and a question, the reply's text
 -- (or why there is none). The request is dropped when the token trips.
 askBackend :: Cancel -> Int -> Backend -> Text -> Text -> IO (Either Text Text)
-askBackend token timeout b system question = sendChat token timeout b (chatBody b system question) >>= pure . (>>= replyText b)
+askBackend token timeout b system question = fmap crText <$> askBackendReply token timeout b system question
+
+-- | 'askBackend' with what the answer cost and how long it took (a @claude@
+-- backend's `total_cost_usd` and `duration_ms`; the curl kinds say no cost).
+askBackendReply :: Cancel -> Int -> Backend -> Text -> Text -> IO (Either Text ChatReply)
+askBackendReply token timeout b system question = do
+  raw <- sendChat token timeout b (chatBody b system question)
+  pure $ do
+    r <- raw
+    t <- replyText b r
+    let o = case eitherDecodeStrict r of
+          Right (Object m) -> m
+          _ -> KM.empty
+        num k = case KM.lookup k o of
+          Just (Number n) -> Just (realToFrac n :: Double)
+          _ -> Nothing
+    pure (ChatReply t (num "total_cost_usd") (maybe 0 (/ 1000) (num "duration_ms")))
+
+-- | The arguments after the runner for one question to @model@ under
+-- @system@: JSON out, no permission prompts, no tools, no session kept, and
+-- no settings (so no CLAUDE.md, hooks or plugins ride along with the call).
+claudeArgs :: Text -> Text -> [String]
+claudeArgs model system =
+  ["-p", "--output-format", "json", "--model", T.unpack model, "--permission-prompts", "none", "--system-prompt", T.unpack system, "--tools", "", "--no-session-persistence", "--setting-sources", ""]
 
 -- | Post a chat body to the backend with curl: its raw reply. An Anthropic
 -- key is read from its variable and passed in a temporary header file,
 -- never on the command line.
 sendChat :: Cancel -> Int -> Backend -> Value -> IO (Either Text ByteString)
+sendChat token timeout (Claude model runner) body =
+  findExecutable (T.unpack runner) >>= \case
+    Nothing -> pure (Left (T.pack (takeFileNameOf runner) <> " is not installed"))
+    Just _ ->
+      runBytesCancellable token (Just timeout) "env" (["-u", "CLAUDECODE", "CLAUDE_CODE_DISABLE_CLAUDE_MDS=1", T.unpack runner] ++ claudeArgs model (field "system")) Nothing (TE.encodeUtf8 (field "user")) >>= \case
+        Left why -> pure (Left why)
+        Right (Finished ExitSuccess out _) -> pure (Right out)
+        -- an error reply still says why on stdout, as JSON
+        Right (Finished (ExitFailure c) out err)
+          | Right (Object _) <- (eitherDecodeStrict out :: Either String Value) -> pure (Right out)
+          | otherwise -> pure (Left (runner <> " exited " <> T.pack (show c) <> ": " <> T.take 120 (T.strip (TE.decodeUtf8Lenient (if BS.null err then out else err)))))
+        Right TimedOut -> pure (Left ("timed out after " <> T.pack (show timeout) <> " s"))
+        Right _ -> pure (Left "cancelled")
+  where
+    field k = case body of
+      Object o | Just (String t) <- KM.lookup k o -> t
+      _ -> ""
+    takeFileNameOf = reverse . takeWhile (/= '/') . reverse . T.unpack
 sendChat token timeout b body =
   findExecutable "curl" >>= \case
     Nothing -> pure (Left "curl is not installed")
@@ -391,6 +452,7 @@ sendJev token timeout b body = case b of
 probeBackend :: Backend -> IO (Either Text ())
 probeBackend = \case
   Anthropic {} -> pure (Right ())
+  Claude _ runner -> maybe (Left (runner <> " is not installed")) (const (Right ())) <$> findExecutable (T.unpack runner)
   Jev {} -> pure (Right ())
   OpenAICompatible url model ->
     findExecutable "curl" >>= \case

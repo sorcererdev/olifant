@@ -41,6 +41,7 @@ spec = describe "Olifant.Server.Errand (the claude -p runner)" $ do
     after "--settings" args `shouldBe` Just "{\"permissions\":{\"deny\":[\"Read(./plans/**)\",\"Read(./.olifant/**)\",\"Read(./docs/**)\",\"WebSearch\",\"WebFetch\"]}}"
     after "--append-system-prompt" args `shouldSatisfy` maybe False (\p -> all (`T.isInfixOf` T.pack p) ["current directory", "plans/", ".olifant/", "docs/"])
     "--strict-mcp-config" `elem` args `shouldBe` True
+    after "--setting-sources" args `shouldBe` Just ""
   it "a web check has the web tools and no file tools; a code check the file tools and no web (user ruling 2026-11-14)" $ do
     let c = cfg {pcWebFetch = ["docs.djangoproject.com"]}
         web = runnerArgs c Check (webTools c) Nothing

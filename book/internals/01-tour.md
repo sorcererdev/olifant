@@ -1470,6 +1470,15 @@ prose. Only when that finds no block does it fall back to JSON: the text as it i
 JSON inside a ``` fence or between the outer braces, reading `{"fills": {…}}` or a bare
 object and taking strings (unfenced), numbers and booleans as code.
 
+A third prompt-answering kind, `Claude model runner`, has no HTTP at all: it is for a
+Claude Code subscription, where there is no API key. `chatBody` holds the system and user
+text, and `sendChat` runs `env -u CLAUDECODE CLAUDE_CODE_DISABLE_CLAUDE_MDS=1 claude`
+with `claudeArgs` (JSON out, no permission prompts, `--tools ""`,
+`--no-session-persistence`, `--setting-sources ""`) and the question on stdin, under
+`runBytesCancellable`'s timeout. `replyText` reads the JSON's `result` (`is_error` becomes
+"the model said: …"). `askBackendReply` returns a `ChatReply` that adds `total_cost_usd`
+and `duration_ms`, and `askBackend` is that reply's text.
+
 **In tests**, `GeneratorTesting.runCase` reads a case's `fills.toml` (`GeneratorTesting.hs`)
 and sets `toolFiller` to `ModelFiller "recorded" 0 (replayFiller fills)`.
 `replayFiller` answers every request from the map and fails if a requested name is

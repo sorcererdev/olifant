@@ -458,17 +458,22 @@ kind        = "anthropic"
 model       = "claude-haiku-4-5-20251001"
 api_key_env = "ANTHROPIC_API_KEY"      # the default; the key is read from this variable
 escalate    = "ask"                    # never, ask (default) or auto: may Jev climb to this rung?
+
+[model.backends.haiku]
+kind  = "claude"                       # through `claude -p`: a Claude Code subscription, no key
+model = "claude-haiku-5-5"
 ```
 
-There are three kinds of backend:
+There are four kinds of backend:
 
 | `kind` | keys | calls |
 |---|---|---|
 | `openai-compatible` | `url`, `model` | `POST {url}/chat/completions` with the system and user messages and `"temperature": 0` (no JSON mode, [below](#why-tagged-blocks)) |
 | `anthropic` | `model`, `api_key_env` (default `ANTHROPIC_API_KEY`) | `POST https://api.anthropic.com/v1/messages` with `max_tokens` 4096. The key is read from the environment when `gen` runs. It is never stored in config and never printed. curl gets it from a private temporary header file, not from its command line |
+| `claude` | `model` (e.g. `claude-haiku-5-5`), `runner` (default `claude`) | runs `claude -p --output-format json --model MODEL --permission-prompts none --system-prompt … --tools "" --no-session-persistence --setting-sources ""` with the question on stdin, `CLAUDECODE` unset and `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1`, so no CLAUDE.md, hooks, plugins or tools ride along. This is the kind for a Claude Code subscription: no API key, the usage counts against the subscription. The reply's `total_cost_usd` is the call's cost. `timeout` applies as for curl. "claude is not installed" when the runner is not on your `PATH` |
 | `jev` | `model` (default `jev-1.14.0`, pinned: `jev-latest` can change calibration under you), `api_key_env` (default `JEV_API_KEY`) | `POST https://api.typesafe.ai/v1/systemone` with typed questions, all of one decision batch in one call. It answers decisions only, never holes: `[decide] model` names this backend (`model = "jev"`), and the version goes in this backend's `model` key. A `[decide] model` that names no backend refuses the config. The key is handled as for `anthropic`. A 429 or 529 is retried twice (after 0.5 s, then 2 s); each call writes `decide jev N tokens M ms model <the model that answered>` to the step log |
 
-All are called with `curl`, which must be on your `PATH` ("curl is not installed"
+All but `claude` are called with `curl`, which must be on your `PATH` ("curl is not installed"
 otherwise). Each call may take `timeout` seconds (`curl --max-time`). A call that runs out
 of time is a failed attempt. Raise `timeout` for a slow model, or for the first request
 after a local server starts and has to load the model.
