@@ -13,7 +13,6 @@ module Olifant.Catalog
   , catalogIgnores
   , catalogStrangler
   , catalogDecideModel
-  , catalogConjureWire
   , catalogConjureWriter
   , catalogConjureHarder
   , catalogPlans
@@ -57,7 +56,7 @@ module Olifant.Catalog
   , packOfEntry
   ) where
 
-import Control.Monad ((>=>))
+import Control.Monad (when, (>=>))
 import Data.Bifunctor (bimap, first)
 import Data.Bits (xor)
 import Data.Char (isAsciiLower, isDigit)
@@ -138,8 +137,6 @@ data Catalog = Catalog
     catalogMigrate :: Maybe MigrateConfig
   , -- | `[decide] model` (typed decisions; `[recognize] model` is its alias)
     catalogDecideModel :: Maybe Text
-  , -- | `[conjure] wire`: the generator id that wires a missing port
-    catalogConjureWire :: Maybe Text
   , -- | `[conjure] writer`: the backend a conjure's step asks (else `[model] default`)
     catalogConjureWriter :: Maybe Text
   , -- | `[conjure] harder`: the backend a step is taken again with, on the person's ask
@@ -360,7 +357,7 @@ openProjectCatalogWith loadP root paths = do
         Right (userM, projectM, rc, named, rec', mig, dec, conj, plns, inspectCfg) ->
           let model = fromMaybe defaultModelConfig (maybe userM Just projectM)
               plansCfg = fromMaybe defaultPlans plns
-           in either (Left . ConfigInvalid projectConfig) Right (plansLadderIn model plansCfg >> decideBackendIn model dec >> writerIn model "writer" (cWriter conj) >> writerIn model "harder" (cHarder conj)) >> fmap (\c -> checkFixes (addRules ownRules (addRegions own c {catalogProject = Just project, catalogModel = model, catalogRulesConfig = rc, catalogName = named, catalogRecognize = rec', catalogMigrate = mig, catalogDecideModel = maybe (recModel rec') Just dec, catalogConjureWire = cWire conj, catalogConjureWriter = cWriter conj, catalogConjureHarder = cHarder conj, catalogPlans = plansCfg, catalogInspect = inspectCfg}))) result
+           in either (Left . ConfigInvalid projectConfig) Right (plansLadderIn model plansCfg >> decideBackendIn model dec >> writerIn model "writer" (cWriter conj) >> writerIn model "harder" (cHarder conj)) >> fmap (\c -> checkFixes (addRules ownRules (addRegions own c {catalogProject = Just project, catalogModel = model, catalogRulesConfig = rc, catalogName = named, catalogRecognize = rec', catalogMigrate = mig, catalogDecideModel = maybe (recModel rec') Just dec, catalogConjureWriter = cWriter conj, catalogConjureHarder = cHarder conj, catalogPlans = plansCfg, catalogInspect = inspectCfg}))) result
   where
     recognizeIn top =
       Toml.optional "recognize" Toml.table top >>= \case
@@ -376,11 +373,11 @@ openProjectCatalogWith loadP root paths = do
       Toml.optional "conjure" Toml.table top >>= \case
         Nothing -> Right Nothing
         Just t -> Toml.inKey "conjure" $ do
-          Toml.onlyKeys ["wire", "writer", "harder"] t
-          Just <$> ((,,) <$> Toml.optional "wire" Toml.text t <*> Toml.optional "writer" Toml.text t <*> Toml.optional "harder" Toml.text t)
-    cWire = maybe Nothing (\(w, _, _) -> w)
-    cWriter = maybe Nothing (\(_, w, _) -> w)
-    cHarder = maybe Nothing (\(_, _, h) -> h)
+          when (M.member "wire" t) (Left "`wire` is gone: a conjure's step may write a port and its adapters itself")
+          Toml.onlyKeys ["writer", "harder"] t
+          Just <$> ((,) <$> Toml.optional "writer" Toml.text t <*> Toml.optional "harder" Toml.text t)
+    cWriter = maybe Nothing fst
+    cHarder = maybe Nothing snd
     -- `[conjure] writer` and `harder` name backends that answer prompts
     writerIn model key = \case
       Just n -> case lookup n (mcBackends model) of
@@ -563,7 +560,7 @@ openAt root loadP olifantDir packs = do
   unused <- maybe (pure []) (unusedQueries root [grName (langGrammar l) | l <- rooted, grSource (langGrammar l) /= Nothing]) olifantDir
   let langs = map fst queried
       broken = lefts layers ++ lefts toolchains ++ either pure (const []) configured ++ concatMap snd queried ++ unused
-      base = Catalog Nothing (sortOn entryId (rights loaded)) (sortOn (\(gid, _, _) -> gid) (lefts loaded)) (map fst packs) langs (broken ++ brokenLangs) [] [] defaultModelConfig [] [] (RulesConfig [] []) [m | Just (Right m) <- map lpModel fromPacks] [b | Just (Left b) <- map lpModel fromPacks] (map snd packs) Nothing (RecognizeConfig True Nothing) Nothing Nothing Nothing Nothing Nothing defaultPlans (listToMaybe [st | Just (Right st) <- map lpStrangler fromPacks]) noGrammar defaultInspect
+      base = Catalog Nothing (sortOn entryId (rights loaded)) (sortOn (\(gid, _, _) -> gid) (lefts loaded)) (map fst packs) langs (broken ++ brokenLangs) [] [] defaultModelConfig [] [] (RulesConfig [] []) [m | Just (Right m) <- map lpModel fromPacks] [b | Just (Left b) <- map lpModel fromPacks] (map snd packs) Nothing (RecognizeConfig True Nothing) Nothing Nothing Nothing Nothing defaultPlans (listToMaybe [st | Just (Right st) <- map lpStrangler fromPacks]) noGrammar defaultInspect
       noGrammar =
         [ n
         | (n, _) <- shippedLanguages

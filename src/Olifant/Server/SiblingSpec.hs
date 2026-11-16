@@ -6,7 +6,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
 import Olifant.Language (CtorShape (..), FakeShape (..), Language (..), shippedLanguageNow)
-import Olifant.Server.ConjureNextSpec (cancelTestText, pyHtmx)
+import Olifant.Server.ConjureScanSpec (cancelTestText, pyHtmx)
 import Olifant.Server.ConjureScan (Port (..))
 import Olifant.Server.Sibling
 import Olifant.Workspace (Workspace (..), diskWorkspace)

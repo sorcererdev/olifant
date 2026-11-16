@@ -126,24 +126,25 @@ spec = describe "Olifant.Model (spec §6.4)" $ do
         claude extra = ["[model.backends.claude]", "kind = \"anthropic\"", "model = \"c\""] <> extra
         parse ls = parseModelConfig (either (error . T.unpack) id (parseToml (T.unlines ls)))
         failsWith needle ls = parse ls `shouldSatisfy` either (needle `T.isInfixOf`) (const False)
-    it "(a) reads the ladder in its order, with rounds, budget and each rung's escalate" $ do
-      let Right c = parse (["[model]", "default = \"local\"", "ladder = [\"local\", \"claude\"]", "rounds = 4", "budget = 90"] <> backends <> claude ["escalate = \"auto\""])
+    it "(a) reads the ladder in its order, with budget and each rung's escalate (plans read them)" $ do
+      let Right c = parse (["[model]", "default = \"local\"", "ladder = [\"local\", \"claude\"]", "budget = 90"] <> backends <> claude ["escalate = \"auto\""])
       mcLadder c `shouldBe` [Rung "local" EscalateAsk, Rung "claude" EscalateAuto]
       mcEscalate c `shouldBe` [("claude", EscalateAuto), ("local", EscalateAsk)]
-      (mcRounds c, mcBudget c) `shouldBe` (4, 90)
-    it "(b) defaults: the default backend is the ladder, 6 rounds, 180 seconds" $ do
+      mcBudget c `shouldBe` 90
+    it "(b) defaults: the default backend is the ladder, 180 seconds" $ do
       let Right c = parse (["[model]", "default = \"local\""] <> backends)
-      (mcLadder c, mcRounds c, mcBudget c) `shouldBe` ([Rung "local" EscalateAsk], 6, 180)
+      (mcLadder c, mcBudget c) `shouldBe` ([Rung "local" EscalateAsk], 180)
       fmap mcLadder (parse ["[model]"]) `shouldBe` Right []
       parseModelConfig M.empty `shouldBe` Right defaultModelConfig
+    it "`rounds` is refused: a conjure is one step, its writer is [conjure] writer" $
+      failsWith "[conjure] writer" (["[model]", "rounds = 4"] <> backends)
     it "(c) refuses a ladder name with no backend" $
       failsWith "no such backend `gpt`" (["[model]", "ladder = [\"local\", \"gpt\"]"] <> backends)
     it "(d) refuses a jev backend in the ladder" $
       failsWith "answers decisions, not prompts" (["[model]", "ladder = [\"local\", \"jev\"]", "[model.backends.jev]", "kind = \"jev\""] <> backends)
     it "(e) refuses a bad escalate value" $
       failsWith "must be never, ask or auto" (backends <> ["escalate = \"sometimes\""])
-    it "(f) refuses rounds or budget below 1" $ do
-      failsWith "`rounds` must be at least 1" ["[model]", "rounds = 0"]
+    it "(f) refuses a budget below 1" $
       failsWith "`budget` must be at least 1" ["[model]", "budget = 0"]
     it "(g) escalate is an unknown key on a jev backend" $
       failsWith "escalate" ["[model.backends.jev]", "kind = \"jev\"", "escalate = \"auto\""]

@@ -31,7 +31,7 @@ module Olifant.Model
   ) where
 
 import Control.Concurrent (threadDelay)
-import Control.Monad ((>=>))
+import Control.Monad (when, (>=>))
 import Data.Aeson (Value (..), eitherDecodeStrict, encode, object, (.=))
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KM
@@ -80,8 +80,8 @@ data Rung = Rung {rungName :: Text, rungEscalate :: Escalate}
   deriving stock (Eq, Show)
 
 -- | 'mcTimeout': seconds a model call may take (default 120). 'mcLadder': the
--- rungs a steered conjure climbs, local first. 'mcRounds': rounds a conjure may
--- run (default 6). 'mcBudget': seconds a conjure may run (default 180).
+-- rungs a plan's ladder falls back to, local first. 'mcBudget': seconds a
+-- plan's pass may run when `[plans]` names none (default 180).
 -- 'mcEscalate': every backend's escalate policy (a ladder named elsewhere,
 -- as `[plans] ladder`, reads its rungs' policies here).
 data ModelConfig = ModelConfig
@@ -90,14 +90,13 @@ data ModelConfig = ModelConfig
   , mcTimeout :: Int
   , mcBackends :: [(Text, Backend)]
   , mcLadder :: [Rung]
-  , mcRounds :: Int
   , mcBudget :: Int
   , mcEscalate :: [(Text, Escalate)]
   }
   deriving stock (Eq, Show)
 
 defaultModelConfig :: ModelConfig
-defaultModelConfig = ModelConfig Nothing 2 120 [] [] 6 180 []
+defaultModelConfig = ModelConfig Nothing 2 120 [] [] 180 []
 
 backendKinds :: [Text]
 backendKinds = ["openai-compatible", "anthropic", "claude", "jev"]
@@ -111,13 +110,12 @@ parseModelConfig top =
   optional "model" table top >>= \case
     Nothing -> Right defaultModelConfig
     Just m -> inKey "model" $ do
-      onlyKeys ["default", "retries", "timeout", "backends", "ladder", "rounds", "budget"] m
+      when (M.member "rounds" m) (Left "`rounds` is gone: a conjure is one step now; name its writer with [conjure] writer")
+      onlyKeys ["default", "retries", "timeout", "backends", "ladder", "budget"] m
       def <- optional "default" text m
       retries <- maybe 2 fromInteger <$> optional "retries" int m
       timeout <- maybe 120 fromInteger <$> optional "timeout" int m
-      rounds <- maybe 6 fromInteger <$> optional "rounds" int m
       budget <- maybe 180 fromInteger <$> optional "budget" int m
-      if rounds < 1 then Left "`rounds` must be at least 1" else Right ()
       if budget < 1 then Left "`budget` must be at least 1" else Right ()
       withEsc <- maybe (Right []) (traverse (\(k, v) -> inKey ("backends." <> k) ((\(b, e) -> (k, b, e)) <$> (table >=> backend) v)) . M.toList) =<< optional "backends" table m
       let backends = [(k, b) | (k, b, _) <- withEsc]
@@ -126,7 +124,7 @@ parseModelConfig top =
       ladder <- case names of
         Nothing -> Right [Rung d (policy d) | Just d <- [def]]
         Just ns -> inKey "ladder" (traverse (rung backends policy) ns)
-      pure (ModelConfig def retries timeout backends ladder rounds budget [(k, e) | (k, _, e) <- withEsc])
+      pure (ModelConfig def retries timeout backends ladder budget [(k, e) | (k, _, e) <- withEsc])
   where
     rung backends policy n = case lookup n backends of
       Nothing -> Left ("no such backend `" <> n <> "` (backends: " <> T.intercalate ", " (map fst backends) <> ")")

@@ -1197,50 +1197,6 @@ outcomeParams params = do
   guard (not (T.null eid) && block >= 0 && outcome `elem` ["accepted", "rejected"])
   pure (path, eid, block, outcome)
 
--- | A conjure request's `resume` (token, choice, optional hint, arg and land;
--- an empty hint is none; `land` a boolean, false when absent; `wire` needs an
--- `arg` of the form `param: Port`): Nothing when it has none, an error when
--- it is not whole.
-resumeOf :: Value -> Either T.Text (Maybe Resume)
-resumeOf = \case
-  Object o | Just r <- KM.lookup "resume" o -> case r of
-    Object ro
-      | Just (String tok) <- KM.lookup "token" ro
-      , not (T.null tok)
-      , Just (String c) <- KM.lookup "choice" ro
-      , Just choice <- lookup c [("continue", ResumeContinue), ("climb", ResumeClimb), ("stop", ResumeStop), ("reconjure", ResumeReconjure), ("accept", ResumeAccept), ("reject", ResumeReject), ("wire", ResumeWire), ("port", ResumePort)]
-      , Just arg <- case KM.lookup "arg" ro of
-          Nothing -> Just Nothing
-          Just Aeson.Null -> Just Nothing
-          Just (String a) -> Just (Just a)
-          _ -> Nothing
-      , Just land <- case KM.lookup "land" ro of
-          Nothing -> Just False
-          Just Aeson.Null -> Just False
-          Just (Bool b) -> Just b
-          _ -> Nothing
-      , choice /= ResumeWire || maybe False (\a -> length (filter (not . T.null . T.strip) (T.splitOn ":" a)) == 2) arg ->
-          Right (Just (Resume tok choice (case KM.lookup "hint" ro of Just (String h) | not (T.null h) -> Just h; _ -> Nothing) arg land))
-    _ -> Left "bad resume"
-  _ -> Right Nothing
-
--- | What `olifant/conjure` answers: a landed conjure, or a paused one.
-conjureJson :: ConjureOutcome -> Value
-conjureJson = \case
-  Landed a ->
-    object
-      [ "file" .= daFile a
-      , "unit" .= daUnit a
-      , "edits" .= (if null (daEdits a) then Aeson.Null else toJSON (acceptedEdit (daEdits a)))
-      , "summary" .= daSummary a
-      , "green" .= daGreen a
-      , "tests" .= testsJson (daTests a)
-      , "rounds" .= daRounds a
-      , "rungs" .= daRungs a
-      , "stopped" .= daStopped a
-      ]
-  Paused p -> object ["paused" .= pausedJson p]
-
 -- | A request's `line` (0-based), if it has one.
 lineOf :: Value -> Maybe Int
 lineOf = \case

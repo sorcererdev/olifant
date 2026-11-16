@@ -49,7 +49,6 @@ import Olifant.Fill (ModelFiller)
 import Olifant.Catalog (Catalog (..), PackCache, catalogIgnores, catalogPackRoots, describeCatalogError, newPackCache)
 import Olifant.Model (Backend (..), ChatReply, ModelConfig (..))
 import Olifant.Process (Cancel, neverCancel)
-import Olifant.Server.ConjureNext (PausedConjure)
 import Olifant.Server.Step (StepHeld)
 import Olifant.Server.LoopTypes (ReconcileAnswer)
 import Olifant.Generator (Generator)
@@ -127,9 +126,6 @@ data ServerState = ServerState
     ssLiveDoc :: Maybe (FilePath -> IO (Maybe (Int, Text)))
   , -- | a filler that answers instead of any model (tests)
     ssTestFiller :: Maybe (ModelFiller IO)
-  , -- | paused conjures by token (`conjure-N`), and the last N given: an
-    -- IORef, so a pause outlives the snapshot of the request that made it
-    ssPaused :: IORef (Int, Map Text PausedConjure)
   , -- | per plan: the last reconcile's situation (its key) and its answer
     ssReconciled :: Map FilePath (Text, ReconcileAnswer)
   , -- | per (language, path): the units found in a text, kept while the file's
@@ -165,14 +161,13 @@ newServerState ports = do
   bases <- newIORef M.empty
   decisions <- newIORef (M.empty, S.empty)
   onDecided <- newIORef (pure ())
-  paused <- newIORef (0, M.empty)
   units <- newIORef M.empty
   claims <- newIORef M.empty
   checking <- newIORef M.empty
   cited <- newIORef (0, M.empty)
   estimates <- newIORef M.empty
   shownSteps <- newIORef (0, M.empty)
-  pure (ServerState ports M.empty M.empty cache defaultServerConfig M.empty 0 0 M.empty M.empty neverCancel M.empty M.empty M.empty M.empty bases decisions onDecided Nothing Nothing paused M.empty units claims checking cited estimates shownSteps Nothing)
+  pure (ServerState ports M.empty M.empty cache defaultServerConfig M.empty 0 0 M.empty M.empty neverCancel M.empty M.empty M.empty M.empty bases decisions onDecided Nothing Nothing M.empty units claims checking cited estimates shownSteps Nothing)
 
 -- | A file's base text, from the cache while no file changed since.
 cachedBase :: ServerState -> FilePath -> Text -> FilePath -> IO (Either Text (Text, Maybe Text))

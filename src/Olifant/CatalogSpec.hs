@@ -88,9 +88,12 @@ spec = describe "catalog" $ do
         _ -> expectationFailure "expected ConfigInvalid for a [decide] model naming no backend"
       withCatalog [("/proj/.olifant/config.toml", "[decide]\nmodel = \"jev\"\n" <> backends)] $ \_ cat -> catalogDecideModel cat `shouldBe` Just "jev"
   describe "[conjure] (conjure, second pass)" $ do
-    it "reads [conjure] wire and refuses other keys" $ do
-      withCatalog [("/proj/.olifant/config.toml", "[conjure]\nwire = \"wire\"\n")] $ \_ cat -> catalogConjureWire cat `shouldBe` Just "wire"
-      withCatalog [("/proj/.olifant/config.toml", "")] $ \_ cat -> catalogConjureWire cat `shouldBe` Nothing
+    it "refuses [conjure] wire, saying a step writes ports itself; no [conjure] is no writer" $ do
+      r <- openWith [("/proj/.olifant/config.toml", "[conjure]\nwire = \"wire\"\n")]
+      case r of
+        Left (ConfigInvalid _ e) -> e `shouldSatisfy` T.isInfixOf "`wire` is gone"
+        _ -> expectationFailure "expected ConfigInvalid"
+      withCatalog [("/proj/.olifant/config.toml", "")] $ \_ cat -> catalogConjureWriter cat `shouldBe` Nothing
     it "reads [conjure] writer and harder, each naming a backend that answers prompts" $ do
       let model = "[model.backends.haiku]\nkind = \"claude\"\nmodel = \"claude-haiku-5-5\"\n[model.backends.sonnet]\nkind = \"claude\"\nmodel = \"claude-sonnet-5-5\"\n"
       withCatalog [("/proj/.olifant/config.toml", model <> "[conjure]\nwriter = \"haiku\"\nharder = \"sonnet\"\n")] $ \_ cat ->
@@ -104,8 +107,8 @@ spec = describe "catalog" $ do
       case j of
         Left (ConfigInvalid _ e) -> e `shouldSatisfy` T.isInfixOf "answers decisions, not prompts"
         _ -> expectationFailure "expected ConfigInvalid"
-      r <- openWith [("/proj/.olifant/config.toml", "[conjure]\nwire = \"wire\"\nother = 1\n")]
-      case r of
+      o <- openWith [("/proj/.olifant/config.toml", "[conjure]\nother = 1\n")]
+      case o of
         Left (ConfigInvalid _ e) -> e `shouldSatisfy` T.isInfixOf "conjure"
         _ -> expectationFailure "expected ConfigInvalid naming conjure"
   describe "[inspect]" $ do
