@@ -1,0 +1,184 @@
+[
+ {
+  "id": "nonsense-cancel",
+  "kind": "nonsense",
+  "tree": "nonsense-cancel",
+  "file": "src/bistro/booking/commands/cancel_booking.py",
+  "unit": "CancelBooking.handle",
+  "line": 32,
+  "span": [
+   32,
+   33
+  ],
+  "reference": "Turn the two prose lines into code: get the booking by input.id, return NotFound(\"there is no booking <id>\") when missing, else remove it and return Ok(None)."
+ },
+ {
+  "id": "nonsense-schedule",
+  "kind": "nonsense",
+  "tree": "nonsense-schedule",
+  "file": "src/bistro/booking/queries/get_day_schedule.py",
+  "unit": "GetDaySchedule.handle",
+  "line": 31,
+  "span": [
+   31,
+   33
+  ],
+  "reference": "Return a GetDayScheduleResult for input.day: all tables and that day's bookings (sorted by start, then table); drop the stray `foo = 12`."
+ },
+ {
+  "id": "stub-cancel",
+  "kind": "stub",
+  "tree": "stub-cancel",
+  "file": "src/bistro/booking/commands/cancel_booking.py",
+  "unit": "CancelBooking.handle",
+  "line": 32,
+  "span": [
+   32,
+   32
+  ],
+  "reference": "Write the body the two tests describe: get by input.id, NotFound when missing, else remove and return Ok(None)."
+ },
+ {
+  "id": "stub-create",
+  "kind": "stub",
+  "tree": "stub-create",
+  "file": "src/bistro/booking/commands/create_booking.py",
+  "unit": "CreateBooking.handle",
+  "line": 54,
+  "span": [
+   54,
+   54
+  ],
+  "reference": "Start the body the four tests describe: look up the table (TableNotFound), then party size (PartyTooLarge), taken slot (SlotTaken), save a new booking with ids.next_id() and return Ok(booking); any first slice of that, in that order, is forward."
+ },
+ {
+  "id": "half-create",
+  "kind": "half",
+  "tree": "half-create",
+  "file": "src/bistro/booking/commands/create_booking.py",
+  "unit": "CreateBooking.handle",
+  "line": 54,
+  "span": [
+   54,
+   58
+  ],
+  "reference": "Continue after the party check: refuse a taken slot (SlotTaken \"table t1 is booked at 19:00\"), then build the booking with ids.next_id(), save it and return Ok(booking)."
+ },
+ {
+  "id": "half-schedule",
+  "kind": "half",
+  "tree": "half-schedule",
+  "file": "src/bistro/booking/queries/get_day_schedule.py",
+  "unit": "GetDaySchedule.handle",
+  "line": 31,
+  "span": [
+   31,
+   31
+  ],
+  "reference": "Return GetDayScheduleResult(day=input.day, tables=self.tables.all(), bookings=the filtered list sorted by (start, table_id))."
+ },
+ {
+  "id": "bug-create",
+  "kind": "bug",
+  "tree": "bug-create",
+  "file": "src/bistro/booking/commands/create_booking.py",
+  "unit": "CreateBooking.handle",
+  "line": 54,
+  "span": [
+   54,
+   63
+  ],
+  "reference": "Fix PartyTooLarge's message to \"table t1 seats 4, not 6\" (the test's wording); change nothing else."
+ },
+ {
+  "id": "bug-cancel",
+  "kind": "bug",
+  "tree": "bug-cancel",
+  "file": "src/bistro/booking/commands/cancel_booking.py",
+  "unit": "CancelBooking.handle",
+  "line": 32,
+  "span": [
+   32,
+   36
+  ],
+  "reference": "Remove by the booking's id (input.id), not its table_id; change nothing else."
+ },
+ {
+  "id": "syntax-create",
+  "kind": "syntax",
+  "tree": "syntax-create",
+  "file": "src/bistro/booking/commands/create_booking.py",
+  "unit": "CreateBooking.handle",
+  "line": 54,
+  "span": [
+   54,
+   63
+  ],
+  "reference": "Add the missing colon after `if table is None`; change nothing else."
+ },
+ {
+  "id": "syntax-cancel",
+  "kind": "syntax",
+  "tree": "syntax-cancel",
+  "file": "src/bistro/booking/commands/cancel_booking.py",
+  "unit": "CancelBooking.handle",
+  "line": 32,
+  "span": [
+   32,
+   36
+  ],
+  "reference": "Close the NotFound( call's parenthesis; change nothing else."
+ },
+ {
+  "id": "notest-cancel",
+  "kind": "no-test",
+  "tree": "notest-cancel",
+  "file": "src/bistro/booking/commands/cancel_booking.py",
+  "unit": "CancelBooking.handle",
+  "line": 32,
+  "span": [
+   32,
+   36
+  ],
+  "reference": "Write cancel_booking__test.py: one test that cancels an existing booking (Ok(None), repository empty) and one that refuses a missing id (NotFound); the body stays as it is."
+ },
+ {
+  "id": "notest-count",
+  "kind": "no-test",
+  "tree": "notest-count",
+  "file": "src/bistro/booking/queries/count_day_bookings.py",
+  "unit": "CountDayBookings.handle",
+  "line": 20,
+  "span": [
+   20,
+   20
+  ],
+  "reference": "Write count_day_bookings__test.py with a test that counts only the given day's bookings (an in-memory repository with bookings on two days); the body stays as it is."
+ },
+ {
+  "id": "green-cancel",
+  "kind": "green",
+  "tree": "green-cancel",
+  "file": "src/bistro/booking/commands/cancel_booking.py",
+  "unit": "CancelBooking.handle",
+  "line": 32,
+  "span": [
+   32,
+   36
+  ],
+  "reference": "Nothing: the body is complete and both tests pass. Leaving it, or at most a tiny tidy, is forward; a rewrite is churn."
+ },
+ {
+  "id": "green-schedule",
+  "kind": "green",
+  "tree": "green-schedule",
+  "file": "src/bistro/booking/queries/get_day_schedule.py",
+  "unit": "GetDaySchedule.handle",
+  "line": 31,
+  "span": [
+   31,
+   32
+  ],
+  "reference": "Nothing: the body is complete and the test passes. Leaving it, or at most a tiny tidy, is forward; a rewrite is churn."
+ }
+]
