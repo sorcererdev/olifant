@@ -34,6 +34,7 @@ import Data.Aeson.KeyMap qualified as KM
 import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe, mapMaybe)
 import Olifant.Plans (Anchor (..), Kind (..), Line (..), Verdict (..), anchorText, childrenOf, excerptInfo, excerptSpans, parsePlan, stepDone, testState, withVerdict)
 import Olifant.Server.Unit (Named (..), fingerprint)
+import Olifant.Server.ConjureStep qualified as Step
 import Olifant.Server.Cascade (checkModelIn)
 import Olifant.Server.Claims (ClaimStore, checkedKeys, claimsOf, modeFor, openSentences, sentencesOf, stepUnit)
 import Olifant.Server.Loop (PassAnswer (..), PassMode (..), Sweep (..), checkOne, checkPlan, claimPass, estimateFor, estimatesOf, sweepTargets)
@@ -220,6 +221,8 @@ configure env = \case
                 { scDebounceMs = maybe (scDebounceMs (ssConfig s)) id (KM.lookup "debounce_ms" o >>= \case Number n -> toBoundedInteger n; _ -> Nothing)
                 , scModel = case KM.lookup "model" o of Just (String m) -> Just m; _ -> scModel (ssConfig s)
                 , scFills = case KM.lookup "fills" o of Just (String f) -> Just (T.unpack f); _ -> scFills (ssConfig s)
+                , -- step_replies: a file whose text every conjure writer answers (tests)
+                  scStepReplies = case KM.lookup "step_replies" o of Just (String f) -> Just (T.unpack f); _ -> scStepReplies (ssConfig s)
                 , -- recognize_answers: an alias of decide_answers (one answers file)
                   scDecideAnswers = case (KM.lookup "decide_answers" o, KM.lookup "recognize_answers" o) of
                     (Just (String f), _) -> Just (T.unpack f)
@@ -1062,17 +1065,16 @@ handlers env =
                     , Just z' <- toBoundedInteger z ->
                         Just (a' + 1, z' + 1)
                   _ -> Nothing
-                invalid = respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "olifant/conjure resume needs a token and a choice (continue, climb, stop, reconjure, accept, reject or wire)" Nothing))
-            case resumeOf (req ^. L.params) of
-              Left _ -> invalid
+            case Step.stepResumeOf (req ^. L.params) of
+              Left why -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) why Nothing))
               Right resumed -> do
-                conjured' <- planProgress "conjuring" (\progress -> withSnapshot job (maybe (conjureAt progress path (line + 1) selection) (resumeConjure progress path) resumed))
+                conjured' <- planProgress "conjuring" (\progress -> withSnapshot job (maybe (Step.conjureAt progress path (line + 1) selection) (\(token, choice) -> Step.answerStep progress path token choice) resumed))
                 -- a conjure the editor cancelled is no result
                 stopped <- liftIO (cancelled (envCancel job))
                 case conjured' of
                   _ | stopped -> respond (Left (TResponseError (InL LSPErrorCodes_RequestCancelled) "cancelled" Nothing))
                   Left why -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
-                  Right outcome -> respond (Right (conjureJson outcome))
+                  Right outcome -> respond (Right (Step.stepJson (toJSON . acceptedEdit) outcome))
           _ -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "olifant/conjure needs a textDocument and a position" Nothing))
     , requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/debugState")) $ \req respond ->
         liftIO (readIORef (envDebug env)) >>= \case

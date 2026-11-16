@@ -300,6 +300,17 @@ stepSpecs = describe "a conjure is one step (olifant/conjure)" $ do
       answer s (CS.shToken sh) CS.StepAccept `shouldReturn` Left CS.stepGone
       recs <- records s
       head recs `shouldSatisfy` T.isInfixOf "\"choice\":\"dropped\""
+    it "the wire: a shown step's keys, and the resume choices accept, reject and harder only" $ do
+      (s, _) <- serving (const (reply filled)) []
+      sh <- shown <$> step s 6
+      let Object o = CS.stepJson (const (J.String "edits")) (CS.StepShown sh)
+          Just (Object w) = KM.lookup "shown" o
+      map K.toText (KM.keys w) `shouldMatchList` ["token", "file", "unit", "writer", "goal", "edits", "dropped", "parses", "tests", "after", "cost", "seconds", "harder"]
+      (KM.lookup "tests" w >>= \case Object t -> KM.lookup "passing" t; _ -> Nothing) `shouldBe` Just (J.toJSON [testId])
+      CS.stepJson (const J.Null) (CS.StepNothing "nothing") `shouldBe` J.object ["nothing" J..= ("nothing" :: Text)]
+      CS.stepResumeOf (J.object ["resume" J..= J.object ["token" J..= ("step-1" :: Text), "choice" J..= ("harder" :: Text)]]) `shouldBe` Right (Just ("step-1", CS.StepHarder))
+      CS.stepResumeOf (J.object ["resume" J..= J.object ["token" J..= ("step-1" :: Text), "choice" J..= ("climb" :: Text)]]) `shouldSatisfy` either (const True) (const False)
+      CS.stepResumeOf (J.object []) `shouldBe` Right Nothing
     it "the file moved on before accept: nothing lands, said, and the step is dropped" $ do
       (s, _) <- serving (const (reply filled)) []
       sh <- shown <$> step s 6

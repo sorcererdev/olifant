@@ -16,13 +16,16 @@ module Olifant.Server.ConjureStep
   , answerStep
   , sessionDiff
   , stepGone
+  , stepJson
+  , stepResumeOf
   ) where
 
 import Control.Exception (SomeException, try)
 import Control.Monad (forM, forM_, void)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.Except (ExceptT (..), runExceptT, throwE)
-import Data.Aeson (encode, object, (.=))
+import Data.Aeson (Value (..), encode, object, (.=))
+import Data.Aeson.KeyMap qualified as KM
 import Data.ByteString.Lazy qualified as BL
 import Data.Functor ((<&>))
 import Data.IORef (atomicModifyIORef')
@@ -44,9 +47,9 @@ import Olifant.Model (ChatReply (..), ModelConfig (..), askBackendReply, backend
 import Olifant.Process (runBytes)
 import Olifant.Server.Edits (FileEdit (..), smallestChange, unifiedDiff)
 import Olifant.Server.Site (Site (..), appendStepLine, importedContext, runOver, siteAt, siteTestFile)
-import Olifant.Server.State (ServerState (..))
+import Olifant.Server.State (ServerConfig (..), ServerState (..))
 import Olifant.Server.Step
-import Olifant.Server.Tests (TestsAnswer (..), TestsScope (..))
+import Olifant.Server.Tests (TestsAnswer (..), TestsScope (..), testsJson)
 import Olifant.Server.Unit (Unit (..), testOrUnitAt)
 import Olifant.Workspace (Workspace (..), normalisePath, overlayMany)
 import System.Directory (getModificationTime)
@@ -248,10 +251,12 @@ answerStep progress path token choice s0 =
 -- review says it, and how to ask it. The test writer, when set, answers for
 -- any name.
 writerFor :: ServerState -> Project -> Bool -> IO (Either Text (Text, Text -> Text -> IO (Either Text ChatReply)))
-writerFor s project harder = pure $ case (named, ssTestWriter s) of
-  (n, Just w) -> let n' = fromMaybe "test-writer" n in Right (n', w n')
-  (Nothing, Nothing) -> Left noModel
-  (Just n, Nothing) -> case lookup n (mcBackends config) of
+writerFor s project harder = pure $ case (named, ssTestWriter s, scStepReplies (ssConfig s)) of
+  (n, Just w, _) -> let n' = fromMaybe "test-writer" n in Right (n', w n')
+  -- recorded: the file's text is every writer's reply (the editor's specs)
+  (n, Nothing, Just file) -> Right (fromMaybe "recorded" n, \_ _ -> readText (pFiles (ssPorts s)) file <&> maybe (Left ("recorded replies: cannot read " <> T.pack file)) (\t -> Right (ChatReply t Nothing 0)))
+  (Nothing, Nothing, Nothing) -> Left noModel
+  (Just n, Nothing, Nothing) -> case lookup n (mcBackends config) of
     Nothing -> Left ("no backend " <> n <> " under [model.backends]")
     Just b -> Right (backendModel b, askBackendReply (ssCancel s) (mcTimeout config) b)
   where
@@ -366,3 +371,47 @@ sessionDiff root exts =
     perFile t = case T.splitOn "diff --git a/" t of
       (_ : chunks) -> [(T.unpack (fst (T.breakOn " b/" c)), "diff --git a/" <> c) | c <- chunks]
       _ -> []
+
+-- | What `olifant/conjure` answers: a shown step (the edits as EDITS words
+-- them, the editor's workspace edit), nothing to do, a landed step, or a
+-- rejected one.
+stepJson :: ([FileEdit] -> Value) -> StepOutcome -> Value
+stepJson edits = \case
+  StepShown sh ->
+    object
+      [ "shown"
+          .= object
+            [ "token" .= shToken sh
+            , "file" .= shFile sh
+            , "unit" .= shUnit sh
+            , "writer" .= shWriter sh
+            , "goal" .= shGoal sh
+            , "edits" .= (if null (shEdits sh) then Null else edits (shEdits sh))
+            , "dropped" .= shDropped sh
+            , "parses" .= [object ["file" .= f, "ok" .= ok] | (f, ok) <- shParses sh]
+            , "tests" .= object ["passing" .= tdPassing d, "failing" .= tdFailing d, "stillRed" .= tdStillRed d, "noTests" .= tdNoTests d]
+            , "after" .= maybe Null testsJson (shTests sh)
+            , "cost" .= shCost sh
+            , "seconds" .= shSeconds sh
+            , "harder" .= shHarder sh
+            ]
+      ]
+    where
+      d = shDelta sh
+  StepNothing goal -> object ["nothing" .= goal]
+  StepLanded l -> object ["landed" .= object ["file" .= lsFile l, "edits" .= (if null (lsEdits l) then Null else edits (lsEdits l))]]
+  StepRejected -> object ["rejected" .= True]
+
+-- | A request's `resume`: the step's token and the person's choice (accept,
+-- reject or harder); Nothing when it has none, Left when it is not whole.
+stepResumeOf :: Value -> Either Text (Maybe (Text, StepChoice))
+stepResumeOf = \case
+  Object o | Just r <- KM.lookup "resume" o -> case r of
+    Object ro
+      | Just (String tok) <- KM.lookup "token" ro
+      , not (T.null tok)
+      , Just (String c) <- KM.lookup "choice" ro
+      , Just choice <- lookup c [("accept", StepAccept), ("reject", StepReject), ("harder", StepHarder)] ->
+          Right (Just (tok, choice))
+    _ -> Left "olifant/conjure resume needs a token and a choice (accept, reject or harder)"
+  _ -> Right Nothing

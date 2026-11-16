@@ -1104,6 +1104,28 @@ conjureSpec = describe "olifant/conjure" $ do
         first `shouldSatisfy` stop
         second `shouldSatisfy` stop
         code `shouldBe` Just 0
+  it "a step: shown with its goal and edits, then accepted with the edits to land; another choice is refused" $
+    withSystemTempDirectory "olifant-step" $ \tmp -> do
+      let script = tmp </> "tests.json"
+          replies = tmp </> "replies.txt"
+      BSL.writeFile script "{}"
+      withPython [] $ \ports dir -> do
+        TIO.writeFile replies . (\t -> "<goal>return none</goal>\n<file path=\"" <> T.pack moduleRel <> "\">\n" <> t <> "\n\nSTEPPED = 1\n</file>\n") =<< TIO.readFile (dir </> moduleRel)
+        ((shownA, accepted, refused), _) <- inProcessWithConfig [("test_script", String (T.pack script)), ("step_replies", String (T.pack replies))] ports dir $ do
+          doc <- openDoc moduleRel "python"
+          text <- documentContents doc
+          let handleAt = length (takeWhile (not . ("    def handle(" `T.isPrefixOf`)) (T.lines text))
+              ask extra = blockMove (Proxy :: Proxy "olifant/conjure") (object (["textDocument" .= object ["uri" .= (doc ^. L.uri)], "position" .= object ["line" .= (handleAt + 1), "character" .= (0 :: Int)]] <> extra))
+          a <- ask []
+          let token = either (const "") (\v -> case lookupKey "shown" v >>= lookupKey "token" of Just (String t) -> t; _ -> "") a
+          b <- ask ["resume" .= object ["token" .= token, "choice" .= ("accept" :: Text)]]
+          c <- ask ["resume" .= object ["token" .= token, "choice" .= ("climb" :: Text)]]
+          pure (a, b, c)
+        let shownField k = either (const Nothing) (\v -> lookupKey "shown" v >>= lookupKey k) shownA
+        shownField "goal" `shouldBe` Just (String "return none")
+        shownField "edits" `shouldSatisfy` \case Just (Object _) -> True; _ -> False
+        either (const Nothing) (\v -> lookupKey "landed" v >>= lookupKey "edits") accepted `shouldSatisfy` \case Just (Object _) -> True; _ -> False
+        refused `shouldSatisfy` either ("accept, reject or harder" `T.isInfixOf`) (const False)
   it "in a method: the edit, the summary and the after-run; outside any unit, why" $
     withSystemTempDirectory "olifant-conjure" $ \tmp -> do
       let script = tmp </> "tests.json"
