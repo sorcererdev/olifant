@@ -17,7 +17,7 @@ and plans never read inspect's.
 |---|---|
 | `Inspect/Steering.hs` | `.olifant/inspect.md`: `steering` reads the rules (headings under `## Rules`), `ruleText`, `rulesSection`, the two nitpick sections |
 | `Inspect/Store.hs` | `InspectFinding`, `Status`, `Place`, `InspectStore`; `readInspectStore`, `updateInspectStore` (one lock, write-then-rename), `dismiss`, `shownIn` (the margin of one file) |
-| `Inspect/Screen.hs` | the unfinished screen: `unitFacts` (parse errors, `TODO`/`FIXME`, empty body), `stopsEarly` (Jev), `unfinished` |
+| `Inspect/Screen.hs` | the unfinished screen (unused for now): `unitFacts` (parse errors, `TODO`/`FIXME`, empty body), `stopsEarly` (Jev), `unfinished` |
 | `Inspect/Find.hs` | the find call: `findPrompt` (1a's prompt word for word), `parseFind`, `packUnits`, `liveFinder`, `recordedFinder` |
 | `Inspect/Judge.hs` | `place`, `samePairs`, `sameProblem`, `matchStored` (the design's step-4 table), `nitpick`, `keepOf`, `citationsOk`, `claimVerdict` |
 | `Inspect/Pass.hs` | `inspectPass`, the orchestrator; `changedOf`; the caps (`spentToday`, `findEstimate`, `claimEstimate`) |
@@ -48,11 +48,11 @@ the time zone (`day_cost` is a local day).
    `compareUnits`, the plans' own comparison: `Added` or `Changed` units count. No `HEAD` text
    (untracked, no commit) means every unit. Units whose fingerprint is already in
    `vsInspected` are dropped.
-3. **Screen.** A code fact skips the unit without asking Jev, and leaves no record. Otherwise one
-   `weigh` of `stopsEarly` (its state: language, file, the unit's text, the enclosing unit's def
-   line, the facts); at P ≥ 0.80 the unit is still sent, as `FindUnit.fuInProgress` (the user's
-   ruling, after the demo trial: a stub's written code can break a rule). `findPrompt` marks it
-   `(in progress)` and adds one sentence: report what is written, never what is missing.
+3. **No screen, for now.** Every changed unit not yet inspected goes to the find call (user
+   ruling, 2026-11-15: rely on Jev's nitpick filter). `Inspect/Screen.hs` (`unitFacts`,
+   `stopsEarly`) and the `errorLines`/`bodyEmpty` tree-sitter calls stay, unused by the pass, so
+   the screen can come back. `FindUnit.fuInProgress` and its prompt sentence stay too; nothing sets
+   it now.
 4. **Find.** `packUnits` cuts the finished units into calls of at most 600 lines. Before each
    call the estimate (`findEstimate`: the mean of the last 20 priced `inspect` errands, else $0.04 or
    $0.005 for haiku) is checked against `pass_cost` and `day_cost`. A pack that does not fit,
