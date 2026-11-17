@@ -216,13 +216,25 @@ stepSpecs = describe "a conjure is one step (olifant/conjure)" $ do
     sh <- shown <$> step s 6
     CS.shDropped sh `shouldBe` ["../evil.py"]
     map fePath (CS.shEdits sh) `shouldBe` [root </> moduleRel]
-  it "nothing to do: said, and nothing kept" $ do
+  it "nothing to do is a step that takes none: shown with no edits, held under a token, its reply kept" $ do
     (s, _) <- serving (const (reply "<goal>nothing</goal>")) []
-    r <- step s 6
-    case r of
-      Right (CS.StepNothing _) -> pure ()
-      other -> expectationFailure (show other)
-    held s `shouldReturn` 0
+    sh <- shown <$> step s 6
+    CS.shTook sh `shouldBe` False
+    CS.shEdits sh `shouldBe` []
+    CS.shGoal sh `shouldBe` Just "nothing"
+    CS.shReply sh `shouldBe` "<goal>nothing</goal>"
+    CS.shSituation sh `shouldSatisfy` T.isInfixOf "`handle`"
+    held s `shouldReturn` 1
+  it "a goal with no files is a step that takes none, held like any step" $ do
+    (s, _) <- serving (const (reply "<goal>fill handle</goal>\nI would change handle.")) []
+    sh <- shown <$> step s 6
+    CS.shTook sh `shouldBe` False
+    CS.shEdits sh `shouldBe` []
+    held s `shouldReturn` 1
+  it "a step with files took one" $ do
+    (s, _) <- serving (const (reply filled)) []
+    sh <- shown <$> step s 6
+    CS.shTook sh `shouldBe` True
   it "the editor's unsaved text is what the step is diffed against, at its version" $ do
     (s0, _) <- serving (const (reply filled)) []
     let unsaved = T.replace "self.closed = 0" "self.closed = 0  # mine" stubbed
@@ -283,6 +295,30 @@ stepSpecs = describe "a conjure is one step (olifant/conjure)" $ do
       sh <- shown <$> step s 6
       CS.shHarder sh `shouldBe` False
       answer s (CS.shToken sh) CS.StepHarder `shouldReturn` Left "no harder writer: name one with [conjure] harder"
+    it "accept on a step that took none lands nothing and records it as no step" $ do
+      (s, _) <- serving (const (reply "<goal>nothing</goal>")) []
+      sh <- shown <$> step s 6
+      r <- answer s (CS.shToken sh) CS.StepAccept
+      r `shouldSatisfy` either (const False) (\case CS.StepRejected -> True; _ -> False)
+      recs <- records s
+      head recs `shouldSatisfy` T.isInfixOf "\"choice\":\"no step\""
+      held s `shouldReturn` 0
+    it "harder on a step that took none: the harder writer's step replaces it" $ do
+      (s, _) <- serving (\n -> if n == "sonnet" then reply filled else reply "<goal>nothing</goal>") [(".olifant/config.toml", "[packs]\npython-htmx = { path = \"/pack\" }\n[model]\ndefault = \"haiku\"\n[model.backends.haiku]\nkind = \"claude\"\nmodel = \"claude-haiku-5-5\"\n[model.backends.sonnet]\nkind = \"claude\"\nmodel = \"claude-sonnet-5-5\"\n[conjure]\nharder = \"sonnet\"\n")]
+      sh <- shown <$> step s 6
+      CS.shTook sh `shouldBe` False
+      sh2 <- shown <$> answer s (CS.shToken sh) CS.StepHarder
+      CS.shTook sh2 `shouldBe` True
+      recs <- records s
+      head recs `shouldSatisfy` T.isInfixOf "\"choice\":\"replaced\""
+      held s `shouldReturn` 1
+    it "harder answering with no step replaces the shown one too" $ do
+      (s, _) <- serving (\n -> if n == "sonnet" then reply "<goal>nothing</goal>" else reply filled) [(".olifant/config.toml", "[packs]\npython-htmx = { path = \"/pack\" }\n[model]\ndefault = \"haiku\"\n[model.backends.haiku]\nkind = \"claude\"\nmodel = \"claude-haiku-5-5\"\n[model.backends.sonnet]\nkind = \"claude\"\nmodel = \"claude-sonnet-5-5\"\n[conjure]\nharder = \"sonnet\"\n")]
+      sh <- shown <$> step s 6
+      sh2 <- shown <$> answer s (CS.shToken sh) CS.StepHarder
+      CS.shTook sh2 `shouldBe` False
+      CS.shToken sh2 `shouldNotBe` CS.shToken sh
+      held s `shouldReturn` 1
     it "a token answers once" $ do
       (s, _) <- serving (const (reply filled)) []
       sh <- shown <$> step s 6
@@ -300,7 +336,7 @@ stepSpecs = describe "a conjure is one step (olifant/conjure)" $ do
       sh <- shown <$> step s 6
       let Object o = CS.stepJson (const (J.String "edits")) (CS.StepShown sh)
           Just (Object w) = KM.lookup "shown" o
-      map K.toText (KM.keys w) `shouldMatchList` ["token", "file", "unit", "writer", "goal", "edits", "dropped", "parses", "tests", "after", "cost", "seconds", "harder", "diffs", "situation", "reply"]
+      map K.toText (KM.keys w) `shouldMatchList` ["token", "file", "unit", "writer", "goal", "edits", "dropped", "parses", "tests", "after", "cost", "seconds", "harder", "diffs", "situation", "reply", "took"]
       case KM.lookup "diffs" w of
         Just (Array ds) | [Object d] <- toList ds -> do
           KM.lookup "file" d `shouldBe` Just (J.String (T.pack moduleRel))
@@ -308,7 +344,7 @@ stepSpecs = describe "a conjure is one step (olifant/conjure)" $ do
         other -> expectationFailure (show other)
       KM.lookup "reply" w `shouldBe` Just (J.String filled)
       (KM.lookup "tests" w >>= \case Object t -> KM.lookup "passing" t; _ -> Nothing) `shouldBe` Just (J.toJSON [testId])
-      CS.stepJson (const J.Null) (CS.StepNothing "nothing") `shouldBe` J.object ["nothing" J..= ("nothing" :: Text)]
+      KM.lookup "took" w `shouldBe` Just (J.Bool True)
       CS.stepResumeOf (J.object ["resume" J..= J.object ["token" J..= ("step-1" :: Text), "choice" J..= ("harder" :: Text)]]) `shouldBe` Right (Just ("step-1", CS.StepHarder))
       CS.stepResumeOf (J.object ["resume" J..= J.object ["token" J..= ("step-1" :: Text), "choice" J..= ("climb" :: Text)]]) `shouldSatisfy` either (const True) (const False)
       CS.stepResumeOf (J.object []) `shouldBe` Right Nothing

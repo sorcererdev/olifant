@@ -67,8 +67,11 @@ along. Specs replace the writer with `ssTestWriter`, or `scStepReplies` (the `st
 init option: a file whose text every writer answers).
 
 **4. The check** (`takeStep`). `readStep` reads `<goal>` and each `<file path="…">` block,
-through prose or a markdown fence around them. `<goal>nothing</goal>` with no files answers
-`StepNothing`. Each answered path goes through `keptPath`: inside the project, not under
+through prose or a markdown fence around them. A reply with no files (`<goal>nothing</goal>`,
+or a goal alone) is a step that took none: it goes through the same check with no writes and is
+held and shown like any other, with `took` false (`hdTook`, `shTook`), so the person can still
+ask the harder writer or read the reply. Only a writer that fails (a backend error) is an
+error. Each answered path goes through `keptPath`: inside the project, not under
 `.git/` or `.olifant/`. Others are listed as `dropped`. Each kept file's base is the editor's
 document (its version and text) when open, else the workspace's text, else nothing (a new
 file). Each file is parsed with its language's grammar (`errorLines`). The test file runs again
@@ -79,7 +82,7 @@ a syntax error) is still red.
 
 **5. Shown.** The step is kept as a `StepHeld` in `ssShown` under `step-N` and answered as
 `StepShown`. `editsOf` turns its writes into `FileEdit`s: a create for a new file, else
-`smallestChange` at the version it was read at.
+`smallestChange` at the version it was read at. A step that took none has no edits.
 
 **6. The answer** (`answerStep`, a request with `resume: {token, choice}`). Every choice takes
 the token, so a token answers once (`stepGone` after).
@@ -87,10 +90,13 @@ the token, so a token answers once (`stepGone` after).
 - **accept**: `movedSince` checks every written file is still at the version (or text) it was
   read at. If so the edits land as `acceptedEdit`. If not, nothing lands, the person's text
   stands, and the step is recorded as `dropped`.
+  On a step that took none (`hdTook` false), accept is answered like reject (`rejected`) and
+  recorded as `no step`.
 - **reject**: nothing lands.
 - **harder**: refused without `[conjure] harder`. Otherwise the same situation text goes to the
-  harder writer. Only when it answers a step is the first one taken and recorded as `replaced`,
-  and the new one shown under a new token; a failure or nothing to do leaves the first to answer.
+  harder writer. When it answers (a step, or one that took none) the first is taken and
+  recorded as `replaced`, and the new one shown under a new token; a failure leaves the first to
+  answer.
 
 **7. The record** (`record`). Every final choice appends one JSON line to
 `.olifant/state/conjure-steps.jsonl`: time, file, unit, writer, goal, files, lines changed, the
@@ -104,30 +110,32 @@ The JSON lines are the corpus for refining the prompt and the writer choice from
 request  olifant/conjure {textDocument, position, selection?, resume?: {token, choice: accept|reject|harder}}
 answer   {"shown": {token, file, unit, writer, goal, edits, dropped, parses: [{file, ok}],
                     tests: {passing, failing, stillRed, noTests}, after, cost, seconds, harder,
-                    diffs: [{file, diff}], situation, reply}}
-       | {"nothing": goal}
+                    diffs: [{file, diff}], situation, reply, took}}
        | {"landed": {file, edits}}
        | {"rejected": true}
 ```
 
 `edits` is a workspace edit (`acceptedEdit`); `after` is `testsJson` of the after-run, or null;
 `diffs` each touched file's `unifiedDiff` (the review draws them); `situation` and `reply` the
-text the writer read and its raw answer (the review's `d`).
+text the writer read and its raw answer (the review's `d`); `took` false when the writer took no
+step (no files: `edits` null, `diffs` empty).
 Any other choice is `InvalidParams` naming the three.
 
 ## Testing it
 
-- `Server/StepSpec`: the reply reader (fences, prose, nothing), `keptPath`, the prompt's
+- `Server/StepSpec`: the reply reader (fences, prose, a goal of nothing), `keptPath`, the prompt's
   framing (no "least code", no language named), `testDelta`, the log line, the session filter,
   and `sessionDiff` on a temp repository.
 - `ServerSpec` `stepSpecs`: a whole step over the python-htmx fixture with `ssTestWriter`:
-  shown, no test file, red, a dropped path, nothing, unsaved text at its version, a failing
-  writer, accept, reject, harder, a used token, a new conjure dropping the old step, a file
+  shown, no test file, red, a dropped path, a step that took none (nothing to do, a goal with no
+  files; accept on it recorded `no step`; harder replacing it and answering one), unsaved text
+  at its version, a failing writer, accept, reject, harder, a used token, a new conjure dropping the old step, a file
   moved before accept, and the wire's shape.
 - `LoopSpec` `conjureFloorSpec`: a step lands in a hspec spec and in a Rust module's own
   `mod tests`.
 - `LspSpec` `conjureSpec`: over pipes with `step_replies`: shown, accepted, a wrong choice
-  refused.
+  refused; a step that took none shown with `took` false and a token, accept answering
+  `rejected`.
 - `ModelSpec`: the `claude` kind (its flags, a missing runner, a fake runner's reply, an error
   reply, fills through it). `CatalogSpec`: `[conjure] writer` and `harder`.
 

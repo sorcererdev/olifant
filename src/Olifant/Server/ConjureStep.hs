@@ -75,6 +75,9 @@ data ShownStep = ShownStep
   -- ^ each touched file's unified diff, by its path in the project
   , shSituation :: Text
   , shReply :: Text
+  , shTook :: Bool
+  -- ^ False when the writer took no step (nothing to do, or no files): shown
+  -- with no edits all the same, so harder and the reply stay in reach
   }
   deriving stock (Eq, Show)
 
@@ -82,7 +85,7 @@ data ShownStep = ShownStep
 data LandedStep = LandedStep {lsFile :: FilePath, lsEdits :: [FileEdit]}
   deriving stock (Eq, Show)
 
-data StepOutcome = StepShown ShownStep | StepNothing Text | StepLanded LandedStep | StepRejected
+data StepOutcome = StepShown ShownStep | StepLanded LandedStep | StepRejected
   deriving stock (Eq, Show)
 
 data StepChoice = StepAccept | StepReject | StepHarder
@@ -140,16 +143,13 @@ conjureAt progress path line selected s0 =
       ExceptT (takeStep s site file unit writer ask situation before)
 
 -- | The writer asked over SITUATION; its answer checked and shown (kept under
--- a new token), or nothing to do.
+-- a new token). An answer with no files (nothing to do, or a goal alone) is a
+-- step that took none: shown and held all the same, with no edits.
 takeStep :: ServerState -> Site -> FilePath -> Text -> Text -> (Text -> Text -> IO (Either Text ChatReply)) -> Text -> Maybe TestRun -> IO (Either Text StepOutcome)
 takeStep s site file unit writer ask situation before =
   ask stepSystem situation >>= \case
     Left why -> pure (Left why)
-    Right reply -> do
-      let r = readStep (crText reply)
-      if srNothing r
-        then pure (Right (StepNothing (fromMaybe "nothing" (srGoal r))))
-        else if null (srFiles r) then pure (Left "the writer took no step: conjure again, or ask the harder writer") else Right . StepShown <$> checked reply r
+    Right reply -> Right . StepShown <$> checked reply (readStep (crText reply))
   where
     root = siteRoot site
     lang = siteLang site
@@ -187,6 +187,7 @@ takeStep s site file unit writer ask situation before =
               , hdLines = sum [diffLines (unifiedDiff k (fromMaybe "" b) t) | (k, _, t, _, b) <- read']
               , hdCost = crCost reply
               , hdSeconds = crSeconds reply
+              , hdTook = not (null (srFiles r))
               }
       token <- atomicModifyIORef' (ssShown s) (\(n, m) -> let t = "step-" <> T.pack (show (n + 1)) in ((n + 1, M.insert t heldStep m), t))
       pure
@@ -207,6 +208,7 @@ takeStep s site file unit writer ask situation before =
           , shDiffs = [(k, d) | (k, _, t, _, b) <- read', let d = unifiedDiff k (fromMaybe "" b) t, not (T.null d)]
           , shSituation = situation
           , shReply = crText reply
+          , shTook = hdTook heldStep
           }
 
 -- | The person's answer to the step under TOKEN: accept lands it (unless a
@@ -245,6 +247,8 @@ answerStep progress path token choice s0 =
             taken <- takeShown s token
             if not taken
               then pure (Left stepGone)
+              else if not (hdTook hd)
+                then record s hd "no step" >> pure (Right StepRejected)
               else
                 movedSince s hd >>= \case
                   Just moved -> do
@@ -382,8 +386,8 @@ sessionDiff root exts =
       _ -> []
 
 -- | What `olifant/conjure` answers: a shown step (the edits as EDITS words
--- them, the editor's workspace edit), nothing to do, a landed step, or a
--- rejected one.
+-- them, the editor's workspace edit; `took` false when the writer took
+-- none), a landed step, or a rejected one.
 stepJson :: ([FileEdit] -> Value) -> StepOutcome -> Value
 stepJson edits = \case
   StepShown sh ->
@@ -406,11 +410,11 @@ stepJson edits = \case
             , "diffs" .= [object ["file" .= f, "diff" .= d] | (f, d) <- shDiffs sh]
             , "situation" .= shSituation sh
             , "reply" .= shReply sh
+            , "took" .= shTook sh
             ]
       ]
     where
       d = shDelta sh
-  StepNothing goal -> object ["nothing" .= goal]
   StepLanded l -> object ["landed" .= object ["file" .= lsFile l, "edits" .= (if null (lsEdits l) then Null else edits (lsEdits l))]]
   StepRejected -> object ["rejected" .= True]
 
