@@ -55,7 +55,8 @@ no project rules: it still finds bugs and wrong assumptions, but it cannot find 
    A large save is split into calls of at most 600 lines each.
 4. **Place and match.** A finding that does not touch a changed unit is recorded as `elsewhere`
    and not shown. Jev asks whether a new finding is the same problem as one already stored. If
-   so, it is merged (seen once more), or dropped when you dismissed it.
+   so, it is merged (seen once more, with the new wording, lines and evidence: it was just
+   checked on the code as it is, so it is not stale), or dropped when you dismissed it.
 5. **Filter.** Jev asks "is this a nitpick?" with the rule the finding cites (or all your rules).
    A finding below `cut` is `withheld`.
 6. **Verify.** The code each finding cites must exist (an end line past the end of the file is
@@ -167,7 +168,8 @@ Findings that need no claim check (a broken rule) show as soon as they pass the 
 shown findings arrive as hints
 (source `olifant-inspect`, code = the kind, on the finding's first line). A finding whose unit changed
 since it was inspected keeps its place with the code `<kind>-stale`, until a save inspects the unit
-again. A finding moves with its unit when code above it is added or removed, and disappears when
+again; a pass that finds it again refreshes it (its wording and lines are the new pass's, and it is
+no longer stale). A finding moves with its unit when code above it is added or removed, and disappears when
 its unit is deleted. Passes run one at a time, so a quick second save is checked against what the
 first stored. A save that changes the units a find call is still working on stops that call. Hover and
 go-to-definition are untouched.
@@ -186,10 +188,14 @@ A dismissal frees a place: the best `waiting` finding of the file is verified ne
 The first time a local day's `day_cost` stops a pass, one message says so: `olifant inspect: today's
 cap ($3.00) is reached; 4 units wait. olifant inspect cost shows them.`
 
-In durandal.nvim a finding is one sign a row: `!` bug, `?` assumption, `§` convention
-(`inspect = { glyphs = { … } }`; highlight `DurandalInspectSign`, a stale one `DurandalPlanStale`).
-Neovim's own signs and virtual text leave inspect's findings out, so each shows once. The words are
-in the diagnostic float.
+In durandal.nvim a finding is one sign a row, its line number tinted the same: `!` bug
+(`DurandalInspectBug`, linked to `DiagnosticSignError`), `?` assumption
+(`DurandalInspectAssumption`, `DiagnosticSignWarn`), `§` convention (`DurandalInspectConvention`,
+`DiagnosticSignInfo`); `inspect = { glyphs = { … } }`. `DurandalInspectSign` colours only another
+kind (design). A bug also says the first sentence of its statement at the end of its line, cut at
+60 characters (`DurandalInspectBugText`, linked to `DiagnosticVirtualTextError`). A stale finding's
+sign, number and words are dimmed (`DurandalPlanStale`). Neovim's own signs and virtual text leave
+inspect's findings out, so each shows once. The whole words are in the diagnostic float.
 
 `olifant doctor` shows a `inspect` row when inspect is on: `on: Jev jev, inspect.md with 13 rules`; a
 warning when no Jev backend is configured (inspect does not run); an error when the store does not

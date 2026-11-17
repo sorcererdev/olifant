@@ -1108,6 +1108,29 @@ conjureSpec = describe "olifant/conjure" $ do
         shownField "edits" `shouldSatisfy` \case Just (Object _) -> True; _ -> False
         either (const Nothing) (\v -> lookupKey "landed" v >>= lookupKey "edits") accepted `shouldSatisfy` \case Just (Object _) -> True; _ -> False
         refused `shouldSatisfy` either ("accept, reject or harder" `T.isInfixOf`) (const False)
+        shownField "took" `shouldBe` Just (Bool True)
+  it "a writer that takes no step: shown with took false and no edits, held under a token; accept lands nothing" $
+    withSystemTempDirectory "olifant-step" $ \tmp -> do
+      let script = tmp </> "tests.json"
+          replies = tmp </> "replies.txt"
+      BSL.writeFile script "{}"
+      TIO.writeFile replies "<goal>nothing</goal>\n"
+      withPython [] $ \ports dir -> do
+        ((shownA, accepted), _) <- inProcessWithConfig [("test_script", String (T.pack script)), ("step_replies", String (T.pack replies))] ports dir $ do
+          doc <- openDoc moduleRel "python"
+          text <- documentContents doc
+          let handleAt = length (takeWhile (not . ("    def handle(" `T.isPrefixOf`)) (T.lines text))
+              ask extra = blockMove (Proxy :: Proxy "olifant/conjure") (object (["textDocument" .= object ["uri" .= (doc ^. L.uri)], "position" .= object ["line" .= (handleAt + 1), "character" .= (0 :: Int)]] <> extra))
+          a <- ask []
+          let token = either (const "") (\v -> case lookupKey "shown" v >>= lookupKey "token" of Just (String t) -> t; _ -> "") a
+          b <- ask ["resume" .= object ["token" .= token, "choice" .= ("accept" :: Text)]]
+          pure (a, b)
+        let shownField k = either (const Nothing) (\v -> lookupKey "shown" v >>= lookupKey k) shownA
+        shownField "took" `shouldBe` Just (Bool False)
+        shownField "goal" `shouldBe` Just (String "nothing")
+        shownField "edits" `shouldBe` Just Aeson.Null
+        shownField "token" `shouldSatisfy` \case Just (String t) -> not (T.null t); _ -> False
+        either (const Nothing) (lookupKey "rejected") accepted `shouldBe` Just (Bool True)
 -- | `olifant/mutate`: the unit at a position mutated against its test
 -- file (a scripted runner that kills nothing); and a survivor's stub.
 mutateSpec :: Spec

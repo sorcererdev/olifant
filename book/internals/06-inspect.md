@@ -65,7 +65,10 @@ the time zone (`day_cost` is a local day).
    is not a heading in `inspect.md` is dropped.
 6. **Match.** `samePairs` picks stored findings that share the file, the rule or a cited line. For
    each, one `sameProblem` question (P ≥ 0.5 is a match). `matchStored` turns a match into `Merge`,
-   `Drop` or `New`. A merged `Withheld` finding is asked the nitpick question again only when the
+   `Drop` or `New`. A merged finding takes the new pass's place (lines, unit start, fingerprint),
+   statement and evidence, and prints from `citationsOk` on that evidence; it keeps its id,
+   status and dismissals, and `vfSeen` goes up by one (`Pass.hs`, the `Merge` branch), so the
+   margin does not mark it `-stale` nor show the old wording. A merged `Withheld` finding is asked the nitpick question again only when the
    hash of (unit fingerprint, rule text, criteria wording) in `vfAskedOn` changed. A merged
    `Refuted` or `Unsure` one is verified again only when `citationsOk` gives different prints.
 7. **Filter.** `nitpick` (1a's wording; `inspect.md`'s two sections replace the criteria) gives

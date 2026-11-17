@@ -2,6 +2,7 @@
 
 module Olifant.Server.StepSpec (spec) where
 
+import Control.Arrow ((&&&))
 import Data.Text qualified as T
 import Olifant.Language (Failure (..), TestRun (..))
 import Olifant.Server.ConjureStep (sessionDiff)
@@ -34,15 +35,13 @@ spec = describe "Olifant.Server.Step (a conjure is one step)" $ do
   describe "readStep" $ do
     let reply = "<goal>fill the body</goal>\n<file path=\"a/b.py\">\nx = 1\n</file>"
     it "reads the goal and each file block" $
-      readStep reply `shouldBe` StepReply (Just "fill the body") [("a/b.py", "x = 1\n")] False
+      readStep reply `shouldBe` StepReply (Just "fill the body") [("a/b.py", "x = 1\n")]
     it "reads the same blocks through a markdown fence and prose around them" $
-      readStep ("Here is the step.\n```\n" <> reply <> "\n```\nDone.") `shouldBe` StepReply (Just "fill the body") [("a/b.py", "x = 1\n")] False
+      readStep ("Here is the step.\n```\n" <> reply <> "\n```\nDone.") `shouldBe` StepReply (Just "fill the body") [("a/b.py", "x = 1\n")]
     it "a fence inside a file block is not the file's" $
       srFiles (readStep "<goal>g</goal>\n<file path=\"a.py\">\n```python\nx = 1\n```\n</file>") `shouldBe` [("a.py", "x = 1\n")]
     it "nothing to do: the goal nothing and no files" $
-      srNothing (readStep "<goal>nothing</goal>") `shouldBe` True
-    it "a goal with files is never nothing" $
-      srNothing (readStep reply) `shouldBe` False
+      (srGoal &&& srFiles) (readStep "<goal>nothing</goal>") `shouldBe` (Just "nothing", [])
   describe "keptPath" $ do
     it "keeps a relative path inside the project" $ keptPath "/p" "src/a.py" `shouldBe` Just "src/a.py"
     it "keeps an absolute path inside the project, relative" $ keptPath "/p" "/p/src/a.py" `shouldBe` Just "src/a.py"

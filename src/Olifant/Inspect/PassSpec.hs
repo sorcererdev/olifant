@@ -189,6 +189,20 @@ spec = describe "Olifant.Inspect.Pass" $ do
     TIO.writeFile (eDir e </> file) edit2
     _ <- ePass e
     map (\f -> (vfStatus f, vfSeen f)) . vsFindings <$> eStore e >>= (`shouldBe` [(Open, 2)])
+  it "a merged finding is refreshed from the pass that kept it: its place, statement and evidence; its id kept" $ withInspect "" edit1 $ \e -> do
+    TIO.writeFile (eFinds e) (replies [("src/inspectme.py:f", findReply [conv] [])])
+    _ <- ePass e
+    [old] <- vsFindings <$> eStore e
+    TIO.writeFile (eDir e </> file) edit2
+    TIO.writeFile (eFinds e) (replies [("src/inspectme.py:f", findReply [("convention", (1, 2), "f adds twenty-two.", "A", (2, 2))] [])])
+    _ <- ePass e
+    [new] <- vsFindings <$> eStore e
+    (vfId new, vfSeen new, vfStatus new) `shouldBe` (vfId old, 2, Open)
+    vfStatement new `shouldBe` "f adds twenty-two."
+    vfEvidence new `shouldBe` [(file, (2, 2))]
+    plFingerprint (vfPlace new) `shouldBe` Just (fingerprint edit2 (1, 2))
+    plLines (vfPlace new) `shouldBe` (1, 2)
+    vfPrints new `shouldNotBe` vfPrints old
   it "dismissed here stays gone" $ withInspect "" edit1 $ \e -> do
     TIO.writeFile (eFinds e) (replies [("src/inspectme.py:f", findReply [conv] [])])
     _ <- ePass e

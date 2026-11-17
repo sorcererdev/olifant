@@ -129,11 +129,17 @@ or unable to run before), or no tests. Its keys:
 
 | key | what it does |
 |---|---|
-| `a` | accept: the step lands, one undo step per file, and your hands are back |
+| `a` | accept: the step lands, one undo step per file, and your hands are back (not offered when the writer took no step) |
 | `r` | reject: nothing lands |
-| `h` | harder: the same step again from the harder writer (`[conjure] harder`), replacing the one shown; if it fails or has nothing to do, the step shown stays; there is no `h` without it |
+| `h` | harder: the same step again from the harder writer (`[conjure] harder`), replacing the one shown; if it fails, the step shown stays; there is no `h` without it |
 | `d` | details: the prompt and the raw reply |
 | `q` | leave it: the step stays; `<leader>mc` on the lines it changes reopens it while the buffer is unchanged (durandal.nvim keeps it; after an edit, `<leader>mc` asks for a new step) |
+
+**When the writer takes no step** (it saw nothing to do, or named a goal and wrote no file),
+the review opens all the same, titled `conjure · no step · <goal>` (or "the writer saw nothing
+to do"), with how the tests stand. There is nothing to accept: `h` asks the harder writer, `d`
+shows what the writer read and its reply, `r` or `q` closes it. It is recorded as `no step`
+when accepted, else like any step.
 
 After accept nothing else is offered: edit, then press `<leader>mc` again for the next step.
 Undo is the editor's (one step per file) and git's. A step whose file changed while it was
@@ -168,15 +174,15 @@ wire` and `[model] rounds` are gone: a step may write a port and its adapters it
 **What is kept.** Every answered step adds one line to `.olifant/state/conjure-steps.jsonl`:
 the time, file, unit, writer, goal, files, lines changed, the tests' movement, whether every
 file parses, seconds, cost, and your choice (`accepted`, `rejected`, `replaced` by a harder
-step, or `dropped`). These lines are how the prompt and the choice of model get better from
+step, `dropped`, or `no step` when one that took none was accepted). These lines are how the prompt and the choice of model get better from
 real use.
 
 On the wire this is `olifant/conjure` with `{textDocument, position, selection?}` (the
 selection's `start` and `end` lines, 0-based, inclusive), under `$/progress` `conjuring`. It
 answers `{shown: {token, file, unit, writer, goal, edits, dropped, parses, tests: {passing,
-failing, stillRed, noTests}, after, cost, seconds, harder, diffs, situation, reply}}` (`edits` a workspace edit over
-every file the step writes; `after` the after-run as `olifant/tests/run` answers it), or
-`{nothing: goal}`. The answer is the same request with `resume: {token, choice}`, `choice` one
+failing, stillRed, noTests}, after, cost, seconds, harder, diffs, situation, reply, took}}` (`edits` a workspace edit over
+every file the step writes; `after` the after-run as `olifant/tests/run` answers it; `took`
+false when the writer took no step, with `edits` null). The answer is the same request with `resume: {token, choice}`, `choice` one
 of `accept` (answers `{landed: {file, edits}}`), `reject` (`{rejected: true}`) or `harder` (a
 new `shown`). A token answers once.
 

@@ -51,7 +51,7 @@ data Situation = Situation
 
 -- | The writer's answer: its goal, the files it wrote (path as written, whole
 -- text), and whether it said there is nothing to do.
-data StepReply = StepReply {srGoal :: Maybe Text, srFiles :: [(FilePath, Text)], srNothing :: Bool}
+data StepReply = StepReply {srGoal :: Maybe Text, srFiles :: [(FilePath, Text)]}
   deriving stock (Eq, Show)
 
 -- | How the tests moved: newly passing, newly failing (passing before: a
@@ -80,6 +80,9 @@ data StepHeld = StepHeld
   , hdLines :: Int
   , hdCost :: Maybe Double
   , hdSeconds :: Double
+  , hdTook :: Bool
+  -- ^ whether the writer took a step (named files); one that took none is
+  -- held all the same, so it can be taken again or read
   }
   deriving stock (Eq, Show)
 
@@ -124,7 +127,7 @@ situationText s =
       ++ (if T.null (T.strip (siSession s)) then [] else ["", "What the person has been doing (uncommitted changes):", siSession s])
 
 readStep :: Text -> StepReply
-readStep t = StepReply goal files (goal == Just "nothing" && null files)
+readStep t = StepReply goal files
   where
     goal = case T.breakOn "<goal>" t of
       (_, "") -> Nothing
