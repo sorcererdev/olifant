@@ -188,10 +188,14 @@ A dismissal frees a place: the best `waiting` finding of the file is verified ne
 The first time a local day's `day_cost` stops a pass, one message says so: `olifant inspect: today's
 cap ($3.00) is reached; 4 units wait. olifant inspect cost shows them.`
 
-In durandal.nvim a finding is one sign a row: `!` bug, `?` assumption, `§` convention
-(`inspect = { glyphs = { … } }`; highlight `DurandalInspectSign`, a stale one `DurandalPlanStale`).
-Neovim's own signs and virtual text leave inspect's findings out, so each shows once. The words are
-in the diagnostic float.
+In durandal.nvim a finding is one sign a row, its line number tinted the same: `!` bug
+(`DurandalInspectBug`, linked to `DiagnosticSignError`), `?` assumption
+(`DurandalInspectAssumption`, `DiagnosticSignWarn`), `§` convention (`DurandalInspectConvention`,
+`DiagnosticSignInfo`); `inspect = { glyphs = { … } }`. `DurandalInspectSign` colours only another
+kind (design). A bug also says the first sentence of its statement at the end of its line, cut at
+60 characters (`DurandalInspectBugText`, linked to `DiagnosticVirtualTextError`). A stale finding's
+sign, number and words are dimmed (`DurandalPlanStale`). Neovim's own signs and virtual text leave
+inspect's findings out, so each shows once. The whole words are in the diagnostic float.
 
 `olifant doctor` shows a `inspect` row when inspect is on: `on: Jev jev, inspect.md with 13 rules`; a
 warning when no Jev backend is configured (inspect does not run); an error when the store does not
