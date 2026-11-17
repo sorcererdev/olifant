@@ -269,8 +269,12 @@ inspectPassOn _token s p deps path
                 Just c -> case matchStored (newF Nothing Open Nothing) c unitName of
                   Drop -> pure vs
                   Merge -> do
-                    c' <- remerge st c textOf
-                    pure (replaceF c' {vfSeen = vfSeen c + 1} vs)
+                    -- kept by this pass: its place, wording and evidence are the
+                    -- ones just checked on the code as it is (id, status and
+                    -- dismissals stay the stored finding's)
+                    c' <- remerge st c {vfPlace = pl, vfStatement = rfStatement raw, vfEvidence = rfEvidence raw} textOf
+                    prints <- citationsOk s p pcfg (rawOf c')
+                    pure (replaceF c' {vfSeen = vfSeen c + 1, vfPrints = either (const (vfPrints c')) id prints} vs)
                   New -> addNew vs st0 raw' codeA nitpickOf newF pl
                 Nothing -> addNew vs st0 raw' codeA nitpickOf newF pl
           )
