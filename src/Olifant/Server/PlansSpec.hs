@@ -299,6 +299,11 @@ spec = describe "Olifant.Server.Plans (anchors in the server)" $ do
         `shouldBe` Just "Right · it returns 1 · src/a.py:Foo\n\ngd: the code · Keep this verdict: <leader>mpk"
       claimHover (M.fromList [("Queued one.", queuedEntry)]) S.empty (ss ["Queued one."])
         `shouldBe` Just "Unchecked · Check this, or Check the plan"
+    it "the footer names the client's keys: definition and keep, verdict or answer" $ do
+      let ss = sentences . parsePlan . T.unlines
+          keys = FooterKeys "F12" "Ctrl+Alt+D P K"
+      claimHoverWith keys (M.fromList [("Right one.", verdictEntry JRight "it returns 1")]) S.empty (ss ["Right one."])
+        `shouldBe` Just "Right · it returns 1 · src/a.py:Foo\n\nF12: the code · Keep this verdict: Ctrl+Alt+D P K"
   describe "questions in the margin (2b)" $ do
     let ss = sentences . parsePlan . T.unlines
         show' d = (d ^. L.code, d ^. L.severity, d ^. L.message)

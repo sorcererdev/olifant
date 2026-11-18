@@ -78,7 +78,7 @@ import Olifant.Inspect.Steering (noSteering, steering, steeringPath)
 import System.Directory (getHomeDirectory)
 import Olifant.Server.LoopTypes (Fact (..))
 import Olifant.Server.Stale (staleIn)
-import Olifant.Server.Plans (Reopen (..), askFor, citationLocations, claimHover, countsText, keepEdit, planCounts, planTokensWith, whyBody)
+import Olifant.Server.Plans (FooterKeys (..), Reopen (..), askFor, citationLocations, claimHoverWith, countsText, keepEdit, planCounts, planTokensWith, whyBody)
 import System.FilePath (makeRelative, takeFileName, (</>))
 import Olifant.Generation (Plan (..), ProgressEvent (Said))
 import Olifant.Output (doctorJson, fileActionsJson, listJson, planJson, showJson)
@@ -1762,11 +1762,13 @@ planHover env project path (Position l c) = do
     a : _ -> withSnapshot env (\s -> (s,) <$> unitHover s project a) <&> fmap (\md -> Hover (InL (MarkupContent MarkupKind_Markdown md)) Nothing)
     [] -> do
       -- off an anchor: what the claim pass found for the sentences on the row
-      (store, ss, stale) <- readMVar (envState env) >>= \s -> do
+      (store, ss, stale, keys) <- readMVar (envState env) >>= \s -> do
         store <- claimsOf s (prRoot project) path
-        (store,,) <$> sentencesOf s (prRoot project) path (parsePlan text) <*> staleIn s project store
+        (store,,,scKeys (ssConfig s)) <$> sentencesOf s (prRoot project) path (parsePlan text) <*> staleIn s project store
       let row = fromIntegral l
-      pure $ case claimHover store stale [x | x <- openSentences (parsePlan text) ss, snRow x <= row, row <= snEndRow x] of
+          key name d = fromMaybe d (lookup name keys)
+          footerKeys = FooterKeys (key "definition" "gd") (key "plan_keep" "<leader>mpk")
+      pure $ case claimHoverWith footerKeys store stale [x | x <- openSentences (parsePlan text) ss, snRow x <= row, row <= snEndRow x] of
         Just md -> Just (Hover (InL (MarkupContent MarkupKind_Markdown md)) Nothing)
         Nothing -> Nothing
 

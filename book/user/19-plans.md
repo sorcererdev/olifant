@@ -487,8 +487,9 @@ about, are silent in the margin (an open step is the normal state): their line i
 Prose, asked questions, questions answered in the file and AI off show nothing. Hover (`K`) on a
 row lists each of its sentences' lines, without the glyph; when one is checked it ends with
 `gd: the code · Keep this verdict: <leader>mpk` (`Keep this answer` when every check on the row is
-an answer) (the server does not know your key: it names
-durandal.nvim's default). The claim's words carry the
+an answer), naming the keys your editor gave in
+`initializationOptions.keys` (`definition`, `plan_keep`); an editor that names none gets
+durandal.nvim's `gd` and `<leader>mpk`. The claim's words carry the
 semantic-token modifiers `checked` and `wrong`.
 
 **The actions** (code actions on the sentence under the cursor):

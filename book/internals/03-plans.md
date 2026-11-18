@@ -508,9 +508,11 @@ UTF-16 and passes `checksCanRun`: the runner found or a recording set, neither c
 `staleKeys`; its second result, the `AnchorPrints`, carries the cited prints too, keyed
 `(path, unit or "")`, so a code change that moves them sends `semanticTokens/refresh` as an
 anchor's does; and `planSummary`, the `plan-unchecked` line from `planCounts`),
-`planTokensWith` (the `checked` and `wrong` modifiers, by `lineKey`) and `claimHover` (called by
+`planTokensWith` (the `checked` and `wrong` modifiers, by `lineKey`) and `claimHoverWith` (called by
 `Lsp.planHover` with the open sentences on the row and the stale keys; a checked one adds
-`keepFooter`, or `keepAnswerFooter` when every check there is an answer). `claimLine` is the one table: a claim's codes, a step's (`step-done`,
+`keepFooter`, or `keepAnswerFooter` when every check there is an answer, with the client's
+`FooterKeys`, which `planHover` builds from `scKeys`, defaulting to `defaultFooterKeys`;
+`claimHover` is `claimHoverWith defaultFooterKeys`). `claimLine` is the one table: a claim's codes, a step's (`step-done`,
 `step-misfit`, `step-ticked`; `step-open`, `step-unsure` and `step-ticked-done` are `hoverOnly`:
 `claimHints` emits no diagnostic for them and the hover shows them without stripping a glyph),
 the stale ones (`claim-right-stale`, `claim-wrong-stale`, `step-done-stale`,

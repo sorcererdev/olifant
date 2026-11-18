@@ -20,6 +20,9 @@ module Olifant.Server.Plans
   , whyBody
   , planCounts
   , countsText
+  , FooterKeys (..)
+  , defaultFooterKeys
+  , claimHoverWith
   , keepFooter
   , keepAnswerFooter
   , citationLocations
@@ -275,12 +278,16 @@ claimLine can store checking stale x
 -- | The hover of the sentences on a row: one line each, without its glyph;
 -- none when no sentence there has a line.
 claimHover :: ClaimStore -> S.Set Text -> [Sentence] -> Maybe Text
-claimHover store stale ss = case [if code `elem` hoverOnly then msg else T.drop 2 msg | x <- ss, Just (code, _, msg) <- [claimLine True store S.empty stale x]] of
+claimHover = claimHoverWith defaultFooterKeys
+
+-- | 'claimHover' with the editor's keys named in its footer.
+claimHoverWith :: FooterKeys -> ClaimStore -> S.Set Text -> [Sentence] -> Maybe Text
+claimHoverWith keys store stale ss = case [if code `elem` hoverOnly then msg else T.drop 2 msg | x <- ss, Just (code, _, msg) <- [claimLine True store S.empty stale x]] of
   [] -> Nothing
   ls -> Just (T.intercalate "\n\n" (ls ++ [footer | not (null checks)]))
   where
     checks = [c | x <- ss, Just c <- [M.lookup (sentenceKey (snText x)) store >>= seCheck]]
-    footer = if all ((== JAnswered) . cfJudgement . cjConfirmed) checks then keepAnswerFooter else keepFooter
+    footer = (if all ((== JAnswered) . cfJudgement . cjConfirmed) checks then keepAnswerFooter else keepFooter) keys
 
 -- | *Show why*'s page for the sentence KEY and its check: the verdict and
 -- why (an answer: the answer and its detail), every citation, every web
@@ -334,11 +341,20 @@ planSummary ls counts@(n, m)
           width = maybe 0 (utf16Length . lnText) target
        in Just (Diagnostic (Range (Position (fromIntegral row) 0) (Position (fromIntegral row) (fromIntegral width))) (Just DiagnosticSeverity_Information) (Just (InR "plan-unchecked")) Nothing (Just "olifant-plan") (countsText counts <> " · Check the plan") Nothing Nothing Nothing)
 
--- | The last line of a checked sentence's hover. The server does not know
--- the client's key for *Keep this verdict*; durandal.nvim's default is named.
-keepFooter, keepAnswerFooter :: Text
-keepFooter = "gd: the code · Keep this verdict: <leader>mpk"
-keepAnswerFooter = "gd: the code · Keep this answer: <leader>mpk"
+-- | The editor's keys a hover's last line names: *go to definition* and
+-- *Keep this verdict* (`keys.definition`, `keys.plan_keep`).
+data FooterKeys = FooterKeys {fkDefinition :: Text, fkKeep :: Text}
+  deriving stock (Eq, Show)
+
+-- | durandal.nvim's keys, for a client that names none.
+defaultFooterKeys :: FooterKeys
+defaultFooterKeys = FooterKeys "gd" "<leader>mpk"
+
+-- | The last line of a checked sentence's hover, with the client's keys
+-- (nvim's by default).
+keepFooter, keepAnswerFooter :: FooterKeys -> Text
+keepFooter k = fkDefinition k <> ": the code \183 Keep this verdict: " <> fkKeep k
+keepAnswerFooter k = fkDefinition k <> ": the code \183 Keep this answer: " <> fkKeep k
 
 -- | Where a checked sentence's citations are, in the checker's order (ROOT
 -- the project root; STARTS the 1-based first line of each cited unit that
