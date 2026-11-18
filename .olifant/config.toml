@@ -7,3 +7,14 @@ olifant-dev = { path = "packs/olifant-dev" }
 [plans]
 timeout = 900
 do_tools = ["Bash(cabal build*)", "Bash(cabal test*)"]
+
+# Inspect on olifant itself: on save, changed units are checked against
+# .olifant/inspect.md; Jev judges what is worth showing.
+[inspect]
+enabled = true
+
+[decide]
+model = "jev"
+
+[model.backends.jev]
+kind = "jev"          # the key is read from JEV_API_KEY
