@@ -7,18 +7,22 @@ module Olifant.Inspect.Margin
   , shownLines
   , whyText
   , inspectSource
+  , unitMoved
+  , findingsNear
   ) where
 
 import Data.Aeson (Value (..))
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
+import Data.List (sortOn)
 import Data.Maybe (fromMaybe)
+import Data.Ord (Down (..))
 import Data.Text (Text)
 import Data.Text qualified as T
 import Language.LSP.Protocol.Types
 import Olifant.Catalog (InspectConfig)
 import Olifant.Inspect.Steering (Steering, ruleText)
-import Olifant.Inspect.Store (Place (..), InspectFinding (..), InspectStore, shownIn)
+import Olifant.Inspect.Store (Place (..), InspectFinding (..), InspectStore (..), Status (..), shownIn)
 
 inspectSource :: Text
 inspectSource = "olifant-inspect"
@@ -46,11 +50,34 @@ inspectDiagnostics cfg units file vs =
   [ Diagnostic (Range (Position l 0) (Position (l + 1) 0)) (Just DiagnosticSeverity_Hint) (Just (InR code)) Nothing (Just inspectSource) (vfStatement f) Nothing Nothing (Just (String (vfId f)))
   | (line, f) <- shownLines cfg units file vs
   , let l = fromIntegral (max 0 (line - 1))
-        moved = case (plUnit (vfPlace f), plFingerprint (vfPlace f)) of
-          (Just u, Just fp) -> fmap fst (M.lookup u units) /= Just fp
-          _ -> False
-        code = vfKind f <> (if moved then "-stale" else "")
+        code = vfKind f <> (if unitMoved units f then "-stale" else "")
   ]
+
+-- | Whether a finding's unit changed since it was found: its fingerprint then
+-- is not the unit's in UNITS (its file's units now: name to fingerprint and
+-- first line). A finding with no unit or fingerprint never moved.
+unitMoved :: Map Text (Text, Int) -> InspectFinding -> Bool
+unitMoved units f = case (plUnit (vfPlace f), plFingerprint (vfPlace f)) of
+  (Just u, Just fp) -> fmap fst (M.lookup u units) /= Just fp
+  _ -> False
+
+-- | What a conjure step is told of inspect: the open or waiting findings
+-- placed in UNIT of FILE (or on its lines SPAN), in a unit of TEST (the
+-- file's test file), or whose evidence points into SPAN; best kept first,
+-- each with whether its unit moved since ('unitMoved', by its file's units in
+-- UNITS; a file not there is taken as unmoved).
+findingsNear :: Map FilePath (Map Text (Text, Int)) -> FilePath -> Text -> (Int, Int) -> FilePath -> InspectStore -> [(InspectFinding, Bool)]
+findingsNear units file unit (a, z) test vs =
+  [ (f, maybe False (`unitMoved` f) (M.lookup (plFile pl) units))
+  | f <- sortOn (Down . fromMaybe 0 . vfKeep) (vsFindings vs)
+  , vfStatus f `elem` [Open, Waiting]
+  , let pl = vfPlace f
+  , (plFile pl == file && (plUnit pl == Just unit || overlaps (plLines pl)))
+      || plFile pl == test
+      || any (\(p, ls) -> p == file && overlaps ls) (vfEvidence f)
+  ]
+  where
+    overlaps (x, y) = x <= z && y >= a
 
 -- | The *Show why* page: the statement, the rule quoted, the evidence, the verdict.
 whyText :: Steering -> InspectFinding -> Text

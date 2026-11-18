@@ -120,6 +120,11 @@ anything that changes behaviour or breaks a rule above
 are the lever: in the experiments, rewording them moved the results far more than anything else.
 Grades such as *(must)* help the find call; Jev did not act on them.
 
+Conjure reads them too. A [conjure step](18-tdd-in-the-editor.md#conjuring) tells its writer the
+`## Rules` section and the open (or waiting) findings near the unit at the cursor, as context it
+may act on: a small step may address a finding, or not. Dismissed, refuted and resolved findings
+are not passed on.
+
 ## What it costs
 
 Measured on 1a's 58 cases (a small Python project): an inspected save is about $0.04 on sonnet

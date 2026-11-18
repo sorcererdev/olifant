@@ -31,3 +31,23 @@ spec = describe "Olifant.Inspect.Margin" $ do
     t `shouldSatisfy` T.isInfixOf "It breaks the rule."
     t `shouldSatisfy` T.isInfixOf "No twos at all."
     t `shouldSatisfy` T.isInfixOf "src/b.py:3"
+  describe "findingsNear (what a conjure step is told)" $ do
+    let at' i st pl ev = (finding i "bug" st 0.5) {vfPlace = pl, vfEvidence = ev}
+        inUnit = Place "src/a.py" (Just "f") (10, 12) (Just "abc1234") (Just 10)
+        elsewhere = Place "src/c.py" (Just "h") (1, 2) Nothing (Just 1)
+        inTests = Place "src/a__test.py" (Just "test_f") (3, 4) Nothing (Just 3)
+        fs =
+          [ at' "open" Open inUnit []
+          , at' "waiting" Waiting inUnit []
+          , at' "dismissed" DismissedHere inUnit []
+          , at' "resolved" Resolved inUnit []
+          , at' "tests" Open inTests []
+          , at' "cites" Open elsewhere [("src/a.py", (11, 11))]
+          , at' "far" Open elsewhere [("src/a.py", (40, 41))]
+          ]
+        near units = findingsNear units "src/a.py" "f" (10, 14) "src/a__test.py" emptyInspectStore {vsFindings = fs}
+    it "open or waiting, placed in the unit or its test file, or citing the unit's lines" $
+      map (vfId . fst) (near M.empty) `shouldBe` ["open", "waiting", "tests", "cites"]
+    it "stale when the unit's fingerprint moved, as the margin says it" $ do
+      lookup "open" [(vfId f, st) | (f, st) <- near (M.fromList [("src/a.py", M.fromList [("f", ("0000000", 10))])])] `shouldBe` Just True
+      lookup "open" [(vfId f, st) | (f, st) <- near (M.fromList [("src/a.py", fps)])] `shouldBe` Just False

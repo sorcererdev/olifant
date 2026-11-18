@@ -1,8 +1,9 @@
 # 4. Conjure: one step
 
 `conjure` takes **one small step** at the cursor. The writer model reads the situation there:
-the unit, its test file (or where its tests would go), the tests' state, the files it imports
-and the person's uncommitted changes. It names a small goal and answers whole files. The
+the unit, its test file (or where its tests would go), the tests' state, the files it imports,
+the person's uncommitted changes and what inspect knows there (its open findings, the project's
+rules). It names a small goal and answers whole files. The
 engine checks the answer, then shows it for review: the goal, the diff across every file
 touched, whether each file parses, and how the tests moved. The person accepts it (it lands),
 rejects it, or asks the harder writer to take the same step again. Nothing is refused for red
@@ -29,9 +30,10 @@ tail -f .olifant/state/steps.log .olifant/state/conjure-steps.jsonl
 
 | module | what it holds |
 |---|---|
-| `Server/Step.hs` | **pure**: the prompt (`stepSystem`, `Situation`, `situationText`), the reply (`StepReply`, `readStep`), which answered paths may land (`keptPath`), the tests' change (`TestDelta`, `testDelta`), the step log's words (`stepLogLine`), the session block (`sessionFilter`), and `StepHeld`, a shown step as the state keeps it |
-| `Server/ConjureStep.hs` | **IO**: `conjureAt` (facts, writer, check, show), `answerStep` (accept, reject, harder), `writerFor`, the edits (`editsOf`), the moved-file check (`movedSince`), the record (`record`), `sessionDiff`, and the wire (`stepJson`, `stepResumeOf`) |
+| `Server/Step.hs` | **pure**: the prompt (`stepSystem`, `Situation`, `situationText`), the reply (`StepReply`, `readStep`), which answered paths may land (`keptPath`), the tests' change (`TestDelta`, `testDelta`), the step log's words (`stepLogLine`), the session block (`sessionFilter`), inspect's words (`InspectNote`, at most five findings; the rules cut at 3000 characters), and `StepHeld`, a shown step as the state keeps it |
+| `Server/ConjureStep.hs` | **IO**: `conjureAt` (facts, writer, check, show), `answerStep` (accept, reject, harder), `inspectKnows` (what inspect knows near the unit), `writerFor`, the edits (`editsOf`), the moved-file check (`movedSince`), the record (`record`), `sessionDiff`, and the wire (`stepJson`, `stepResumeOf`) |
 | `Server/Site.hs`, `Unit.hs`, `Tests.hs` | shared with the other editor commands: the cursor's project, language, module and test file (`siteAt`); the unit (`testOrUnitAt`); the test run (`runOver`); the imported files (`importedContext`) |
+| `Inspect/Store.hs`, `Margin.hs`, `Steering.hs` | inspect's store (`readInspectStore`), the findings near a unit (`findingsNear`, stale by `unitMoved`, the margin's own check) and inspect.md's `## Rules` (`rulesSection`) |
 | `Model.hs` | the backends; `askBackendReply` returns a `ChatReply` (text, cost, seconds); the `claude` kind runs `claude -p` |
 | `Catalog.hs` | `[conjure] writer` and `harder` (`catalogConjureWriter`, `catalogConjureHarder`), checked against `[model.backends]` at load |
 
@@ -55,8 +57,15 @@ as `dropped`).
 imported files come from `importedContext`. The session block is `sessionDiff`:
 `git diff HEAD` per file, most recently modified first, kept to the language's extensions
 (from `langFiles`) without `book/`, `.olifant/`, lockfiles and binary diffs, cut at 300 lines,
-then the untracked files by name (`untrackedLine`: the language's, at most 20). Not a git repository gives an empty block. `situationText`
-words it all. The language and the test file's path come from the language and the site, so no
+then the untracked files by name (`untrackedLine`: the language's, at most 20). Not a git repository gives an empty block.
+What inspect knows is `inspectKnows`: the store (`readInspectStore`; no file, or one that does
+not read, is no findings) through `findingsNear`, which keeps the open and waiting findings
+placed in the unit (by name, or on its lines), in any unit of its test file, or whose evidence
+cites the unit's lines, best kept first. Each becomes an `InspectNote`, stale when its unit's
+fingerprint moved (`unitMoved` over `unitFingerprints` of the module and test file, the
+margin's `-stale` check). The rules are `rulesSection` of `.olifant/inspect.md`. `situationText`
+words it all; the inspect blocks are framed as context the writer may act on, not orders, and
+are left out when empty. The language and the test file's path come from the language and the site, so no
 language is named in the engine (`ConjureNeutralSpec` holds `ConjureStep.hs` and `Step.hs` to
 that).
 
@@ -124,18 +133,21 @@ Any other choice is `InvalidParams` naming the three.
 ## Testing it
 
 - `Server/StepSpec`: the reply reader (fences, prose, a goal of nothing), `keptPath`, the prompt's
-  framing (no "least code", no language named), `testDelta`, the log line, the session filter,
+  framing (no "least code", no language named), inspect's blocks (absent, present, stale,
+  the five-finding cap, the rules cut), `testDelta`, the log line, the session filter,
   and `sessionDiff` on a temp repository.
 - `ServerSpec` `stepSpecs`: a whole step over the python-htmx fixture with `ssTestWriter`:
   shown, no test file, red, a dropped path, a step that took none (nothing to do, a goal with no
   files; accept on it recorded `no step`; harder replacing it and answering one), unsaved text
-  at its version, a failing writer, accept, reject, harder, a used token, a new conjure dropping the old step, a file
+  at its version, inspect's findings and rules in the situation (a dismissed finding left out),
+  a failing writer, accept, reject, harder, a used token, a new conjure dropping the old step, a file
   moved before accept, and the wire's shape.
 - `LoopSpec` `conjureFloorSpec`: a step lands in a hspec spec and in a Rust module's own
   `mod tests`.
 - `LspSpec` `conjureSpec`: over pipes with `step_replies`: shown, accepted, a wrong choice
   refused; a step that took none shown with `took` false and a token, accept answering
   `rejected`.
+- `Inspect/MarginSpec`: `findingsNear` (which statuses and places, stale).
 - `ModelSpec`: the `claude` kind (its flags, a missing runner, a fake runner's reply, an error
   reply, fills through it). `CatalogSpec`: `[conjure] writer` and `harder`.
 
@@ -155,6 +167,8 @@ the main checkout.
 
 - **The step does not read sibling tests or the pack's `[conjure]` shapes.** Doctor still
   reports them. Feeding a sibling's facts into the situation, or retiring the shapes, is open.
+- **Inspect's findings are placed where they were found.** A note gives the line when the
+  finding was made; a stale one says it may be out of date rather than being moved or dropped.
 - **The writer answers whole files.** A large module costs tokens both ways. The measurement's
   files were small; real use will say whether a unit-scoped answer is needed.
 - **Jev does not read the situation yet.** The design's milestone 3 adds Jev picking the writer

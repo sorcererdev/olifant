@@ -28,7 +28,12 @@ situation =
     , siTestsBefore = "none (no test file)."
     , siRelated = []
     , siSession = ""
+    , siFindings = []
+    , siRules = ""
     }
+
+note :: T.Text -> InspectNote
+note statement = InspectNote {inKind = "bug", inRule = Just "No twos", inStatement = statement, inFile = "src/x.py", inLine = 6, inStale = False}
 
 spec :: Spec
 spec = describe "Olifant.Server.Step (a conjure is one step)" $ do
@@ -62,6 +67,29 @@ spec = describe "Olifant.Server.Step (a conjure is one step)" $ do
       situationText situation {siSession = "diff --git a/x b/x"} `shouldSatisfy` T.isInfixOf "What the person has been doing (uncommitted changes):\ndiff --git a/x b/x"
     it "related files" $
       situationText situation {siRelated = [("src/y.py", "Y = 1\n")]} `shouldSatisfy` T.isInfixOf "Related file src/y.py:"
+  describe "what inspect knows" $ do
+    it "no findings and no rules: neither block, no empty heading" $ do
+      let t = situationText situation
+      t `shouldNotSatisfy` T.isInfixOf "findings"
+      t `shouldNotSatisfy` T.isInfixOf "rules"
+    it "open findings: each with its kind, rule, statement and place, framed as context the writer may act on" $ do
+      let t = situationText situation {siFindings = [note "handle drops the twos."]}
+      mapM_ (\k -> t `shouldSatisfy` T.isInfixOf k) ["Inspect's open findings here", "a small step may address one, or not", "bug", "rule: No twos", "handle drops the twos.", "src/x.py:6"]
+      t `shouldNotSatisfy` T.isInfixOf "out of date"
+    it "a finding whose unit moved since says it may be out of date" $
+      situationText situation {siFindings = [(note "handle drops the twos.") {inStale = True}]} `shouldSatisfy` T.isInfixOf "may be out of date"
+    it "at most five findings, and how many more" $ do
+      let t = situationText situation {siFindings = [note ("finding " <> T.pack (show i) <> ".") | i <- [1 .. 7 :: Int]]}
+      t `shouldSatisfy` T.isInfixOf "finding 5."
+      t `shouldNotSatisfy` T.isInfixOf "finding 6."
+      t `shouldSatisfy` T.isInfixOf "2 more"
+    it "the project's rules as context, not orders" $ do
+      let t = situationText situation {siRules = "## Rules\n### No twos\nNever two.\n"}
+      mapM_ (\k -> t `shouldSatisfy` T.isInfixOf k) ["The project's rules", "context, not orders", "### No twos\nNever two."]
+    it "rules past the cap are cut, and it says so" $ do
+      let t = situationText situation {siRules = "## Rules\n" <> T.replicate 4000 "x"}
+      T.count "x" t `shouldSatisfy` (< 3100)
+      t `shouldSatisfy` T.isInfixOf "rules cut at 3000 characters"
   describe "testDelta" $ do
     it "newly passing, newly failing (passed before) and still red" $
       testDelta (Just (TestRun ["t2", "t3"] [("t1", f), ("t4", f)] Nothing)) (Just (TestRun ["t1", "t3"] [("t2", f), ("t4", f)] Nothing))
