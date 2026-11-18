@@ -242,6 +242,10 @@ doctor ports di = do
           dpEnvSet ports keyEnv >>= \case
             True -> pure (Check "model" Ok (m <> " via Anthropic; " <> keyEnv <> " is set") Nothing)
             False -> pure (Check "model" Warn (keyEnv <> " is not set: holes stay placeholders") (Just ("export " <> keyEnv <> "=… in the shell that starts olifant (or your editor)")))
+        Just b@(Claude m runner) ->
+          dpProbe ports b >>= \case
+            Right () -> pure (Check "model" Ok (m <> " via Claude Code (`" <> runner <> "`)") Nothing)
+            Left why -> pure (Check "model" Warn (why <> ": holes stay placeholders") (Just "install Claude Code, or set `runner = \"…\"` on the backend"))
         Just (Jev m keyEnv) ->
           dpEnvSet ports keyEnv >>= \case
             True -> pure (Check "model" Warn (m <> " via Jev answers decisions only, not holes; " <> keyEnv <> " is set") (Just "point [model] default at a chat backend and [decide] model at this one"))

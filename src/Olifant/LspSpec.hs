@@ -3539,6 +3539,20 @@ claimPassSpec = describe "plans claim pass" $ do
       [(d ^. L.code, d ^. L.severity, d ^. L.message, d ^. L.range) | d <- ds, d ^. L.source == Just "olifant-plan"]
         `shouldBe` [(Just (InR "claim-wrong"), Just DiagnosticSeverity_Warning, "✗ Wrong · it returns two · " <> T.pack table <> ":helper", Range (Position 0 2) (Position 0 24))]
       fmap (\h -> case h ^. L.contents of InL (MarkupContent _ md) -> md; _ -> "") hover `shouldBe` Just ("Wrong · it returns two · " <> T.pack table <> ":helper\n\ngd: the code · Keep this verdict: <leader>mpk")
+  it "(b2) the hover footer names the keys the client gave (keys.definition, keys.plan_keep); with none, gd and <leader>mpk" $
+    withPass wrong $ \ports dir _ cfg -> do
+      let footerOf h = fmap (\x -> case x ^. L.contents of InL (MarkupContent _ md) -> last (T.lines md); _ -> "") h
+          checkedHover cfg' = fst <$> inProcessWithConfig cfg' ports dir (do
+            p <- openWritten dir
+            sendNotification SMethod_TextDocumentDidSave (DidSaveTextDocumentParams p Nothing)
+            _ <- waitFor (maybe False (isJust . seCheck) . M.lookup "the helper returns one" <$> readClaims plainPorts dir "plans/t.md")
+            getHover p (Position 0 4))
+      custom <- checkedHover (("keys", object ["definition" .= ("F12" :: Text), "plan_keep" .= ("Ctrl+Alt+D P K" :: Text)]) : cfg)
+      footerOf custom `shouldBe` Just "F12: the code · Keep this verdict: Ctrl+Alt+D P K"
+      -- a client naming only one key keeps the other's default
+      half <- checkedHover (("keys", object ["plan_keep" .= ("<leader>k" :: Text)]) : cfg)
+      footerOf half `shouldBe` Just "gd: the code · Keep this verdict: <leader>k"
+
   it "(f) the actions: Check this on a queued claim; Show the code here and Show why once checked" $
     withPass right $ \ports dir _ cfg -> do
       ((before, after), _) <- inProcessWithConfig cfg ports dir $ do

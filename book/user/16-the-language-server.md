@@ -42,6 +42,7 @@ arguments and no root: it finds each file's project itself (below).
 | `model` | the project's `[model]` default | which `[model.backends.NAME]` fills holes ([chapter 12](12-holes-and-models.md)) |
 | `fills` | none | a recorded `[fills]` file standing in for the model (tests, demos) |
 | `debug` | `false` | answers `olifant/debugState` (tests) |
+| `keys` | none | the editor's key names, an object of strings: `plan_review` (named in the plan's lenses), and `definition` (default `gd`) and `plan_keep` (default `<leader>mpk`), named in a checked sentence's hover footer |
 
 Everything else comes from each project's `.olifant/config.toml`, as with the CLI.
 

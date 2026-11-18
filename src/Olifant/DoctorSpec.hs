@@ -76,6 +76,12 @@ spec = describe "olifant doctor (spec §4.7)" $ do
         probeFails = ports ["ast-grep", "cargo"] (Left "must not be called") []
     statusOf "model" (runIdentity (doctor probeFails (input claude))) `shouldBe` Just Warn
     statusOf "model" (runIdentity (doctor (ports ["ast-grep", "cargo"] (Left "must not be called") ["MY_KEY"]) (input claude))) `shouldBe` Just Ok
+  it "(e2) claude: probed for its runner; ok when found, a warning with the install hint when not" $ do
+    let viaClaude = defaultModelConfig {mcDefault = Just "sonnet", mcBackends = [("sonnet", Claude "sonnet" "claude")]}
+        row probe = [(checkStatus c, checkDetail c, checkFix c) | c <- runIdentity (doctor (ports ["ast-grep", "cargo"] probe []) (input viaClaude)), checkName c == "model"]
+    row (Right ()) `shouldBe` [(Ok, "sonnet via Claude Code (`claude`)", Nothing)]
+    row (Left "claude is not installed") `shouldBe` [(Warn, "claude is not installed: holes stay placeholders", Just "install Claude Code, or set `runner = \"…\"` on the backend")]
+
   it "(c) a check run through `env VAR=… uv …` checks uv, with how to install it (Review Focus 3)" $ do
     let Right python = parseLanguage "python" "/p" (T.unlines ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = { git = \"https://github.com/tree-sitter/tree-sitter-python\", rev = \"293fdc02038ee2bf0e2e206711b69c90ac0d413f\" }", "[check]", "preset = \"pyright\""])
         cs = runIdentity (doctor (ports ["ast-grep", "env"] (Right ()) []) (DoctorInput (Just "/proj") ["python-htmx"] [python] [] [] local Nothing defaultPlans [] False defaultInspect))
