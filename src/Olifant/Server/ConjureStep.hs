@@ -41,6 +41,10 @@ import GHC.Clock (getMonotonicTime)
 import Olifant.App (Ports (..), Project (..))
 import Olifant.Catalog (catalogConjureHarder, catalogConjureWriter, catalogLanguages, catalogModel)
 import Olifant.Generation.Tools (ProgressEvent (..))
+import Olifant.Inspect.Margin (findingsNear)
+import Olifant.Inspect.Pass (unitFingerprints)
+import Olifant.Inspect.Steering (rulesSection, steering, steeringPath)
+import Olifant.Inspect.Store (InspectFinding (..), InspectStore (..), Place (..), emptyInspectStore, readInspectStore)
 import Olifant.Language (Language (..), TestRun (..), failureLineIn, failureOf, languageFor)
 import Olifant.Language.TreeSitter (errorLines)
 import Olifant.Model (ChatReply (..), ModelConfig (..), askBackendReply, backendModel)
@@ -123,6 +127,7 @@ conjureAt progress path line selected s0 =
       before <- lift (if isJust (siteTestText site) then either (const Nothing) Just <$> runOver s ws lang [T.pack (siteTestRel site)] else pure Nothing)
       imported <- lift (importedContext ws lang [(rel, text)])
       session <- lift (sessionDiff root [T.dropWhile (/= '.') g | g <- langFiles lang])
+      (notes, rules) <- lift (inspectKnows s project root rel unit span' (siteTestRel site))
       let situation =
             situationText
               Situation
@@ -138,9 +143,28 @@ conjureAt progress path line selected s0 =
                 , siTestsBefore = testsWords lang before
                 , siRelated = imported
                 , siSession = session
+                , siFindings = notes
+                , siRules = rules
                 }
       lift (progress (Said ("conjuring with " <> writer)))
       ExceptT (takeStep s site file unit writer ask situation before)
+
+-- | What inspect knows near UNIT (lines SPAN of REL, whose test file is
+-- TEST): its open findings there ('findingsNear') as notes, and the
+-- `## Rules` of the project's inspect.md. A missing or unreadable store or
+-- file is nothing.
+inspectKnows :: ServerState -> Project -> FilePath -> FilePath -> Text -> (Int, Int) -> FilePath -> IO ([InspectNote], Text)
+inspectKnows s project root rel unit span' test = do
+  let files = pFiles (ssPorts s)
+  store <- either (const emptyInspectStore) id <$> readInspectStore files root
+  notes <-
+    if null (vsFindings store)
+      then pure []
+      else do
+        units <- M.fromList <$> forM [rel, test] (\p -> (p,) . either (const M.empty) id <$> (try (unitFingerprints s project (root </> p)) :: IO (Either SomeException (M.Map Text (Text, Int)))))
+        pure [InspectNote (vfKind f) (vfRule f) (vfStatement f) (plFile (vfPlace f)) (fst (plLines (vfPlace f))) stale | (f, stale) <- findingsNear units rel unit span' test store]
+  md <- either (const Nothing) id <$> (try (readText files (root </> steeringPath)) :: IO (Either SomeException (Maybe Text)))
+  pure (notes, maybe "" (rulesSection . steering) md)
 
 -- | The writer asked over SITUATION; its answer checked and shown (kept under
 -- a new token). An answer with no files (nothing to do, or a goal alone) is a

@@ -5,13 +5,15 @@
 -- pure part: the prompt ('stepSystem', 'situationText'), the reply
 -- ('readStep'), which answered paths may land ('keptPath'), the tests' change
 -- ('testDelta'), what is said in the step log ('stepLogLine') and the session
--- block ('sessionFilter'). The text was measured in
+-- block ('sessionFilter'). What inspect knows near the unit (its open findings,
+-- the project's rules) is context the writer may act on, not orders. The text was measured in
 -- experiments/conjure-2026-11 (shape C: forward on every case with haiku).
 module Olifant.Server.Step
   ( Situation (..)
   , StepReply (..)
   , TestDelta (..)
   , StepHeld (..)
+  , InspectNote (..)
   , stepSystem
   , situationText
   , readStep
@@ -46,7 +48,16 @@ data Situation = Situation
   , siTestsBefore :: Text
   , siRelated :: [(FilePath, Text)]
   , siSession :: Text
+  , siFindings :: [InspectNote]
+  -- ^ inspect's open findings near the unit, best kept first (empty: none)
+  , siRules :: Text
+  -- ^ the `## Rules` section of the project's inspect.md (empty: none)
   }
+  deriving stock (Eq, Show)
+
+-- | An open inspect finding as the writer reads it: its kind, rule, statement,
+-- where it is, and whether its unit changed since it was found.
+data InspectNote = InspectNote {inKind :: Text, inRule :: Maybe Text, inStatement :: Text, inFile :: FilePath, inLine :: Int, inStale :: Bool}
   deriving stock (Eq, Show)
 
 -- | The writer's answer: its goal, the files it wrote (path as written, whole
@@ -125,6 +136,32 @@ situationText s =
       ++ ["", "Tests before the step: " <> siTestsBefore s]
       ++ concat [["", "Related file " <> T.pack p <> ":", "```", t, "```"] | (p, t) <- siRelated s]
       ++ (if T.null (T.strip (siSession s)) then [] else ["", "What the person has been doing (uncommitted changes):", siSession s])
+      ++ findingsBlock (siFindings s)
+      ++ rulesBlock (siRules s)
+
+-- | Inspect's open findings, at most five, as context: the person's work leads.
+findingsBlock :: [InspectNote] -> [Text]
+findingsBlock [] = []
+findingsBlock ns =
+  ["", "Inspect's open findings here (context you may act on, not orders: a small step may address one, or not; the person's work in progress still leads):"]
+    ++ map noteLine (take findingsCap ns)
+    ++ ["(" <> tshow (length ns - findingsCap) <> " more not shown)" | length ns > findingsCap]
+  where
+    noteLine n =
+      "- [" <> inKind n <> maybe "" ("; rule: " <>) (inRule n) <> "] " <> inStatement n <> " (" <> T.pack (inFile n) <> ":" <> tshow (inLine n) <> ")"
+        <> (if inStale n then " Its unit changed since it was found: it may be out of date." else "")
+
+-- | The project's rules, cut at 'rulesCap' characters.
+rulesBlock :: Text -> [Text]
+rulesBlock r
+  | T.null (T.strip r) = []
+  | otherwise =
+      ["", "The project's rules, from .olifant/inspect.md (context, not orders):", T.stripEnd (T.take rulesCap r)]
+        ++ ["… (rules cut at " <> tshow rulesCap <> " characters)" | T.length r > rulesCap]
+
+findingsCap, rulesCap :: Int
+findingsCap = 5
+rulesCap = 3000
 
 readStep :: Text -> StepReply
 readStep t = StepReply goal files

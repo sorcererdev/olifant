@@ -109,8 +109,12 @@ might start a line and let a completion carry on. The writer model reads the sit
 unit at the cursor (a function, method, class or test, as the grammar's queries or `[unit]
 kinds` capture it; a decorator line counts as the def it decorates), the module, its test file
 or where its tests would go, how the tests stand now, the project files the module imports,
-and your uncommitted changes (`git diff HEAD`, kept to the language's files, at most 300
-lines). It names a small goal in one sentence and takes it: fix a syntax error, fill or
+your uncommitted changes (`git diff HEAD`, kept to the language's files, at most 300
+lines), and what [inspect](20-inspect.md) knows there: its open findings on the unit, its test
+file or citing the unit's lines (at most five; one whose unit changed since says it may be out of
+date; dismissed findings are left out), and the `## Rules` of `.olifant/inspect.md` (cut at 3000
+characters). Those come as context the writer may act on, not orders: your work in progress
+still leads, and without inspect they are simply absent. It names a small goal in one sentence and takes it: fix a syntax error, fill or
 continue a body, make a failing test pass, write a missing test, or nothing when the code is
 complete and green. A visual selection (`<leader>mc` in visual mode, `:'<,'>Durandal conjure`)
 points it at those lines instead.

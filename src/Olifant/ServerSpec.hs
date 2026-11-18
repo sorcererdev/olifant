@@ -24,6 +24,8 @@ import System.Directory (canonicalizePath, doesDirectoryExist, doesFileExist, li
 import System.Directory qualified as Dir
 import Olifant.Server.ConjureStep qualified as CS
 import Olifant.Server.Step (TestDelta (..), stepSystem)
+import Olifant.Inspect.Store (InspectFinding (..), InspectStore (..), Place (..), Status (..), emptyInspectStore, encodeStore)
+import Olifant.Inspect.StoreSpec (finding)
 import Olifant.Server.Edits (FileEdit (..))
 import Olifant.Model (ChatReply (..))
 import Olifant.Generation.Steer (noSeed)
@@ -199,6 +201,22 @@ stepSpecs = describe "a conjure is one step (olifant/conjure)" $ do
     map (\e -> (fePath e, feVersion e)) (CS.shEdits sh) `shouldBe` [(root </> moduleRel, Just 1)]
     tdPassing (CS.shDelta sh) `shouldBe` [testId]
     held s `shouldReturn` 1
+  it "the situation holds inspect's open findings near the unit and the project's rules; a dismissed finding is left out" $ do
+    let placed i st statement = (finding i "bug" st 0.9) {vfStatement = statement, vfPlace = Place moduleRel (Just "handle") (5, 6) Nothing (Just 5), vfEvidence = [(moduleRel, (6, 6))]}
+        store = emptyInspectStore {vsFindings = [placed "a" Open "handle never closes a table.", placed "b" DismissedHere "handle is too terse."]}
+        rules = "# Inspect\n\n## Rules\n\n### Seats are counted\nA table closes when its seats are counted.\n\n## A nitpick is\nstyle.\n"
+    (s, asked) <- serving (const (reply filled)) [(".olifant/state/inspect/findings.json", encodeStore store), (".olifant/inspect.md", rules)]
+    _ <- shown <$> step s 6
+    [(_, _, user)] <- readIORef asked
+    mapM_ (\k -> user `shouldSatisfy` T.isInfixOf k) ["Inspect's open findings here", "handle never closes a table.", "### Seats are counted"]
+    user `shouldNotSatisfy` T.isInfixOf "handle is too terse."
+    user `shouldNotSatisfy` T.isInfixOf "A nitpick is"
+  it "no findings file and no inspect.md: neither block" $ do
+    (s, asked) <- serving (const (reply filled)) []
+    _ <- shown <$> step s 6
+    [(_, _, user)] <- readIORef asked
+    user `shouldNotSatisfy` T.isInfixOf "findings"
+    user `shouldNotSatisfy` T.isInfixOf "The project's rules"
   it "a module with no test file is no refusal: the writer is told where its tests go and may create the file" $ do
     let other = "src/shop/open_table.py"
         otherTest = "src/shop/open_table__test.py"
