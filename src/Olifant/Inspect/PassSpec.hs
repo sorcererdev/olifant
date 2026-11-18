@@ -219,6 +219,41 @@ spec = describe "Olifant.Inspect.Pass" $ do
     TIO.writeFile (eDir e </> file) edit2
     _ <- ePass e
     statuses <$> eStore e >>= (`shouldBe` [Resolved])
+  it "a unit inspected again at a new fingerprint, its finding not found again, resolves it" $ withInspect "" edit1 $ \e -> do
+    TIO.writeFile (eFinds e) (replies [("src/inspectme.py:f", findReply [conv] [])])
+    _ <- ePass e
+    TIO.writeFile (eFinds e) (replies [("src/inspectme.py:f", findReply [] [])])
+    TIO.writeFile (eDir e </> file) edit2
+    _ <- ePass e
+    statuses <$> eStore e >>= (`shouldBe` [Resolved])
+  it "not found again: a dismissed finding stays dismissed, a waiting one resolves" $ withInspect "" edit1 $ \e -> do
+    TIO.writeFile (eAnswers e) (answers [("stops-early", False), ("nitpick", False), ("same", False)])
+    TIO.writeFile (eFinds e) (replies [("src/inspectme.py:f", findReply [conv, ("convention", (1, 2), "f is named f.", "A", (1, 1))] [])])
+    _ <- ePass e
+    [i, _] <- map vfId . vsFindings <$> eStore e
+    _ <- updateInspectStore (eWs e) (eDir e) (\vs -> (dismiss False i (vs {vsFindings = [if vfId f == i then f else f {vfStatus = Waiting} | f <- vsFindings vs]}), ()))
+    TIO.writeFile (eFinds e) (replies [("src/inspectme.py:f", findReply [] [])])
+    TIO.writeFile (eDir e </> file) edit2
+    _ <- ePass e
+    statuses <$> eStore e >>= (`shouldBe` [DismissedHere, Resolved])
+  it "a find call that fails, or a capped pass, resolves nothing" $ withInspect "" edit1 $ \e -> do
+    TIO.writeFile (eFinds e) (replies [("src/inspectme.py:f", findReply [conv] [])])
+    _ <- ePass e
+    TIO.writeFile (eFinds e) (replies [])
+    TIO.writeFile (eDir e </> file) edit2
+    _ <- ePass e
+    statuses <$> eStore e >>= (`shouldBe` [Open])
+    TIO.writeFile (eFinds e) (replies [("src/inspectme.py:f", findReply [] [])])
+    TIO.appendFile (eDir e </> ".olifant/config.toml") "pass_cost = 0.01\n"
+    _ <- ePass e
+    statuses <$> eStore e >>= (`shouldBe` [Open])
+  it "a finding on a unit the pass did not inspect stays open" $ withInspect "" edit1 $ \e -> do
+    TIO.writeFile (eFinds e) (replies [(k, findReply [conv] []) | k <- ["src/inspectme.py:f", "src/inspectme.py:g"]])
+    _ <- ePass e
+    TIO.writeFile (eFinds e) (replies [("src/inspectme.py:g", findReply [] [])])
+    TIO.writeFile (eDir e </> file) (T.replace "y * 2" "y * 3" edit1)
+    _ <- ePass e
+    statuses <$> eStore e >>= (`shouldBe` [Open])
   it "withheld is re-asked only on change" $ withInspect "" edit1 $ \e -> do
     TIO.writeFile (eAnswers e) (answers [("stops-early", False), ("nitpick", True), ("same", True)])
     -- the finding sits in f; later saves change only g, so f's fingerprint stays

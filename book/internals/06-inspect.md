@@ -85,9 +85,14 @@ the time zone (`day_cost` is a local day).
    end line is never checked. A `bug` or `assumption` then goes through `checkWith "inspect-check"`
    (the plans' cascade, the statement as a bare prose `Sentence`, as 1a measured it), within the
    caps (`claimEstimate`, else $0.016).
-9. **Close.** Ids the find call says no longer hold become `Resolved`. Findings in units that left
-   the file become `Gone`. The file is read again: a unit whose fingerprint moved while the pass
-   ran loses its new findings and is not marked inspected. Then `vsInspected` and `vsCapped` are updated.
+9. **Close.** Ids the find call says no longer hold (`resolvedIds`) become `Resolved`. Findings in
+   units that left the file become `Gone`. The file is read again: a unit whose fingerprint moved
+   while the pass ran loses its new findings and is not marked inspected. Then `notFound`: an
+   `Open` or `Waiting` finding from before the pass whose unit (`plUnit`) this pass inspected
+   (`inspectedAt`, the answered packs' units at their fingerprint now) at a fingerprint other than
+   its `plFingerprint`, and which the pass neither merged (`mergedRef`, filled by the `Merge`
+   branch) nor resolved, becomes `Resolved`. Only when the pass is `whole`: nothing capped and
+   every pack's find call answered. Then `vsInspected` and `vsCapped` are updated.
 
 The pass works on a copy of the store and writes it as it goes: each `writeStore` applies
 `mergeInto base mine current`, with `base` the version the pass last wrote (`store0` at first). A finding the pass changed is taken only if its status in the store
