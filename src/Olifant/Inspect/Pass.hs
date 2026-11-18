@@ -219,6 +219,7 @@ inspectPassOn _token s p deps path
           findUnit (n, inProgress) = FindUnit rel (namedName n) (namedLines n) (nonEmpty (headerOf text units n)) (cut text n) inProgress
           openOn names = [f | f <- vsFindings store0, plFile (vfPlace f) == rel, vfStatus f `elem` [Open, Waiting], maybe False (`elem` names) (plUnit (vfPlace f))]
       -- the find calls, one a pack, while the caps allow
+      let packs = packUnits (map findUnit finished)
       (spent1, capped, answered) <-
         foldM
           ( \(spent, cappedNames, done) pack ->
@@ -239,7 +240,7 @@ inspectPassOn _token s p deps path
                       pure (spent + cost, cappedNames, done ++ either (const []) (\reply -> [(names, reply)]) parsed)
           )
           (0, [], [])
-          (packUnits (map findUnit finished))
+          packs
       spentRef <- newIORef spent1
       cappedRef <- newIORef (not (null capped))
       dayCappedRef <- newIORef (not (null capped) && overDay spent1 est)
@@ -247,6 +248,7 @@ inspectPassOn _token s p deps path
           resolvedIds = S.fromList [i | (_, reply) <- answered, (i, False, _) <- frOpen reply]
           codeAt t ln = citedCode t ln
       textOf <- memoText
+      mergedRef <- newIORef S.empty
       -- place, match, filter
       vs1 <-
         foldM
@@ -273,6 +275,7 @@ inspectPassOn _token s p deps path
                     -- ones just checked on the code as it is (id, status and
                     -- dismissals stay the stored finding's)
                     c' <- remerge st c {vfPlace = pl, vfStatement = rfStatement raw, vfEvidence = rfEvidence raw} textOf
+                    modifyIORef' mergedRef (S.insert (vfId c))
                     prints <- citationsOk s p pcfg (rawOf c')
                     pure (replaceF c' {vfSeen = vfSeen c + 1, vfPrints = either (const (vfPrints c')) id prints} vs)
                   New -> addNew vs st0 raw' codeA nitpickOf newF pl
@@ -366,7 +369,24 @@ inspectPassOn _token s p deps path
           vs4 = vs3 {vsFindings = [if plFile (vfPlace f) == rel && maybe False (`S.notMember` names) (plUnit (vfPlace f)) && vfStatus f `elem` [Open, Waiting, Withheld] then f {vfStatus = Gone} else f | f <- vsFindings vs3]}
       -- a unit whose fingerprint moved while the pass ran: its new findings drop, it stays uninspected
       movedNames <- movedNow
-      let vs5 = dropMoved movedNames vs4
+      merged <- readIORef mergedRef
+      -- not found again: an open or waiting finding whose unit this pass inspected
+      -- at a new fingerprint, and which the find call neither kept nor resolved,
+      -- is resolved; only when every find call of the pass answered
+      let whole = null capped && length answered == length packs
+          inspectedAt = M.fromList [(namedName n, fingerprint text (namedLines n)) | (ns, _) <- answered, n <- units, namedName n `elem` ns, namedName n `S.notMember` movedNames]
+          notFound f =
+            whole
+              && plFile (vfPlace f) == rel
+              && vfStatus f `elem` [Open, Waiting]
+              && vfId f `S.member` oldIds
+              && vfId f `S.notMember` merged
+              && vfId f `S.notMember` resolvedIds
+              && case (plUnit (vfPlace f) >>= (`M.lookup` inspectedAt), plFingerprint (vfPlace f)) of
+                (Just now', Just was) -> now' /= was
+                _ -> False
+          vs4' = dropMoved movedNames vs4
+          vs5 = vs4' {vsFindings = [if notFound f then f {vfStatus = Resolved} else f | f <- vsFindings vs4']}
           inspectedNow = S.fromList [fingerprint text (namedLines n) | (ns, _) <- answered, n <- units, namedName n `elem` ns, namedName n `S.notMember` movedNames]
           inspectedNames = S.fromList [n | (ns, _) <- answered, n <- ns]
           vs6 =

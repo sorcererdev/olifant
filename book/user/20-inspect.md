@@ -64,8 +64,11 @@ no project rules: it still finds bugs and wrong assumptions, but it cannot find 
    check: right is shown, wrong is `refuted`, can't tell is `unsure`. Neither is shown. A pass
    verifies until `max_shown` findings have passed; the rest are `waiting`.
 
-A finding is `resolved` only when the find call, shown it on a later save, says it no longer
-holds. A finding whose unit is deleted is `gone`.
+A finding is `resolved` when the find call, shown it on a later save, says it no longer
+holds, or when a later save inspects its unit as changed and the find call does not report it
+again (you fixed the code and the finding is not found any more). Only a pass whose every find
+call answered does this: a failed call or a capped pass leaves the finding as it was. Dismissed
+findings stay dismissed. A finding whose unit is deleted is `gone`.
 
 ## `[inspect]`
 
